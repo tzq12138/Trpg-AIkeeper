@@ -19,6 +19,12 @@ def test_db():
     pg.connect()
     pg.initialize()
     conn = pg.get_connection()
+    conn.execute(
+        "TRUNCATE TABLE clarifications, clue_shares, clues, objectives, inventory, "
+        "actions, events, player_sequences, checkpoints, campaign_archives, "
+        "document_chunks, host_states, characters, rooms, scenarios, rule_documents "
+        "RESTART IDENTITY CASCADE"
+    )
     yield conn
     conn.close()
     pg.close()

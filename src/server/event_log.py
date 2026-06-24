@@ -28,8 +28,8 @@ class EventLog:
                 room_id=r["room_id"],
                 event_type=r["event_type"],
                 audience=r["audience"],
-                payload=json.loads(r["payload"]),
-                issued_at=r["issued_at"],
+                payload=_decode_json(r["payload"]),
+                issued_at=_to_iso(r["issued_at"]),
             )
             for r in rows
         ]
@@ -47,8 +47,8 @@ class EventLog:
                 room_id=r["room_id"],
                 event_type=r["event_type"],
                 audience=r["audience"],
-                payload=json.loads(r["payload"]),
-                issued_at=r["issued_at"],
+                payload=_decode_json(r["payload"]),
+                issued_at=_to_iso(r["issued_at"]),
             )
             for r in rows
         ]
@@ -58,7 +58,7 @@ class EventLog:
             checkpoint_id = str(__import__("uuid").uuid4())[:8]
 
         snapshot = self._build_snapshot(room_id)
-        snapshot_json = json.dumps(snapshot)
+        snapshot_json = json.dumps(snapshot, ensure_ascii=False, default=_json_default)
 
         self.conn.execute(
             "INSERT INTO checkpoints (checkpoint_id, room_id, state_snapshot) VALUES (%s, %s, %s)",
@@ -81,7 +81,7 @@ class EventLog:
         if not row:
             raise ValueError(f"Checkpoint {checkpoint_id} not found for room {room_id}")
 
-        snapshot = json.loads(row["state_snapshot"])
+        snapshot = _decode_json(row["state_snapshot"])
         self._apply_snapshot(room_id, snapshot)
         return snapshot
 
@@ -95,8 +95,8 @@ class EventLog:
             Checkpoint(
                 checkpoint_id=r["checkpoint_id"],
                 room_id=r["room_id"],
-                state_snapshot=json.loads(r["state_snapshot"]),
-                created_at=r["created_at"],
+                state_snapshot=_decode_json(r["state_snapshot"]),
+                created_at=_to_iso(r["created_at"]),
             )
             for r in rows
         ]
@@ -138,17 +138,17 @@ class EventLog:
                 "INSERT INTO characters (character_id, room_id, player_name, player_token, xlsx_data, is_ready) "
                 "VALUES (%s, %s, %s, %s, %s, %s)",
                 (char["character_id"], room_id, char["player_name"], char["player_token"],
-                 char.get("xlsx_data"), char.get("is_ready", 0)),
+                 _encode_json(char.get("xlsx_data")), char.get("is_ready", 0)),
             )
 
         for action in snapshot.get("actions", []):
             self.conn.execute(
                 "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, "
-                "status, batch_id, result, created_at, completed_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "params, status, batch_id, result, created_at, completed_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (action["action_id"], room_id, action["character_id"], action["intent_type"],
-                 action.get("declared_intent"), action["status"], action.get("batch_id"),
-                 action.get("result"), action.get("created_at"), action.get("completed_at")),
+                 action.get("declared_intent"), _encode_json(action.get("params", {})), action["status"], action.get("batch_id"),
+                 _encode_json(action.get("result")), action.get("created_at"), action.get("completed_at")),
             )
 
         for event in snapshot.get("events", []):
@@ -156,7 +156,33 @@ class EventLog:
                 "INSERT INTO events (room_id, event_type, audience, payload, issued_at) "
                 "VALUES (%s, %s, %s, %s, %s)",
                 (room_id, event["event_type"], event["audience"],
-                 event["payload"], event.get("issued_at", datetime.now(timezone.utc).isoformat())),
+                 _encode_json(event["payload"]), event.get("issued_at", datetime.now(timezone.utc).isoformat())),
             )
 
         self.conn.commit()
+
+
+def _decode_json(value):
+    if isinstance(value, (dict, list)):
+        return value
+    if value is None:
+        return {}
+    return json.loads(value)
+
+
+def _encode_json(value):
+    if value is None or isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, default=_json_default)
+
+
+def _json_default(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
+def _to_iso(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value

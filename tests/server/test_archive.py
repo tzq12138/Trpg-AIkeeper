@@ -63,7 +63,7 @@ def test_skill_check_history(client, test_db):
 
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status, result) "
-        "VALUES ('sc-1', ?, ?, 'skill_check', 'spot hidden', 'resolved', 'success')",
+        "VALUES ('sc-1', ?, ?, 'skill_check', 'spot hidden', 'resolved', '\"success\"')",
         (room_id, char_id),
     )
     test_db.execute(

@@ -45,7 +45,7 @@ class CampaignArchive:
 
         duration = 0
         if room["started_at"]:
-            start = datetime.fromisoformat(room["started_at"])
+            start = _datetime_value(room["started_at"])
             if start.tzinfo is None:
                 start = start.replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
@@ -66,8 +66,8 @@ class CampaignArchive:
             ending = CampaignEnding(
                 ending_type=archive_row["ending_type"],
                 summary=archive_row["summary"],
-                highlights=json.loads(archive_row["highlights"]),
-                character_arcs=json.loads(archive_row["character_arcs"]),
+                highlights=_json_value(archive_row["highlights"]),
+                character_arcs=_json_value(archive_row["character_arcs"]),
             )
 
         return CampaignSummary(
@@ -96,7 +96,7 @@ class CampaignArchive:
             params.append(filters.until)
 
         if filters.character_id:
-            query += " AND payload LIKE %s"
+            query += " AND payload::text LIKE %s"
             params.append(f"%{filters.character_id}%")
 
         query += " ORDER BY sequence LIMIT %s"
@@ -109,8 +109,8 @@ class CampaignArchive:
                 room_id=r["room_id"],
                 event_type=r["event_type"],
                 audience=r["audience"],
-                payload=json.loads(r["payload"]),
-                issued_at=r["issued_at"],
+                payload=_json_value(r["payload"]),
+                issued_at=_iso_value(r["issued_at"]),
             )
             for r in rows
         ]
@@ -124,7 +124,7 @@ class CampaignArchive:
     def _determine_ending_type(self, events: list[dict]) -> str:
         for e in events:
             if e["event_type"] == "s2c_campaign_ended":
-                payload = json.loads(e["payload"])
+                payload = _json_value(e["payload"])
                 return payload.get("ending_type", "mixed")
         return "mixed"
 
@@ -138,7 +138,7 @@ class CampaignArchive:
         highlights = []
         for e in events:
             if e["event_type"] in ("s2c_reveal_transaction", "s2c_scene_sync"):
-                payload = json.loads(e["payload"])
+                payload = _json_value(e["payload"])
                 if "text" in payload:
                     highlights.append(payload["text"])
                 elif "summary" in payload:
@@ -169,3 +169,23 @@ class CampaignArchive:
              json.dumps(ending.highlights), json.dumps(ending.character_arcs)),
         )
         self.conn.commit()
+
+
+def _json_value(value):
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    return json.loads(value)
+
+
+def _datetime_value(value):
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(value)
+
+
+def _iso_value(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value

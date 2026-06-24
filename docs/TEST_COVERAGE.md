@@ -1,8 +1,9 @@
 # AI-Keeper 测试覆盖文档
 
-**最后更新**: 2026-06-22 (审查修复后)  
-**测试总数**: 184 passed, 0 failed  
-**后端**: Python FastAPI + SQLite  
+**最后更新**: 2026-06-25
+**当前验证口径**: PostgreSQL/pgvector 迁移后，以 `scripts/test.ps1` 为准
+**本轮已验证**: `scripts/test.ps1` 通过，后端 `258 passed`，前端 Vite build 通过
+**后端**: Python FastAPI + PostgreSQL + pgvector
 **前端**: React + TypeScript (Vite)
 
 ---
@@ -40,8 +41,12 @@
 | PRD-26 | 防剧透策略与暴露度控制 | ✅ | ✅ | — | ✅ 完成 |
 | PRD-27 | 事件日志存档回放与检查点 | ✅ | ✅ | — | ✅ 完成 |
 | PRD-28 | 自动结局与可查询战役档案 | ✅ | ✅ | — | ✅ 完成 |
+| PRD-29 | 四阶段裁决与后验物品主张 | ✅ | ✅ | ✅ | ✅ 完成 |
+| PRD-30 | 双层规则引擎架构 | ✅ | ✅ | — | ✅ 完成 |
 
-**完成率**: 28/29 PRD 完成 (97%)，1 个部分完成 (PRD-08 语音需要浏览器 MediaRecorder API)
+**完成率**: 30/31 PRD 完成，1 个部分完成（PRD-08 语音/STT 暂列后续）。
+
+> 注：历史 `184 passed, 0 failed` 属 SQLite 口径，不再代表当前 PostgreSQL/pgvector 主线。
 
 ---
 

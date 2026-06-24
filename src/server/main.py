@@ -9,6 +9,9 @@ from .db_adapter import PgDatabase
 from .embedding import HybridEmbedding
 from .rag import RAGStore
 from .engine import Engine
+from .mechanic_compiler import MechanicCompiler
+from .projection import ProjectionDispatcher
+from .resolution_pipeline import ResolutionPipeline
 from .router_rooms import router as rooms_router
 from .router_player import router as player_router
 from .router_scenarios import router as scenarios_router
@@ -40,6 +43,16 @@ async def lifespan(app: FastAPI):
     rag = RAGStore(pg_db, embedding)
     app.state.rag = rag
     app.state.engine = Engine(conn)
+    compiler = MechanicCompiler(
+        api_key=settings.deepseek_api_key,
+        model=settings.deepseek_model,
+    )
+    app.state.compiler = compiler
+    app.state.pipeline = ResolutionPipeline(
+        conn,
+        compiler=compiler,
+        dispatcher=ProjectionDispatcher(conn),
+    )
     yield
     conn.close()
     pg_db.close()

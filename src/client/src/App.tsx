@@ -132,6 +132,10 @@ function PlayerAction({ roomId }: { roomId: string }) {
   const [actionStatus, setActionStatus] = useState<string>('idle');
   const [messages, setMessages] = useState<PlayerChatMessage[]>([]);
   const [pendingActions, setPendingActions] = useState<TacticalAction[]>([]);
+  const [claimOpen, setClaimOpen] = useState(false);
+  const [claimedItemName, setClaimedItemName] = useState('');
+  const [claimJustification, setClaimJustification] = useState('');
+  const [claimStatus, setClaimStatus] = useState('');
 
   useEffect(() => {
     const token = localStorage.getItem('player_token') || '';
@@ -153,6 +157,29 @@ function PlayerAction({ roomId }: { roomId: string }) {
       } else if (event.type === 's2c_action_completed') {
         setActionStatus('idle');
         setPendingActions([]);
+      } else if (event.type === 's2c_public_observation') {
+        const payload = event.payload as { text?: string };
+        const text = payload.text;
+        if (text) {
+          setMessages((prev) => [...prev.slice(-49), {
+            id: crypto.randomUUID(),
+            sender: 'kp',
+            text,
+            timestamp: Date.now(),
+          }]);
+        }
+      } else if (event.type === 's2c_state_patch') {
+        const payload = event.payload as { patches?: Array<{ op?: string; path?: string; value?: { name?: string } }> };
+        const added = payload.patches?.find((p) => p.op === 'add' && p.path === '/inventory/-');
+        const itemName = added?.value?.name;
+        if (itemName) {
+          setMessages((prev) => [...prev.slice(-49), {
+            id: crypto.randomUUID(),
+            sender: 'system',
+            text: `已加入背包：${itemName}`,
+            timestamp: Date.now(),
+          }]);
+        }
       }
     });
     ws.connect(token);
@@ -184,6 +211,45 @@ function PlayerAction({ roomId }: { roomId: string }) {
       }
     } catch {
       setActionStatus('idle');
+    }
+  };
+
+  const submitRetroClaim = async () => {
+    if (!claimedItemName.trim() || actionStatus !== 'idle') return;
+    setClaimStatus('提交中...');
+    const actionId = crypto.randomUUID();
+    const justification = claimJustification.trim() || `我主张角色背景中应有${claimedItemName.trim()}`;
+    try {
+      const res = await fetch('/api/player/intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Room-Token': localStorage.getItem('player_token') || '' },
+        body: JSON.stringify({
+          action_id: actionId,
+          intent_type: 'retroactive_item_claim',
+          declared_intent: justification,
+          params: {
+            claimedItemName: claimedItemName.trim(),
+            justificationText: justification,
+          },
+        }),
+      });
+      if (res.ok) {
+        setClaimStatus('主张已提交');
+        setMessages((prev) => [...prev.slice(-49), {
+          id: actionId,
+          sender: 'player',
+          text: `主张物品：${claimedItemName.trim()}`,
+          timestamp: Date.now(),
+        }]);
+        setClaimedItemName('');
+        setClaimJustification('');
+        setClaimOpen(false);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setClaimStatus(String(data.detail || '主张未通过'));
+      }
+    } catch {
+      setClaimStatus('提交失败');
     }
   };
 
@@ -280,6 +346,51 @@ function PlayerAction({ roomId }: { roomId: string }) {
           >
             {actionStatus === 'idle' ? '提交行动' : '等待结算...'}
           </button>
+          <button
+            onClick={() => {
+              setClaimOpen((v) => !v);
+              setClaimStatus('');
+            }}
+            disabled={actionStatus !== 'idle'}
+            style={{
+              padding: 10, fontSize: 14, width: '100%', marginTop: 8,
+              borderRadius: 8, border: '1px solid #333',
+              background: 'transparent',
+              color: actionStatus === 'idle' ? '#8c9eff' : '#666',
+              cursor: actionStatus === 'idle' ? 'pointer' : 'not-allowed',
+            }}
+          >
+            主张物品
+          </button>
+          {claimOpen && (
+            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <input
+                value={claimedItemName}
+                onChange={(e) => setClaimedItemName(e.target.value)}
+                placeholder="物品名，例如：医用塑胶手套"
+                style={{ padding: 8, fontSize: 14, borderRadius: 8, border: '1px solid #333', background: '#111', color: '#ddd', boxSizing: 'border-box' }}
+              />
+              <input
+                value={claimJustification}
+                onChange={(e) => setClaimJustification(e.target.value)}
+                placeholder="理由，例如：我是医生，随身带着"
+                style={{ padding: 8, fontSize: 14, borderRadius: 8, border: '1px solid #333', background: '#111', color: '#ddd', boxSizing: 'border-box' }}
+              />
+              <button
+                onClick={submitRetroClaim}
+                disabled={!claimedItemName.trim() || actionStatus !== 'idle'}
+                style={{
+                  padding: 10, fontSize: 14, borderRadius: 8, border: 'none',
+                  background: claimedItemName.trim() && actionStatus === 'idle' ? '#4caf50' : '#333',
+                  color: claimedItemName.trim() && actionStatus === 'idle' ? '#fff' : '#666',
+                  cursor: claimedItemName.trim() && actionStatus === 'idle' ? 'pointer' : 'not-allowed',
+                }}
+              >
+                提交主张
+              </button>
+              {claimStatus && <div style={{ color: '#888', fontSize: 12 }}>{claimStatus}</div>}
+            </div>
+          )}
         </div>
       )}
 

@@ -50,7 +50,9 @@ async def submit_clarification(request: Request):
         (char["character_id"], char["room_id"]),
     ).fetchone()
     if recent:
-        last_time = datetime.fromisoformat(recent["created_at"])
+        last_time = recent["created_at"] if isinstance(recent["created_at"], datetime) else datetime.fromisoformat(recent["created_at"])
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(tzinfo=timezone.utc)
         if (now - last_time).total_seconds() < RATE_LIMIT_COOLDOWN_SECONDS:
             raise HTTPException(429, "Rate limited. Please wait before submitting another clarification.")
 
@@ -93,7 +95,7 @@ async def get_clarification(request: Request, clarification_id: str):
     result = None
     if row["result"]:
         import json
-        result = json.loads(row["result"])
+        result = row["result"] if isinstance(row["result"], (dict, list)) else json.loads(row["result"])
 
     return {
         "clarification_id": row["clarification_id"],

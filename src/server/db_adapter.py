@@ -1,3 +1,4 @@
+import json
 import re
 import logging
 from contextlib import contextmanager
@@ -9,10 +10,73 @@ import psycopg2.extras
 logger = logging.getLogger(__name__)
 
 _placeholder_re = re.compile(r'\?')
+_sqlite_datetime_hour_re = re.compile(r"datetime\('now',\s*'-(\d+)\s+hour'\)", re.IGNORECASE)
+_sqlite_datetime_now_re = re.compile(r"datetime\('now'\)", re.IGNORECASE)
 
 
 def _translate_sql(sql: str) -> str:
+    sql = _sqlite_datetime_hour_re.sub(r"(NOW() - INTERVAL '\1 hour')", sql)
+    sql = _sqlite_datetime_now_re.sub("NOW()", sql)
     return _placeholder_re.sub('%s', sql)
+
+
+def _coerce_jsonb_result_literals(sql: str) -> str:
+    lower_sql = sql.lower()
+    if "insert into actions" not in lower_sql or "result" not in lower_sql:
+        return sql
+
+    match = re.search(
+        r"(insert\s+into\s+actions\s*\((?P<columns>[^)]+)\)\s*values\s*\()(?P<values>.*)(\)\s*)$",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return sql
+
+    columns = [column.strip().strip('"').lower() for column in match.group("columns").split(",")]
+    if "result" not in columns:
+        return sql
+
+    values = _split_sql_values(match.group("values"))
+    result_idx = columns.index("result")
+    if result_idx >= len(values):
+        return sql
+
+    result_value = values[result_idx].strip()
+    if len(result_value) < 2 or not (result_value.startswith("'") and result_value.endswith("'")):
+        return sql
+
+    inner = result_value[1:-1].replace("''", "'")
+    try:
+        json.loads(inner)
+        return sql
+    except Exception:
+        values[result_idx] = "'" + json.dumps(inner, ensure_ascii=False).replace("'", "''") + "'"
+        return match.group(1) + ", ".join(values) + match.group(4)
+
+
+def _split_sql_values(values_sql: str) -> list[str]:
+    values: list[str] = []
+    current: list[str] = []
+    in_string = False
+    i = 0
+    while i < len(values_sql):
+        char = values_sql[i]
+        if char == "'":
+            current.append(char)
+            if in_string and i + 1 < len(values_sql) and values_sql[i + 1] == "'":
+                current.append(values_sql[i + 1])
+                i += 2
+                continue
+            in_string = not in_string
+        elif char == "," and not in_string:
+            values.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+        i += 1
+    values.append("".join(current).strip())
+    return values
 
 
 SCHEMA_SQL = """
@@ -43,6 +107,7 @@ CREATE TABLE IF NOT EXISTS scenarios (
     title TEXT,
     raw_text TEXT,
     knowledge_graph JSONB,
+    scenario_assets JSONB,
     quality_report JSONB,
     import_status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -63,6 +128,7 @@ CREATE TABLE IF NOT EXISTS actions (
     character_id TEXT NOT NULL,
     intent_type TEXT NOT NULL,
     declared_intent TEXT,
+    params JSONB DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'queued',
     batch_id TEXT,
     result JSONB,
@@ -176,6 +242,9 @@ CREATE TABLE IF NOT EXISTS rule_documents (
     content TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS scenario_assets JSONB;
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS params JSONB DEFAULT '{}';
 """
 
 
@@ -187,7 +256,8 @@ class PgCursorWrapper:
         self._lastrowid = None
 
     def execute(self, sql, params=None):
-        translated = _translate_sql(sql)
+        translated = _coerce_jsonb_result_literals(_translate_sql(sql))
+        params = self._coerce_params(translated, params)
         try:
             if params is not None:
                 self._cursor.execute(translated, params)
@@ -204,6 +274,65 @@ class PgCursorWrapper:
                     pass
             raise
         return self
+
+    def _coerce_params(self, sql, params=None):
+        if params is None or not isinstance(params, (tuple, list)):
+            return params
+        values = list(params)
+        lower_sql = sql.lower()
+        boolean_columns = ("is_private", "is_ready", "is_secret")
+        if any(column in lower_sql for column in boolean_columns):
+            columns = self._insert_columns(lower_sql)
+            for column in boolean_columns:
+                if column in columns:
+                    idx = columns.index(column)
+                    if idx < len(values) and values[idx] in (0, 1):
+                        values[idx] = bool(values[idx])
+            if "set is_private = %s" in lower_sql and values and values[0] in (0, 1):
+                values[0] = bool(values[0])
+            if "set is_ready = %s" in lower_sql and values and values[0] in (0, 1):
+                values[0] = bool(values[0])
+            if "set is_secret = %s" in lower_sql and values and values[0] in (0, 1):
+                values[0] = bool(values[0])
+        if "result" in lower_sql:
+            columns = self._insert_columns(lower_sql)
+            if "result" in columns:
+                idx = columns.index("result")
+                if idx < len(values):
+                    values[idx] = self._json_param(values[idx])
+            elif "result = %s" in lower_sql:
+                update_columns = self._update_columns(lower_sql)
+                if "result" in update_columns:
+                    idx = update_columns.index("result")
+                    if idx < len(values):
+                        values[idx] = self._json_param(values[idx])
+        return tuple(values) if isinstance(params, tuple) else values
+
+    def _insert_columns(self, sql: str) -> list[str]:
+        match = re.search(r"insert\s+into\s+\w+\s*\(([^)]+)\)", sql)
+        if not match:
+            return []
+        return [column.strip().strip('"') for column in match.group(1).split(",")]
+
+    def _update_columns(self, sql: str) -> list[str]:
+        match = re.search(r"update\s+\w+\s+set\s+(.+?)\s+where\s+", sql, re.DOTALL)
+        if not match:
+            return []
+        assignments = match.group(1).split(",")
+        return [
+            assignment.split("=", 1)[0].strip().strip('"')
+            for assignment in assignments
+            if "=" in assignment and "%s" in assignment
+        ]
+
+    def _json_param(self, value):
+        if value is None or not isinstance(value, str):
+            return value
+        try:
+            json.loads(value)
+            return value
+        except Exception:
+            return json.dumps(value, ensure_ascii=False)
 
     def fetchone(self):
         row = self._cursor.fetchone()

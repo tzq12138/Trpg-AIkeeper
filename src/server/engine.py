@@ -37,9 +37,16 @@ class Engine:
             return {"status": "accepted", "action_id": intent.action_id, "is_ready": bool(char["is_ready"])}
 
         self.conn.execute(
-            "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
-            "VALUES (%s, %s, %s, %s, %s, 'queued')",
-            (intent.action_id, room_id, character_id, intent.intent_type, intent.declared_intent),
+            "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, params, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 'queued')",
+            (
+                intent.action_id,
+                room_id,
+                character_id,
+                intent.intent_type,
+                intent.declared_intent,
+                json.dumps(intent.params, ensure_ascii=False),
+            ),
         )
         self.conn.execute(
             "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, 'player', %s)",
@@ -79,7 +86,12 @@ class Engine:
     ) -> list[dict]:
         self.conn.execute(
             "UPDATE actions SET status = %s, result = %s, completed_at = %s WHERE action_id = %s",
-            (status, result, datetime.now(timezone.utc).isoformat(), action_id),
+            (
+                status,
+                json.dumps(result, ensure_ascii=False) if result is not None else None,
+                datetime.now(timezone.utc).isoformat(),
+                action_id,
+            ),
         )
         action = self.conn.execute(
             "SELECT room_id, character_id FROM actions WHERE action_id = %s", (action_id,)

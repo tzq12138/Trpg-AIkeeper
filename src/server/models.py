@@ -46,7 +46,7 @@ class PlayerIntent(BaseModel):
     intent_type: Literal[
         "voice_command", "dialogue", "skill_check", "move",
         "use_item", "show_item", "ready_toggle", "character_import_confirm",
-        "clarification_request",
+        "clarification_request", "retroactive_item_claim",
     ]
     declared_intent: str = ""
     base_state_version: int = 0
@@ -315,6 +315,47 @@ class ScenarioKnowledgeGraph(BaseModel):
     clues: list[dict[str, Any]] = []
     truth: dict[str, Any] | None = None
     endings: list[dict[str, Any]] = []
+
+
+class ScenarioAssets(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    items: dict[str, dict[str, Any]] = {}
+    professions_matrix: dict[str, dict[str, Any]] = Field(default={}, alias="professionsMatrix")
+    scenes: list[dict[str, Any]] = []
+
+
+class MechanicCompileResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    triggered_mechanic: Literal[
+        "skill_check", "sanity_check", "combat_damage", "luck_check",
+        "auto_success", "auto_failure", "dialogue",
+    ] = Field(default="dialogue", alias="triggeredMechanic")
+    skill_name: str | None = Field(default=None, alias="skillName")
+    difficulty: Literal["regular", "hard", "extreme"] = "regular"
+    item_consumed: bool = Field(default=False, alias="itemConsumed")
+    consequence: dict[str, Any] = {}
+
+
+class ResolutionResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    action_id: str = Field(alias="actionId")
+    room_id: str = Field(alias="roomId")
+    character_id: str = Field(alias="characterId")
+    mechanic: str = "dialogue"
+    is_success: bool = Field(default=True, alias="isSuccess")
+    metadata: dict[str, Any] = {}
+    mutations: list[dict[str, Any]] = []
+    reveal_steps: list[dict[str, Any]] = Field(default=[], alias="revealSteps")
+    cascading_state_changes: list[str] = Field(default=[], alias="cascadingStateChanges")
+    narrative: str = ""
+
+
+class NarrativeProjection(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    narrative: str
+    host_transaction: dict[str, Any] | None = Field(default=None, alias="hostTransaction")
+    state_patch: dict[str, Any] | None = Field(default=None, alias="statePatch")
+    public_observation: dict[str, Any] | None = Field(default=None, alias="publicObservation")
 
 
 class CharacterCompatibilityReport(BaseModel):

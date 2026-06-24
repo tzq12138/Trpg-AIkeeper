@@ -121,7 +121,7 @@ def test_ready_toggle(engine, test_db):
     )
     test_db.execute(
         "INSERT INTO characters (character_id, room_id, player_name, player_token, is_ready) "
-        "VALUES ('char-1', 'room-1', 'Alice', 'token-1', 0)"
+        "VALUES ('char-1', 'room-1', 'Alice', 'token-1', FALSE)"
     )
     test_db.commit()
 
@@ -135,7 +135,7 @@ def test_ready_toggle(engine, test_db):
     char = test_db.execute(
         "SELECT is_ready FROM characters WHERE character_id = 'char-1'"
     ).fetchone()
-    assert char["is_ready"] == 1
+    assert char["is_ready"] is True
 
 
 def test_ready_toggle_off(engine, test_db):
@@ -144,7 +144,7 @@ def test_ready_toggle_off(engine, test_db):
     )
     test_db.execute(
         "INSERT INTO characters (character_id, room_id, player_name, player_token, is_ready) "
-        "VALUES ('char-1', 'room-1', 'Alice', 'token-1', 1)"
+        "VALUES ('char-1', 'room-1', 'Alice', 'token-1', TRUE)"
     )
     test_db.commit()
 

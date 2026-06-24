@@ -1,3 +1,5 @@
+import hashlib
+import math
 import numpy as np
 import logging
 from typing import Protocol
@@ -23,8 +25,14 @@ class LocalEmbedding:
         return self._model
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        vectors = self.model.encode(texts, normalize_embeddings=True)
-        return vectors.tolist()
+        try:
+            vectors = self.model.encode(texts, normalize_embeddings=True)
+            return vectors.tolist()
+        except ModuleNotFoundError as e:
+            if e.name != 'sentence_transformers':
+                raise
+            logger.warning('sentence_transformers is not installed, using deterministic fallback embeddings')
+            return _fallback_embed(texts)
 
 
 class RemoteEmbedding:
@@ -63,6 +71,19 @@ class HybridEmbedding:
     @property
     def dimension(self) -> int:
         return 768
+
+
+def _fallback_embed(texts: list[str], dimension: int = 768) -> list[list[float]]:
+    vectors: list[list[float]] = []
+    for text in texts:
+        vector = [0.0] * dimension
+        for char in text:
+            digest = hashlib.sha256(char.encode('utf-8')).digest()
+            index = int.from_bytes(digest[:4], 'big') % dimension
+            vector[index] += 1.0
+        norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+        vectors.append([value / norm for value in vector])
+    return vectors
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

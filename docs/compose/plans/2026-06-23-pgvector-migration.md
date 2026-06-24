@@ -1040,16 +1040,16 @@ git commit -m "chore: complete SQLite to PostgreSQL migration"
 
 ## Migration Checklist
 
-- [ ] PgAdapter created and tested
-- [ ] main.py wired to PgAdapter, SQLite removed
-- [ ] All `datetime('now')` → `NOW()`
-- [ ] All `INSERT OR REPLACE` → `ON CONFLICT`
-- [ ] All `GROUP_CONCAT` → `STRING_AGG`
-- [ ] All `cursor.lastrowid` → `RETURNING`
-- [ ] Boolean `0/1` → `TRUE/FALSE` in SQL
-- [ ] HostStore save/load implemented
-- [ ] RAG: character indexing works
-- [ ] RAG: NPC graph indexing works
-- [ ] RAG: rules indexing works
-- [ ] All existing tests pass
-- [ ] Smoke test creates room and queries work
+- [x] PgAdapter created and targeted tests added
+- [x] main.py wired to PgAdapter, SQLite removed from active path
+- [x] All `datetime('now')` → `NOW()` on active PostgreSQL path
+- [x] All active `INSERT OR REPLACE` → `ON CONFLICT`
+- [x] No active `GROUP_CONCAT` usage remains
+- [x] Active generated IDs avoid `cursor.lastrowid`; `RETURNING` used where needed
+- [x] Boolean test SQL updated to `TRUE/FALSE`
+- [x] HostStore save/load implemented
+- [x] RAG: character indexing implemented
+- [x] RAG: NPC graph indexing implemented
+- [x] RAG: rules indexing implemented
+- [x] Full suite pass under `scripts/test.ps1`
+- [ ] Smoke test creates room and queries work under fresh Docker volume

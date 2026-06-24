@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS scenarios (
     title TEXT,
     raw_text TEXT,
     knowledge_graph JSONB,
+    scenario_assets JSONB,
     quality_report JSONB,
     import_status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS actions (
     character_id TEXT NOT NULL,
     intent_type TEXT NOT NULL,
     declared_intent TEXT,
+    params JSONB DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'queued',
     batch_id TEXT,
     result JSONB,
@@ -153,6 +155,9 @@ CREATE TABLE IF NOT EXISTS clarifications (
     resolved_at TIMESTAMP,
     result JSONB
 );
+
+ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS scenario_assets JSONB;
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS params JSONB DEFAULT '{}';
 """
 
 

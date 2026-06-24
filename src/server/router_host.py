@@ -92,6 +92,7 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str):
     conn = websocket.app.state.db
     store = get_host_store(room_id, conn)
     await websocket.accept()
+    ws_manager.register_accepted(websocket, room_id, "host")
     logger.info("Host connected to room %s", room_id)
 
     last_seq = 0
@@ -226,3 +227,5 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str):
         logger.info("Host disconnected from room %s", room_id)
     except Exception as e:
         logger.error("Host %s error: %s", room_id, e)
+    finally:
+        ws_manager.disconnect(room_id, "host")

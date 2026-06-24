@@ -9,12 +9,15 @@ logger = logging.getLogger(__name__)
 def chunk_text(text: str, max_chars: int = 500, overlap: int = 50) -> list[str]:
     chunks = []
     start = 0
+    step_back = min(overlap, max_chars - 1)
     while start < len(text):
         end = min(start + max_chars, len(text))
         chunk = text[start:end]
         if chunk.strip():
             chunks.append(chunk.strip())
-        start = end - overlap
+        if end >= len(text):
+            break
+        start = end - step_back
     return chunks
 
 
@@ -193,8 +196,7 @@ class RAGStore:
                     params.extend(source_types)
 
                 where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-                params.append(query_vec)
-                params.append(top_k)
+                query_params = [query_vec, *params, query_vec, top_k]
 
                 cur.execute(f"""
                     SELECT chunk_id, source_type, source_id, content, metadata,
@@ -203,7 +205,7 @@ class RAGStore:
                     {where}
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s
-                """, params + [query_vec, top_k])
+                """, query_params)
 
                 return cur.fetchall()
 

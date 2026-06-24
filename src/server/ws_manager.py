@@ -14,6 +14,9 @@ class ConnectionManager:
         await websocket.accept()
         self._connections.setdefault(room_id, {})[connection_id] = websocket
 
+    def register_accepted(self, websocket: WebSocket, room_id: str, connection_id: str):
+        self._connections.setdefault(room_id, {})[connection_id] = websocket
+
     def disconnect(self, room_id: str, connection_id: str):
         if room_id in self._connections:
             self._connections[room_id].pop(connection_id, None)

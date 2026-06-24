@@ -295,6 +295,22 @@ export default function HostStage({ roomId }: { roomId: string }) {
       setMessages((prev) => [...prev, data.message as ChatMessage]);
     } else if (data.type === 'atmosphere_update') {
       setAtmosphere(data.atmosphere as Record<string, unknown>);
+    } else if (data.type === 's2c_reveal_transaction') {
+      const payload = data.payload as { steps?: Array<{ kind?: string; payload?: Record<string, unknown> }>; summaryText?: string };
+      const steps = payload.steps || [];
+      const rollStep = steps.find((step) => step.kind === 'roll')?.payload;
+      if (rollStep) {
+        setRollEvent(rollStep);
+      }
+      const narrative = steps.find((step) => step.kind === 'narrative_text')?.payload?.text || payload.summaryText;
+      if (narrative) {
+        setMessages((prev) => [...prev, { text: String(narrative), speaker: 'KP' }]);
+      }
+    } else if (data.type === 's2c_public_observation') {
+      const payload = data.payload as { text?: string };
+      if (payload.text) {
+        setMessages((prev) => [...prev, { text: payload.text, speaker: 'KP' }]);
+      }
     }
   }, []);
 

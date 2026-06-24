@@ -41,64 +41,13 @@ async def trigger_ai_turn(request: Request, room_id: str):
     if not room:
         raise HTTPException(404, "Room not found")
 
-    actions = conn.execute(
-        "SELECT * FROM actions WHERE room_id = %s AND status = 'queued' ORDER BY created_at",
-        (room_id,),
-    ).fetchall()
-
-    if not actions:
+    pipeline = getattr(request.app.state, "pipeline", None)
+    if not pipeline:
+        raise HTTPException(500, "Resolution pipeline unavailable")
+    result = await pipeline.resolve_queued_room(room_id)
+    if result["resolved"] == 0:
         raise HTTPException(400, "No pending actions to process")
-
-    action_dicts = [dict(a) for a in actions]
-    batch = {
-        "batch_id": f"manual-{room_id}",
-        "room_id": room_id,
-        "actions": action_dicts,
-    }
-
-    scenario = _get_scenario_for_room(conn, room_id)
-    if not scenario:
-        scenario = {"title": "默认场景", "raw_text": ""}
-
-    ai_kp = _get_ai_kp(request)
-    response = await ai_kp.process_batch(room_id, batch, scenario)
-
-    for a in action_dicts:
-        conn.execute(
-            "UPDATE actions SET status = 'resolved', result = %s WHERE action_id = %s",
-            (response.narrative[:200], a["action_id"]),
-        )
-
-    conn.execute(
-        "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, 'host', %s)",
-        (room_id, "s2c_reveal_transaction", json.dumps({
-            "narrative": response.narrative,
-            "batch_id": batch["batch_id"],
-        })),
-    )
-
-    for roll_req in response.roll_requests:
-        conn.execute(
-            "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, 'player', %s)",
-            (room_id, "s2c_tactical_prompt", json.dumps({
-                "skill_name": roll_req.skill_name,
-                "difficulty": roll_req.difficulty,
-                "reason": roll_req.reason,
-                "target_character": roll_req.target_character,
-            })),
-        )
-
-    conn.commit()
-
-    return {
-        "batch_id": batch["batch_id"],
-        "narrative": response.narrative,
-        "roll_requests": [r.model_dump() for r in response.roll_requests],
-        "state_suggestions": [s.model_dump() for s in response.state_suggestions],
-        "tactical_prompts": [t.model_dump() for t in response.tactical_prompts],
-        "clues_to_release": response.clues_to_release,
-        "keeper_notes": response.keeper_notes,
-    }
+    return result
 
 
 @router.get("/{room_id}/ai-status")
