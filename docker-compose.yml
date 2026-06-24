@@ -1,0 +1,21 @@
+version: "3.9"
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aikeeper-db
+    environment:
+      POSTGRES_USER: aikeeper
+      POSTGRES_PASSWORD: aikeeper123
+      POSTGRES_DB: aikeeper
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aikeeper"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
