@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import HostStage from './pages/HostStage';
 import HostLobby from './pages/HostLobby';
 import AdminDashboard from './pages/AdminDashboard';
+import RagTestPage from './pages/RagTestPage';
 import PlayerCharacter from './pages/PlayerCharacter';
 import PlayerInventory from './pages/PlayerInventory';
 import TacticalButtons from './components/TacticalButtons';
@@ -13,6 +14,7 @@ function getRoute(): { page: string; param: string } {
   const path = window.location.pathname;
   if (path === '/') return { page: 'home', param: '' };
   if (path === '/admin') return { page: 'admin', param: '' };
+  if (path === '/rag-test') return { page: 'rag-test', param: '' };
   if (path === '/host/create') return { page: 'host-create', param: '' };
   if (path.match(/^\/host\/[^/]+\/stage$/)) return { page: 'host-stage', param: path.split('/')[2] };
   if (path.startsWith('/host/')) return { page: 'host-lobby', param: path.split('/')[2] };
@@ -36,6 +38,9 @@ export default function App() {
   if (route.page === 'admin') {
     return <AdminDashboard />;
   }
+  if (route.page === 'rag-test') {
+    return <RagTestPage />;
+  }
 
   return (
     <div style={{ maxWidth: 480, margin: '0 auto', padding: 16, fontFamily: 'sans-serif' }}>
@@ -54,6 +59,9 @@ function Home() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <a href="/admin" style={{ padding: 16, border: '2px solid #3f51b5', borderRadius: 8, textAlign: 'center', color: '#8c9eff', fontWeight: 'bold' }}>
         管理后台
+      </a>
+      <a href="/rag-test" style={{ padding: 16, border: '2px solid #3f51b5', borderRadius: 8, textAlign: 'center', color: '#8c9eff', fontWeight: 'bold' }}>
+        规则书 RAG 测试台
       </a>
       <a href="/host/create" style={{ padding: 16, border: '1px solid #ccc', borderRadius: 8, textAlign: 'center' }}>
         创建房间 (Host)

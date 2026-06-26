@@ -78,6 +78,32 @@ async def search(request: Request, body: SearchRequest):
     return results
 
 
+@router.get('/rule-docs')
+async def rule_docs(request: Request):
+    conn = request.app.state.db
+    rows = conn.execute(
+        """
+        SELECT rd.doc_id, rd.title, rd.category, length(rd.content) AS content_chars,
+               COUNT(dc.chunk_id) AS chunks
+        FROM rule_documents rd
+        LEFT JOIN document_chunks dc
+          ON dc.source_type = 'rule' AND dc.source_id = rd.doc_id
+        GROUP BY rd.doc_id, rd.title, rd.category, rd.content
+        ORDER BY rd.title
+        """
+    ).fetchall()
+    return [
+        {
+            "doc_id": row["doc_id"],
+            "title": row["title"],
+            "category": row["category"],
+            "content_chars": row["content_chars"] or 0,
+            "chunks": int(row["chunks"] or 0),
+        }
+        for row in rows
+    ]
+
+
 @router.get('/stats')
 async def stats(request: Request):
     rag = request.app.state.rag
