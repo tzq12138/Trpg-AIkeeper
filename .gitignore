@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp-*/
+.pytest_cache/
+*.db
+*.db-shm
+*.db-wal
+
+src/client/dist/
+src/client/node_modules/
+src/client/node_modules/.vite/
+
+data/character_presets/
+data/scenario_assets/
+.env
+.env.*
