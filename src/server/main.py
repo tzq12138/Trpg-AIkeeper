@@ -318,9 +318,11 @@ async def player_ws_endpoint(websocket: WebSocket, room_id: str, token: str, las
 
 
 @app.websocket("/ws")
-async def ws_handler(websocket: WebSocket, room: str = "", role: str = "", token: str = "", lastSequence: int = 0):
+async def ws_handler(websocket: WebSocket, room: str = "", role: str = "",
+                     token: str = "", lastSequence: int = 0,
+                     ownerToken: str = ""):
     if role == "host":
-        await host_ws_endpoint(websocket, room)
+        await host_ws_endpoint(websocket, room, ownerToken)
     elif role == "player":
         await player_ws_endpoint(websocket, room, token, lastSequence)
     else:

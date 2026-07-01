@@ -112,8 +112,40 @@ async def retry_turn(request: Request, room_id: str):
     return {"status": "no_active_transaction", "room_id": room_id}
 
 
-async def host_ws_endpoint(websocket: WebSocket, room_id: str):
+async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str = ""):
+    from ..router_auth import verify_token
     conn = websocket.app.state.db
+
+    # Auth: must have valid owner_token or admin account
+    authorized = False
+    if owner_token:
+        room = conn.execute(
+            "SELECT owner_token FROM rooms WHERE room_id = %s", (room_id,)
+        ).fetchone()
+        if room and room["owner_token"] == owner_token:
+            authorized = True
+
+    if not authorized:
+        try:
+            from ..router_auth import get_account_from_token
+            account = get_account_from_token(websocket)
+            if account:
+                if account.get("role") == "admin":
+                    authorized = True
+                else:
+                    room = conn.execute(
+                        "SELECT owner_account_id FROM rooms WHERE room_id = %s", (room_id,)
+                    ).fetchone()
+                    if room and room.get("owner_account_id") == account.get("account_id"):
+                        authorized = True
+        except Exception:
+            pass
+
+    if not authorized:
+        await websocket.close(code=1008, reason="Policy violation")
+        logger.warning("Host WS auth failed for room %s", room_id)
+        return
+
     store = get_host_store(room_id, conn)
     await websocket.accept()
     ws_manager.register_accepted(websocket, room_id, "host")
