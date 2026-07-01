@@ -1,9 +1,9 @@
 import json
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
-from src.server.ai_kp import AIKP, structure_scenario
+from src.server.ai.ai_kp import AIKP, structure_scenario
 from src.server.models import AIResponse
-from src.server.spoiler_control import SpoilerController
+from src.server.ai.spoiler_control import SpoilerController
 
 
 def _make_batch():
@@ -89,7 +89,7 @@ async def test_mock_ai_move_no_roll():
 
 
 async def test_batch_processing_flow(test_db):
-    from src.server.batch import BatchCollector, BatchProcessor
+    from src.server.engine.batch import BatchCollector, BatchProcessor
 
     test_db.execute(
         "INSERT INTO rooms (room_id, owner_token, spoiler_level) VALUES ('room-1', 'tok', 'standard')"
@@ -144,7 +144,7 @@ async def test_invalid_ai_response_handling():
     }
     mock_response.raise_for_status = MagicMock()
 
-    with patch("src.server.ai_kp.httpx.AsyncClient") as mock_client_cls:
+    with patch("src.server.ai.ai_kp.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -178,7 +178,7 @@ async def test_deepseek_success():
     }
     mock_response.raise_for_status = MagicMock()
 
-    with patch("src.server.ai_kp.httpx.AsyncClient") as mock_client_cls:
+    with patch("src.server.ai.ai_kp.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -229,7 +229,7 @@ async def test_tactical_prompts_generated():
 
 
 async def test_batch_processor_no_scenario():
-    from src.server.batch import BatchCollector, BatchProcessor
+    from src.server.engine.batch import BatchCollector, BatchProcessor
 
     collector = BatchCollector(window_seconds=0)
     processor = BatchProcessor(collector=collector)
@@ -266,7 +266,7 @@ async def test_structure_scenario_with_ai():
     }
     mock_response.raise_for_status = MagicMock()
 
-    with patch("src.server.ai_kp.httpx.AsyncClient") as mock_client_cls:
+    with patch("src.server.ai.ai_kp.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)

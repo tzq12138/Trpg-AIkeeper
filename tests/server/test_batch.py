@@ -1,4 +1,4 @@
-from src.server.batch import BatchCollector
+from src.server.engine.batch import BatchCollector
 
 
 def test_collector_creates_batch_after_timeout():

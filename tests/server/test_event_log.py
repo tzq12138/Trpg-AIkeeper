@@ -1,6 +1,6 @@
 import json
 import pytest
-from src.server.event_log import EventLog
+from src.server.events.event_log import EventLog
 
 
 @pytest.fixture

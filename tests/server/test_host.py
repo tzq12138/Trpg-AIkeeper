@@ -1,7 +1,7 @@
 import json
 import pytest
 from src.server.models import EngineEvent, RevealTransaction, TransactionStep
-from src.server.host_store import HostStore, HOST_VISIBLE_EVENTS, PRIVATE_EVENTS
+from src.server.host.host_store import HostStore, HOST_VISIBLE_EVENTS, PRIVATE_EVENTS
 
 
 class TestHostStoreRouting:

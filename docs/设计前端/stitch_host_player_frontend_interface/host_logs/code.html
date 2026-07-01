@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>ARKHAM OS - Log</title>
+<!-- Google Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&amp;family=Space+Grotesk:wght@500;700;900&amp;display=swap" rel="stylesheet"/>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Config for Neo-Brutalist Theme -->
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "surface-container-low": "#f2ede5",
+                        "on-tertiary-container": "#1a1a1a",
+                        "tertiary-fixed": "#d6e3ff",
+                        "on-primary": "#ffffff",
+                        "on-background": "#1a1a1a",
+                        "on-secondary-container": "#1a1a1a",
+                        "on-primary-fixed": "#1a1a1a",
+                        "error": "#cc0000",
+                        "secondary-container": "#ffdad6",
+                        "tertiary": "#0055ff",
+                        "on-secondary": "#1a1a1a",
+                        "surface-dim": "#d6d1c9",
+                        "outline-variant": "#d0cbc3",
+                        "primary-fixed-dim": "#e6b800",
+                        "tertiary-container": "#d6e3ff",
+                        "secondary-fixed-dim": "#ffb3ab",
+                        "on-tertiary-fixed": "#1a1a1a",
+                        "on-primary-fixed-variant": "#1a1a1a",
+                        "inverse-on-surface": "#f5f0e8",
+                        "error-container": "#ffdad6",
+                        "secondary-fixed": "#ffdad6",
+                        "surface-container": "#eee9e0",
+                        "surface-tint": "#1a1a1a",
+                        "on-primary-container": "#1a1a1a",
+                        "primary-fixed": "#ffcc00",
+                        "tertiary-fixed-dim": "#a8c6ff",
+                        "on-surface-variant": "#4a4a4a",
+                        "background": "#f5f0e8",
+                        "outline": "#1a1a1a",
+                        "on-error": "#ffffff",
+                        "inverse-surface": "#1a1a1a",
+                        "surface-variant": "#e8e3da",
+                        "inverse-primary": "#f5f0e8",
+                        "on-tertiary-fixed-variant": "#1a1a1a",
+                        "on-secondary-fixed": "#1a1a1a",
+                        "primary-container": "#ffcc00",
+                        "primary": "#1a1a1a",
+                        "on-surface": "#1a1a1a",
+                        "on-secondary-fixed-variant": "#1a1a1a",
+                        "surface-container-high": "#e8e3da",
+                        "secondary": "#e63b2e",
+                        "on-error-container": "#93000a",
+                        "surface-container-highest": "#e2ddd4",
+                        "surface-bright": "#faf7f2",
+                        "on-tertiary": "#ffffff",
+                        "surface": "#f5f0e8",
+                        "surface-container-lowest": "#ffffff"
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0rem",
+                        "lg": "0rem",
+                        "xl": "0rem",
+                        "full": "0rem" // Overriding to flat/sharp for brutalism
+                    },
+                    fontFamily: {
+                        "headline": ["Space Grotesk", "sans-serif"],
+                        "display": ["Space Grotesk", "sans-serif"],
+                        "body": ["Inter", "sans-serif"],
+                        "label": ["Space Grotesk", "sans-serif"]
+                    },
+                    boxShadow: {
+                        'brutal': '6px 6px 0px 0px #1a1a1a',
+                        'brutal-hover': '2px 2px 0px 0px #1a1a1a',
+                        'brutal-sm': '3px 3px 0px 0px #1a1a1a',
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 700, 'GRAD' 0, 'opsz' 24;
+        }
+        .material-symbols-outlined.fill {
+            font-variation-settings: 'FILL' 1, 'wght' 700, 'GRAD' 0, 'opsz' 24;
+        }
+        /* Custom scrollbar for brutalist theme */
+        ::-webkit-scrollbar { width: 12px; }
+        ::-webkit-scrollbar-track { background: #f5f0e8; border-left: 3px solid #1a1a1a; }
+        ::-webkit-scrollbar-thumb { background: #1a1a1a; }
+    </style>
+</head>
+<body class="bg-background text-primary font-body antialiased overflow-x-hidden">
+<!-- TopNavBar (Shared Component) -->
+<header class="fixed top-0 left-0 right-0 z-50 bg-background dark:bg-primary border-b-4 border-primary dark:border-primary-fixed shadow-[4px_4px_0px_0px_#1a1a1a] flex justify-between items-center px-6 py-4 w-full h-20">
+<div class="flex items-center gap-8">
+<span class="text-2xl font-black text-primary dark:text-primary-fixed uppercase tracking-widest font-headline">ARKHAM OS</span>
+<nav class="hidden md:flex gap-4 font-headline font-black uppercase tracking-tighter text-sm">
+<a class="text-primary hover:bg-primary-container transition-colors px-4 py-1" href="#">时间轴</a>
+<a class="text-primary hover:bg-primary-container transition-colors px-4 py-1" href="#">参战者</a>
+<a class="text-primary hover:bg-primary-container transition-colors px-4 py-1" href="#">资料库</a>
+<a class="text-on-primary bg-tertiary px-4 py-1 border-2 border-primary active:translate-x-1 active:translate-y-1 active:shadow-none transition-all" href="#">日志</a>
+</nav>
+</div>
+<div class="flex items-center gap-4 hidden">
+<!-- Search bar hidden per JSON -->
+</div>
+<div class="flex items-center gap-4">
+<button aria-label="settings" class="p-2 border-2 border-primary hover:bg-primary hover:text-on-primary active:translate-x-1 active:translate-y-1 transition-all">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+</button>
+<button aria-label="help" class="p-2 border-2 border-primary hover:bg-primary hover:text-on-primary active:translate-x-1 active:translate-y-1 transition-all">
+<span class="material-symbols-outlined" data-icon="help">help</span>
+</button>
+<div class="w-10 h-10 border-2 border-primary bg-surface overflow-hidden ml-2 shadow-[2px_2px_0px_0px_#1a1a1a]">
+<img alt="Keeper Avatar" class="w-full h-full object-cover" data-alt="A striking minimalist avatar placeholder in a neo-brutalist style. Features sharp geometric black lines against a stark white background. High contrast, raw aesthetic, capturing a digital retro-terminal vibe perfectly suited for a light-mode interface." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDSou5RraL9JFHMzldeDCAp79Ff57ambYDDLhv_4Aqwvi9kUUlighhslmFNbhD0ar25eFzWuhFD-Kkufbm5neZ-5vYnc7fyKsGWjlehsOo-qWD0tIfPNkHWxcX9IA82SFRBMmQWvcXgXKyvpyiEHGe-Xc6uLW5vsmR6B13TX_11xxh58i-5SyW8to81uKM5lbDltiCUzym6nsJaDDo0JBL-RnVtXpxh4QOAhog4eLSB7Ireb5qHepI"/>
+</div>
+</div>
+</header>
+<!-- SideNavBar (Shared Component) -->
+<aside class="hidden md:flex flex-col h-screen fixed left-0 top-0 pt-20 w-64 border-r-4 border-primary dark:border-primary-fixed bg-surface-container-high dark:bg-primary z-40">
+<div class="p-6 border-b-4 border-primary">
+<h2 class="font-headline font-black text-xl text-secondary">KEEPER</h2>
+<p class="font-body font-bold text-xs uppercase text-on-surface-variant tracking-wider mt-1">V2.0.4-STABLE</p>
+</div>
+<div class="p-6 border-b-4 border-primary bg-primary-container">
+<button class="w-full py-3 px-4 bg-primary text-on-primary font-headline font-black uppercase text-sm border-2 border-primary hover:bg-secondary hover:text-white active:scale-95 transition-transform shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                INITIATE PROTOCOL
+            </button>
+</div>
+<nav class="flex-1 overflow-y-auto font-body font-bold text-sm uppercase py-4">
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-primary-fixed-dim transition-colors" href="#">
+<span class="material-symbols-outlined" data-icon="terminal">terminal</span>
+<span>主控台</span>
+</a>
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-primary-fixed-dim transition-colors" href="#">
+<span class="material-symbols-outlined" data-icon="visibility">visibility</span>
+<span>实体监测</span>
+</a>
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-primary-fixed-dim transition-colors" href="#">
+<span class="material-symbols-outlined" data-icon="layers">layers</span>
+<span>场景调度</span>
+</a>
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-primary-fixed-dim transition-colors" href="#">
+<span class="material-symbols-outlined" data-icon="rule">rule</span>
+<span>规则校验</span>
+</a>
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-primary-fixed-dim transition-colors" href="#">
+<span class="material-symbols-outlined" data-icon="bolt">bolt</span>
+<span>脚本触发</span>
+</a>
+</nav>
+<div class="border-t-4 border-primary mt-auto">
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-primary-fixed-dim transition-colors" href="#">
+<span class="material-symbols-outlined" data-icon="lock">lock</span>
+<span class="font-body font-bold text-sm uppercase">系统锁定</span>
+</a>
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-secondary hover:text-white transition-colors border-t-2 border-primary" href="#">
+<span class="material-symbols-outlined" data-icon="power_settings_new">power_settings_new</span>
+<span class="font-body font-bold text-sm uppercase">关机</span>
+</a>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="md:ml-64 pt-20 min-h-screen">
+<!-- Header Section -->
+<div class="px-8 py-12 border-b-4 border-primary bg-primary-container relative overflow-hidden">
+<!-- decorative raw elements -->
+<div class="absolute right-0 top-0 w-32 h-32 border-l-4 border-b-4 border-primary bg-secondary -translate-y-16 translate-x-16 rotate-45 z-0"></div>
+<div class="relative z-10 max-w-5xl mx-auto">
+<h1 class="font-headline font-black text-4xl md:text-6xl uppercase tracking-tighter text-primary">ARKHAM OS // 运行日志</h1>
+<p class="font-body font-bold text-primary mt-4 text-lg border-l-4 border-primary pl-4">SEQUENCE RECORDING: ACTIVE // TIMELINE RECONSTRUCTION</p>
+</div>
+</div>
+<!-- Timeline Container -->
+<div class="max-w-5xl mx-auto px-4 md:px-8 py-16">
+<div class="relative">
+<!-- Brutalist Timeline Line -->
+<div class="absolute left-8 md:left-1/2 top-0 bottom-0 w-2 bg-primary -translate-x-1/2"></div>
+<!-- Node 1: Critical Event -->
+<div class="flex flex-col md:flex-row items-start md:justify-between w-full mb-16 relative">
+<!-- Left empty space on desktop, node date on mobile -->
+<div class="w-full md:w-[45%] text-left md:text-right pl-16 md:pl-0 pr-0 md:pr-12 mb-4 md:mb-0">
+<div class="font-headline font-black text-3xl md:text-4xl text-primary uppercase">Day 01 // 23:45</div>
+<div class="font-body font-bold text-secondary tracking-widest uppercase text-sm mt-1">Initial Contact</div>
+</div>
+<!-- Center Marker -->
+<div class="absolute left-8 md:left-1/2 w-6 h-6 border-4 border-primary bg-secondary -translate-x-1/2 top-2 md:top-4 rotate-45 z-10 shadow-[2px_2px_0px_0px_#1a1a1a]"></div>
+<!-- Card Right -->
+<div class="w-full md:w-[45%] pl-16 md:pl-12">
+<div class="border-4 border-primary bg-surface p-6 shadow-brutal hover:shadow-brutal-hover hover:translate-x-1 hover:translate-y-1 transition-all">
+<div class="flex items-center gap-4 mb-4 border-b-2 border-primary pb-4">
+<div class="w-12 h-12 border-2 border-primary shrink-0">
+<img alt="Investigator" class="w-full h-full object-cover grayscale" data-alt="A close-up portrait of a determined 1920s investigator. The scene is illuminated by harsh, bright, high-key white lighting typical of a neo-brutalist light-mode aesthetic. The investigator wears a sharp trench coat against a stark, flat off-white background (#f5f0e8). Strong geometric shadows fall across their face. The image features a minimalist palette focused on deep blacks, stark whites, and a singular pop of vibrant accent yellow. The mood is tense, raw, and unapologetically graphic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCUgdbghk39IiNRAJtuuAZQnCwGvb62EOG05ADbdAyQekSI0ORuHgYETk-SU5oVI987HSzjYhU8EaeropYHB4SFYnk1cytmQj-kZ5nV5m2rPV9CnApTbZsvzu4CulrgRz3a9lAlmF2bMdnHBvuUjJNxK0YaLx9tyP7-hvjqBKiYQnzykHDUcYDZuByqyvQ9itzihGXyPulUsilo8Noj32OnHWX2ha8Dd45jfpmFVXpRwCMUS6XX0A0"/>
+</div>
+<div>
+<h3 class="font-headline font-black text-xl uppercase">D. Thomas</h3>
+<span class="inline-block bg-primary text-white text-xs font-bold px-2 py-1 uppercase mt-1">Lead Investigator</span>
+</div>
+</div>
+<p class="font-body text-primary font-medium leading-relaxed">
+                                Arrived at the old Blackwood estate. The front door was ajar. A foul stench, reminiscent of ozone and copper, permeated the hallway. Navigating through the debris.
+                            </p>
+<div class="mt-4 flex gap-2">
+<span class="border-2 border-primary px-3 py-1 text-xs font-bold uppercase bg-surface-container-high">Location: Blackwood Manor</span>
+<span class="border-2 border-secondary text-secondary px-3 py-1 text-xs font-bold uppercase bg-error-container">Sanity: 95/100</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Node 2: Dialogue -->
+<div class="flex flex-col md:flex-row-reverse items-start md:justify-between w-full mb-16 relative">
+<!-- Date Right -->
+<div class="w-full md:w-[45%] text-left pl-16 md:pl-12 mb-4 md:mb-0">
+<div class="font-headline font-black text-3xl md:text-4xl text-primary uppercase">Day 02 // 02:12</div>
+<div class="font-body font-bold text-tertiary tracking-widest uppercase text-sm mt-1">Audio Transcript</div>
+</div>
+<!-- Center Marker -->
+<div class="absolute left-8 md:left-1/2 w-8 h-8 border-4 border-primary bg-primary-container rounded-full -translate-x-1/2 top-2 md:top-4 z-10 flex items-center justify-center">
+<span class="material-symbols-outlined text-[16px]" data-icon="mic">mic</span>
+</div>
+<!-- Card Left -->
+<div class="w-full md:w-[45%] pl-16 md:pr-12 md:pl-0">
+<div class="border-4 border-primary bg-tertiary-fixed p-6 shadow-brutal hover:shadow-brutal-hover hover:translate-x-1 hover:translate-y-1 transition-all">
+<div class="flex items-center gap-4 mb-4 border-b-2 border-primary pb-4">
+<div class="w-12 h-12 border-2 border-primary shrink-0">
+<img alt="Scholar" class="w-full h-full object-cover grayscale" data-alt="A portrait of an eccentric scholar surrounded by scattered occult documents. The visual style is rooted in modern neo-brutalism, characterized by high contrast, flat lighting, and an absence of soft gradients. The background is a stark, warm off-white, emphasizing the bold, thick black outlines of the character's features. Vibrant red accents highlight specific arcane symbols on the papers. The overall aesthetic is raw, functional, and highly graphic, fitting a modern light-mode interface." src="https://lh3.googleusercontent.com/aida-public/AB6AXuD8cLMIFN_8BOdLfgJjJ6sBBi_2PNt3dioVE3qjSvEicr_NVP2pcWXU95nLI0dd6gNKxOi6xZ-t0dgUxVlClBVNRk-aFMc7y4gi31Wcrj-oIAbWuyzrfDb7V8eAJOsR4YnQkBO6TzxYcydEfYEHQl8zW251cEE4TMcrqrIKldMCo32p588F9ZJ8c_iiMHbi8OyV2O_vS_z9ZFvF0r8cXCpiPrzF5U_jbGoZmZqqaHQrvX2N7qi1CJc"/>
+</div>
+<div>
+<h3 class="font-headline font-black text-xl uppercase">Dr. Armitage</h3>
+<span class="inline-block bg-tertiary text-white text-xs font-bold px-2 py-1 uppercase mt-1">Consultant</span>
+</div>
+</div>
+<blockquote class="font-body text-primary font-bold text-lg border-l-4 border-tertiary pl-4 italic">
+                                "The geometries in this room... they defy Euclidean principles. Look at the corner where the ceiling meets the floor. It bends inward. We shouldn't be here."
+                            </blockquote>
+</div>
+</div>
+</div>
+<!-- Node 3: System Event -->
+<div class="flex flex-col md:flex-row items-start md:justify-between w-full mb-16 relative">
+<div class="w-full md:w-[45%] text-left md:text-right pl-16 md:pl-0 pr-0 md:pr-12 mb-4 md:mb-0">
+<div class="font-headline font-black text-3xl md:text-4xl text-primary uppercase">Day 02 // 03:33</div>
+<div class="font-body font-bold text-secondary tracking-widest uppercase text-sm mt-1">System Override</div>
+</div>
+<div class="absolute left-8 md:left-1/2 w-6 h-6 border-4 border-primary bg-primary -translate-x-1/2 top-2 md:top-4 z-10 shadow-[2px_2px_0px_0px_#ffcc00]"></div>
+<div class="w-full md:w-[45%] pl-16 md:pl-12">
+<div class="border-4 border-primary bg-secondary p-6 text-white shadow-brutal hover:shadow-brutal-hover hover:translate-x-1 hover:translate-y-1 transition-all">
+<div class="flex items-center gap-3 mb-4">
+<span class="material-symbols-outlined text-3xl" data-icon="warning">warning</span>
+<h3 class="font-headline font-black text-2xl uppercase tracking-wider">Entity Detected</h3>
+</div>
+<p class="font-body font-bold text-secondary-container mb-4">
+                                AUTOMATED SENSOR ARRAY TRIPPED IN BASEMENT SECTOR 4. NON-STANDARD BIOMETRIC SIGNATURES CONFIRMED.
+                            </p>
+<button class="w-full py-2 bg-primary border-2 border-primary text-white font-headline font-black uppercase hover:bg-white hover:text-primary transition-colors">
+                                View Sensor Data
+                            </button>
+</div>
+</div>
+</div>
+</div>
+<!-- End of timeline marker -->
+<div class="flex justify-center mt-8">
+<div class="w-16 h-4 bg-primary border-2 border-primary"></div>
+</div>
+</div>
+</main>
+</body></html>

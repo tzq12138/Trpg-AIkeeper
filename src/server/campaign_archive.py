@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 from .models import CampaignEnding, CampaignSummary, CampaignArchiveQuery, EventLogEntry
+from .events.events_registry import event_type
 
 
 class CampaignArchive:
@@ -54,7 +55,7 @@ class CampaignArchive:
         key_events = [
             {"sequence": e["sequence"], "type": e["event_type"], "timestamp": e["issued_at"]}
             for e in events
-            if e["event_type"] in ("s2c_campaign_ended", "s2c_reveal_transaction", "s2c_scene_sync")
+            if e["event_type"] in (event_type("s2c_campaign_ended"), event_type("s2c_reveal_transaction"), event_type("s2c_scene_sync"))
         ]
 
         ending = None
@@ -123,7 +124,7 @@ class CampaignArchive:
 
     def _determine_ending_type(self, events: list[dict]) -> str:
         for e in events:
-            if e["event_type"] == "s2c_campaign_ended":
+            if e["event_type"] == event_type("s2c_campaign_ended"):
                 payload = _json_value(e["payload"])
                 return payload.get("ending_type", "mixed")
         return "mixed"
@@ -137,7 +138,7 @@ class CampaignArchive:
     def _extract_highlights(self, events: list[dict]) -> list[str]:
         highlights = []
         for e in events:
-            if e["event_type"] in ("s2c_reveal_transaction", "s2c_scene_sync"):
+            if e["event_type"] in (event_type("s2c_reveal_transaction"), event_type("s2c_scene_sync")):
                 payload = _json_value(e["payload"])
                 if "text" in payload:
                     highlights.append(payload["text"])

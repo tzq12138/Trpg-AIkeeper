@@ -2,8 +2,16 @@ from .base import BaseRuleHandler
 from .coc_handlers import (
     CocCombatHandler,
     CocLuckCheckHandler,
+    CocMoveHandler,
     CocSanityCheckHandler,
     CocSkillCheckHandler,
+)
+from .encounter_handlers import (
+    CombatAttackHandler, CombatDodgeHandler, CombatDefendHandler,
+    CombatAssistHandler, CombatFleeHandler, CombatWaitHandler,
+    ChasePursueHandler, ChaseEscapeHandler, ChaseBlockHandler,
+    ChaseCreateObstacleHandler, ChaseDetourHandler,
+    ChaseAssistHandler, ChaseWaitHandler,
 )
 
 rule_registry: dict[str, BaseRuleHandler] = {
@@ -11,6 +19,20 @@ rule_registry: dict[str, BaseRuleHandler] = {
     "sanity_check": CocSanityCheckHandler(),
     "combat_damage": CocCombatHandler(),
     "luck_check": CocLuckCheckHandler(),
+    "move": CocMoveHandler(),
+    "combat_attack": CombatAttackHandler(),
+    "combat_dodge": CombatDodgeHandler(),
+    "combat_defend": CombatDefendHandler(),
+    "combat_assist": CombatAssistHandler(),
+    "combat_flee": CombatFleeHandler(),
+    "combat_wait": CombatWaitHandler(),
+    "chase_pursue": ChasePursueHandler(),
+    "chase_escape": ChaseEscapeHandler(),
+    "chase_block": ChaseBlockHandler(),
+    "chase_create_obstacle": ChaseCreateObstacleHandler(),
+    "chase_detour": ChaseDetourHandler(),
+    "chase_assist": ChaseAssistHandler(),
+    "chase_wait": ChaseWaitHandler(),
 }
 
 

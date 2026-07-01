@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from src.server.rag import RAGStore
+from src.server.ai.rag import RAGStore
 
 
 class FakeEmbedding:

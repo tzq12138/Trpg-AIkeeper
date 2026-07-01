@@ -1,4 +1,4 @@
-from src.server.pdf_parser import extract_text_from_pdf, is_scanned_pdf, chunk_text, PDFPage
+from src.server.scenario.pdf_parser import extract_text_from_pdf, is_scanned_pdf, chunk_text, PDFPage
 
 
 def test_extract_text_returns_list():

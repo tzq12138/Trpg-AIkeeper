@@ -1,0 +1,402 @@
+<!DOCTYPE html><html class="dark" lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>Keeper Prime - Narrative Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700;900&amp;family=Inter:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "surface": "#f5f0e8",
+                        "secondary-fixed": "#ffdad6",
+                        "on-secondary-container": "#1a1a1a",
+                        "surface-tint": "#1a1a1a",
+                        "error": "#cc0000",
+                        "primary-fixed-dim": "#e6b800",
+                        "surface-dim": "#d6d1c9",
+                        "surface-bright": "#faf7f2",
+                        "inverse-on-surface": "#f5f0e8",
+                        "surface-container-high": "#e8e3da",
+                        "outline-variant": "#d0cbc3",
+                        "surface-container": "#eee9e0",
+                        "background": "#f5f0e8",
+                        "tertiary-fixed-dim": "#a8c6ff",
+                        "on-tertiary-container": "#1a1a1a",
+                        "inverse-surface": "#1a1a1a",
+                        "tertiary-fixed": "#d6e3ff",
+                        "tertiary-container": "#d6e3ff",
+                        "primary-fixed": "#ffcc00",
+                        "on-tertiary": "#ffffff",
+                        "surface-container-lowest": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "primary": "#1a1a1a",
+                        "on-primary-fixed": "#1a1a1a",
+                        "surface-container-low": "#f2ede5",
+                        "on-secondary-fixed": "#1a1a1a",
+                        "on-error": "#ffffff",
+                        "surface-container-highest": "#e2ddd4",
+                        "on-error-container": "#93000a",
+                        "secondary": "#e63b2e",
+                        "outline": "#1a1a1a",
+                        "on-secondary-fixed-variant": "#1a1a1a",
+                        "on-background": "#1a1a1a",
+                        "on-surface": "#1a1a1a",
+                        "on-secondary": "#1a1a1a",
+                        "on-primary-fixed-variant": "#1a1a1a",
+                        "on-primary-container": "#1a1a1a",
+                        "surface-variant": "#e8e3da",
+                        "on-tertiary-fixed-variant": "#1a1a1a",
+                        "on-surface-variant": "#4a4a4a",
+                        "secondary-fixed-dim": "#ffb3ab",
+                        "primary-container": "#ffcc00",
+                        "on-tertiary-fixed": "#1a1a1a",
+                        "on-primary": "#ffffff",
+                        "inverse-primary": "#f5f0e8",
+                        "secondary-container": "#ffdad6",
+                        "tertiary": "#0055ff"
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    fontFamily: {
+                        "headline": ["Space Grotesk", "sans-serif"],
+                        "display": ["Space Grotesk", "sans-serif"],
+                        "body": ["Inter", "sans-serif"],
+                        "label": ["Space Grotesk", "sans-serif"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .noise-bg {
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.05'/%3E%3C/svg%3E");
+        }
+        .typing-cursor::after {
+            content: '█';
+            animation: blink 1s step-end infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        /* Temporary Insanity Effects */
+        body.insanity-mode {
+            animation: background-flicker 0.15s infinite;
+        }
+
+        body.insanity-mode .rgb-split {
+            animation: rgb-shift 0.1s infinite alternate;
+        }
+
+        body.insanity-mode .glitch-text {
+            animation: text-glitch 0.25s infinite;
+        }
+
+        #insanity-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 9999;
+            mix-blend-mode: difference;
+            background: rgba(230, 59, 46, 0.1);
+            animation: overlay-flicker 0.1s infinite;
+        }
+        body.insanity-mode #insanity-overlay {
+            display: block;
+        }
+
+        @keyframes rgb-shift {
+            0% { text-shadow: 3px 0 0 rgba(230,59,46,0.9), -3px 0 0 rgba(0,255,255,0.9); transform: translate(1px, 1px); }
+            100% { text-shadow: -3px 0 0 rgba(230,59,46,0.9), 3px 0 0 rgba(0,255,255,0.9); transform: translate(-2px, -1px); }
+        }
+
+        @keyframes text-glitch {
+            0% { transform: skewX(0deg); font-weight: 700; letter-spacing: normal; }
+            20% { transform: skewX(-10deg); font-weight: 900; letter-spacing: -2px; }
+            40% { transform: skewX(0deg); font-weight: 400; letter-spacing: normal; }
+            60% { transform: skewX(15deg); font-weight: 700; letter-spacing: 2px; }
+            80% { transform: skewX(0deg); font-weight: 900; letter-spacing: normal; }
+            100% { transform: skewX(0deg); font-weight: 700; }
+        }
+
+        @keyframes background-flicker {
+            0% { filter: contrast(1) brightness(1) hue-rotate(0deg); }
+            50% { filter: contrast(1.4) brightness(0.8) hue-rotate(15deg); }
+            100% { filter: contrast(0.8) brightness(1.2) hue-rotate(-15deg); }
+        }
+
+        @keyframes overlay-flicker {
+            0% { opacity: 0.5; }
+            50% { opacity: 0.8; }
+            100% { opacity: 0.3; }
+        }
+
+        @keyframes glitch-block-anim {
+            0% { opacity: 0; clip-path: polygon(0 0, 100% 0, 100% 5%, 0 5%); transform: translate(0,0); }
+            10% { opacity: 1; clip-path: polygon(0 15%, 100% 15%, 100% 25%, 0 25%); transform: translate(10px,-5px); }
+            20% { opacity: 0; }
+            30% { opacity: 1; clip-path: polygon(0 50%, 100% 50%, 100% 70%, 0 70%); transform: translate(-15px,15px); }
+            40% { opacity: 0; }
+            50% { opacity: 1; clip-path: polygon(0 80%, 100% 80%, 100% 90%, 0 90%); transform: translate(5px,0); }
+            60% { opacity: 0; }
+        }
+        .glitch-blocks-container {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 9998;
+            display: none;
+        }
+        body.insanity-mode .glitch-blocks-container {
+            display: block;
+        }
+        .glitch-block-1, .glitch-block-2, .glitch-block-3 {
+            position: absolute;
+            background: #1a1a1a;
+            width: 100%;
+            height: 100%;
+        }
+        .glitch-block-1 { animation: glitch-block-anim 0.6s infinite steps(2, end); }
+        .glitch-block-2 { animation: glitch-block-anim 0.8s infinite steps(2, end) 0.2s; background: #e63b2e; mix-blend-mode: multiply; }
+        .glitch-block-3 { animation: glitch-block-anim 0.5s infinite steps(2, end) 0.4s; }
+    </style>
+</head>
+<body class="bg-surface text-on-surface font-body h-screen flex flex-col overflow-hidden noise-bg relative">
+<!-- Insanity Effects Layer -->
+<div id="insanity-overlay"></div>
+<div class="glitch-blocks-container">
+<div class="glitch-block-1"></div>
+<div class="glitch-block-2"></div>
+<div class="glitch-block-3"></div>
+</div>
+<!-- Global Dice Notification Overlay -->
+
+<!-- TopAppBar -->
+<header class="flex justify-between items-center w-full px-6 py-4 max-w-full docked full-width top-0 border-b-4 border-primary bg-surface dark:bg-surface shadow-[4px_4px_0px_0px_rgba(26,26,26,1)] z-50 flex-shrink-0">
+<div class="flex items-center gap-6">
+<span class="text-2xl font-headline font-black tracking-tighter text-on-surface dark:text-on-surface uppercase glitch-text">ARKHAM OS</span>
+<div class="flex items-center gap-4 bg-primary text-surface px-3 py-1 border-2 border-primary font-headline font-bold text-sm tracking-widest rgb-split">
+<span class="">房间代码:</span>
+<span class="text-primary-fixed">X9B-44V</span>
+</div>
+</div>
+<nav class="hidden md:flex gap-8 items-end h-full"><a class="text-on-surface-variant font-medium opacity-80 font-headline font-bold uppercase tracking-tighter text-xl hover:bg-primary hover:text-surface transition-colors duration-100 px-2" href="#">时间轴</a><a class="text-primary font-bold border-b-4 border-secondary-fixed pb-1 font-headline uppercase tracking-tighter text-xl hover:bg-primary hover:text-surface transition-colors duration-100 px-2 translate-x-[2px] translate-y-[2px] shadow-none transition-all" href="#">参战者</a><a class="text-on-surface-variant font-medium opacity-80 font-headline font-bold uppercase tracking-tighter text-xl hover:bg-primary hover:text-surface transition-colors duration-100 px-2" href="#">资料库</a><a class="text-on-surface-variant font-medium opacity-80 font-headline font-bold uppercase tracking-tighter text-xl hover:bg-primary hover:text-surface transition-colors duration-100 px-2" href="#">日志</a></nav>
+<div class="flex items-center gap-4">
+<button class="bg-primary-fixed text-primary px-4 py-2 font-headline font-bold uppercase border-2 border-primary hover:bg-primary hover:text-primary-fixed transition-colors shadow-[2px_2px_0px_0px_rgba(26,26,26,1)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none flex items-center gap-2" id="insanity-toggle">
+<span class="material-symbols-outlined">psychology_alt</span>
+    模拟：临时疯狂
+</button>
+<button class="bg-secondary text-on-error px-4 py-2 font-headline font-bold uppercase border-2 border-primary hover:bg-primary hover:text-secondary transition-colors shadow-[2px_2px_0px_0px_rgba(26,26,26,1)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none">系统锁定</button>
+<div class="flex gap-2">
+<button class="w-10 h-10 border-2 border-primary flex items-center justify-center hover:bg-primary hover:text-surface transition-colors"><span class="material-symbols-outlined">warning</span></button>
+<button class="w-10 h-10 border-2 border-primary flex items-center justify-center hover:bg-primary hover:text-surface transition-colors"><span class="material-symbols-outlined">settings</span></button>
+</div>
+</div>
+</header>
+<div class="flex flex-1 overflow-hidden">
+<!-- SideNavBar -->
+<nav class="docked left-0 h-full border-r-4 border-primary w-64 bg-surface dark:bg-surface flex flex-col pt-8 flex-shrink-0 z-40 hidden lg:flex">
+<div class="px-6 mb-8 text-center">
+<div class="w-24 h-24 bg-primary mx-auto border-4 border-primary shadow-[4px_4px_0px_0px_rgba(26,26,26,1)] mb-4 flex items-center justify-center">
+<span class="material-symbols-outlined text-4xl text-primary-fixed rgb-split" style="font-variation-settings: 'FILL' 1;">admin_panel_settings</span>
+</div>
+<h2 class="font-headline font-black text-primary text-xl glitch-text">KEEPER_PRIME</h2>
+<p class="font-body text-xs text-on-surface-variant font-bold tracking-widest mt-1">V.0.4.2_STABLE</p>
+<button class="mt-6 w-full bg-primary-fixed text-primary border-4 border-primary font-headline font-black py-3 uppercase shadow-[4px_4px_0px_0px_rgba(26,26,26,1)] hover:bg-primary hover:text-primary-fixed active:translate-x-[4px] active:translate-y-[4px] active:shadow-none transition-all">掷骰 D100</button>
+</div>
+<div class="flex-1 overflow-y-auto mt-4">
+<a class="bg-primary-fixed text-primary border-y-4 border-primary font-black flex items-center px-6 py-4 font-headline uppercase text-lg hover:bg-secondary-fixed hover:text-on-secondary-fixed scale-95 duration-75 transition-all rgb-split" href="#">
+<span class="material-symbols-outlined mr-4">menu_book</span> 叙事
+                </a>
+<a class="text-on-surface flex items-center px-6 py-4 opacity-70 font-headline font-bold uppercase text-lg border-b-4 border-primary hover:bg-secondary-fixed hover:text-on-secondary-fixed hover:opacity-100 transition-colors" href="#">
+<span class="material-symbols-outlined mr-4">group</span> 调查员
+                </a>
+<a class="text-on-surface flex items-center px-6 py-4 opacity-70 font-headline font-bold uppercase text-lg border-b-4 border-primary hover:bg-secondary-fixed hover:text-on-secondary-fixed hover:opacity-100 transition-colors" href="#">
+<span class="material-symbols-outlined mr-4">skull</span> 生物指南
+                </a>
+<a class="text-on-surface flex items-center px-6 py-4 opacity-70 font-headline font-bold uppercase text-lg border-b-4 border-primary hover:bg-secondary-fixed hover:text-on-secondary-fixed hover:opacity-100 transition-colors" href="#">
+<span class="material-symbols-outlined mr-4">directions_run</span> 追逐
+                </a>
+<a class="text-on-surface flex items-center px-6 py-4 opacity-70 font-headline font-bold uppercase text-lg border-b-4 border-primary hover:bg-secondary-fixed hover:text-on-secondary-fixed hover:opacity-100 transition-colors" href="#">
+<span class="material-symbols-outlined mr-4">psychology</span> 理智
+                </a>
+</div>
+<div class="mt-auto border-t-4 border-primary">
+<a class="text-on-surface flex items-center px-6 py-4 opacity-70 font-headline font-bold uppercase text-sm hover:bg-secondary-fixed hover:text-on-secondary-fixed hover:opacity-100 transition-colors" href="#">
+<span class="material-symbols-outlined mr-4">terminal</span> 终端
+                </a>
+<a class="text-on-surface flex items-center px-6 py-4 opacity-70 font-headline font-bold uppercase text-sm hover:bg-secondary-fixed hover:text-on-secondary-fixed hover:opacity-100 transition-colors" href="#">
+<span class="material-symbols-outlined mr-4">tune</span> 配置
+                </a>
+</div>
+</nav>
+<!-- Main Content Area -->
+<main class="flex-1 flex overflow-hidden p-6 gap-6 relative">
+<!-- Narrative Projection Panel (Center) -->
+<section class="flex-1 bg-[#0a0a0a] border-4 border-primary shadow-[8px_8px_0px_0px_rgba(26,26,26,1)] flex flex-col relative overflow-hidden">
+<!-- Grain Overlay -->
+<div class="absolute inset-0 opacity-20 mix-blend-overlay pointer-events-none" style="background-image: url('data:image/svg+xml,%3Csvg viewBox=%220 0 200 200%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cfilter id=%22noiseFilter%22%3E%3CfeTurbulence type=%22fractalNoise%22 baseFrequency=%220.8%22 numOctaves=%223%22 stitchTiles=%22stitch%22/%3E%3C/filter%3E%3Crect width=%22100%25%22 height=%22100%25%22 filter=%22url(%23noiseFilter)%22/%3E%3C/svg%3E');"></div>
+<div class="p-4 border-b-4 border-primary bg-primary text-primary-fixed flex justify-between items-center z-10 rgb-split">
+<span class="font-headline font-bold tracking-widest text-sm uppercase">投影激活 // 第一阶段</span>
+<span class="material-symbols-outlined animate-pulse">videocam</span>
+</div>
+<div class="flex-1 p-12 flex flex-col justify-center items-center text-center z-10 overflow-y-auto">
+<h1 class="font-headline font-black text-6xl text-surface uppercase mb-8 tracking-tighter leading-none glitch-text rgb-split" style="text-shadow: 4px 4px 0px #1a1a1a;">
+                        场景 04：<br>疗养院走廊
+                    </h1>
+<div class="max-w-3xl space-y-6 text-left border-l-4 border-secondary pl-6">
+<p class="font-body text-xl text-surface-dim leading-relaxed" id="narrative-text-1">The air in this wing is perceptibly colder, carrying the unmistakable scent of ozone and stale institutional bleach. The flickering fluorescent light at the far end of the hall casts long, shuddering shadows that seem to detach from the walls.</p>
+<p class="font-body text-xl text-surface-dim leading-relaxed" id="narrative-text-2">From behind the heavy steel door of Room 412, a rhythmic scratching sound begins—slow at first, then accelerating into a frantic, wet tearing noise. It is not the sound of a patient wanting to get out. It is the sound of something wanting to get <span class="text-secondary font-bold">in</span>.</p>
+</div>
+<div class="mt-12 flex gap-4">
+<button class="bg-primary-fixed text-primary px-8 py-4 font-headline font-black text-xl uppercase border-4 border-primary shadow-[4px_4px_0px_0px_rgba(255,255,255,0.1)] hover:bg-surface hover:text-primary transition-all active:translate-x-[4px] active:translate-y-[4px] active:shadow-none rgb-split">推进剧情</button>
+</div>
+</div>
+</section>
+<!-- Investigator Monitor (Right Sidebar) -->
+<aside class="w-96 flex flex-col gap-6 overflow-y-auto pr-2 pb-2">
+<div class="bg-primary text-surface p-4 border-4 border-primary font-headline font-bold uppercase tracking-widest flex items-center justify-between sticky top-0 z-20 shadow-[4px_4px_0px_0px_rgba(26,26,26,1)] rgb-split">
+<span class="">调查员监控</span>
+<span class="material-symbols-outlined text-primary-fixed">vital_signs</span>
+</div>
+<!-- Investigator Card 1 -->
+<div class="bg-surface border-4 border-primary p-4 shadow-[4px_4px_0px_0px_rgba(26,26,26,1)] flex flex-col gap-3">
+<div class="flex justify-between items-start border-b-4 border-primary pb-2">
+<div>
+<h3 class="font-headline font-black text-xl uppercase leading-none">ARTHUR HASTINGS</h3>
+<span class="font-body text-xs font-bold text-on-surface-variant tracking-widest uppercase">私家侦探</span>
+</div>
+<img class="w-12 h-12 border-2 border-primary object-cover grayscale" data-alt="A gritty black and white stylized portrait illustration of a 1920s private investigator wearing a fedora, severe neo-brutalist ink style with harsh shadows and stark contrast, high quality, vector art style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDAlb_nKD-opujw89fgLLNriFC3YdrMyUx8nu4qPYFZeb_o1qX2YdL9_L-CPcKDd_4KXSExGGzY3snCl--QnqXpioJ34xlqdX983MjSlhmuaqa6k8VAmm8dojw33WOM6F9tknEhEGgbJwI0FgsrlQp3t2QRi-B3Fu_40Os24WpCjhx4tV71ElgG8Lp73z7E9soUXbRnwQJgJB2YLVo28rI3Px-e4svSI5XZy8WuztfBLQfHYlyRn98">
+</div>
+<div class="space-y-2 mt-2">
+<div class="flex items-center gap-2">
+<span class="font-headline font-bold w-8">HP</span>
+<div class="flex-1 h-6 border-2 border-primary bg-surface-container relative">
+<div class="absolute top-0 left-0 h-full bg-primary-fixed border-r-2 border-primary w-[80%]"></div>
+<span class="absolute inset-0 flex items-center justify-center font-headline font-bold text-xs">12/15</span>
+</div>
+</div>
+<div class="flex items-center gap-2">
+<span class="font-headline font-bold w-8">SAN</span>
+<div class="flex-1 h-6 border-2 border-primary bg-surface-container relative">
+<div class="absolute top-0 left-0 h-full bg-secondary border-r-2 border-primary w-[45%]"></div>
+<span class="absolute inset-0 flex items-center justify-center font-headline font-bold text-xs text-white mix-blend-difference">38/85</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Investigator Card 2 -->
+<div class="bg-surface border-4 border-primary p-4 shadow-[4px_4px_0px_0px_rgba(26,26,26,1)] flex flex-col gap-3">
+<div class="flex justify-between items-start border-b-4 border-primary pb-2">
+<div>
+<h3 class="font-headline font-black text-xl uppercase leading-none">ELEANOR VANCE</h3>
+<span class="font-body text-xs font-bold text-on-surface-variant tracking-widest uppercase">古董商</span>
+</div>
+<img class="w-12 h-12 border-2 border-primary object-cover grayscale" data-alt="A gritty black and white stylized portrait illustration of a 1920s female antiquarian with round glasses and a focused expression, severe neo-brutalist ink style with harsh shadows and stark contrast, high quality, vector art style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCt40fXXt0BtXJEnKq4poLUqVJnCt-RiJVeqcfMBU9FHG2rAa6_zLJMUDGNH1Wm3cBc3gIlt43r6r5J0BMMBxEB1b6eI6aw_rF-o7NfuVr7RSMDP3l21UCNIsEppOddaxAQ8fQIyMwFlgKVS8Aieqn8KhvqUmoOYGPyzLi_PDuaDWiKBQvZK9JLTc_-vM6HEQX8OwXKTKHCT4Y74eVW1A5qHVPvWTAnyxeNVqZsZMVeH1UrDFRoE68">
+</div>
+<div class="space-y-2 mt-2">
+<div class="flex items-center gap-2">
+<span class="font-headline font-bold w-8">HP</span>
+<div class="flex-1 h-6 border-2 border-primary bg-surface-container relative">
+<div class="absolute top-0 left-0 h-full bg-primary-fixed border-r-2 border-primary w-[40%]"></div>
+<span class="absolute inset-0 flex items-center justify-center font-headline font-bold text-xs">4/10</span>
+</div>
+</div>
+<div class="flex items-center gap-2">
+<span class="font-headline font-bold w-8">SAN</span>
+<div class="flex-1 h-6 border-2 border-primary bg-surface-container relative">
+<div class="absolute top-0 left-0 h-full bg-surface-variant border-r-2 border-primary w-[90%]"></div>
+<span class="absolute inset-0 flex items-center justify-center font-headline font-bold text-xs">72/80</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Investigator Card 3 (Active/Highlight/Emergency) -->
+<div class="bg-primary-fixed border-4 border-error p-4 shadow-[4px_4px_0px_0px_rgba(204,0,0,1)] flex flex-col gap-3 translate-x-[-4px] translate-y-[-4px] relative overflow-hidden animate-[pulse_2s_ease-in-out_infinite]">
+<div class="absolute -right-6 top-4 bg-error text-white font-headline font-black text-xs py-1 px-8 rotate-45 border-y-2 border-primary shadow-sm z-10 rgb-split">告急</div>
+<div class="flex justify-between items-start border-b-4 border-error pb-2">
+<div>
+<h3 class="font-headline font-black text-xl uppercase leading-none text-primary glitch-text rgb-split">DR. MASON</h3>
+<span class="font-body text-xs font-bold text-primary tracking-widest uppercase">医生</span>
+</div>
+<span class="material-symbols-outlined text-error animate-bounce">warning</span>
+</div>
+<div class="space-y-2 mt-2">
+<div class="flex items-center gap-2">
+<span class="font-headline font-bold w-8 text-primary">HP</span>
+<div class="flex-1 h-6 border-2 border-error bg-surface relative">
+<div class="absolute top-0 left-0 h-full bg-error border-r-2 border-error w-[15%]"></div>
+<span class="absolute inset-0 flex items-center justify-center font-headline font-bold text-xs">2/14</span>
+</div>
+</div>
+<div class="flex items-center gap-2">
+<span class="font-headline font-bold w-8 text-primary">SAN</span>
+<div class="flex-1 h-6 border-2 border-primary bg-surface relative">
+<div class="absolute top-0 left-0 h-full bg-primary border-r-2 border-primary w-[60%]"></div>
+<span class="absolute inset-0 flex items-center justify-center font-headline font-bold text-xs text-white mix-blend-difference rgb-split">45/75</span>
+</div>
+</div>
+</div>
+</div>
+</aside>
+</main>
+</div>
+<!-- BottomNavBar (Mobile Only) -->
+<nav class="md:hidden docked full-width bottom-0 border-t-4 border-primary bg-surface dark:bg-surface fixed bottom-0 left-0 w-full z-50 flex justify-around items-stretch h-16"><a class="flex flex-col items-center justify-center bg-primary-fixed text-primary font-black p-2 border-x-4 border-primary flex-1 invert duration-0" href="#"><span class="material-symbols-outlined mb-1">schedule</span><span class="font-headline font-bold uppercase text-xs tracking-widest leading-none">时间轴</span></a><a class="flex flex-col items-center justify-center text-on-surface p-2 border-r-4 border-primary flex-1 hover:bg-tertiary-fixed hover:text-primary transition-colors" href="#"><span class="material-symbols-outlined mb-1">group</span><span class="font-headline font-bold uppercase text-xs tracking-widest leading-none">参战者</span></a><a class="flex flex-col items-center justify-center text-on-surface p-2 border-r-4 border-primary flex-1 hover:bg-tertiary-fixed hover:text-primary transition-colors" href="#"><span class="material-symbols-outlined mb-1">menu_book</span><span class="font-headline font-bold uppercase text-xs tracking-widest leading-none">资料库</span></a><a class="flex flex-col items-center justify-center text-on-surface p-2 flex-1 hover:bg-tertiary-fixed hover:text-primary transition-colors" href="#"><span class="material-symbols-outlined mb-1">map</span><span class="font-headline font-bold uppercase text-xs tracking-widest leading-none">地图</span></a></nav>
+<script>
+    const text1 = "The air in this wing is perceptibly colder, carrying the unmistakable scent of ozone and stale institutional bleach. The flickering fluorescent light at the far end of the hall casts long, shuddering shadows that seem to detach from the walls.";
+    const text2 = "From behind the heavy steel door of Room 412, a rhythmic scratching sound begins—slow at first, then accelerating into a frantic, wet tearing noise. It is not the sound of a patient wanting to get out. It is the sound of something wanting to get in.";
+    
+    const el1 = document.getElementById('narrative-text-1');
+    const el2 = document.getElementById('narrative-text-2');
+    
+    let i = 0;
+    let j = 0;
+    
+    function typeWriter1() {
+        if (i < text1.length) {
+            el1.innerHTML = text1.substring(0, i+1) + '<span class="typing-cursor"></span>';
+            i++;
+            setTimeout(typeWriter1, 30);
+        } else {
+            el1.innerHTML = text1;
+            setTimeout(typeWriter2, 500);
+        }
+    }
+
+    function typeWriter2() {
+        if (j < text2.length) {
+            let currentText = text2.substring(0, j+1);
+            // Re-apply styling for the word "in" if it's fully typed
+            if (currentText.endsWith("in.")) {
+                 currentText = currentText.replace("in.", '<span class="text-secondary font-bold">in</span>.');
+            }
+            el2.innerHTML = currentText + '<span class="typing-cursor"></span>';
+            j++;
+            setTimeout(typeWriter2, 30);
+        } else {
+            el2.innerHTML = text2.replace("in.", '<span class="text-secondary font-bold">in</span>.');
+        }
+    }
+
+    // Start typing effect on load
+    window.onload = typeWriter1;
+
+    // Toggle Insanity Mode
+    document.getElementById('insanity-toggle').addEventListener('click', function() {
+        document.body.classList.toggle('insanity-mode');
+    });
+</script>
+
+
+</body></html>

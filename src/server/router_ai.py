@@ -1,7 +1,7 @@
 import json
 from fastapi import APIRouter, Request, HTTPException
-from .ai_kp import AIKP
-from .spoiler_control import SpoilerController
+from .ai.ai_kp import AIKP
+from .ai.spoiler_control import SpoilerController
 
 router = APIRouter(prefix="/api/rooms")
 

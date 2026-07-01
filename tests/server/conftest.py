@@ -1,13 +1,13 @@
 import pytest
 from src.server.db_adapter import PgDatabase
-from src.server.engine import Engine
+from src.server.engine.engine import Engine
 from src.server.main import app
 from fastapi.testclient import TestClient
 
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter():
-    from src.server.router_player import _join_attempts
+    from src.server.player.router_player import _join_attempts
     _join_attempts.clear()
     yield
     _join_attempts.clear()
@@ -22,7 +22,9 @@ def test_db():
     conn.execute(
         "TRUNCATE TABLE clarifications, clue_shares, clues, objectives, inventory, "
         "actions, events, player_sequences, checkpoints, campaign_archives, "
-        "document_chunks, host_states, characters, rooms, scenarios, rule_documents "
+        "document_chunks, host_states, characters, rooms, scenarios, rule_documents, "
+        "spoiler_sensitive_items, spoiler_audits, "
+        "character_profiles, character_runtime_state, room_scene_state "
         "RESTART IDENTITY CASCADE"
     )
     yield conn

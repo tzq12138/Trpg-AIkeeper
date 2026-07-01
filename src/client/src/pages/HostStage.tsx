@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import type { EngineEvent } from '../types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { BrutalProgress } from '../components/BauhausShell';
+import HostSkeletonPanels from '../components/HostSkeletonPanels';
+import { hostTabs, type HostTabKey } from '../navigation';
 
 interface PlayerStatus {
   character_id: string;
   player_name: string;
+  investigator_name: string;
   hp: number;
   hp_max: number;
   san: number;
@@ -46,7 +49,9 @@ function useHostWS(roomId: string, onEvent: (event: Record<string, unknown>) => 
         try {
           const data = JSON.parse(msg.data);
           onEvent(data);
-        } catch { /* ignore parse errors */ }
+        } catch {
+          // Ignore malformed events from transient reconnects.
+        }
       };
 
       ws.onclose = () => {
@@ -70,126 +75,26 @@ function useHostWS(roomId: string, onEvent: (event: Record<string, unknown>) => 
 }
 
 function PlayerCard({ player }: { player: PlayerStatus }) {
-  const hpPercent = player.hp_max > 0 ? (player.hp / player.hp_max) * 100 : 0;
-  const sanPercent = player.san_max > 0 ? (player.san / player.san_max) * 100 : 0;
+  const danger = player.hp <= Math.ceil(player.hp_max * 0.25) || player.san <= Math.ceil(player.san_max * 0.4);
 
   return (
-    <div style={{
-      background: 'rgba(0,0,0,0.6)',
-      borderRadius: 8,
-      padding: '12px 16px',
-      minWidth: 160,
-      backdropFilter: 'blur(4px)',
-      border: '1px solid rgba(255,255,255,0.1)',
-    }}>
-      <div style={{ fontWeight: 'bold', fontSize: 14, marginBottom: 8 }}>{player.player_name}</div>
-      <div style={{ marginBottom: 4 }}>
-        <div style={{ fontSize: 11, color: '#aaa' }}>HP {player.hp}/{player.hp_max}</div>
-        <div style={{ background: 'rgba(255,255,255,0.1)', borderRadius: 4, height: 6, marginTop: 2 }}>
-          <div style={{
-            background: hpPercent > 50 ? '#4caf50' : hpPercent > 25 ? '#ff9800' : '#f44336',
-            width: `${hpPercent}%`,
-            height: '100%',
-            borderRadius: 4,
-            transition: 'width 0.5s ease',
-          }} />
-        </div>
-      </div>
-      <div>
-        <div style={{ fontSize: 11, color: '#aaa' }}>SAN {player.san}/{player.san_max}</div>
-        <div style={{ background: 'rgba(255,255,255,0.1)', borderRadius: 4, height: 6, marginTop: 2 }}>
-          <div style={{
-            background: '#9c27b0',
-            width: `${sanPercent}%`,
-            height: '100%',
-            borderRadius: 4,
-            transition: 'width 0.5s ease',
-          }} />
-        </div>
-      </div>
+    <article className={`bh-player-card ${danger ? 'bh-player-card--danger' : ''}`}>
+      <h3>{player.player_name}</h3>
+      <div className="bh-subtitle">{player.investigator_name || player.character_id}</div>
+      <BrutalProgress label="HP" value={player.hp} max={player.hp_max} tone={danger ? 'red' : 'yellow'} />
+      <BrutalProgress label="SAN" value={player.san} max={player.san_max} tone={player.san < player.san_max / 2 ? 'red' : 'yellow'} />
       {player.status_tags.length > 0 && (
-        <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {player.status_tags.map((tag, i) => (
-            <span key={i} style={{
-              fontSize: 10,
-              background: 'rgba(255,200,0,0.3)',
-              borderRadius: 4,
-              padding: '2px 6px',
-            }}>{tag}</span>
+        <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {player.status_tags.map((tag) => (
+            <span className="bh-eyebrow" key={tag}>{tag}</span>
           ))}
         </div>
       )}
-    </div>
+    </article>
   );
 }
 
-function GlobalHUD({ players, engineState }: { players: PlayerStatus[]; engineState: string }) {
-  return (
-    <div style={{
-      position: 'absolute',
-      top: 16,
-      left: 16,
-      right: 16,
-      display: 'flex',
-      gap: 12,
-      zIndex: 10,
-      flexWrap: 'wrap',
-    }}>
-      {players.map((p) => <PlayerCard key={p.character_id} player={p} />)}
-      <div style={{
-        marginLeft: 'auto',
-        background: 'rgba(0,0,0,0.5)',
-        borderRadius: 8,
-        padding: '8px 16px',
-        alignSelf: 'flex-start',
-        fontSize: 12,
-        color: engineState === 'thinking' ? '#ffd54f' : '#aaa',
-      }}>
-        {engineState === 'thinking' ? 'KP 思考中...' : engineState === 'busy' ? 'KP 忙碌...' : ''}
-      </div>
-    </div>
-  );
-}
-
-function SceneBackground({ imageUrl }: { imageUrl: string | null }) {
-  const [images, setImages] = useState<{ url: string; key: string }[]>([]);
-
-  useEffect(() => {
-    if (!imageUrl) return;
-    setImages((prev) => {
-      const next = [...prev, { url: imageUrl, key: imageUrl }];
-      return next.slice(-2);
-    });
-  }, [imageUrl]);
-
-  return (
-    <div style={{ position: 'absolute', inset: 0, zIndex: 0 }}>
-      {images.map((img, i) => (
-        <div
-          key={img.key}
-          style={{
-            position: 'absolute',
-            inset: 0,
-            backgroundImage: `url(${img.url})`,
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-            opacity: i === images.length - 1 ? 1 : 0,
-            transition: 'opacity 1.5s ease',
-          }}
-        />
-      ))}
-      {images.length === 0 && (
-        <div style={{
-          position: 'absolute',
-          inset: 0,
-          background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)',
-        }} />
-      )}
-    </div>
-  );
-}
-
-function TypewriterSubtitle({ messages }: { messages: ChatMessage[] }) {
+function TypewriterText({ messages }: { messages: ChatMessage[] }) {
   const [displayed, setDisplayed] = useState('');
   const targetRef = useRef('');
   const indexRef = useRef(0);
@@ -214,33 +119,11 @@ function TypewriterSubtitle({ messages }: { messages: ChatMessage[] }) {
     return () => cancelAnimationFrame(rafRef.current);
   }, [messages]);
 
-  if (!displayed) return null;
-
   return (
-    <div style={{
-      position: 'absolute',
-      bottom: 40,
-      left: 40,
-      right: 40,
-      zIndex: 20,
-      textAlign: 'center',
-    }}>
-      <div style={{
-        display: 'inline-block',
-        background: 'rgba(0,0,0,0.75)',
-        borderRadius: 12,
-        padding: '16px 32px',
-        maxWidth: '80%',
-        fontSize: 22,
-        lineHeight: 1.6,
-        color: '#eee',
-        backdropFilter: 'blur(8px)',
-        border: '1px solid rgba(255,255,255,0.1)',
-      }}>
-        {displayed}
-        <span style={{ opacity: 0.5, animation: 'blink 1s infinite' }}>|</span>
-      </div>
-    </div>
+    <p>
+      {displayed || '投影待命。等待玩家行动、公共观察或裁决叙事进入舞台。'}
+      <span className="bh-cursor">|</span>
+    </p>
   );
 }
 
@@ -256,39 +139,73 @@ function DiceRollDisplay({ rollEvent, onSettled }: { rollEvent: Record<string, u
   if (!rollEvent) return null;
 
   return (
-    <div style={{
-      position: 'absolute',
-      top: '50%',
-      left: '50%',
-      transform: 'translate(-50%, -50%)',
-      zIndex: 30,
-      background: 'rgba(0,0,0,0.8)',
-      borderRadius: 16,
-      padding: '32px 48px',
-      textAlign: 'center',
-      border: '2px solid rgba(255,215,0,0.5)',
-    }}>
-      <div style={{ fontSize: 14, color: '#aaa', marginBottom: 8 }}>骰子检定</div>
-      <div style={{ fontSize: 36, fontWeight: 'bold', color: '#ffd54f' }}>
-        {String(rollEvent.dice || '1d20')}
+    <div className="bh-dice-toast">
+      <strong>骰子检定</strong>
+      <span>{String(rollEvent.skill || rollEvent.dice || 'D100')}</span>
+      {rollEvent.result ? <span>结果：{String(rollEvent.result)}</span> : null}
+    </div>
+  );
+}
+
+function normalizeHud(raw: Record<string, unknown>): HUDData {
+  const queue = (raw.queue_status || raw.queueStatus || {}) as { normal?: number; urgent?: number };
+  const players = (raw.players as Array<Record<string, unknown>> | undefined || []).map((player) => ({
+    character_id: String(player.character_id || player.characterId || ''),
+    player_name: String(player.player_name || player.playerName || '未命名玩家'),
+    investigator_name: String(player.investigator_name || player.investigatorName || ''),
+    hp: Number(player.hp || 0),
+    hp_max: Number(player.hp_max ?? player.hpMax ?? 0),
+    san: Number(player.san || 0),
+    san_max: Number(player.san_max ?? player.sanMax ?? 0),
+    mp: Number(player.mp || 0),
+    mp_max: Number(player.mp_max ?? player.mpMax ?? 0),
+    luck: Number(player.luck || 0),
+    status_tags: (player.status_tags || player.statusTags || []) as string[],
+  }));
+  return {
+    room_id: String(raw.room_id || raw.roomId || ''),
+    players,
+    scene_image_url: (raw.scene_image_url ?? raw.sceneImageUrl ?? null) as string | null,
+    engine_state: String(raw.engine_state || raw.engineState || 'idle'),
+    queue_status: {
+      normal: Number(queue.normal || 0),
+      urgent: Number(queue.urgent || 0),
+    },
+  };
+}
+
+function NarrativeProjection({ imageUrl, messages, rollEvent, onDiceSettled }: {
+  imageUrl: string | null;
+  messages: ChatMessage[];
+  rollEvent: Record<string, unknown> | null;
+  onDiceSettled: () => void;
+}) {
+  return (
+    <div className="bh-projection">
+      {imageUrl && <div className="bh-projection-image" style={{ backgroundImage: `url(${imageUrl})` }} />}
+      <DiceRollDisplay rollEvent={rollEvent} onSettled={onDiceSettled} />
+      <div className="bh-projection-copy">
+        <h2>场景投影</h2>
+        <TypewriterText messages={messages} />
       </div>
-      {rollEvent.skill ? (
-        <div style={{ fontSize: 16, color: '#ccc', marginTop: 8 }}>{String(rollEvent.skill)}</div>
-      ) : null}
     </div>
   );
 }
 
 export default function HostStage({ roomId }: { roomId: string }) {
+  const [activeTab, setActiveTab] = useState<HostTabKey>('narrative');
   const [hud, setHud] = useState<HUDData | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [rollEvent, setRollEvent] = useState<Record<string, unknown> | null>(null);
   const [atmosphere, setAtmosphere] = useState<Record<string, unknown> | null>(null);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [activeEncounter, setActiveEncounter] = useState<any>(null);
+  const [encounterSuggestion, setEncounterSuggestion] = useState<any>(null);
+  const [mapRefresh, setMapRefresh] = useState(0);
 
   const handleEvent = useCallback((data: Record<string, unknown>) => {
     if (data.type === 'host_state_update' && data.hud) {
-      setHud(data.hud as HUDData);
+      setHud(normalizeHud(data.hud as Record<string, unknown>));
     } else if (data.type === 'scene_update') {
       setHud((prev) => prev ? { ...prev, scene_image_url: data.image_url as string | null } : prev);
     } else if (data.type === 'chat_message') {
@@ -311,6 +228,26 @@ export default function HostStage({ roomId }: { roomId: string }) {
       if (payload.text) {
         setMessages((prev) => [...prev, { text: payload.text, speaker: 'KP' }]);
       }
+    } else if (data.type === 'encounter_suggested') {
+      setEncounterSuggestion(data.payload);
+    } else if (data.type === 'encounter_started') {
+      setActiveEncounter(data.payload);
+      setEncounterSuggestion(null);
+      setActiveTab('combat');
+    } else if (data.type === 'encounter_updated') {
+      setActiveEncounter(data.payload);
+    } else if (data.type === 'encounter_resolved') {
+      setActiveEncounter(null);
+    } else if (data.type === 'team_message') {
+      const p = data.payload as Record<string, unknown>;
+      if (p.text && typeof p.text === 'string') {
+        setMessages((prev) => [...prev, {
+          text: `💬 ${p.playerName || p.investigatorName || '玩家'}: ${p.text}`,
+          speaker: 'TEAM',
+        }]);
+      }
+    } else if (data.type === 'map_updated' || data.type === 'player_moved' || data.type === 'map_revealed') {
+      setMapRefresh((prev) => prev + 1);
     }
   }, []);
 
@@ -337,70 +274,102 @@ export default function HostStage({ roomId }: { roomId: string }) {
 
   const visual = atmosphere?.visual as Record<string, unknown> | undefined;
   const filterStyle = visual?.filter ? `hue-rotate(${visual.filter === 'cold_blue' ? '180deg' : '0deg'}) saturate(1.5)` : undefined;
-  const shakeClass = visual?.shake ? 'host-shake' : '';
+  const shakeClass = visual?.shake ? 'bh-host-shake' : '';
+  const players = hud?.players ?? [];
 
   return (
-    <div style={{
-      position: 'fixed',
-      inset: 0,
-      overflow: 'hidden',
-      color: 'white',
-      fontFamily: 'sans-serif',
-    }}>
-      <style>{`
-        @keyframes blink { 0%,50% { opacity: 1; } 51%,100% { opacity: 0; } }
-        @keyframes shake {
-          0%,100% { transform: translateX(0); }
-          25% { transform: translateX(-4px); }
-          75% { transform: translateX(4px); }
-        }
-        .host-shake { animation: shake 0.15s infinite; }
-      `}</style>
+    <div className="bh-host">
+      <header className="bh-host-topbar">
+        <div className="bh-host-brand">
+          <strong className="bh-panel-title" style={{ margin: 0 }}>阿卡姆系统</strong>
+          <span className="bh-room-code">房间代码：{roomId}</span>
+        </div>
+        <nav className="bh-host-tabs" aria-label="守密人页面">
+          {hostTabs.map((tab) => (
+            <button
+              className="bh-tab"
+              key={tab.key}
+              type="button"
+              aria-selected={activeTab === tab.key}
+              onClick={() => setActiveTab(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+        <div className="bh-host-actions">
+          {!audioUnlocked && (
+            <button className="bh-button bh-button--yellow" onClick={unlockAudio} type="button">解锁音频</button>
+          )}
+          <button className="bh-button" onClick={handlePause} type="button">系统锁定</button>
+          <button className="bh-button bh-button--red" onClick={handleReset} type="button">紧急重置</button>
+        </div>
+      </header>
 
-      <div className={shakeClass} style={{ position: 'absolute', inset: 0, filter: filterStyle }}>
-        <SceneBackground imageUrl={hud?.scene_image_url ?? null} />
-        <GlobalHUD players={hud?.players ?? []} engineState={hud?.engine_state ?? 'idle'} />
-        <TypewriterSubtitle messages={messages} />
-        <DiceRollDisplay rollEvent={rollEvent} onSettled={handleDiceSettled} />
-      </div>
+      <div className={`bh-host-layout ${shakeClass}`} style={{ filter: filterStyle }}>
+        <aside className="bh-host-rail">
+          <div className="bh-keeper-card">
+            <div className="bh-keeper-mark">KP</div>
+            <h2 className="bh-panel-title">KEEPER_PRIME</h2>
+            <p className="bh-subtitle">v.0.4.2_stable</p>
+          </div>
+          <div className="bh-tool-list">
+            {hostTabs.map((tab) => (
+              <button
+                className="bh-tool"
+                key={tab.key}
+                type="button"
+                aria-pressed={activeTab === tab.key}
+                onClick={() => setActiveTab(tab.key)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div className="bh-rail-footer">
+            <span className="bh-eyebrow">QUEUE</span>
+            <strong>普通 {hud?.queue_status.normal ?? 0} / 紧急 {hud?.queue_status.urgent ?? 0}</strong>
+            <span>{hud?.engine_state === 'thinking' ? 'KP 思考中' : hud?.engine_state === 'busy' ? 'KP 忙碌中' : '系统待命'}</span>
+          </div>
+        </aside>
 
-      <div style={{
-        position: 'absolute',
-        bottom: 8,
-        right: 16,
-        zIndex: 50,
-        display: 'flex',
-        gap: 8,
-      }}>
-        {!audioUnlocked && (
-          <button onClick={unlockAudio} style={{
-            background: 'rgba(0,0,0,0.5)',
-            border: '1px solid rgba(255,255,255,0.2)',
-            borderRadius: 6,
-            color: '#fff',
-            padding: '6px 12px',
-            cursor: 'pointer',
-            fontSize: 12,
-          }}>解锁音频</button>
-        )}
-        <button onClick={handlePause} style={{
-          background: 'rgba(0,0,0,0.5)',
-          border: '1px solid rgba(255,255,255,0.2)',
-          borderRadius: 6,
-          color: '#fff',
-          padding: '6px 12px',
-          cursor: 'pointer',
-          fontSize: 12,
-        }}>暂停/恢复</button>
-        <button onClick={handleReset} style={{
-          background: 'rgba(180,0,0,0.6)',
-          border: '1px solid rgba(255,100,100,0.3)',
-          borderRadius: 6,
-          color: '#fff',
-          padding: '6px 12px',
-          cursor: 'pointer',
-          fontSize: 12,
-        }}>紧急重置</button>
+        <section className="bh-stage-panel">
+          <div className="bh-stage-label">{hostTabs.find((tab) => tab.key === activeTab)?.eyebrow} // 第一阶段投影</div>
+          {activeTab === 'narrative' ? (
+            <NarrativeProjection
+              imageUrl={hud?.scene_image_url ?? null}
+              messages={messages}
+              rollEvent={rollEvent}
+              onDiceSettled={handleDiceSettled}
+            />
+          ) : (
+            <div className="bh-projection" style={{ background: 'var(--bh-paper)' }}>
+              <HostSkeletonPanels
+                activeTab={activeTab}
+                queueStatus={hud?.queue_status}
+                messages={messages}
+                roomId={roomId}
+                activeEncounter={activeEncounter}
+                encounterSuggestion={encounterSuggestion}
+                onEncounterConfirmed={() => {}}
+                mapRefresh={mapRefresh}
+              />
+            </div>
+          )}
+        </section>
+
+        <aside className="bh-monitor">
+          <div className="bh-monitor-label">调查员监控</div>
+          <div className="bh-player-monitor-list">
+            {players.length === 0 && (
+              <article className="bh-player-card">
+                <h3>等待调查员</h3>
+                <p>玩家加入后，HP / SAN 会在这里实时显示。</p>
+              </article>
+            )}
+            {players.map((player) => <PlayerCard key={player.character_id} player={player} />)}
+          </div>
+        </aside>
       </div>
     </div>
   );

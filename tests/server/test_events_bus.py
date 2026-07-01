@@ -1,6 +1,6 @@
-from src.server.events import EventBus
+from src.server.events.events import EventBus
 from src.server.models import EngineEvent
-from src.server.projection import ProjectionBuilder
+from src.server.engine.projection import ProjectionBuilder
 
 
 def test_event_bus_publish_and_subscribe():

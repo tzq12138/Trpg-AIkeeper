@@ -3,8 +3,8 @@ import random
 
 import pytest
 
-from src.server.mechanic_compiler import MechanicCompiler
-from src.server.resolution_pipeline import ResolutionPipeline
+from src.server.ai.mechanic_compiler import MechanicCompiler
+from src.server.engine.resolution_pipeline import ResolutionPipeline
 
 
 class Rows:
@@ -129,6 +129,38 @@ async def test_pipeline_resolves_queued_action_and_projects_events():
     event_types = [event[1] for event in dispatcher.events]
     assert "s2c_reveal_transaction" in event_types
     assert "s2c_action_completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_pipeline_includes_skill_check_result_in_action_completed_projection():
+    random.seed(0)
+    conn = FakeConn()
+    conn.characters["char-1"]["xlsx_data"]["skills"] = {"Spot": 60}
+    conn.actions["act-1"].update({
+        "intent_type": "skill_check",
+        "declared_intent": "roll Spot",
+        "params": json.dumps({"skillName": "Spot"}),
+    })
+    dispatcher = FakeDispatcher()
+    pipeline = ResolutionPipeline(
+        conn=conn,
+        compiler=MechanicCompiler(api_key=""),
+        dispatcher=dispatcher,
+    )
+
+    await pipeline.resolve_action("act-1")
+
+    completed = [
+        event for event in dispatcher.events
+        if event[1] == "s2c_action_completed" and event[3]["status"] == "resolved"
+    ][0]
+    payload = completed[3]
+    assert payload["skill_name"] == "Spot"
+    assert payload["skillName"] == "Spot"
+    assert payload["target"] == 60
+    assert isinstance(payload["roll"], int)
+    assert "level" in payload
+    assert "success" in payload
 
 
 @pytest.mark.asyncio

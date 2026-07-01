@@ -11,6 +11,7 @@ def test_full_flow(client):
     assert resp.status_code == 200
     player = resp.json()
     player_token = player["player_token"]
+    character_id = player["character_id"]
 
     # 3. Submit intent
     resp = client.post(
@@ -37,7 +38,12 @@ def test_full_flow(client):
     )
     assert resp.status_code == 202
 
-    # 5. Start room
+    # 5. Mark character ready (direct DB — admin endpoint requires auth)
+    db = client.app.state.db
+    db.execute("UPDATE characters SET is_ready = TRUE WHERE character_id = %s", (character_id,))
+    db.commit()
+
+    # 6. Start room
     resp = client.post(
         f"/api/rooms/{room_id}/start",
         headers={"X-Owner-Token": owner_token},

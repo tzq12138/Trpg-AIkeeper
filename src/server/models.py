@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Literal, Any
 from pydantic import BaseModel, ConfigDict, Field
 
+# Event type literals — canonical registry is at .events.events_registry.ALL_EVENTS
 EngineEventType = Literal[
     "s2c_reveal_transaction", "s2c_resume_transaction", "s2c_cancel_transaction",
     "s2c_chat_stream", "s2c_atmosphere", "s2c_engine_state", "s2c_scene_sync",
@@ -11,6 +12,11 @@ EngineEventType = Literal[
     "s2c_room_lobby_snapshot", "s2c_campaign_ended",
     "s2c_action_queued", "s2c_action_batched", "s2c_action_completed",
     "s2c_clarification_prompt", "s2c_clarification_result",
+    "s2c_ready_toggled",
+    "s2c_map_updated", "s2c_player_moved", "s2c_map_revealed",
+    "s2c_encounter_suggested", "s2c_encounter_started",
+    "s2c_encounter_updated", "s2c_encounter_resolved",
+    "s2c_team_message",
 ]
 
 Audience = Literal["host", "player", "party", "system"]
@@ -47,6 +53,7 @@ class PlayerIntent(BaseModel):
         "voice_command", "dialogue", "skill_check", "move",
         "use_item", "show_item", "ready_toggle", "character_import_confirm",
         "clarification_request", "retroactive_item_claim",
+        "combat_action", "chase_action", "system_skip",
     ]
     declared_intent: str = ""
     base_state_version: int = 0
@@ -85,6 +92,7 @@ class PlayerPublicStatus(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     character_id: str = Field(alias="characterId")
     player_name: str = Field(default="", alias="playerName")
+    investigator_name: str = Field(default="", alias="investigatorName")
     hp: int = 0
     hp_max: int = Field(default=0, alias="hpMax")
     san: int = 0
@@ -260,6 +268,7 @@ class AIResponse(BaseModel):
     tactical_prompts: list[TacticalPrompt] = []
     clues_to_release: list[str] = []
     keeper_notes: str = ""
+    encounter_suggestion: "EncounterSuggestion | None" = Field(default=None, alias="encounterSuggestion")
 
 
 class ExposureLevel(BaseModel):
@@ -328,7 +337,11 @@ class MechanicCompileResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     triggered_mechanic: Literal[
         "skill_check", "sanity_check", "combat_damage", "luck_check",
-        "auto_success", "auto_failure", "dialogue",
+        "auto_success", "auto_failure", "dialogue", "move",
+        "combat_attack", "combat_dodge", "combat_defend",
+        "combat_assist", "combat_flee", "combat_wait",
+        "chase_pursue", "chase_escape", "chase_block",
+        "chase_create_obstacle", "chase_detour", "chase_assist", "chase_wait",
     ] = Field(default="dialogue", alias="triggeredMechanic")
     skill_name: str | None = Field(default=None, alias="skillName")
     difficulty: Literal["regular", "hard", "extreme"] = "regular"
@@ -373,3 +386,262 @@ class PlayerOnboardingState(BaseModel):
     has_character: bool = False
     has_reviewed_adaptation: bool = False
     is_ready: bool = False
+
+
+# ── Map Models ──
+
+class MapNode(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    node_id: str = Field(alias="nodeId")
+    name: str
+    description: str = ""
+    npcs_present: list[str] = Field(default=[], alias="npcsPresent")
+    clues_available: list[str] = Field(default=[], alias="cluesAvailable")
+    position: dict[str, float] = Field(default={"x": 0.0, "y": 0.0})
+    is_start: bool = Field(default=False, alias="isStart")
+
+
+class MapEdge(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    from_node: str = Field(alias="fromNode")
+    to_node: str = Field(alias="toNode")
+    is_one_way: bool = Field(default=False, alias="isOneWay")
+    label: str = ""
+
+
+class ScenarioMap(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    map_id: str = Field(alias="mapId")
+    scenario_id: str = Field(alias="scenarioId")
+    generated_by: str = Field(default="python", alias="generatedBy")
+    status: Literal["draft", "confirmed"] = "draft"
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    created_at: str | None = Field(default=None, alias="createdAt")
+    confirmed_at: str | None = Field(default=None, alias="confirmedAt")
+
+
+class PlayerMapView(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    room_id: str = Field(alias="roomId")
+    nodes: list[dict[str, Any]] = []
+    current_node_id: str | None = Field(default=None, alias="currentNodeId")
+    hidden_count: int = Field(default=0, alias="hiddenCount")
+    map_status: str = "no_map"
+
+
+class MapMoveIntent(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    target_node_id: str = Field(alias="targetNodeId")
+    from_node_id: str = Field(alias="fromNodeId")
+    room_id: str = Field(alias="roomId")
+
+
+class HostMapOperation(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    operation: Literal["reveal", "hide", "force_move"] = Field(alias="operation")
+    node_id: str | None = Field(default=None, alias="nodeId")
+    character_id: str | None = Field(default=None, alias="characterId")
+
+
+# ── Encounter Models ──
+
+class EncounterParticipant(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    encounter_id: str = Field(alias="encounterId")
+    character_id: str = Field(alias="characterId")
+    side: Literal["player", "enemy", "neutral"] = "player"
+    hp: int = 0
+    hp_max: int = Field(default=0, alias="hpMax")
+    san: int = 0
+    san_max: int = Field(default=0, alias="sanMax")
+    dex: int = 0
+    mov: int = 7
+    current_position: str = Field(default="", alias="currentPosition")
+    distance_band: str = Field(default="medium", alias="distanceBand")
+    status_tags: list[str] = Field(default=[], alias="statusTags")
+    acted_this_round: bool = Field(default=False, alias="actedThisRound")
+    weapon_name: str = Field(default="", alias="weaponName")
+    damage_expression: str = Field(default="1d3", alias="damageExpression")
+    main_skill: str = Field(default="", alias="mainSkill")
+    notes: str = ""
+
+
+class Encounter(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    encounter_id: str = Field(alias="encounterId")
+    room_id: str = Field(alias="roomId")
+    type: Literal["combat", "chase"] = "combat"
+    status: Literal["suggested", "active", "resolved", "cancelled"] = "suggested"
+    current_round: int = Field(default=0, alias="currentRound")
+    summary: str = ""
+    participants: list[EncounterParticipant] = []
+    created_at: str | None = Field(default=None, alias="createdAt")
+    resolved_at: str | None = Field(default=None, alias="resolvedAt")
+
+
+class EncounterSuggestion(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    type: Literal["combat", "chase"] = "combat"
+    reason: str = ""
+    suggested_participants: list[dict[str, Any]] = Field(default=[], alias="suggestedParticipants")
+    initial_distance: str = Field(default="medium", alias="initialDistance")
+
+
+# ── SpoilerGuard Models ──
+
+SpoilerCategory = Literal["truth", "ending", "hidden_clue", "hidden_npc", "hidden_asset"]
+SpoilerAuditStatus = Literal["retry_ok", "blocked_fallback", "redacted_safety_net"]
+
+
+class SpoilerSensitiveItem(BaseModel):
+    """A single sensitive item extracted from knowledge_graph for spoiler checking."""
+    model_config = ConfigDict(populate_by_name=True)
+    item_id: str = Field(alias="itemId")
+    scenario_id: str = Field(alias="scenarioId")
+    category: SpoilerCategory
+    label: str
+    aliases: list[str] = []
+    source_ref: str = Field(default="", alias="sourceRef")
+    default_audience: Audience = Field(default="host", alias="defaultAudience")
+
+
+class SpoilerReviewResult(BaseModel):
+    """Result of a single spoiler review pass."""
+    model_config = ConfigDict(populate_by_name=True)
+    allowed: bool = True
+    violations: list[dict[str, Any]] = []
+    redacted_reason: str = Field(default="", alias="redactedReason")
+    retry_prompt: str = Field(default="", alias="retryPrompt")
+    safe_fallback_text: str = Field(default="", alias="safeFallbackText")
+
+
+class SpoilerUnlockState(BaseModel):
+    """What content has been unlocked through gameplay events for a given room."""
+    model_config = ConfigDict(populate_by_name=True)
+    room_id: str = Field(alias="roomId")
+    discovered_clue_ids: list[str] = Field(default=[], alias="discoveredClueIds")
+    revealed_npc_names: list[str] = Field(default=[], alias="revealedNpcNames")
+    entered_scene_names: list[str] = Field(default=[], alias="enteredSceneNames")
+    explored_node_ids: list[str] = Field(default=[], alias="exploredNodeIds")
+    active_ending_phase: str = Field(default="", alias="activeEndingPhase")
+    shared_clue_ids: list[str] = Field(default=[], alias="sharedClueIds")
+    host_manual_reveals: list[str] = Field(default=[], alias="hostManualReveals")
+
+
+class SpoilerAuditEntry(BaseModel):
+    """Persistent log of a spoiler interception event."""
+    model_config = ConfigDict(populate_by_name=True)
+    audit_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:12], alias="auditId")
+    room_id: str = Field(alias="roomId")
+    action_id: str = Field(default="", alias="actionId")
+    original_text: str = Field(alias="originalText")
+    violations: list[dict[str, Any]] = []
+    retry_count: int = Field(default=0, alias="retryCount")
+    final_status: SpoilerAuditStatus = Field(default="blocked_fallback", alias="finalStatus")
+    final_text: str = Field(default="", alias="finalText")
+    unlock_snapshot: dict[str, Any] = Field(default_factory=dict, alias="unlockSnapshot")
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat(), alias="createdAt")
+
+
+# ── StateService Models ──
+
+class CharacterMutationItem(BaseModel):
+    """A set of mutations targeting a specific character."""
+    model_config = ConfigDict(populate_by_name=True)
+    character_id: str = Field(alias="characterId")
+    mutations: list[dict[str, Any]]
+    permanent: bool = False
+
+
+class SceneChange(BaseModel):
+    """Changes to room scene state."""
+    model_config = ConfigDict(populate_by_name=True)
+    current_scene: str | None = Field(default=None, alias="currentScene")
+    visited_scenes_add: list[str] | None = Field(default=None, alias="visitedScenesAdd")
+    trigger_fired: str | None = Field(default=None, alias="triggerFired")
+    public_facts_add: list[str] | None = Field(default=None, alias="publicFactsAdd")
+    variable_set: dict[str, Any] | None = Field(default=None, alias="variableSet")
+    bgm: str | None = None
+    asset_url: str | None = Field(default=None, alias="assetUrl")
+
+
+class MapChangeItem(BaseModel):
+    """Changes to room map state."""
+    model_config = ConfigDict(populate_by_name=True)
+    node_explored: str | None = Field(default=None, alias="nodeExplored")
+    node_hidden: str | None = Field(default=None, alias="nodeHidden")
+    node_revealed: str | None = Field(default=None, alias="nodeRevealed")
+    position_set: dict[str, str] | None = Field(default=None, alias="positionSet")
+
+
+class ClueChangeItem(BaseModel):
+    """Changes to clue state."""
+    model_config = ConfigDict(populate_by_name=True)
+    clue_id: str = Field(alias="clueId")
+    discovered: bool | None = None
+    shared: bool | None = None
+    shared_by: str | None = Field(default=None, alias="sharedBy")
+
+
+class StateChangeSet(BaseModel):
+    """Unified state change payload for StateService.apply_change()."""
+    model_config = ConfigDict(populate_by_name=True)
+    character_mutations: list[CharacterMutationItem] = Field(default=[], alias="characterMutations")
+    scene_changes: SceneChange | None = Field(default=None, alias="sceneChanges")
+    map_changes: MapChangeItem | None = Field(default=None, alias="mapChanges")
+    clue_changes: list[ClueChangeItem] | None = Field(default=None, alias="clueChanges")
+    inventory_changes: list[dict[str, Any]] | None = Field(default=None, alias="inventoryChanges")
+    encounter_changes: dict[str, Any] | None = Field(default=None, alias="encounterChanges")
+    room_changes: dict[str, Any] | None = Field(default=None, alias="roomChanges")
+
+
+class CharacterProfile(BaseModel):
+    """Long-term character profile (cross-campaign)."""
+    model_config = ConfigDict(populate_by_name=True)
+    profile_id: str = Field(alias="profileId")
+    account_id: str = Field(alias="accountId")
+    name: str = ""
+    occupation: str = ""
+    attributes: dict[str, int] = {}
+    skills: dict[str, int] = {}
+    background: str = ""
+    backstory: dict[str, Any] = {}
+    permanent_injuries: list[dict[str, Any]] = Field(default=[], alias="permanentInjuries")
+    permanent_insanities: list[dict[str, Any]] = Field(default=[], alias="permanentInsanities")
+    experience_points: int = Field(default=0, alias="experiencePoints")
+    inheritable_items: list[dict[str, Any]] = Field(default=[], alias="inheritableItems")
+    version: int = 0
+
+
+class CharacterRuntimeState(BaseModel):
+    """Per-room mutable character state."""
+    model_config = ConfigDict(populate_by_name=True)
+    character_id: str = Field(alias="characterId")
+    room_id: str = Field(alias="roomId")
+    profile_id: str | None = Field(default=None, alias="profileId")
+    hp: int = 0
+    hp_max: int = Field(default=0, alias="hpMax")
+    san: int = 0
+    san_max: int = Field(default=0, alias="sanMax")
+    mp: int = 0
+    mp_max: int = Field(default=0, alias="mpMax")
+    luck: int = 0
+    status_tags: list[str] = Field(default=[], alias="statusTags")
+    temp_modifiers: dict[str, Any] = Field(default={}, alias="tempModifiers")
+    visibility: str = "visible"
+    version: int = 0
+
+
+class RoomSceneState(BaseModel):
+    """Per-room scene tracking state."""
+    model_config = ConfigDict(populate_by_name=True)
+    room_id: str = Field(alias="roomId")
+    current_scene: str = Field(default="", alias="currentScene")
+    visited_scenes: list[str] = Field(default=[], alias="visitedScenes")
+    triggered_triggers: list[str] = Field(default=[], alias="triggeredTriggers")
+    public_facts: list[str] = Field(default=[], alias="publicFacts")
+    scene_variables: dict[str, Any] = Field(default={}, alias="sceneVariables")
+    current_bgm: str = Field(default="", alias="currentBgm")
+    current_asset_url: str = Field(default="", alias="currentAssetUrl")
+    version: int = 0

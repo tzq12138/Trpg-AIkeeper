@@ -1,0 +1,1078 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+<!-- 2023-07-18 Tue 00:01 -->
+<meta http-equiv="Content-Type" content="text/html;charset=utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Along Against the Flames</title>
+<meta name="generator" content="Org Mode" />
+<style>
+  #content { max-width: 60em; margin: auto; }
+  .title  { text-align: center;
+             margin-bottom: .2em; }
+  .subtitle { text-align: center;
+              font-size: medium;
+              font-weight: bold;
+              margin-top:0; }
+  .todo   { font-family: monospace; color: red; }
+  .done   { font-family: monospace; color: green; }
+  .priority { font-family: monospace; color: orange; }
+  .tag    { background-color: #eee; font-family: monospace;
+            padding: 2px; font-size: 80%; font-weight: normal; }
+  .timestamp { color: #bebebe; }
+  .timestamp-kwd { color: #5f9ea0; }
+  .org-right  { margin-left: auto; margin-right: 0px;  text-align: right; }
+  .org-left   { margin-left: 0px;  margin-right: auto; text-align: left; }
+  .org-center { margin-left: auto; margin-right: auto; text-align: center; }
+  .underline { text-decoration: underline; }
+  #postamble p, #preamble p { font-size: 90%; margin: .2em; }
+  p.verse { margin-left: 3%; }
+  pre {
+    border: 1px solid #e6e6e6;
+    border-radius: 3px;
+    background-color: #f2f2f2;
+    padding: 8pt;
+    font-family: monospace;
+    overflow: auto;
+    margin: 1.2em;
+  }
+  pre.src {
+    position: relative;
+    overflow: auto;
+  }
+  pre.src:before {
+    display: none;
+    position: absolute;
+    top: -8px;
+    right: 12px;
+    padding: 3px;
+    color: #555;
+    background-color: #f2f2f299;
+  }
+  pre.src:hover:before { display: inline; margin-top: 14px;}
+  /* Languages per Org manual */
+  pre.src-asymptote:before { content: 'Asymptote'; }
+  pre.src-awk:before { content: 'Awk'; }
+  pre.src-authinfo::before { content: 'Authinfo'; }
+  pre.src-C:before { content: 'C'; }
+  /* pre.src-C++ doesn't work in CSS */
+  pre.src-clojure:before { content: 'Clojure'; }
+  pre.src-css:before { content: 'CSS'; }
+  pre.src-D:before { content: 'D'; }
+  pre.src-ditaa:before { content: 'ditaa'; }
+  pre.src-dot:before { content: 'Graphviz'; }
+  pre.src-calc:before { content: 'Emacs Calc'; }
+  pre.src-emacs-lisp:before { content: 'Emacs Lisp'; }
+  pre.src-fortran:before { content: 'Fortran'; }
+  pre.src-gnuplot:before { content: 'gnuplot'; }
+  pre.src-haskell:before { content: 'Haskell'; }
+  pre.src-hledger:before { content: 'hledger'; }
+  pre.src-java:before { content: 'Java'; }
+  pre.src-js:before { content: 'Javascript'; }
+  pre.src-latex:before { content: 'LaTeX'; }
+  pre.src-ledger:before { content: 'Ledger'; }
+  pre.src-lisp:before { content: 'Lisp'; }
+  pre.src-lilypond:before { content: 'Lilypond'; }
+  pre.src-lua:before { content: 'Lua'; }
+  pre.src-matlab:before { content: 'MATLAB'; }
+  pre.src-mscgen:before { content: 'Mscgen'; }
+  pre.src-ocaml:before { content: 'Objective Caml'; }
+  pre.src-octave:before { content: 'Octave'; }
+  pre.src-org:before { content: 'Org mode'; }
+  pre.src-oz:before { content: 'OZ'; }
+  pre.src-plantuml:before { content: 'Plantuml'; }
+  pre.src-processing:before { content: 'Processing.js'; }
+  pre.src-python:before { content: 'Python'; }
+  pre.src-R:before { content: 'R'; }
+  pre.src-ruby:before { content: 'Ruby'; }
+  pre.src-sass:before { content: 'Sass'; }
+  pre.src-scheme:before { content: 'Scheme'; }
+  pre.src-screen:before { content: 'Gnu Screen'; }
+  pre.src-sed:before { content: 'Sed'; }
+  pre.src-sh:before { content: 'shell'; }
+  pre.src-sql:before { content: 'SQL'; }
+  pre.src-sqlite:before { content: 'SQLite'; }
+  /* additional languages in org.el's org-babel-load-languages alist */
+  pre.src-forth:before { content: 'Forth'; }
+  pre.src-io:before { content: 'IO'; }
+  pre.src-J:before { content: 'J'; }
+  pre.src-makefile:before { content: 'Makefile'; }
+  pre.src-maxima:before { content: 'Maxima'; }
+  pre.src-perl:before { content: 'Perl'; }
+  pre.src-picolisp:before { content: 'Pico Lisp'; }
+  pre.src-scala:before { content: 'Scala'; }
+  pre.src-shell:before { content: 'Shell Script'; }
+  pre.src-ebnf2ps:before { content: 'ebfn2ps'; }
+  /* additional language identifiers per "defun org-babel-execute"
+       in ob-*.el */
+  pre.src-cpp:before  { content: 'C++'; }
+  pre.src-abc:before  { content: 'ABC'; }
+  pre.src-coq:before  { content: 'Coq'; }
+  pre.src-groovy:before  { content: 'Groovy'; }
+  /* additional language identifiers from org-babel-shell-names in
+     ob-shell.el: ob-shell is the only babel language using a lambda to put
+     the execution function name together. */
+  pre.src-bash:before  { content: 'bash'; }
+  pre.src-csh:before  { content: 'csh'; }
+  pre.src-ash:before  { content: 'ash'; }
+  pre.src-dash:before  { content: 'dash'; }
+  pre.src-ksh:before  { content: 'ksh'; }
+  pre.src-mksh:before  { content: 'mksh'; }
+  pre.src-posh:before  { content: 'posh'; }
+  /* Additional Emacs modes also supported by the LaTeX listings package */
+  pre.src-ada:before { content: 'Ada'; }
+  pre.src-asm:before { content: 'Assembler'; }
+  pre.src-caml:before { content: 'Caml'; }
+  pre.src-delphi:before { content: 'Delphi'; }
+  pre.src-html:before { content: 'HTML'; }
+  pre.src-idl:before { content: 'IDL'; }
+  pre.src-mercury:before { content: 'Mercury'; }
+  pre.src-metapost:before { content: 'MetaPost'; }
+  pre.src-modula-2:before { content: 'Modula-2'; }
+  pre.src-pascal:before { content: 'Pascal'; }
+  pre.src-ps:before { content: 'PostScript'; }
+  pre.src-prolog:before { content: 'Prolog'; }
+  pre.src-simula:before { content: 'Simula'; }
+  pre.src-tcl:before { content: 'tcl'; }
+  pre.src-tex:before { content: 'TeX'; }
+  pre.src-plain-tex:before { content: 'Plain TeX'; }
+  pre.src-verilog:before { content: 'Verilog'; }
+  pre.src-vhdl:before { content: 'VHDL'; }
+  pre.src-xml:before { content: 'XML'; }
+  pre.src-nxml:before { content: 'XML'; }
+  /* add a generic configuration mode; LaTeX export needs an additional
+     (add-to-list 'org-latex-listings-langs '(conf " ")) in .emacs */
+  pre.src-conf:before { content: 'Configuration File'; }
+
+  table { border-collapse:collapse; }
+  caption.t-above { caption-side: top; }
+  caption.t-bottom { caption-side: bottom; }
+  td, th { vertical-align:top;  }
+  th.org-right  { text-align: center;  }
+  th.org-left   { text-align: center;   }
+  th.org-center { text-align: center; }
+  td.org-right  { text-align: right;  }
+  td.org-left   { text-align: left;   }
+  td.org-center { text-align: center; }
+  dt { font-weight: bold; }
+  .footpara { display: inline; }
+  .footdef  { margin-bottom: 1em; }
+  .figure { padding: 1em; }
+  .figure p { text-align: center; }
+  .equation-container {
+    display: table;
+    text-align: center;
+    width: 100%;
+  }
+  .equation {
+    vertical-align: middle;
+  }
+  .equation-label {
+    display: table-cell;
+    text-align: right;
+    vertical-align: middle;
+  }
+  .inlinetask {
+    padding: 10px;
+    border: 2px solid gray;
+    margin: 10px;
+    background: #ffffcc;
+  }
+  #org-div-home-and-up
+   { text-align: right; font-size: 70%; white-space: nowrap; }
+  textarea { overflow-x: auto; }
+  .linenr { font-size: smaller }
+  .code-highlighted { background-color: #ffff00; }
+  .org-info-js_info-navigation { border-style: none; }
+  #org-info-js_console-label
+    { font-size: 10px; font-weight: bold; white-space: nowrap; }
+  .org-info-js_search-highlight
+    { background-color: #ffff00; color: #000000; font-weight: bold; }
+  .org-svg { }
+</style>
+<style type="text/css">
+html{font-family:sans-serif;line-height:1.15;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%}body{margin:0}article,aside,details,figcaption,figure,footer,header,main,menu,nav,section,summary{display:block}audio,canvas,progress,video{display:inline-block}audio:not([controls]){display:none;height:0}progress{vertical-align:baseline}[hidden],template{display:none}a{background-color:transparent;-webkit-text-decoration-skip:objects}a:active,a:hover{outline-width:0}abbr[title]{border-bottom:none;text-decoration:underline;text-decoration:underline dotted}b,strong{font-weight:inherit;font-weight:bolder}dfn{font-style:italic}h1{font-size:2em;margin:.67em 0}mark{background-color:#ff0;color:#000}small{font-size:80%}sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}sub{bottom:-.25em}sup{top:-.5em}img{border-style:none}svg:not(:root){overflow:hidden}code,kbd,pre,samp{font-family:monospace,monospace;font-size:1em}figure{margin:1em 40px}hr{box-sizing:content-box;height:0;overflow:visible}button,input,optgroup,select,textarea{font:inherit;margin:0}optgroup{font-weight:700}button,input{overflow:visible}button,select{text-transform:none}[type=reset],[type=submit],button,html [type=button]{-webkit-appearance:button}[type=button]::-moz-focus-inner,[type=reset]::-moz-focus-inner,[type=submit]::-moz-focus-inner,button::-moz-focus-inner{border-style:none;padding:0}[type=button]:-moz-focusring,[type=reset]:-moz-focusring,[type=submit]:-moz-focusring,button:-moz-focusring{outline:1px dotted ButtonText}fieldset{border:1px solid silver;margin:0 2px;padding:.35em .625em .75em}legend{box-sizing:border-box;color:inherit;display:table;max-width:100%;padding:0;white-space:normal}textarea{overflow:auto}[type=checkbox],[type=radio]{box-sizing:border-box;padding:0}[type=number]::-webkit-inner-spin-button,[type=number]::-webkit-outer-spin-button{height:auto}[type=search]{-webkit-appearance:textfield;outline-offset:-2px}[type=search]::-webkit-search-cancel-button,[type=search]::-webkit-search-decoration{-webkit-appearance:none}::-webkit-input-placeholder{color:inherit;opacity:.54}::-webkit-file-upload-button{-webkit-appearance:button;font:inherit}body{color:#000;background-color:#fff}.org-alert-high{color:#ff8c00;font-weight:700}.org-alert-low{color:#00008b}.org-alert-moderate{color:gold;font-weight:700}.org-alert-saved-fringe{background-color:#f2f2f2}.org-alert-trivial{color:Dark purple}.org-alert-urgent{color:red;font-weight:700}.org-anzu-match-1{color:#000;background-color:#7fffd4}.org-anzu-match-2{color:#000;background-color:#00ff7f}.org-anzu-match-3{color:#000;background-color:#ff0}.org-anzu-mode-line,.org-anzu-mode-line-no-match{color:#008b00;font-weight:700}.org-anzu-replace-highlight{color:#b0e2ff;background-color:#cd00cd}.org-anzu-replace-to{color:red}.org-bbdb-field-name{color:sienna}.org-bbdb-name{color:#00f}.org-bbdb-organization{color:#b22222}.org-beacon-fallback-background{background-color:#000}.org-biblio-results-header{color:#483d8b;font-size:150%;font-weight:700}.org-bold{font-weight:700}.org-bold-italic{font-weight:700;font-style:italic}.org-bookmark-menu-bookmark{font-weight:700}.org-bookmark-menu-heading{color:#228b22}.org-buffer-menu-buffer{font-weight:700}.org-builtin{color:#483d8b}.org-button{color:#3a5fcd;text-decoration:underline}.org-c-annotation{color:#008b8b}.org-cal-china-x-general-holiday{background-color:#228b22}.org-cal-china-x-important-holiday{background-color:#8b0000}.org-calendar-iso-week{color:pink;font-weight:700}.org-calendar-iso-week-header{color:#0ff}.org-calendar-month-header{color:#00f}.org-calendar-today{text-decoration:underline}.org-calendar-weekday-header{color:#008b8b}.org-calendar-weekend-header{color:#b22222}.org-comint-highlight-input{font-weight:700}.org-comint-highlight-prompt{color:#0000cd}.org-comment,.org-comment-delimiter{color:#b22222}.org-compilation-column-number{color:#8b2252}.org-compilation-error{color:red;font-weight:700}.org-compilation-info{color:#228b22;font-weight:700}.org-compilation-line-number{color:#a020f0}.org-compilation-mode-line-exit{color:#228b22;font-weight:700}.org-compilation-mode-line-fail{color:red;font-weight:700}.org-compilation-mode-line-run,.org-compilation-warning{color:#ff8c00;font-weight:700}.org-completions-annotations{font-style:italic}.org-completions-first-difference{font-weight:700}.org-constant{color:#008b8b}.org-cursor{background-color:#eead0e}.org-custom-button{color:#000;background-color:#d3d3d3}.org-custom-button-mouse{color:#000;background-color:#e5e5e5}.org-custom-button-pressed{color:#000;background-color:#d3d3d3}.org-custom-button-pressed-unraised{color:#8b008b;text-decoration:underline}.org-custom-button-unraised{text-decoration:underline}.org-custom-changed{color:#fff;background-color:#00f}.org-custom-comment{background-color:#d9d9d9}.org-custom-comment-tag{color:#00008b}.org-custom-face-tag{color:#00f;font-weight:700}.org-custom-group-subtitle{font-weight:700}.org-custom-group-tag{color:#00f;font-size:120%;font-weight:700}.org-custom-group-tag-1{color:red;font-size:120%;font-weight:700}.org-custom-invalid{color:#ff0;background-color:red}.org-custom-link{color:#3a5fcd;text-decoration:underline}.org-custom-modified{color:#fff;background-color:#00f}.org-custom-rogue{color:pink;background-color:#000}.org-custom-saved{text-decoration:underline}.org-custom-set{color:#00f;background-color:#fff}.org-custom-state{color:#006400}.org-custom-themed{color:#fff;background-color:#00f}.org-custom-variable-button{font-weight:700;text-decoration:underline}.org-custom-variable-tag{color:#00f;font-weight:700}.org-custom-visibility{color:#3a5fcd;font-size:80%;text-decoration:underline}.org-diary{color:red}.org-diary-anniversary{color:#a020f0}.org-diary-time{color:sienna}.org-dired-async-failures{color:red}.org-dired-async-message{color:#ff0}.org-dired-async-mode-message{color:gold}.org-dired-directory{color:#00f}.org-dired-flagged{color:red;font-weight:700}.org-dired-header{color:#228b22}.org-dired-ignored{color:#7f7f7f}.org-dired-mark{color:#008b8b}.org-dired-marked{color:#ff8c00;font-weight:700}.org-dired-perm-write{color:#b22222}.org-dired-symlink{color:#a020f0}.org-dired-warning{color:red;font-weight:700}.org-doc{color:#8b2252}.org-eldoc-highlight-function-argument{font-weight:700}.org-epa-field-body{font-style:italic}.org-epa-field-name,.org-epa-mark{font-weight:700}.org-epa-mark{color:red}.org-epa-string{color:#00008b}.org-epa-validity-disabled{font-style:italic}.org-epa-validity-high{font-weight:700}.org-epa-validity-low,.org-epa-validity-medium{font-style:italic}.org-error{color:red;font-weight:700}.org-escape-glyph{color:brown}.org-evil-ex-commands{font-style:italic;text-decoration:underline}.org-evil-ex-info{color:red;font-style:italic}.org-evil-ex-lazy-highlight{background-color:#afeeee}.org-evil-ex-search{color:#b0e2ff;background-color:#cd00cd}.org-evil-ex-substitute-matches{background-color:#afeeee}.org-evil-ex-substitute-replacement{color:red;text-decoration:underline}.org-ffap{background-color:#b4eeb4}.org-file-name-shadow{color:#7f7f7f}.org-flycheck-error{text-decoration:underline}.org-flycheck-error-list-checker-name{color:#00f}.org-flycheck-error-list-column-number{color:#008b8b}.org-flycheck-error-list-error{color:red;font-weight:700}.org-flycheck-error-list-filename{color:sienna}.org-flycheck-error-list-highlight{background-color:#b4eeb4}.org-flycheck-error-list-id,.org-flycheck-error-list-id-with-explainer{color:#228b22}.org-flycheck-error-list-info{color:#228b22;font-weight:700}.org-flycheck-error-list-line-number{color:#008b8b}.org-flycheck-error-list-warning{color:#ff8c00;font-weight:700}.org-flycheck-fringe-error{color:red;font-weight:700}.org-flycheck-fringe-info{color:#228b22;font-weight:700}.org-flycheck-fringe-warning{color:#ff8c00;font-weight:700}.org-flycheck-info,.org-flycheck-warning,.org-flyspell-duplicate,.org-flyspell-incorrect{text-decoration:underline}.org-fringe{background-color:#f2f2f2}.org-function-name{color:#00f}.org-glyphless-char{font-size:60%}.org-golden-ratio-scroll-highlight-line{color:#fff;background-color:#53868b;font-weight:700}.org-header-line{color:#333;background-color:#e5e5e5}.org-helm-action{text-decoration:underline}.org-helm-bookmark-addressbook{color:tomato}.org-helm-bookmark-directory{color:#8b0000;background-color:#d3d3d3}.org-helm-bookmark-file{color:#00b2ee}.org-helm-bookmark-file-not-found{color:#6c7b8b}.org-helm-bookmark-gnus{color:#f0f}.org-helm-bookmark-info{color:#0f0}.org-helm-bookmark-man{color:#8b5a00}.org-helm-bookmark-w3m{color:#ff0}.org-helm-buffer-archive{color:gold}.org-helm-buffer-directory{color:#8b0000;background-color:#d3d3d3}.org-helm-buffer-file{color:#483d8b}.org-helm-buffer-modified{color:#b22222}.org-helm-buffer-not-saved{color:#ee6363}.org-helm-buffer-process{color:#cd6839}.org-helm-buffer-saved-out{color:red;background-color:#000}.org-helm-buffer-size{color:#708090}.org-helm-candidate-number,.org-helm-candidate-number-suspended{color:#000;background-color:#faffb5}.org-helm-delete-async-message{color:#ff0}.org-helm-etags-file{color:#8b814c;text-decoration:underline}.org-helm-ff-denied{color:red;background-color:#000}.org-helm-ff-directory{color:#8b0000;background-color:#d3d3d3}.org-helm-ff-dirs{color:#00f}.org-helm-ff-dotted-directory{color:#000;background-color:#696969}.org-helm-ff-dotted-symlink-directory{color:#ff8c00;background-color:#696969}.org-helm-ff-executable{color:#0f0}.org-helm-ff-file{color:#483d8b}.org-helm-ff-invalid-symlink{color:#000;background-color:red}.org-helm-ff-pipe{color:#ff0;background-color:#000}.org-helm-ff-prefix{color:#000;background-color:#ff0}.org-helm-ff-socket{color:#ff1493}.org-helm-ff-suid{color:#fff;background-color:red}.org-helm-ff-symlink{color:#b22222}.org-helm-ff-truename{color:#8b2252}.org-helm-grep-cmd-line{color:#228b22}.org-helm-grep-file{color:#8a2be2;text-decoration:underline}.org-helm-grep-finish{color:#0f0}.org-helm-grep-lineno{color:#ff7f00}.org-helm-grep-match{color:#b00000}.org-helm-header{color:#333;background-color:#e5e5e5}.org-helm-header-line-left-margin{color:#000;background-color:#ff0}.org-helm-helper{color:#333;background-color:#e5e5e5}.org-helm-history-deleted{color:#000;background-color:red}.org-helm-history-remote{color:#ff6a6a}.org-helm-lisp-completion-info{color:red}.org-helm-lisp-show-completion{background-color:#2f4f4f}.org-helm-locate-finish{color:#0f0}.org-helm-m-x-key{color:orange;text-decoration:underline}.org-helm-match{color:#b00000}.org-helm-match-item{color:#b0e2ff;background-color:#cd00cd}.org-helm-minibuffer-prompt{color:#0000cd}.org-helm-moccur-buffer{color:#00ced1;text-decoration:underline}.org-helm-non-file-buffer{font-style:italic}.org-helm-prefarg{color:red}.org-helm-resume-need-update{background-color:red}.org-helm-selection{background-color:#097209}.org-helm-selection-line{background-color:#b4eeb4}.org-helm-separator{color:#ffbfb5}.org-helm-source-header{color:#000;background-color:#abd7f0;font-size:130%;font-weight:700}.org-helm-visible-mark{background-color:#d1f5ea}.org-help-argument-name{font-style:italic}.org-highlight{background-color:#b4eeb4}.org-highlight-indent-guides-character{color:#e6e6e6}.org-highlight-indent-guides-even{background-color:#e6e6e6}.org-highlight-indent-guides-odd{background-color:#f3f3f3}.org-highlight-indent-guides-stack-character{color:#ccc}.org-highlight-indent-guides-stack-even{background-color:#ccc}.org-highlight-indent-guides-stack-odd{background-color:#d9d9d9}.org-highlight-indent-guides-top-character{color:#b3b3b3}.org-highlight-indent-guides-top-even{background-color:#b3b3b3}.org-highlight-indent-guides-top-odd{background-color:silver}.org-highlight-numbers-number{color:#008b8b}.org-hl-line{background-color:#b4eeb4}.org-holiday{background-color:pink}.org-hydra-face-amaranth{color:#e52b50;font-weight:700}.org-hydra-face-blue{color:#00f;font-weight:700}.org-hydra-face-pink{color:#ff6eb4;font-weight:700}.org-hydra-face-red{color:red;font-weight:700}.org-hydra-face-teal{color:#367588;font-weight:700}.org-ido-first-match{font-weight:700}.org-ido-incomplete-regexp{color:red;font-weight:700}.org-ido-indicator{color:#ff0;background-color:red}.org-ido-only-match{color:#228b22}.org-ido-subdir{color:red}.org-ido-virtual{color:#483d8b}.org-info-header-node{color:brown;font-weight:700;font-style:italic}.org-info-header-xref{color:#3a5fcd;text-decoration:underline}.org-info-index-match{background-color:#ff0}.org-info-menu-header{font-weight:700}.org-info-menu-star{color:red}.org-info-node{color:brown;font-weight:700;font-style:italic}.org-info-title-1{font-size:172%;font-weight:700}.org-info-title-2{font-size:144%;font-weight:700}.org-info-title-3{font-size:120%;font-weight:700}.org-info-title-4{font-weight:700}.org-info-xref{color:#3a5fcd;text-decoration:underline}.org-isearch{color:#b0e2ff;background-color:#cd00cd}.org-isearch-fail{background-color:#ffc1c1}.org-italic{font-style:italic}.org-keyword{color:#a020f0}.org-lazy-highlight{background-color:#afeeee}.org-link{color:#3a5fcd;text-decoration:underline}.org-link-visited{color:#8b008b;text-decoration:underline}.org-lv-separator{background-color:#ccc}.org-match{background-color:#ff0}.org-mcXcursor-bar{background-color:#000}.org-mcXregion{background-color:gtk_selection_bg_color}.org-me-dired-dim-0{color:#b3b3b3}.org-me-dired-dim-1{color:#7f7f7f}.org-me-dired-executable{color:#0f0}.org-message-cited-text{color:red}.org-message-header-cc{color:#191970}.org-message-header-name{color:#6495ed}.org-message-header-newsgroups{color:#00008b;font-weight:700;font-style:italic}.org-message-header-other{color:#4682b4}.org-message-header-subject{color:navy;font-weight:700}.org-message-header-to{color:#191970;font-weight:700}.org-message-header-xheader{color:#00f}.org-message-mml{color:#228b22}.org-message-separator{color:brown}.org-minibuffer-prompt{color:#0000cd}.org-mm-command-output{color:#cd0000}.org-mode-line{color:#000;background-color:#bfbfbf}.org-mode-line-buffer-id,.org-mode-line-buffer-id-inactive,.org-mode-line-emphasis{font-weight:700}.org-mode-line-inactive{color:#333;background-color:#e5e5e5}.org-mu4e-attach-number{color:sienna;font-weight:700}.org-mu4e-cited-1{color:#483d8b;font-style:italic}.org-mu4e-cited-2{color:#5cacee;font-style:italic}.org-mu4e-cited-3{color:sienna;font-style:italic}.org-mu4e-cited-4{color:#a020f0;font-style:italic}.org-mu4e-cited-5,.org-mu4e-cited-6{color:#b22222;font-style:italic}.org-mu4e-cited-7{color:#228b22;font-style:italic}.org-mu4e-compose-header,.org-mu4e-compose-separator{color:brown;font-style:italic}.org-mu4e-contact{color:sienna}.org-mu4e-context{color:#006400;font-weight:700}.org-mu4e-draft{color:#8b2252}.org-mu4e-flagged{color:#008b8b;font-weight:700}.org-mu4e-footer{color:#b22222}.org-mu4e-forwarded{color:#483d8b}.org-mu4e-header{color:#000;background-color:#fff}.org-mu4e-header-highlight{background-color:#000;font-weight:700;text-decoration:underline}.org-mu4e-header-key{color:#6495ed;font-weight:700}.org-mu4e-header-marks{color:#483d8b}.org-mu4e-header-title,.org-mu4e-header-value{color:#228b22}.org-mu4e-highlight{background-color:#b4eeb4}.org-mu4e-link{color:#3a5fcd;text-decoration:underline}.org-mu4e-modeline{color:#8b4500;font-weight:700}.org-mu4e-moved{color:#b22222;font-style:italic}.org-mu4e-ok{color:#b22222;font-weight:700}.org-mu4e-region-code{background-color:#2f4f4f}.org-mu4e-replied,.org-mu4e-special-header-value{color:#483d8b}.org-mu4e-system{color:#b22222;font-style:italic}.org-mu4e-title{color:#228b22;font-weight:700}.org-mu4e-trashed{color:#b22222;text-decoration:line-through}.org-mu4e-unread{color:#a020f0;font-weight:700}.org-mu4e-url-number{color:#008b8b;font-weight:700}.org-mu4e-view-body{color:#000;background-color:#fff}.org-mu4e-warning{color:red;font-weight:700}.org-next-error{background-color:gtk_selection_bg_color}.org-nobreak-space{color:brown;text-decoration:underline}.org-org-agenda-calendar-event,.org-org-agenda-calendar-sexp{color:#000;background-color:#fff}.org-org-agenda-clocking{background-color:#ff0}.org-org-agenda-column-dateline{background-color:#e5e5e5}.org-org-agenda-current-time{color:#b8860b}.org-org-agenda-date{color:#00f}.org-org-agenda-date-today{color:#00f;font-weight:700;font-style:italic}.org-org-agenda-date-weekend{color:#00f;font-weight:700}.org-org-agenda-diary{color:#000;background-color:#fff}.org-org-agenda-dimmed-todo{color:#7f7f7f}.org-org-agenda-done{color:#228b22}.org-org-agenda-filter-category,.org-org-agenda-filter-effort,.org-org-agenda-filter-regexp,.org-org-agenda-filter-tags{color:#000;background-color:#bfbfbf}.org-org-agenda-restriction-lock{background-color:#eee}.org-org-agenda-structure{color:#00f}.org-org-archived{color:#7f7f7f}.org-org-block{color:#7f7f7f}.org-org-block-begin-line,.org-org-block-end-line{color:#b22222}.org-org-checkbox{font-weight:700}.org-org-checkbox-statistics-done{color:#228b22;font-weight:700}.org-org-checkbox-statistics-todo{color:red;font-weight:700}.org-org-clock-overlay{color:#000;background-color:#d3d3d3}.org-org-code{color:#7f7f7f}.org-org-column,.org-org-column-title{background-color:#e5e5e5}.org-org-column-title{font-weight:700;text-decoration:underline}.org-org-date{color:#bfaf87;text-decoration:underline}.org-org-date-selected{color:red}.org-org-default{color:#000;background-color:#fff}.org-org-document-info{color:#191970}.org-org-document-info-keyword{color:#7f7f7f}.org-org-document-title{color:#191970;font-weight:700}.org-org-done{color:#228b22;font-weight:700}.org-org-drawer{color:#00f}.org-org-ellipsis{color:#b8860b;text-decoration:underline}.org-org-footnote{color:#96b4cd;text-decoration:underline}.org-org-formula{color:#b22222}.org-org-habit-alert{background-color:#f5f946}.org-org-habit-alert-future{background-color:#fafca9}.org-org-habit-clear{background-color:#8270f9}.org-org-habit-clear-future{background-color:#d6e4fc}.org-org-habit-overdue{background-color:#f9372d}.org-org-habit-overdue-future{background-color:#fc9590}.org-org-habit-ready{background-color:#4df946}.org-org-habit-ready-future{background-color:#acfca9}.org-org-headline-done{color:#bc8f8f}.org-org-hide{color:#fff}.org-org-latex-and-related{color:#8b4513}.org-org-level-1{color:#edd1c5}.org-org-level-2{color:#ebebb7}.org-org-level-3{color:#cce8cc}.org-org-level-4{color:#c9deec}.org-org-level-5{color:#dce3e8}.org-org-level-6{color:#dde6dd}.org-org-level-7{color:#e8e8ce}.org-org-level-8{color:#e8dedb}.org-org-link{color:#c5d2dc;text-decoration:underline}.org-org-list-dt{font-weight:700}.org-org-macro{color:#8b4513}.org-org-meta-line{color:#b22222}.org-org-mode-line-clock{color:#000;background-color:#bfbfbf}.org-org-mode-line-clock-overrun{color:#000;background-color:red}.org-org-priority{color:#a020f0}.org-org-quote{color:#7f7f7f}.org-org-ref-acronym{color:#ee7600;text-decoration:underline}.org-org-ref-cite{color:#c3d5c3;text-decoration:underline}.org-org-ref-glossary{color:#8968cd;text-decoration:underline}.org-org-ref-label{color:#8b008b;text-decoration:underline}.org-org-ref-ref{color:#e1cc96;text-decoration:underline}.org-org-scheduled{color:#006400}.org-org-scheduled-previously{color:#b22222}.org-org-scheduled-today{color:#006400}.org-org-sexp-date{color:#a020f0}.org-org-special-keyword{color:#88949f}.org-org-table{color:#00f}.org-org-tag,.org-org-tag-group{font-weight:700}.org-org-target{text-decoration:underline}.org-org-time-grid{color:#b8860b}.org-org-todo{color:red;font-weight:700}.org-org-upcoming-deadline{color:#b22222}.org-org-verbatim,.org-org-verse{color:#7f7f7f}.org-org-warning{color:red;font-weight:700}.org-outline-1{color:#00f}.org-outline-2{color:sienna}.org-outline-3{color:#a020f0}.org-outline-4{color:#b22222}.org-outline-5{color:#228b22}.org-outline-6{color:#008b8b}.org-outline-7{color:#483d8b}.org-outline-8{color:#8b2252}.org-package-description{color:#000;background-color:#fff}.org-package-name{color:#3a5fcd;text-decoration:underline}.org-package-status-avail-obso{color:#b22222}.org-package-status-available{color:#000;background-color:#fff}.org-package-status-built-in{color:#483d8b}.org-package-status-dependency{color:#b22222}.org-package-status-disabled{color:red;font-weight:700}.org-package-status-external{color:#483d8b}.org-package-status-held{color:#008b8b}.org-package-status-incompat,.org-package-status-installed{color:#b22222}.org-package-status-unsigned{color:red;font-weight:700}.org-pdf-isearch-batch{background-color:#ff0}.org-pdf-isearch-lazy{background-color:#afeeee}.org-pdf-isearch-match{color:#b0e2ff;background-color:#cd00cd}.org-pdf-occur-document{color:#8b2252}.org-pdf-occur-page{color:#228b22}.org-pdf-view-rectangle{background-color:#b4eeb4}.org-pdf-view-region{background-color:gtk_selection_bg_color}.org-powerline-active0{color:#000;background-color:#bfbfbf}.org-powerline-active1{color:#fff;background-color:#2b2b2b}.org-powerline-active2{color:#fff;background-color:#666}.org-powerline-inactive0{color:#333;background-color:#e5e5e5}.org-powerline-inactive1{color:#333;background-color:#1c1c1c}.org-powerline-inactive2{color:#333;background-color:#333}.org-preprocessor{color:#483d8b}.org-query-replace{color:#b0e2ff;background-color:#cd00cd}.org-rainbow-delimiters-depth-1{color:#ffdead}.org-rainbow-delimiters-depth-2{color:#00bfff}.org-rainbow-delimiters-depth-3{color:#ffdead}.org-rainbow-delimiters-depth-4{color:#00bfff}.org-rainbow-delimiters-depth-5{color:#ffdead}.org-rainbow-delimiters-depth-6{color:#00bfff}.org-rainbow-delimiters-depth-7{color:#ffdead}.org-rainbow-delimiters-depth-8{color:#00bfff}.org-rainbow-delimiters-depth-9{color:#ffdead}.org-rainbow-delimiters-unmatched{color:#88090b}.org-reb-match-0{background-color:#add8e6}.org-reb-match-1{background-color:#7fffd4}.org-reb-match-2{background-color:#00ff7f}.org-reb-match-3{background-color:#ff0}.org-rectangle-preview{background-color:gtk_selection_bg_color}.org-regexp-grouping-backslash,.org-regexp-grouping-construct{font-weight:700}.org-region{background-color:gtk_selection_bg_color}.org-secondary-selection{background-color:#ff0}.org-semantic-highlight-edits,.org-semantic-highlight-func-current-tag{background-color:#e5e5e5}.org-semantic-unmatched-syntax{text-decoration:underline}.org-sgml-namespace{color:#483d8b}.org-sh-escaped-newline{color:#8b2252}.org-sh-heredoc{color:#ee0}.org-sh-quoted-exec{color:#f0f}.org-shadow{color:#7f7f7f}.org-show-paren-match{background-color:#40e0d0}.org-show-paren-mismatch{color:#fff;background-color:#a020f0}.org-sp-pair-overlay,.org-sp-show-pair-enclosing{background-color:#b4eeb4}.org-sp-show-pair-match{background-color:#40e0d0}.org-sp-show-pair-mismatch{color:#fff;background-color:#a020f0}.org-sp-wrap-overlay{background-color:#b4eeb4}.org-sp-wrap-overlay-closing-pair{color:red;background-color:#b4eeb4}.org-sp-wrap-overlay-opening-pair{color:#0f0;background-color:#b4eeb4}.org-sp-wrap-tag-overlay{background-color:#b4eeb4}.org-spaceline-flycheck-error{color:#fc5c94;background-color:#333}.org-spaceline-flycheck-info{color:#8de6f7;background-color:#333}.org-spaceline-flycheck-warning{color:#f3ea98;background-color:#333}.org-spaceline-python-venv{color:#fbf}.org-speedbar-button{color:#008b00}.org-speedbar-directory{color:#00008b}.org-speedbar-file{color:#008b8b}.org-speedbar-highlight{background-color:#0f0}.org-speedbar-selected{color:red;text-decoration:underline}.org-speedbar-separator{color:#fff;background-color:#00f;text-decoration:overline}.org-speedbar-tag{color:brown}.org-string{color:#8b2252}.org-success{color:#228b22;font-weight:700}.org-table-cell{color:#e5e5e5;background-color:#00f}.org-tex-math{color:#8b2252}.org-tool-bar{color:#000;background-color:#bfbfbf}.org-tooltip{color:#000;background-color:#ffffe0}.org-trailing-whitespace{background-color:red}.org-tty-menu-disabled{color:#d3d3d3;background-color:#00f}.org-tty-menu-enabled{color:#ff0;background-color:#00f;font-weight:700}.org-tty-menu-selected{background-color:red}.org-type{color:#228b22}.org-underline{text-decoration:underline}.org-undo-tree-visualizer-active-branch{color:#000;font-weight:700}.org-undo-tree-visualizer-current{color:red}.org-undo-tree-visualizer-default{color:#bebebe}.org-undo-tree-visualizer-register{color:#ff0}.org-undo-tree-visualizer-unmodified{color:#0ff}.org-variable-name{color:sienna}.org-vhlXdefault{background-color:#ff0}.org-warning{color:#ff8c00;font-weight:700}.org-warning-1{color:red;font-weight:700}.org-wgrep{color:#fff;background-color:#228b22}.org-wgrep-delete{color:pink;background-color:#228b22}.org-wgrep-done{color:#00f}.org-wgrep-file{color:#fff;background-color:#228b22}.org-wgrep-reject{color:red;font-weight:700}.org-which-key-command-description{color:#00f}.org-which-key-docstring{color:#b22222}.org-which-key-group-description{color:#a020f0}.org-which-key-highlighted-command{color:#00f;text-decoration:underline}.org-which-key-key{color:#008b8b}.org-which-key-local-map-description{color:#00f}.org-which-key-note,.org-which-key-separator{color:#b22222}.org-which-key-special-key{color:#008b8b;font-weight:700}.org-whitespace-big-indent{color:#b22222;background-color:red}.org-whitespace-empty{color:#b22222;background-color:#ff0}.org-whitespace-hspace{color:#d3d3d3;background-color:#cdc9a5}.org-whitespace-indentation{color:#b22222;background-color:#ff0}.org-whitespace-line{color:violet;background-color:#333}.org-whitespace-newline{color:#d3d3d3}.org-whitespace-space{color:#d3d3d3;background-color:#ffffe0}.org-whitespace-space-after-tab{color:#b22222;background-color:#ff0}.org-whitespace-space-before-tab{color:#b22222;background-color:#ff8c00}.org-whitespace-tab{color:#d3d3d3;background-color:beige}.org-whitespace-trailing{color:#ff0;background-color:red;font-weight:700}.org-widget-button{font-weight:700}.org-widget-button-pressed{color:red}.org-widget-documentation{color:#006400}.org-widget-field{background-color:#d9d9d9}.org-widget-inactive{color:#7f7f7f}.org-widget-single-line-field{background-color:#d9d9d9}.org-window-divider{color:#999}.org-window-divider-first-pixel{color:#ccc}.org-window-divider-last-pixel{color:#666}a{color:inherit;background-color:inherit;font:inherit;text-decoration:inherit}a:hover{text-decoration:underline}body{width:95%;margin:2% auto;font-size:14px;line-height:1.4em;font-family:Georgia,serif;color:#333}@media screen and (min-width:600px){body{font-size:18px}}@media screen and (min-width:910px){body{width:900px}}::selection{background:#d6edff}p{margin:1em auto}dl,ol,ul{margin:0 auto}.title{text-align:center;margin:.8em auto;color:#000}.subtitle{text-align:center;font-size:1.1em;line-height:1.4;font-weight:700;margin:1em auto}.abstract{margin:auto;width:80%;font-style:italic}.abstract p:last-of-type:before{content:"    ";white-space:pre}.status{font-size:90%;margin:2em auto}[class^=section-number-]{margin-right:.5em}[id^=orgheadline]{clear:both}#footnotes{font-size:90%}.footpara{display:inline;margin:.2em auto}.footdef{margin-bottom:1em}.footdef sup{padding-right:.5em}a{color:#527d9a;text-decoration:none}a:hover{color:#035;border-bottom:1px dotted}figure{padding:0;margin:1em auto;text-align:center}img{max-width:100%;vertical-align:middle}.MathJax_Display{margin:0!important;width:90%!important}h1,h2,h3,h4,h5,h6{color:#a5573e;line-height:1em;font-family:Helvetica,sans-serif}h1,h2,h3{line-height:1.4em}h4,h5,h6{font-size:1em}@media screen and (min-width:600px){h1{font-size:2em}h2{font-size:1.5em}h3{font-size:1.3em}h1,h2,h3{line-height:1.4em}h4,h5,h6{font-size:1.1em}}dt{font-weight:700}table{margin:1em auto;border-top:2px solid;border-bottom:2px solid;border-collapse:collapse}thead{border-bottom:2px solid}table td+td,table th+th{border-left:1px solid grey}table tr{border-top:1px solid #d3d3d3}td,th{padding:.3em .6em;vertical-align:middle}caption.t-above{caption-side:top}caption.t-bottom{caption-side:bottom}caption{margin-bottom:.3em}figcaption{margin-top:.3em}th.org-center,th.org-left,th.org-right{text-align:center}td.org-right{text-align:right}td.org-left{text-align:left}td.org-center{text-align:center}blockquote{margin:1em 2em;padding-left:1em;border-left:3px solid #ccc}kbd{background-color:#f7f7f7;font-size:80%;margin:0 .1em;padding:.1em .6em}.todo{background-color:red;color:#fff;padding:.1em .3em;border-radius:3px;background-clip:padding-box;font-size:80%;font-family:Lucida Console,monospace;line-height:1}.done{background-color:green;color:#fff;padding:.1em .3em;border-radius:3px;background-clip:padding-box;font-size:80%;font-family:Lucida Console,monospace;line-height:1}.priority{color:orange;font-family:Lucida Console,monospace}#table-of-contents li{clear:both}.tag{font-family:Lucida Console,monospace;font-size:.7em;font-weight:400}.tag span{padding:.3em;float:right;margin-right:.5em;border:1px solid #bbb;border-radius:3px;background-clip:padding-box;color:#333;background-color:#eee;line-height:1}.timestamp{color:#bebebe;font-size:90%}.timestamp-kwd{color:#5f9ea0}.org-right{margin-left:auto;margin-right:0;text-align:right}.org-left{margin-left:0;margin-right:auto;text-align:left}.org-center{margin-left:auto;margin-right:auto;text-align:center}.underline{text-decoration:underline}#postamble p,#preamble p{font-size:90%;margin:.2em}p.verse{margin-left:3%}:not(pre)>code{padding:2px 5px;margin:auto 1px;border:1px solid #ddd;border-radius:3px;background-clip:padding-box;color:#333;font-size:80%}.org-src-container{border:1px solid #ccc;box-shadow:3px 3px 3px #eee;font-family:Lucida Console,monospace;font-size:80%;margin:1em auto;padding:.1em .5em;position:relative}.org-src-container>pre{overflow:auto}.org-src-container>pre:before{display:block;position:absolute;background-color:#b3b3b3;top:0;right:0;padding:0 .5em;border-bottom-left-radius:8px;border:0;color:#fff;font-size:80%}.org-src-container>pre.src-sh:before{content:"sh"}.org-src-container>pre.src-bash:before{content:"bash"}.org-src-container>pre.src-emacs-lisp:before{content:"Emacs Lisp"}.org-src-container>pre.src-R:before{content:"R"}.org-src-container>pre.src-cpp:before{content:"C++"}.org-src-container>pre.src-c:before{content:"C"}.org-src-container>pre.src-html:before{content:"HTML"}.org-src-container>pre.src-javascript:before,.org-src-container>pre.src-js:before{content:"Javascript"}// More languages 0% http://orgmode.org/worg/org-contrib/babel/languages.html .org-src-container>pre.src-abc:before{content:"ABC"}.org-src-container>pre.src-asymptote:before{content:"Asymptote"}.org-src-container>pre.src-awk:before{content:"Awk"}.org-src-container>pre.src-C:before{content:"C"}.org-src-container>pre.src-calc:before{content:"Calc"}.org-src-container>pre.src-clojure:before{content:"Clojure"}.org-src-container>pre.src-comint:before{content:"comint"}.org-src-container>pre.src-css:before{content:"CSS"}.org-src-container>pre.src-D:before{content:"D"}.org-src-container>pre.src-ditaa:before{content:"Ditaa"}.org-src-container>pre.src-dot:before{content:"Dot"}.org-src-container>pre.src-ebnf:before{content:"ebnf"}.org-src-container>pre.src-forth:before{content:"Forth"}.org-src-container>pre.src-F90:before{content:"Fortran"}.org-src-container>pre.src-gnuplot:before{content:"Gnuplot"}.org-src-container>pre.src-haskell:before{content:"Haskell"}.org-src-container>pre.src-io:before{content:"Io"}.org-src-container>pre.src-java:before{content:"Java"}.org-src-container>pre.src-latex:before{content:"LaTeX"}.org-src-container>pre.src-ledger:before{content:"Ledger"}.org-src-container>pre.src-ly:before{content:"Lilypond"}.org-src-container>pre.src-lisp:before{content:"Lisp"}.org-src-container>pre.src-makefile:before{content:"Make"}.org-src-container>pre.src-matlab:before{content:"Matlab"}.org-src-container>pre.src-max:before{content:"Maxima"}.org-src-container>pre.src-mscgen:before{content:"Mscgen"}.org-src-container>pre.src-Caml:before{content:"Objective"}.org-src-container>pre.src-octave:before{content:"Octave"}.org-src-container>pre.src-org:before{content:"Org"}.org-src-container>pre.src-perl:before{content:"Perl"}.org-src-container>pre.src-picolisp:before{content:"Picolisp"}.org-src-container>pre.src-plantuml:before{content:"PlantUML"}.org-src-container>pre.src-python:before{content:"Python"}.org-src-container>pre.src-ruby:before{content:"Ruby"}.org-src-container>pre.src-sass:before{content:"Sass"}.org-src-container>pre.src-scala:before{content:"Scala"}.org-src-container>pre.src-scheme:before{content:"Scheme"}.org-src-container>pre.src-screen:before{content:"Screen"}.org-src-container>pre.src-sed:before{content:"Sed"}.org-src-container>pre.src-shell:before{content:"shell"}.org-src-container>pre.src-shen:before{content:"Shen"}.org-src-container>pre.src-sql:before{content:"SQL"}.org-src-container>pre.src-sqlite:before{content:"SQLite"}.org-src-container>pre.src-stan:before{content:"Stan"}.org-src-container>pre.src-vala:before{content:"Vala"}.org-src-container>pre.src-axiom:before{content:"Axiom"}.org-src-container>pre.src-browser:before{content:"HTML"}.org-src-container>pre.src-cypher:before{content:"Neo4j"}.org-src-container>pre.src-elixir:before{content:"Elixir"}.org-src-container>pre.src-request:before{content:"http"}.org-src-container>pre.src-ipython:before{content:"iPython"}.org-src-container>pre.src-kotlin:before{content:"Kotlin"}.org-src-container>pre.src-Flavored Erlang lfe:before{content:"Lisp"}.org-src-container>pre.src-mongo:before{content:"MongoDB"}.org-src-container>pre.src-prolog:before{content:"Prolog"}.org-src-container>pre.src-rec:before{content:"rec"}.org-src-container>pre.src-ML sml:before{content:"Standard"}.org-src-container>pre.src-Translate translate:before{content:"Google"}.org-src-container>pre.src-typescript:before{content:"Typescript"}.org-src-container>pre.src-rust:before{content:"Rust"}.inlinetask{background:#ffc;border:2px solid grey;margin:10px;padding:10px}#org-div-home-and-up{font-size:70%;text-align:right;white-space:nowrap}.linenr{font-size:90%}.code-highlighted{background-color:#ff0}#bibliography{font-size:90%}#bibliography table{width:100%}.creator{display:block}@media screen and (min-width:600px){.creator{display:inline;float:right}}
+</style>
+</head>
+<body>
+<div id="content" class="content">
+<h1 class="title">Along Against the Flames</h1>
+<div id="table-of-contents" role="doc-toc">
+<h2>Table of Contents</h2>
+<div id="text-table-of-contents" role="doc-toc">
+<ul>
+<li><a href="#org13cb0db">1. day1</a>
+<ul>
+<li><a href="#orgf1ffcd9">1.1. 1</a></li>
+<li><a href="#org5e9bbb0">1.2. 263</a></li>
+<li><a href="#orgb8605dd">1.3. 8</a></li>
+<li><a href="#orgbeb55b3">1.4. 38</a></li>
+<li><a href="#orgeceb79f">1.5. 233</a></li>
+<li><a href="#org48df091">1.6. 134</a></li>
+<li><a href="#orga724892">1.7. 261#</a></li>
+<li><a href="#org5666018">1.8. 71#</a></li>
+<li><a href="#org892538f">1.9. 249#</a></li>
+<li><a href="#org8be5f20">1.10. 128#</a></li>
+<li><a href="#org8cc5bd2">1.11. 144#</a></li>
+<li><a href="#org4c0dcdc">1.12. 194#</a></li>
+<li><a href="#org6e907dd">1.13. 251#</a></li>
+<li><a href="#orgbc6be7a">1.14. 267#</a></li>
+<li><a href="#org92ec425">1.15. 4#</a></li>
+<li><a href="#org3f5d2ce">1.16. 14#</a></li>
+<li><a href="#orge5e1e60">1.17. 63#</a></li>
+<li><a href="#orga236030">1.18. 154#</a></li>
+</ul>
+</li>
+<li><a href="#orgc93f9b0">2. day2</a>
+<ul>
+<li><a href="#orgaddd2fa">2.1. 166#</a></li>
+<li><a href="#org461a62b">2.2. 192#</a></li>
+<li><a href="#org723ec65">2.3. 218#</a></li>
+<li><a href="#org730a951">2.4. 6#</a></li>
+<li><a href="#org90165d5">2.5. 16#</a></li>
+<li><a href="#org0dd3b82">2.6. 25#</a></li>
+<li><a href="#org657ae2d">2.7. 84#</a></li>
+<li><a href="#orgcc3204b">2.8. 25#</a></li>
+<li><a href="#org0407d5c">2.9. 96#</a></li>
+<li><a href="#orgb88bd6b">2.10. 25#</a></li>
+<li><a href="#org4e10f0d">2.11. 115#</a></li>
+<li><a href="#orge97c03a">2.12. 127#</a></li>
+<li><a href="#org61a51ee">2.13. 160#</a></li>
+<li><a href="#org41cb6c1">2.14. 3#</a></li>
+<li><a href="#orgafded6f">2.15. 22#</a></li>
+<li><a href="#orgf25d5b0">2.16. 11#</a></li>
+<li><a href="#org46ecfa7">2.17. 17#</a></li>
+<li><a href="#org6c623a1">2.18. 30#</a></li>
+<li><a href="#org0013d32">2.19. 37#</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="/home/yayu/org/TRPG/node_modules/socket.io/client-dist/socket.io.js"></script><script type="text/javascript" src="/home/yayu/org/TRPG/dist/websocket.js">
+</script>
+
+
+<div id="outline-container-org13cb0db" class="outline-2">
+<h2 id="org13cb0db"><span class="section-number-2">1.</span> day1</h2>
+<div class="outline-text-2" id="text-1">
+</div>
+<div id="outline-container-orgf1ffcd9" class="outline-3">
+<h3 id="orgf1ffcd9"><span class="section-number-3">1.1.</span> 1</h3>
+<div class="outline-text-3" id="text-1-1">
+<p>
+太阳高悬天空，无情地释放着热量。当你来
+到奥斯本药店门口的汽车站时，感觉自己都要被
+烤熟了。你放下沉重的行李箱，摘下帽子，终于
+得到片刻休息。你往脸上扇了扇风。在你的家乡，
+夏天总是漫长；但这个夏天格外令你空虚。
+你望向街对面，街对面是肮脏的肉店，挂着
+褪色遮阳篷的杂货店，还有破旧的烟草店。人们
+路过你时，用不信任的表情盯着你看，打量着你
+的衣着和行李。但住在这里是你父母的主意，和
+你无关。当你还是个小孩时也曾经南下；那时你
+还很开心，普罗维登斯有白墙小屋，还有绿树掩
+映的教堂。也许去阿卡姆开始新工作可以带给你
+你需要的改变。
+但你在这世界上认识的所有人都住在这里。
+你在阿卡姆一个人也不知道，一个灵魂也不认识。
+你最后问了自己一遍，自己的选择到底是不是正
+确的。
+答案已经很清楚了。你所谓的朋友没有一个
+人来为你送行，你现在孤身一人。无论阿卡姆有
+什么挑战等待着你，那都将是新的生活、光彩夺
+目的生活。
+一辆灰色的小长途车开了过来，嘎啷嘎啷地
+响着停下。你戴回帽子，提起你的行李箱。
+</p>
+
+
+<div id="orgd4a2b97" class="figure">
+<p><img src="长途车.png" alt="长途车.png" width="600" />
+</p>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org5e9bbb0" class="outline-3">
+<h3 id="org5e9bbb0"><span class="section-number-3">1.2.</span> 263</h3>
+<div class="outline-text-3" id="text-1-2">
+<p>
+两个面有愠色的年轻男人走下了长途车。一
+个人从头到脚打量了你一遍，才转头离去。司机
+也下了车，瞟了你一眼，穿过马路进了烟草店。
+等他回来的时候，他正用泛黄的手指搓着烟卷。
+他卷完了最后一下，一边伸手寻找火柴盒，一边
+仔细地观察你。他身材瘦削，约莫五十多岁，身
+上穿的衬衫有公共汽车公司的徽标，沾着不少污
+渍。但他的眼神仍然锐利地从深陷的眼眶里透出
+来。
+“去哪儿？”
+</p>
+
+
+<div id="org6a979fd" class="figure">
+<p><img src="车票.png" alt="车票.png" width="600" />
+</p>
+</div>
+
+<p>
+你把你去奥西皮 (Ossipee) 的票拿给他看。从
+那里你可以前往罗切斯特、朴次茅斯，再沿海岸
+线到达纽伯里波特，最后抵达阿卡姆。你也许买
+得起至少一部分旅程的火车票，否则这将是很多
+段长途汽车旅程的第一站。
+“嗯——哼。”司机擦着火柴，点燃了他的香
+烟。他吸了一口，烟头开始闪光。然后他又吐了
+一口烟，用手指了指车尾。
+“行李架在上边。
+</p>
+</div>
+</div>
+
+<div id="outline-container-orgb8605dd" class="outline-3">
+<h3 id="orgb8605dd"><span class="section-number-3">1.3.</span> 8</h3>
+<div class="outline-text-3" id="text-1-3">
+<p>
+司机叼着烟，看着你把箱子拖到长途汽车的
+后面去。行李架装在车顶上，十分不便。你握紧
+了沉重的箱子。
+</p>
+
+<p>
+如果你的“体型”是 40 &#x2026;
+</p>
+</div>
+</div>
+
+<div id="outline-container-orgbeb55b3" class="outline-3">
+<h3 id="orgbeb55b3"><span class="section-number-3">1.4.</span> 38</h3>
+<div class="outline-text-3" id="text-1-4">
+<p>
+司机继续享受他的烟卷，饶有兴致地看着你
+和箱子拼命。你咬咬牙，终于把第二个行李举起来，
+放到了位。兴许阿卡姆的人会比他有礼貌点儿。
+</p>
+</div>
+</div>
+
+<div id="outline-container-orgeceb79f" class="outline-3">
+<h3 id="orgeceb79f"><span class="section-number-3">1.5.</span> 233</h3>
+<div class="outline-text-3" id="text-1-5">
+<p>
+司机把他的烟卷弹进排水沟，走进了车厢。
+发动机咳嗽着开始运转。你也上了车，非常庆幸
+自己至少在旅程开始时是唯一的乘客。你怀着复
+杂的感情，隔着窗户看着那些早已看厌的街道缓
+缓退远，慢慢滑到你身后。最初几分钟你还能看
+见山坡顶上教堂的尖顶，但道路开始下坡，很快
+连尖顶也看不到了。
+阿卡姆将是你的新家。你会到那里，开始新
+的生活。
+</p>
+
+
+<div id="orgf2bca94" class="figure">
+<p><img src="旅途.png" alt="旅途.png" width="600" />
+</p>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org48df091" class="outline-3">
+<h3 id="org48df091"><span class="section-number-3">1.6.</span> 134</h3>
+<div class="outline-text-3" id="text-1-6">
+
+<div id="org30a25e4" class="figure">
+<p><img src="风景.png" alt="风景.png" width="600" />
+</p>
+</div>
+
+<p>
+长途车突突地响着，在乡间缓慢挪动。车里
+的气氛令人窒息，每当车转弯的时候，你的肚子
+里就一阵翻腾。不过司机身边的窗户是开着的，
+你换了几个座，找到了一个可以让微风吹到脸上
+的位置。没多久你就放松下来，开始享受旅程，
+观察着长途车经过的富有古趣的小小村落。在一
+个村庄，一位体格粗壮的女人上了车，对你礼貌
+地点点头。到了下一个村庄，她就下车了。
+道路升高了一些，穿越一片又一片的玉米地
+和果园。树叶正在变色，把树木装点成鲜红、金黄，
+灿烂缤纷，富有生机。当你快要打起瞌睡的时候，
+司机开始快速通过一个急弯。
+现 在 你 必 须 要 进 行 一 次 敏 捷 检 定。 投 掷
+1D100。这表示投掷两颗十面骰子，一颗骰子结
+果为十位，另一颗为个位。你必须在投掷之前选
+择哪个是十位，哪个是个位！
+如果你投出来的结果等于或小于你的“敏捷”，
+你的检定就成功了。如果结果大于你的“敏捷”，
+你的检定就失败了。
+</p>
+</div>
+</div>
+
+<div id="outline-container-orga724892" class="outline-3">
+<h3 id="orga724892"><span class="section-number-3">1.7.</span> 261#</h3>
+<div class="outline-text-3" id="text-1-7">
+<p>
+你被一阵绝望的叫喊惊醒了。司机猛打方向
+盘，长途车跌出了路沿，你感觉自己从座位上往
+下滑。你紧紧抓住前面的座位，不及时的话，肯
+定会摔得生疼。长途车发出一声闷响，停了下来。
+现在你才看到发生了什么事。一辆福特森拖
+拉机停在了路中央，你的司机刚才必须紧急转弯
+躲避这只铁皮拦路虎。他从座位上跳下马路，对
+开拖拉机的农民吐出一连串咒骂。
+你花了一会儿工夫才喘过气来。也许你可以
+帮帮忙？但是司机已经回来了。他往后倒了倒车，
+绕开了拖拉机，对农民怒目而视。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org5666018" class="outline-3">
+<h3 id="org5666018"><span class="section-number-3">1.8.</span> 71#</h3>
+<div class="outline-text-3" id="text-1-8">
+<p>
+你的行程重新开始了。司机转弯时变得更加
+小心。他转过头看了你好几次。
+“刚才对不住，”他说，“那货比猪还蠢。我
+叫西拉斯。你的名字是？”
+刚才的事件里，西拉斯和农民的责任至少要
+对半分。但是，当他开车带你穿过这前不着村、
+后不着店的地方时，和他对抗可能并不明智。
+为你的角色起一个名字，把它记在自己的调
+查员角色卡上。你还可以加上你的年龄；对本冒
+险来说，你的角色年龄应当在 23 到 36 岁之间。
+长途车开上了一条窄一些的路，这条路迂回
+上升，穿过树林。西拉斯的话变得多了起来。
+“去阿卡姆吗，哈？都没听说过这地方。就
+去过一次波士顿。不喜欢。人太多，太闹腾。你
+家在那里吗？有特别的人等你吗？”
+下午的时间在缓慢地流逝。你觉得向西拉斯
+透露自己的新生活也没有什么坏处。
+“工作哈？你干哪行？”
+</p>
+</div>
+</div>
+
+<div id="outline-container-org892538f" class="outline-3">
+<h3 id="org892538f"><span class="section-number-3">1.9.</span> 249#</h3>
+<div class="outline-text-3" id="text-1-9">
+<p>
+你没有按通常的方式讲述自己的专业，而是
+兜了个圈子，只说自己帮助警察解决过各种各样
+的问题。一想到你得到了布莱克伍德侦探事务所
+的职位，你的心跳就会稍稍加速。你已经受够了
+婚姻不忠和银行职员受贿之类的调查；听上去布
+莱克伍德事务所恰好可以提供机会，让你积累起
+和真正的坏人斗争的经验。
+西拉斯眯起了眼睛，但什么话也没说。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org8be5f20" class="outline-3">
+<h3 id="org8be5f20"><span class="section-number-3">1.10.</span> 128#</h3>
+<div class="outline-text-3" id="text-1-10">
+<p>
+你发现，西拉斯自从和拖拉机发生冲突之后，
+再没有停站。长途车沿着山坡盘曲上行。但是，
+当道路攀上了山顶，山下绝佳的美景一览无余地
+展现在你面前时，你的思绪被打断了。
+色彩斑斓的树叶，铺成了深秋的调色板；一
+条溪流从谷底蜿蜒流过，又将这调色板打破成两
+半。远方白山山脉在朦胧的云雾之中若隐若现。
+极目远眺，视野之中没有一座村庄，甚至连一座
+小木屋都见不到。你能看到鸟儿在树冠之上翱翔，
+还能勉强捕捉到两只白尾鹿在水边流连的身影。
+也许你搬家到大城市去是个错误。在这繁盛
+的大自然当中，你能不能独自生存下去呢？
+</p>
+</div>
+</div>
+
+<div id="outline-container-org8cc5bd2" class="outline-3">
+<h3 id="org8cc5bd2"><span class="section-number-3">1.11.</span> 144#</h3>
+<div class="outline-text-3" id="text-1-11">
+<p>
+长途车咯吱咯吱地继续行驶，西拉斯又一言
+不发了。你身后的天色逐渐变暗，随着日落西山，
+云彩也被染上了一层粉红色。终于，你看到了受
+人欢迎的景象：坡顶上坐落着一个小村庄。这里
+和你在照片上见过的奥西皮并不一样。但你也许
+可以说服西拉斯停一下车，让你伸展伸展腿脚。
+过了几分钟，发动机突然急促地停止，打断
+了你的沉思。西拉斯皱起眉头，拉了一下变速杆。
+长途车踉踉跄跄地继续上坡。西拉斯用你察觉不
+到的声音骂了一句，咬紧牙关，和轮子开始死磕。
+你们似乎在一点一点地往上挪动，终于抵达了第
+一座房子，一座粗糙红石头砌成的低矮住宅。西
+拉斯费力地把车停在路边的一块小空地上。他爬
+下自己的座位，走到发动机舱那里。
+你必须选择使用「汽车驾驶」或「心理学」
+进行一次检定。如果你选用「汽车驾驶」，你投出
+的结果需要小于等于技能值。如果你选用「心理学」
+你需要一次困难成功。这个检定的结果需要小于
+等于技能值的一半（右上角小方格里的数值）。你
+只能选择一项技能来检定一次。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org4c0dcdc" class="outline-3">
+<h3 id="org4c0dcdc"><span class="section-number-3">1.12.</span> 194#</h3>
+<div class="outline-text-3" id="text-1-12">
+<p>
+西拉斯打开了引擎舱盖，把头伸了进去。这
+块烧热的铁疙瘩砰砰作响，咝咝有声。他把各个
+部位都戳了几下，然后伸出头来，擦了擦额头，
+额头上沾上了漆黑的油污。
+“我不知道是哪的问题。也许是油压不行。
+也许是刚才摔了一下的时候什么东西摔坏了。得
+两个气缸都凉下来才能修。天也晚了&#x2026;&#x2026;我觉得
+我们应该在这里过夜。”他一边用破布擦手一边说。
+你四周的影子都已经很长，空气中也有了寒
+意。你因为旅途而感到浑身酸痛，在这摇摇晃晃
+的长途车里过一夜可一点也不好受。西拉斯看出
+了你的沮丧。
+“这里叫烬头村。别的村子要走好几里。我
+每星期才来两次。但这里的人都是好人。梅·莱
+德贝特有间空房。她会让你留宿的。顺着这条巷子，
+右转，左边第一间房。”
+他挠了挠脸颊，又把头探进发动机舱，往地
+上吐了口痰。
+“明天早上八点回来找我，再看看车的情况。”
+问西拉斯他在哪里过夜，转到 251。
+</p>
+</div>
+</div>
+<div id="outline-container-org6e907dd" class="outline-3">
+<h3 id="org6e907dd"><span class="section-number-3">1.13.</span> 251#</h3>
+<div class="outline-text-3" id="text-1-13">
+<p>
+你问西拉斯他要怎么办。他烦厌地看了一眼
+发动机，才回答道：
+“我村里有认识的人。希望他们能还我个人
+情。不管怎样我都有地方睡，还管早饭。”他注视
+着自己肮脏的手，“热水澡恐怕指望不上。”
+你似乎没有什么选择。你从长途车顶取下了
+自己的行李。你最不希望发生的就是在陌生人的
+棚屋过了一夜之后，发现自己的全部家当不翼而
+飞了。
+</p>
+</div>
+</div>
+<div id="outline-container-orgbc6be7a" class="outline-3">
+<h3 id="orgbc6be7a"><span class="section-number-3">1.14.</span> 267#</h3>
+<div class="outline-text-3" id="text-1-14">
+<p>
+你拖着行李，走过这些阴郁的建筑物。你在
+车里坐了一整天，感觉疲惫不堪。按照西拉斯说
+的路走过去，有一座朴素的石板色房顶小楼。房
+前挂着名牌，上面写着“莱德贝特”，下面有一块
+洁净的铜牌，上面写着“住宿”。你四周的小巷昏
+暗无光，但窗户里有一盏灯火在闪烁。
+一阵冷风吹过你的脸颊。你还不想自己的新
+生活从露宿街头开始。你轻轻敲起了面前饱经风
+霜的房门。
+</p>
+</div>
+</div>
+<div id="outline-container-org92ec425" class="outline-3">
+<h3 id="org92ec425"><span class="section-number-3">1.15.</span> 4#</h3>
+<div class="outline-text-3" id="text-1-15">
+<p>
+过了一会儿，你听到了房子里传来脚步声。
+然后，随着推开门闩的声音，木门打开了。一名
+卷发松散，身穿粗糙便服的女人看见了你。她的
+眼睛注视着你的旅行衣和旅行箱。她说话的时候
+带着一点点爱尔兰口音。
+“你好。我能认为你是在寻找过夜的房间吗？”
+你克制自己愁苦的表情，问她要价多少。就
+你目前所见，这个村子并没有给你多少选择的空
+间。
+“哦，价格绝对公道。”她说，“一看你就累
+坏了。我叫梅。进来吧，我们喝杯茶慢慢聊。”
+莱德贝特的家感觉相当逼仄，天花板很低，
+摆设也十分简单。但屋子整理得很不错，壁炉里
+还有一团令人愉悦的炉火在噼啪作响。茶水的芳
+香柔和舒缓，杯子让你的手指也暖了起来。
+“你是来烬头村参加节日的吗？”梅问道。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org3f5d2ce" class="outline-3">
+<h3 id="org3f5d2ce"><span class="section-number-3">1.16.</span> 14#</h3>
+<div class="outline-text-3" id="text-1-16">
+<p>
+梅摇了摇头，你瞥见她绿色的双眼里闪过一
+丝积攒已久的愤怒。
+“他总是开太快，就好像那条路是他自己家
+的一样。几年前他撞死过一匹母马，那可是相当
+地可怕。你也看见那辆车成了什么模样。车上的
+那些毛病都够吓着你了。”
+她抿了一口茶，视线掠过你，注视着房间的
+角落。
+“然而，我们既然住在这里，就实在不能得
+罪这个人。他是我们联系外面大世界的唯一方式，
+而且他心眼并不坏。我觉得人在同一条路上走
+十五年，会变得粗心大意。你该原谅他才是。”
+梅又沉默了好一会儿。然后，她的目光再次
+转回你。
+“但你来这儿不是听我唠叨的，你肯定也饿
+了。我可以给你凑一点炖菜。你觉得如何？”
+你又问了一遍她要价多少，梅讲了个相当便
+宜的价钱，你毫不犹豫地接受了。这间房子虽小
+但舒适，炖菜熟烂又丰盛。吃过饭以后，离你平
+常睡觉的时间还有几个小时。
+</p>
+
+<ol class="org-ol">
+<li>要和梅多聊聊天</li>
+<li>要到外面转转，确认自己的方位</li>
+<li>要提前上床早睡觉</li>
+</ol>
+</div>
+</div>
+
+<div id="outline-container-orge5e1e60" class="outline-3">
+<h3 id="orge5e1e60"><span class="section-number-3">1.17.</span> 63#</h3>
+<div class="outline-text-3" id="text-1-17">
+<p>
+当梅站起身的时候，你听到身后传来撞门的
+声音。你扭头往回看，却只能看见关得严严实实
+的木门。
+梅咂了咂嘴。“是我们家的小女主人。她准是
+在偷听我们说话。露丝！出来和客人打个招呼。”
+一阵短暂的沉默之后，门吱嘎一声开了。门
+后的人披着乱蓬蓬的头发，穿着粗糙的睡衣；她
+的一双大眼睛透过门缝盯着你。
+“你该说什么？”
+她眨了眨眼。“很高兴见到你。”
+“现在回去睡觉。”
+门又合上了。
+“我女儿露丝。今年夏天就十岁了。她是个
+既快乐又痛苦的孩子。不用担心，她会和我一起睡，
+不会打扰你的。那么，该说晚安了。”
+你走进你的房间躺下。房间里有点冷，但你
+实在太疲倦了，压根没有考虑生火。床上铺着洁
+净的床单，躺下不久就暖和起来。你在城市里生
+活了那么久，感觉外面的寂静很奇怪，但很快就
+睡着了。
+</p>
+</div>
+</div>
+
+<div id="outline-container-orga236030" class="outline-3">
+<h3 id="orga236030"><span class="section-number-3">1.18.</span> 154#</h3>
+<div class="outline-text-3" id="text-1-18">
+<p>
+你梦见了壁炉里的炉火；跳动的火舌之中，
+闪烁着明亮耀眼的色彩。最开始火苗很小很小，
+几乎要用显微镜才看得见，但它越烧越大，越烧
+越大，最后变成了瞬息万变的炼狱火海，它溢出
+壁炉，顺着地板延烧，爬上了你的床单&#x2026;&#x2026;
+你在惊吓之中醒了过来。阳光透过窗帘照进
+屋里。你起床检查壁炉，眨眨眼驱赶睡意。壁炉
+是冷的。
+你之前如果受过伤害，睡过这一晚之后可以
+回复 1 点生命值。
+</p>
+</div>
+</div>
+</div>
+
+<div id="outline-container-orgc93f9b0" class="outline-2">
+<h2 id="orgc93f9b0"><span class="section-number-2">2.</span> day2</h2>
+<div class="outline-text-2" id="text-2">
+</div>
+<div id="outline-container-orgaddd2fa" class="outline-3">
+<h3 id="orgaddd2fa"><span class="section-number-3">2.1.</span> 166#</h3>
+<div class="outline-text-3" id="text-2-1">
+<p>
+梅的家里好像没有自来水，但有一个陶坛子，
+里面积了一些水。你在盥洗室梳洗一番，走进屋
+子里。梅又做了一顿丰盛的早餐，让你安心享用。
+差不多七点半的时候，你付了钱，打点好行李，
+准备继续上路。你向梅告别，她祝愿你在阿卡姆
+工作顺利。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org461a62b" class="outline-3">
+<h3 id="org461a62b"><span class="section-number-3">2.2.</span> 192#</h3>
+<div class="outline-text-3" id="text-2-2">
+<p>
+你已经厌倦自己拖动沉重的行李了。希望西
+拉斯能修好长途车，这样你就能继续旅途。他虽
+然脾气够坏，但这个老司机看起来相当了解自己
+的车。你停下来看了看表——还早了二十分钟——
+然后转过了最后一个街角。
+长途车已经不见了。
+你放下行李开始四处搜索，走下坡道，又走
+上坡道；转过街角，又转回街角，一直不停地寻找。
+在村头，你也追着漫长的盘山公路找过了。八点
+钟到了又过去，但长途车连个影子都见不到。
+一个过路的村民看见了你的包。
+“你等公车？我听他天刚亮就走了。他应该
+三四天以后才回来。要是你没处去，梅·莱德贝
+特那里有房间可以住。”他向你抬了抬帽沿，漫步
+走进了村子。
+你低声诅咒着西拉斯。他也许是去找零部件
+了。但是你怀疑，这只老狐狸是故意把你扔在这
+里的。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org723ec65" class="outline-3">
+<h3 id="org723ec65"><span class="section-number-3">2.3.</span> 218#</h3>
+<div class="outline-text-3" id="text-2-3">
+<p>
+梅正在洗衣服，看到你回来了有点吃惊。“落
+下东西了？”当你解释了情况之后，她让你在寻找
+其他交通方式时，暂时把行李寄存下来。你卸下
+了重荷，十分感激。
+梅摸摸下巴，眯起双眼：“这村里没人有汽车。
+也许你能找到有马的人，还有马车装你的行李。
+我一会儿也四处问问。你可以试着去问村会堂的
+文特斯先生，他会知道谁愿意借的。或者问问那
+些工匠。他们的工坊在锡尔伯里街左边第一个门。”
+她凑过来握住你的双手，“不要担心，不管你有没
+有钱，我都不会让你睡在马路上的。”
+你谢过梅，转头面向村子。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org730a951" class="outline-3">
+<h3 id="org730a951"><span class="section-number-3">2.4.</span> 6#</h3>
+<div class="outline-text-3" id="text-2-4">
+<p>
+你漫步在烬头村的街道上，可是并没有特别
+想去的地方。这村子建在一片相对平坦的高地上，
+视野开阔，景色壮丽。向北看去，白山山脉朦胧
+的峰顶高耸入云；向南眺望，温尼伯索基湖粼粼
+的湖水天水相接。
+这个村子只需要不到五分钟就能从一头走到
+另一头。你来到西面的盘山路。还有一条路通向
+南边，再转向东，从另一侧的山脊下坡延伸出去。
+村子西南角有一片开阔的草地，包围着一座坍圮
+的教堂，它的墓地正位于悬崖的最高点。还有三
+条大道，朝东北方向交汇到一座刻有浮雕的黑色
+金属建筑物。它十分突兀，直指蓝天。
+现在你可以：
+</p>
+
+<ol class="org-ol">
+<li>——去本地杂货店询问交通方式</li>
+<li>——找到村会堂</li>
+<li>—— 沿 着 道 路 下 坡， 查 看 东 盘 山 路</li>
+<li>——调查巨大的金属建筑物</li>
+<li>——探索教堂</li>
+<li>—— 寻 找 拥 有 交 通 工 具 的 当 地 居 民</li>
+</ol>
+
+
+<div id="org80212a3" class="figure">
+<p><img src="地图.png" alt="地图.png" width="600" />
+</p>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org90165d5" class="outline-3">
+<h3 id="org90165d5"><span class="section-number-3">2.5.</span> 16#</h3>
+<div class="outline-text-3" id="text-2-5">
+<p>
+杂货店坐落在大街的拐角，过了杂货店就是
+南边的下坡。店主是位体形硕大但动作敏捷的女
+人，肩膀宽阔，穿着浆硬过的围裙。她死死盯着
+你这陌生的面孔。
+“坐车？这里每星期会来两辆长途车。没坐
+上？唔唔。每隔一星期的星期二会有卡车来给我
+送货，但他也要下星期才来。”她耸耸肩。
+看起来烬头村很乐意和外面的世界保持距离。
+你的钱足够在这里买到一两件便宜的日常用
+品。在你的调查员角色卡上把它们记下来。注意
+现在是 1927 年！商店里没有武器，只有一把积满
+尘土的狩猎小刀，如果想要，你可以买下它。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org0dd3b82" class="outline-3">
+<h3 id="org0dd3b82"><span class="section-number-3">2.6.</span> 25#</h3>
+<div class="outline-text-3" id="text-2-6">
+<p>
+你已经能大概摸清自己在烬头村的位置了。
+你想继续深入调查吗？你可以从之前的几个选项中
+再选择一项。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org657ae2d" class="outline-3">
+<h3 id="org657ae2d"><span class="section-number-3">2.7.</span> 84#</h3>
+<div class="outline-text-3" id="text-2-7">
+<p>
+村会堂背靠着锡尔伯里街东头的悬崖。这是
+你到烬头村以来看见的最大的一座建筑物了。但
+它现在大门紧闭，还上着锁。你围着它走了一圈，
+从百叶窗的缝隙向里窥视。看上去里面有一间大
+厅，大概是用作村民集会；还有较小的配楼，用
+作办公室和档案室。有一扇窗户被砖头砌死了。
+你回到大门口后也看不到门口有任何开放时间表。
+一个灰衣女人经过说：“文特斯先生上午不开
+门，每年这时候都是。下午再来吧。”
+你问办公室里能不能拍电报。
+“不知道。”她耸耸肩，“我们要拍给谁？”
+你得之后才能再来尝试。
+</p>
+</div>
+</div>
+
+<div id="outline-container-orgcc3204b" class="outline-3">
+<h3 id="orgcc3204b"><span class="section-number-3">2.8.</span> 25#</h3>
+<div class="outline-text-3" id="text-2-8">
+<p>
+你已经能大概摸清自己在烬头村的位置了。
+你想继续深入调查吗？你可以从之前的几个选项中
+再选择一项。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org0407d5c" class="outline-3">
+<h3 id="org0407d5c"><span class="section-number-3">2.9.</span> 96#</h3>
+<div class="outline-text-3" id="text-2-9">
+<p>
+在锡尔伯特街北边，离莱德贝特家不远处，
+有一座开阔的大院。有节奏的锤击声，好像在告
+诉你已经到了目的地。
+这座院子是你在烬头村见到的最忙碌的地方。
+它的周围是一圈工坊。有些是砖石建筑，有些只
+是简陋的棚屋。有个铁匠停下了他的锤子，将一
+块发着红光的东西急速塞进凉水桶里。还有个织
+布工，从织布机上抬起头对你眨了眨眼，就继续
+摆弄他的梭子。一个陶工、一个雕工和一个木匠
+各自在自己的位置上工作，互相开着友善的玩笑。
+你在这些工匠之中穿行，和他们谈论他们的
+工作。最后你提到了出售的问题。他们中有些人
+会让西拉斯偶尔捎些包裹，有些则完全将产品留
+给村民使用。你完全没得到关于其他交通方式的
+消息。
+</p>
+</div>
+</div>
+
+<div id="outline-container-orgb88bd6b" class="outline-3">
+<h3 id="orgb88bd6b"><span class="section-number-3">2.10.</span> 25#</h3>
+<div class="outline-text-3" id="text-2-10">
+<p>
+你已经能大概摸清自己在烬头村的位置了。
+你想继续深入调查吗？你可以从之前的几个选项中
+再选择一项。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org4e10f0d" class="outline-3">
+<h3 id="org4e10f0d"><span class="section-number-3">2.11.</span> 115#</h3>
+<div class="outline-text-3" id="text-2-11">
+<p>
+空气很是清新，沿路走下山坡令人精神鼓舞。
+你看到烬头村周围的低地上铺展着庄稼地，在庄
+稼之中还有些牲畜，但看不到马匹。接下来的旅
+途你要徒步而行吗？
+再走远一些，道路迂回越过山脊，开始下坡。
+这里有几间散乱的棚屋，有人在居住的迹象。它
+们之间的距离相当远。
+在你端详这些棚屋的时候，一扇门打开了，
+出来一个上了年纪的男人。他身穿一件破烂脏污
+的外套，但多了一块布；他把这块布扯过头顶，
+像头巾一样裹起头部。他正这样做的时候看见了
+你，愣住了。
+进行一次“幸运”检定。
+</p>
+</div>
+</div>
+
+<div id="outline-container-orge97c03a" class="outline-3">
+<h3 id="orge97c03a"><span class="section-number-3">2.12.</span> 127#</h3>
+<div class="outline-text-3" id="text-2-12">
+<p>
+这男人仰望村子的方向，视野扫过悬崖的顶
+部。一瞬间，你看到了他的脸。似乎有什么东西
+让你不安。然后他转过身，沿着路走远。但这时，
+他扬起一只手，慢慢地向你招手示意。
+你要跟上这个奇怪的人吗?
+</p>
+</div>
+</div>
+
+<div id="outline-container-org61a51ee" class="outline-3">
+<h3 id="org61a51ee"><span class="section-number-3">2.13.</span> 160#</h3>
+<div class="outline-text-3" id="text-2-13">
+<p>
+你回到路上，继续你最重要的任务：离开烬
+头村，前往奥西皮。山脊上的视野很好，你可以
+从这里看到道路延伸的方向。它随着山峦弯曲，
+在林地里消失了一段，又再次浮现，继续向远方
+伸展。当它向第二片林地连接过去的时候，你终
+于看不到它了。你觉得往最少里说，整个距离都
+至少有六七英里。一路上既无村庄，又无车马。
+走过去碰碰运气也许值得尝试。天气还很好。
+但你在尝试之前，还需要不少补给。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org41cb6c1" class="outline-3">
+<h3 id="org41cb6c1"><span class="section-number-3">2.14.</span> 3#</h3>
+<div class="outline-text-3" id="text-2-14">
+<p>
+一上午的辛劳让你饥肠辘辘。你漫步在烬头
+村的街道上寻找食物。这里根本没有你家乡常见
+的那种忙碌咖啡厅，也没有任何能称作饭馆的地
+方。
+</p>
+
+<p>
+当你开始觉得你必须要去杂货店买补给的时
+候，梅·莱德贝特从马路另一头走来，身后跟着
+个小女孩。这一定是露丝了。她一注意到你，就
+小跑起来，超过她妈妈，一边向你跑来一边朝你
+微笑。现在的露丝和昨天晚上那个害羞的小孩可
+完全不同。
+她跑到你身边就停下来，伸开胳膊，做了一
+个庆祝的手势。她仰视着你的眼睛。突然，她脸
+上的微笑不见了，好像一瞬间长大了几岁一样。
+“节日开始之前就走吧，”她小声嘘道。“走
+吧！”她用力眨眨眼，然后逃回妈妈身边去了。
+梅走过来搂住她女儿的肩膀，微笑道：“你的
+进展怎么样？找到交通方式了吗？”
+你吃了一惊，向她解释了现在的糟糕情形。
+“我去村会堂找过了文特斯先生。他一直是
+下午才在。你现在饿了吧？到我家里随便吃点东
+西吧。房门没有锁。”
+你瞟了露丝一眼，她现在像松鼠一样躲在她
+妈妈身后。她的眼神恳求你保持沉默。
+</p>
+</div>
+</div>
+
+<div id="outline-container-orgafded6f" class="outline-3">
+<h3 id="orgafded6f"><span class="section-number-3">2.15.</span> 22#</h3>
+<div class="outline-text-3" id="text-2-15">
+<p>
+你别过莱德贝特母女，向她们家走去。房门
+一下就打开了。在低矮的厨房里，你用干硬的面
+包和剩下的炖菜凑合了一顿午餐。厨房里有扇小
+窗户，可以望见群山。
+这一上午你的唯一收获就是——烬头村并没
+有什么可以吸引外界游客的东西。但现在白昼还
+剩下差不多五个小时。你可以准备一点干粮，带
+上自己行李里仅有的必需品，继续出发，希望能
+在天黑之前抵达下一个村庄。你也可以去文特斯
+先生那里寻求帮助。
+</p>
+
+<ol class="org-ol">
+<li>你稍作准备出村去</li>
+<li>你转而造访村会堂</li>
+</ol>
+</div>
+</div>
+
+<div id="outline-container-orgf25d5b0" class="outline-3">
+<h3 id="orgf25d5b0"><span class="section-number-3">2.16.</span> 11#</h3>
+<div class="outline-text-3" id="text-2-16">
+<p>
+村会堂俯瞰着村子北面较低的山脊。你沿着
+锡尔伯里街走到它门前，一路上都在注意着道路
+尽头那座令人压抑的黑色金属建筑物。会堂的百
+叶窗打开了，还有些窗户半掩着。门上没有门环，
+但你推开前门时，门顶上挂着的小铃铛发出了清
+脆的响声。
+进屋以后，你右手边有一扇紧闭的门，上面
+写着“私用”。左手边则是一条通路，通往一个敞
+亮的房间。你几步就走了过去。许多长凳沿墙整
+齐排列，两扇窗户之间挂着一块布告板。
+</p>
+
+<ol class="org-ol">
+<li>检查布告板</li>
+<li>去敲紧闭的门</li>
+</ol>
+</div>
+</div>
+
+<div id="outline-container-org46ecfa7" class="outline-3">
+<h3 id="org46ecfa7"><span class="section-number-3">2.17.</span> 17#</h3>
+<div class="outline-text-3" id="text-2-17">
+<p>
+你走过房间，地板在你脚下吱嘎作响。你感
+觉到脚下略微有些弹力。这个房间可能是给村里
+的孩子们做体操房用的。
+看起来，村里的大人们使用一块布告板，孩
+子们用另一块布告板。大人用的板子看上去很破
+旧，满是手写的字体，内容则是日用品的广告，
+还有一张泛黄的电报价目表。板上没有和节日相
+关的东西。
+孩子们的布告板上则写着托儿所的每周时间
+安排，还有一些明显由孩子们自己画出来的图画。
+这些画虽然五颜六色，但内容却支离破碎。你尽
+力分辨，也只能分辨他们在描绘焰火，或者是《创
+世纪》中约瑟的故事。有一张画少了一枚图钉，
+倒吊在板上。上面画着一只巨鸟正在攻击烬头村。
+不过也有可能只是小画家还没有掌握透视的精妙
+之处。
+进行一次「侦查」检定。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org6c623a1" class="outline-3">
+<h3 id="org6c623a1"><span class="section-number-3">2.18.</span> 30#</h3>
+<div class="outline-text-3" id="text-2-18">
+<p>
+午后的阳光照射到地面上，你发现了一些有
+意思的东西。窗户下面的地板比房间中央的地板
+要新。窗框也有最近曾经更换过的痕迹。也许是
+雨水漏进来，木头被腐蚀了。
+你可以在「侦查」技能左边的小方框里打勾。
+</p>
+</div>
+</div>
+
+<div id="outline-container-org0013d32" class="outline-3">
+<h3 id="org0013d32"><span class="section-number-3">2.19.</span> 37#</h3>
+<div class="outline-text-3" id="text-2-19">
+<p>
+你身后的门发出吱嘎的响声。一个戴眼镜的
+中年绅士出现在门前：“有什么需要吗？”
+你解释说，梅·莱德贝特建议自己来这里。
+“啊。好吧。我是克莱德·文特斯。我不知
+道我能不能帮上您的忙，但&#x2026;&#x2026;您要不要来点儿
+咖啡？我下午总爱喝一杯。”
+他用手指向身后敞开的大门。这看起来是次
+值得把握的机会，而且你也有点渴了。
+</p>
+</div>
+</div>
+</div>
+</div>
+<div id="postamble" class="status">
+<p class="date">Date: Fri Jul 14 00:50:12 PDT 2023</p>
+<p class="date">Created: 2023-07-18 Tue 00:01</p>
+<p class="validation"><a href="https://validator.w3.org/check?uri=referer">Validate</a></p>
+</div>
+</body>
+</html>

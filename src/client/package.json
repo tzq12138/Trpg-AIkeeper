@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "node ./node_modules/vite/bin/vite.js --host 127.0.0.1",
     "build": "node ./node_modules/typescript/bin/tsc --noEmit && node ./node_modules/vite/bin/vite.js build",
-    "test": "vitest run"
+    "test": "node ./node_modules/vitest/vitest.mjs run"
   },
   "dependencies": {
     "react": "^18.3.1",

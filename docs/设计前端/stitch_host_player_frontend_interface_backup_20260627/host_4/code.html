@@ -1,0 +1,448 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>Arkham OS - Combat Tracker</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700;900&amp;family=Inter:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "inverse-on-surface": "#f5f0e8",
+                        "on-tertiary-fixed-variant": "#1a1a1a",
+                        "on-secondary-fixed-variant": "#1a1a1a",
+                        "error": "#cc0000",
+                        "tertiary": "#0055ff",
+                        "surface-tint": "#1a1a1a",
+                        "on-primary-fixed": "#1a1a1a",
+                        "on-tertiary-fixed": "#1a1a1a",
+                        "surface-container-lowest": "#ffffff",
+                        "secondary": "#e63b2e",
+                        "surface": "#f5f0e8",
+                        "on-secondary": "#1a1a1a",
+                        "on-primary-container": "#1a1a1a",
+                        "surface-container-highest": "#e2ddd4",
+                        "outline-variant": "#d0cbc3",
+                        "on-primary": "#ffffff",
+                        "secondary-container": "#ffdad6",
+                        "surface-dim": "#d6d1c9",
+                        "primary": "#1a1a1a",
+                        "on-surface-variant": "#4a4a4a",
+                        "outline": "#1a1a1a",
+                        "on-secondary-container": "#1a1a1a",
+                        "on-secondary-fixed": "#1a1a1a",
+                        "inverse-surface": "#1a1a1a",
+                        "tertiary-container": "#d6e3ff",
+                        "on-error-container": "#93000a",
+                        "on-background": "#1a1a1a",
+                        "tertiary-fixed": "#d6e3ff",
+                        "secondary-fixed-dim": "#ffb3ab",
+                        "primary-fixed-dim": "#e6b800",
+                        "surface-container-low": "#f2ede5",
+                        "surface-container-high": "#e8e3da",
+                        "on-surface": "#1a1a1a",
+                        "inverse-primary": "#f5f0e8",
+                        "on-error": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "primary-container": "#ffcc00",
+                        "on-tertiary-container": "#1a1a1a",
+                        "surface-container": "#eee9e0",
+                        "background": "#f5f0e8",
+                        "surface-variant": "#e8e3da",
+                        "on-primary-fixed-variant": "#1a1a1a",
+                        "surface-bright": "#faf7f2",
+                        "primary-fixed": "#ffcc00",
+                        "on-tertiary": "#ffffff",
+                        "tertiary-fixed-dim": "#a8c6ff",
+                        "secondary-fixed": "#ffdad6"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "fontFamily": {
+                        "headline": ["Space Grotesk", "sans-serif"],
+                        "display": ["Space Grotesk", "sans-serif"],
+                        "body": ["Inter", "sans-serif"],
+                        "label": ["Space Grotesk", "sans-serif"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .neo-shadow {
+            box-shadow: 6px 6px 0px 0px rgba(26,26,26,1);
+        }
+        .neo-shadow-lg {
+            box-shadow: 8px 8px 0px 0px rgba(26,26,26,1);
+        }
+        .neo-shadow-sm {
+            box-shadow: 4px 4px 0px 0px rgba(26,26,26,1);
+        }
+        
+        @keyframes shake {
+            0%, 100% { transform: translate(0, 0) rotate(0deg); }
+            10%, 30%, 50%, 70%, 90% { transform: translate(-4px, 2px) rotate(-1deg); }
+            20%, 40%, 60%, 80% { transform: translate(4px, -2px) rotate(1deg); }
+        }
+
+        .damage-shake {
+            animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
+        }
+
+        .damage-flash {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: rgba(204, 0, 0, 0.3);
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0;
+            mix-blend-mode: multiply;
+        }
+
+        @keyframes flashEffect {
+            0% { opacity: 0; }
+            10% { opacity: 1; }
+            100% { opacity: 0; }
+        }
+
+        .trigger-flash {
+            animation: flashEffect 0.4s ease-out forwards;
+        }
+
+        .shatter-effect {
+            transition: all 0.5s cubic-bezier(0.68, -0.55, 0.26, 1.55);
+            clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
+        }
+
+        .shattered {
+            clip-path: polygon(50% 50%, 100% 0, 100% 100%, 50% 50%, 0 100%, 0 0);
+            transform: scale(0.8) rotate(5deg);
+            opacity: 0;
+        }
+    </style>
+</head>
+<body class="bg-background text-primary font-body min-h-screen overflow-x-hidden transition-all duration-75" id="main-container">
+<div class="damage-flash" id="damage-flash-overlay"></div>
+<!-- TopNavBar (Shared Component) -->
+<nav class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 py-4 bg-background dark:bg-background border-b-4 border-outline shadow-[6px_6px_0px_0px_rgba(26,26,26,1)]">
+<div class="flex items-center gap-8">
+<div class="text-2xl font-black uppercase tracking-tighter text-primary dark:text-primary font-headline">
+                ARKHAM OS
+            </div>
+<div class="hidden md:flex items-center gap-4 font-headline font-bold uppercase">
+<!-- Active Link: Timeline -->
+<a class="text-primary border-b-4 border-secondary px-2 pb-1 hover:bg-primary-container dark:hover:bg-primary-container hover:text-on-primary-container translate-x-1 translate-y-1 transition-all duration-75" href="#">
+                    时间轴 (TIMELINE)
+                </a>
+<!-- Inactive Links -->
+<a class="text-on-surface-variant hover:text-primary transition-colors hover:bg-primary-container dark:hover:bg-primary-container hover:text-on-primary-container px-2 py-1" href="#">
+                    参战者 (COMBATANTS)
+                </a>
+<a class="text-on-surface-variant hover:text-primary transition-colors hover:bg-primary-container dark:hover:bg-primary-container hover:text-on-primary-container px-2 py-1" href="#">资料库 (DATABASE)</a>
+<a class="text-on-surface-variant hover:text-primary transition-colors hover:bg-primary-container dark:hover:bg-primary-container hover:text-on-primary-container px-2 py-1" href="#">
+                    日志 (LOG)
+                </a>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<span class="font-headline font-bold text-secondary bg-secondary-container px-3 py-1 border-2 border-outline uppercase text-sm mr-4">战斗模式 (COMBAT MODE)</span>
+<button class="text-primary hover:bg-primary-container hover:text-on-primary-container p-2 transition-colors">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<button class="text-primary hover:bg-primary-container hover:text-on-primary-container p-2 transition-colors">
+<span class="material-symbols-outlined">history</span>
+</button>
+</div>
+</nav>
+<!-- SideNavBar (Shared Component) -->
+<aside class="fixed left-0 top-[76px] h-[calc(100vh-76px)] flex flex-col gap-4 p-4 z-40 bg-surface dark:bg-surface w-80 border-r-4 border-outline shadow-[4px_0px_0px_0px_rgba(26,26,26,1)]">
+<div class="mb-6 border-b-4 border-outline pb-4">
+<h2 class="text-xl font-bold text-primary font-headline uppercase">调查员 (INVESTIGATORS)</h2>
+<p class="text-sm text-on-surface-variant font-body">当前会话 (Active Session)</p>
+<div class="mt-4 flex items-center gap-3">
+<div class="w-12 h-12 border-2 border-outline bg-surface-container overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="A stark, high-contrast black and white portrait illustration of a 1920s investigator looking stressed, thick ink lines, neo-brutalist comic style, solid yellow background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuA7traQqG0TCN_B4RQzvxRYc9ksNb5p39JgT4E9TbVEEPI7MQH_44ZPZhbnUWvw906oFbBX5RnJFewSqqbZUpwc2qjUsTtj8vuEME5gf3IxzRzYnUDhlM8htNjS9L8CaQyuQfzgUOf3lVXiWMyLQFMG87wuIROuNiOq_IZteHhWfVD1yTU4AfDTyjHRp116FYdEZrDInDKoQT_95CusO8F7F0bhmPOJgE_qpoKXDk2UsSa_3pJ6ZqQ">
+</div>
+<span class="font-bold font-headline uppercase">当前阵容 (Current Roster)</span>
+</div>
+</div>
+<nav class="flex flex-col gap-2 font-label font-bold uppercase">
+<a class="text-on-surface-variant p-3 border-2 border-transparent hover:bg-tertiary-container dark:hover:bg-tertiary-container hover:text-on-tertiary-container flex items-center gap-3" href="#">
+<span class="material-symbols-outlined">monitor_heart</span>
+                健康 (HEALTH)
+            </a>
+<a class="text-on-surface-variant p-3 border-2 border-transparent hover:bg-tertiary-container dark:hover:bg-tertiary-container hover:text-on-tertiary-container flex items-center gap-3" href="#">
+<span class="material-symbols-outlined">psychology</span>
+                理智 (SANITY)
+            </a>
+<a class="text-on-surface-variant p-3 border-2 border-transparent hover:bg-tertiary-container dark:hover:bg-tertiary-container hover:text-on-tertiary-container flex items-center gap-3" href="#">
+<span class="material-symbols-outlined">inventory_2</span>
+                物品 (INVENTORY)
+            </a>
+<a class="text-on-surface-variant p-3 border-2 border-transparent hover:bg-tertiary-container dark:hover:bg-tertiary-container hover:text-on-tertiary-container flex items-center gap-3" href="#">
+<span class="material-symbols-outlined">fitness_center</span>
+                技能 (SKILLS)
+            </a>
+<a class="text-on-surface-variant p-3 border-2 border-transparent hover:bg-tertiary-container dark:hover:bg-tertiary-container hover:text-on-tertiary-container flex items-center gap-3" href="#">
+<span class="material-symbols-outlined">description</span>
+                笔记 (NOTES)
+            </a>
+</nav>
+<div class="mt-auto pt-4">
+<button class="w-full bg-primary text-on-primary border-4 border-outline font-headline font-bold py-3 uppercase hover:bg-tertiary hover:text-on-tertiary transition-colors neo-shadow-sm active:translate-x-1 active:translate-y-1 active:shadow-none">
+                添加单位 (ADD UNIT)
+            </button>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="pl-[320px] pt-[76px] min-h-screen flex flex-col md:flex-row gap-8 p-8">
+<!-- Central Column: Combat Timeline -->
+<section class="flex-grow max-w-4xl">
+<header class="mb-8 flex flex-col border-b-4 border-outline pb-4 bg-primary text-primary-fixed p-6 neo-shadow-sm">
+<div class="flex justify-between items-start">
+<div>
+<h1 class="font-headline font-black text-6xl uppercase tracking-tighter text-surface" style="text-shadow: 4px 4px 0px #1a1a1a;">战斗轮控制台</h1>
+<div class="flex items-center gap-4 mt-4 bg-surface text-primary px-3 py-1 border-2 border-outline font-headline font-bold text-sm tracking-widest inline-flex">
+<span class="">回合:</span>
+<span class="text-secondary">4</span>
+<span class="mx-2">•</span>
+<span class="">协议:</span>
+<span class="text-secondary">Alpha-7</span>
+</div>
+</div>
+<div class="text-right">
+<span class="block font-headline font-black text-xl uppercase text-secondary bg-surface px-4 py-2 border-2 border-outline">主动权激活 (Initiative Active)</span>
+</div>
+</div>
+</header>
+<!-- Current Turn Area -->
+<div class="mb-12">
+<h3 class="font-headline font-bold text-2xl uppercase mb-4 flex items-center gap-2">
+<span class="material-symbols-outlined text-secondary">play_arrow</span>
+                    当前回合 (Current Turn)
+                </h3>
+<!-- Current Turn Card (Large, Yellow, Neo-Brutalist) -->
+<div class="bg-primary-container border-4 border-outline neo-shadow-lg p-6 relative overflow-hidden group">
+<div class="absolute top-0 right-0 w-32 h-32 bg-primary opacity-5 -rotate-12 translate-x-10 -translate-y-10"></div>
+<div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 relative z-10">
+<div class="flex items-center gap-6">
+<div class="w-24 h-24 border-4 border-outline bg-surface overflow-hidden shrink-0">
+<img class="w-full h-full object-cover grayscale" data-alt="A harsh, ink-heavy black and white illustration of a gritty 1920s private investigator holding a revolver, graphic novel style, extreme lighting contrast, flat color background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBEIm8z2V1FlzOtS420C2jS14sSCCQF36TjUmM0RjS_qOjc-SXjk9JA6lvJysr4qPGayRJsIXYS4N47hQoupU8jhg3GxdCEC8oQjfMRS-N1eI3GCGNKaQnAyjglCunPVaOgWgaE2zL9uv6Ub3C59tNIQrC2dKNeAG6c5PDTutK0tBVjxWtbCykZx_e-AYjjs4dobc4mjWxGxFcZhQo88lL1Bsdf9WuexiR6_6gmACoDSsdf_q_-zM4">
+</div>
+<div>
+<div class="text-xs font-bold font-headline uppercase tracking-widest text-primary mb-1">调查员 (Investigator)</div>
+<h2 class="font-headline font-black text-4xl uppercase tracking-tight text-primary">Harvey Walters</h2>
+<div class="mt-3 flex items-center gap-4">
+<span class="font-bold text-sm bg-surface border-2 border-outline px-2 py-1">敏捷 (DEX) 75</span>
+<span class="font-bold text-sm bg-surface border-2 border-outline px-2 py-1">移动 (MOV) 8</span>
+</div>
+</div>
+</div>
+<div class="w-full md:w-auto bg-surface border-4 border-outline p-4 min-w-[300px]">
+<div class="flex justify-between items-center mb-2">
+<span class="font-headline font-bold uppercase text-sm">剩余生命 (HP)</span>
+<span class="font-headline font-bold text-lg">12 / 14</span>
+</div>
+<div class="h-6 w-full border-2 border-outline bg-surface-variant relative overflow-hidden mb-4">
+<div class="absolute top-0 left-0 h-full bg-primary w-[85%]"></div>
+</div>
+<div class="grid grid-cols-3 gap-2">
+<button class="bg-primary text-on-primary font-headline font-bold py-2 border-2 border-outline hover:bg-tertiary transition-colors uppercase text-xs">行动 (Action)</button>
+<button class="bg-surface-variant text-primary font-headline font-bold py-2 border-2 border-outline hover:bg-surface transition-colors uppercase text-xs">闪避 (Dodge)</button>
+<button class="bg-surface-variant text-primary font-headline font-bold py-2 border-2 border-outline hover:bg-surface transition-colors uppercase text-xs">反击 (Parry)</button>
+<button class="col-span-1 bg-surface-variant text-primary font-headline font-bold py-2 border-2 border-outline hover:bg-surface transition-colors uppercase text-xs">物品 (Use Item)</button>
+<button class="col-span-1 bg-primary-fixed text-primary font-headline font-bold py-2 border-2 border-outline hover:bg-primary hover:text-primary-fixed transition-colors uppercase text-xs">奖励骰 (Bonus)</button>
+<button class="col-span-1 bg-surface-variant text-primary font-headline font-bold py-2 border-2 border-outline hover:bg-surface transition-colors uppercase text-xs">等待 (Wait)</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Action Order Queue -->
+<div>
+<h3 class="font-headline font-bold text-xl uppercase mb-4 flex items-center gap-2 text-on-surface-variant">
+<span class="material-symbols-outlined">queue</span>
+                    行动顺序 (下个回合 / Next Turn)
+                </h3>
+<div class="flex flex-col gap-4">
+<!-- Enemy Card (Deep One - Red Theme) -->
+<div class="bg-secondary border-4 border-outline neo-shadow-sm p-4 flex justify-between items-center group hover:translate-x-2 transition-transform cursor-pointer shatter-effect shattered" id="enemy-card" onclick="shatterEnemy()" style="display: none;">
+<div class="flex items-center gap-4">
+<div class="w-16 h-16 border-2 border-outline bg-primary shrink-0 overflow-hidden">
+<img class="w-full h-full object-cover mix-blend-screen opacity-80" data-alt="A terrifying, abstract silhouette of an aquatic Lovecraftian monster with glowing eyes, jagged edges, deep red and black neo-brutalist graphic art style, highly stylized." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCQ3N6FE5n5ZNyFj-O7JdhCYkCwzWVtGjPBAMsAxBd3B6E606nRyVAzrMNqj5Qic0qjdm2-ZPya9bRvC1aDkBj6DezLg6vHNn9K4sfzH2Xq2kQgi-d9NDxEorfWIbgKLoafDmvY9p4QmfOxgghRqrndlNlmLzs9wDhA4ccEoJ4wVXcTAZ1AqnkKf6ZhRrEPEfi5hg-mUXD0wEkc8TYbxyCSKx4MeJXCbX61NlMZetzNyV_hvYxafmw">
+</div>
+<div>
+<div class="text-[10px] font-bold font-headline uppercase tracking-widest text-on-secondary mb-1">敌对实体 (Hostile Entity)</div>
+<h4 class="font-headline font-bold text-2xl uppercase text-on-secondary">深潜者 (Deep One)</h4>
+</div>
+</div>
+<div class="flex items-center gap-6">
+<div class="text-right text-on-secondary">
+<div class="font-headline font-bold text-sm uppercase">剩余生命 (HP)</div>
+<div class="font-bold text-xl" id="enemy-hp">0 / 15</div>
+</div>
+<div class="w-12 h-12 border-2 border-outline bg-primary flex items-center justify-center text-on-primary font-headline font-black text-xl">
+                                60
+                            </div>
+</div>
+</div>
+<!-- Investigator 2 -->
+<div class="bg-surface border-4 border-outline neo-shadow-sm p-4 flex justify-between items-center group hover:translate-x-2 transition-transform cursor-pointer">
+<div class="flex items-center gap-4">
+<div class="w-16 h-16 border-2 border-outline bg-surface-container shrink-0"></div>
+<div>
+<div class="text-[10px] font-bold font-headline uppercase tracking-widest text-on-surface-variant mb-1">调查员 (Investigator)</div>
+<h4 class="font-headline font-bold text-2xl uppercase text-primary">Margaret Ye</h4>
+</div>
+</div>
+<div class="flex items-center gap-6">
+<div class="text-right text-primary">
+<div class="font-headline font-bold text-sm uppercase">剩余生命 (HP)</div>
+<div class="font-bold text-xl">8 / 10</div>
+</div>
+<div class="w-12 h-12 border-2 border-outline bg-surface-variant flex items-center justify-center text-primary font-headline font-black text-xl">
+                                55
+                            </div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Right Sidebar: Tactical Overview -->
+<aside class="w-full md:w-96 shrink-0 flex flex-col gap-8">
+<!-- Quick Roll Area -->
+<div class="bg-surface border-4 border-outline neo-shadow p-6">
+<h3 class="font-headline font-bold text-xl uppercase mb-4 border-b-2 border-outline pb-2">战术总览 (Quick Roll)</h3>
+<div class="grid grid-cols-2 gap-4 mb-4">
+<button class="bg-surface-variant border-2 border-outline font-headline font-bold py-3 uppercase hover:bg-primary hover:text-on-primary transition-colors text-lg flex items-center justify-center gap-2">
+<span class="material-symbols-outlined">casino</span>
+                        1D100
+                    </button>
+<button class="bg-surface-variant border-2 border-outline font-headline font-bold py-3 uppercase hover:bg-primary hover:text-on-primary transition-colors text-lg flex items-center justify-center gap-2">
+<span class="material-symbols-outlined">casino</span>
+                        1D10
+                    </button>
+</div>
+<button class="w-full bg-error text-white font-headline font-bold py-2 mb-4 border-2 border-outline uppercase hover:bg-primary transition-colors flex items-center justify-center gap-2" onclick="triggerDamageEffect()">
+<span class="material-symbols-outlined">bolt</span>
+                演示伤害特效 (DEMO DAMAGE)
+            </button>
+<button class="w-full bg-primary text-white font-headline font-bold py-2 mb-4 border-2 border-outline uppercase hover:bg-secondary transition-colors flex items-center justify-center gap-2" onclick="demoShatter()">
+<span class="material-symbols-outlined">delete</span>
+                演示击败特效 (DEMO DEFEAT)
+            </button>
+<div class="border-2 border-outline bg-background p-4 text-center">
+<div class="text-sm font-headline uppercase font-bold text-on-surface-variant mb-1">最后结果 (Last Result)</div>
+<div class="font-headline font-black text-5xl text-primary">42</div>
+<div class="text-sm font-bold text-secondary uppercase mt-1">极难成功 (Extreme Success)</div>
+</div>
+</div>
+<!-- Combat Log -->
+<div class="bg-background border-4 border-outline neo-shadow flex-grow flex flex-col overflow-hidden max-h-[600px]">
+<div class="bg-primary text-on-primary p-3 border-b-4 border-outline flex justify-between items-center">
+<h3 class="font-headline font-bold uppercase tracking-wide">战斗日志 (Combat Log)</h3>
+<span class="material-symbols-outlined text-sm">history</span>
+</div>
+<div class="p-4 flex flex-col gap-3 overflow-y-auto font-body text-sm bg-surface">
+<div class="border-l-4 border-secondary pl-3 py-1">
+<span class="font-bold text-primary">深潜者</span> 试图攻击 <span class="font-bold text-primary">Harvey</span>. 
+                        <br>
+<span class="text-secondary font-bold">检定: 34/60 (成功)</span>
+</div>
+<div class="border-l-4 border-primary pl-3 py-1">
+<span class="font-bold text-primary">Harvey</span> 试图 <span class="font-bold">躲闪 (Dodge)</span>. 
+                        <br>
+<span class="text-on-surface-variant font-bold">检定: 85/40 (失败)</span>
+</div>
+<div class="bg-secondary-container border-2 border-secondary p-2 mt-1">
+<span class="font-bold text-secondary uppercase text-xs block mb-1">承受伤害 (Damage Taken)</span>
+<span class="font-bold text-primary text-lg">Harvey 受到 4 点伤害!</span>
+<div class="text-xs text-primary mt-1">当前HP: 12/14</div>
+</div>
+<div class="border-l-4 border-outline pl-3 py-1 mt-2 text-on-surface-variant">
+<span class="font-bold text-primary">Margaret</span> 使用 <span class="font-bold">急救 (First Aid)</span> 目标自己. 
+                        <br>
+<span class="">检定: 12/50 (极难成功) -&gt; 恢复 2 HP</span>
+</div>
+<div class="border-l-4 border-outline pl-3 py-1 text-on-surface-variant">
+                        回合结束。开始新的行动轮。 (Round ended. Starting new round.)
+                    </div>
+</div>
+</div>
+</aside>
+</main>
+<script>
+        // Micro-interaction for log auto-scroll simulation
+        document.addEventListener('DOMContentLoaded', () => {
+            const logContainer = document.querySelector('.overflow-y-auto');
+            if(logContainer) {
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }
+        });
+
+        // Damage effect simulation
+        function triggerDamageEffect() {
+            const container = document.getElementById('main-container');
+            const flash = document.getElementById('damage-flash-overlay');
+            
+            // Remove classes if they exist to re-trigger animation
+            container.classList.remove('damage-shake');
+            flash.classList.remove('trigger-flash');
+            
+            // Force reflow
+            void container.offsetWidth;
+            
+            // Add classes
+            container.classList.add('damage-shake');
+            flash.classList.add('trigger-flash');
+            
+            // Clean up
+            setTimeout(() => {
+                container.classList.remove('damage-shake');
+                flash.classList.remove('trigger-flash');
+            }, 400);
+        }
+
+        // Enemy defeat shatter simulation
+        function shatterEnemy() {
+            const card = document.getElementById('enemy-card');
+            const hp = document.getElementById('enemy-hp');
+            
+            if(card && !card.classList.contains('shattered')) {
+                hp.innerText = '0 / 15';
+                card.classList.add('shattered');
+                setTimeout(() => {
+                    card.style.display = 'none';
+                }, 500);
+            }
+        }
+
+        // Helper for the demo button to reset if needed
+        function demoShatter() {
+            const card = document.getElementById('enemy-card');
+            if(card.classList.contains('shattered')) {
+                // Reset for demo purposes
+                card.style.display = 'flex';
+                setTimeout(() => {
+                    card.classList.remove('shattered');
+                    document.getElementById('enemy-hp').innerText = '15 / 15';
+                }, 50);
+            } else {
+                shatterEnemy();
+            }
+        }
+    </script>
+
+
+</body></html>
