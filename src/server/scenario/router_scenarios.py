@@ -13,6 +13,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scenarios")
 
 
+@router.get("/available")
+async def list_available_scenarios(request: Request):
+    """List scenarios that a host or admin can use to create rooms."""
+    from ..router_auth import get_account_from_token
+    account = get_account_from_token(request)
+    if not account:
+        raise HTTPException(401, "请先登录")
+    if account.get("role") not in ("admin", "host"):
+        raise HTTPException(403, "仅房主或管理员可访问")
+    conn = request.app.state.db
+    rows = conn.execute(
+        "SELECT scenario_id, title, import_status, created_at "
+        "FROM scenarios WHERE import_status = 'structured' ORDER BY created_at DESC"
+    ).fetchall()
+    return [{
+        "scenario_id": r["scenario_id"],
+        "title": r["title"],
+        "status": r["import_status"],
+        "created_at": str(r.get("created_at", "")),
+    } for r in rows]
+
+
 @router.post("/import-pdf")
 async def import_pdf(request: Request, file: UploadFile = File(...)):
     """Upload and structure a scenario PDF. Admin-only."""

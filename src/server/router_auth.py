@@ -103,7 +103,8 @@ def get_account_from_token(request: Request) -> dict | None:
         return None
     conn = request.app.state.db
     row = conn.execute(
-        "SELECT * FROM accounts WHERE account_id = %s", (data["sub"],)
+        "SELECT account_id, username, display_name, role, last_seen_at, created_at "
+        "FROM accounts WHERE account_id = %s", (data["sub"],)
     ).fetchone()
     return dict(row) if row else None
 

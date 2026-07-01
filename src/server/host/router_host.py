@@ -62,6 +62,7 @@ def remove_host_store(room_id: str):
 
 @router.get("/{room_id}/hud")
 async def get_hud(request: Request, room_id: str):
+    _verify_owner(request, room_id)  # auth gate
     conn = request.app.state.db
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
