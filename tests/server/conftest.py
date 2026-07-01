@@ -24,7 +24,8 @@ def test_db():
         "actions, events, player_sequences, checkpoints, campaign_archives, "
         "document_chunks, host_states, characters, rooms, scenarios, rule_documents, "
         "spoiler_sensitive_items, spoiler_audits, "
-        "character_profiles, character_runtime_state, room_scene_state "
+        "character_profiles, character_runtime_state, room_scene_state, "
+        "accounts, ai_call_logs "
         "RESTART IDENTITY CASCADE"
     )
     yield conn

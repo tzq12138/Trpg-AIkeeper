@@ -78,19 +78,34 @@ async def list_my_rooms(request: Request):
 
 @router.get("/{room_id}")
 async def get_room(request: Request, room_id: str):
+    """Public room info — never leaks owner_token or owner_account_id."""
     conn = request.app.state.db
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
-    result = dict(room)
-    # Add scenario_title if scenario_id is set
+    scenario_title = ""
+    player_count = 0
     if room.get("scenario_id"):
         sc = conn.execute(
             "SELECT title FROM scenarios WHERE scenario_id = %s", (room["scenario_id"],)
         ).fetchone()
         if sc:
-            result["scenario_title"] = sc["title"]
-    return result
+            scenario_title = sc["title"]
+    char_count = conn.execute(
+        "SELECT COUNT(*) as c FROM characters WHERE room_id = %s AND status IN ('active', 'joined')",
+        (room_id,),
+    ).fetchone()
+    player_count = char_count["c"] if char_count else 0
+    return {
+        "room_id": room["room_id"],
+        "status": room["status"],
+        "scenario_id": room.get("scenario_id", ""),
+        "scenario_title": scenario_title,
+        "spoiler_level": room.get("spoiler_level", "standard"),
+        "created_at": str(room.get("created_at", "")),
+        "started_at": str(room.get("started_at", "")) if room.get("started_at") else None,
+        "player_count": player_count,
+    }
 
 
 @router.get("/{room_id}/scenario-options")

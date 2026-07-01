@@ -187,14 +187,17 @@ class RAGStore:
             with conn.cursor() as cur:
                 conditions = []
                 params = []
-                # Include: (room-scoped chunks) OR (global rules) OR (scenario-scoped for this room's scenario)
                 if room_id:
                     # Find the room's scenario_id first
                     cur.execute("SELECT scenario_id FROM rooms WHERE room_id = %s", (room_id,))
                     room_row = cur.fetchone()
                     scenario_id = room_row["scenario_id"] if room_row else None
+                    # Safe scoping:
+                    # (a) room-scoped chunks for this room
+                    # (b) global rules (source_type = 'rule' with room_id IS NULL)
+                    # (c) scenario chunks for THIS room's scenario only
                     conditions.append(
-                        '(room_id = %s OR room_id IS NULL OR source_type = %s'
+                        '(room_id = %s OR (source_type = %s AND room_id IS NULL)'
                     )
                     params.extend([room_id, 'rule'])
                     if scenario_id:

@@ -15,6 +15,14 @@ router = APIRouter(prefix="/api/scenarios")
 
 @router.post("/import-pdf")
 async def import_pdf(request: Request, file: UploadFile = File(...)):
+    """Upload and structure a scenario PDF. Admin-only."""
+    from ..router_auth import get_account_from_token
+    account = get_account_from_token(request)
+    if not account:
+        raise HTTPException(401, "请先登录")
+    if account.get("role") != "admin":
+        raise HTTPException(403, "仅管理员可导入剧本")
+
     if not file.filename or not file.filename.endswith(".pdf"):
         raise HTTPException(400, "Only PDF files supported")
 
@@ -120,6 +128,15 @@ async def get_quality_report(request: Request, scenario_id: str):
 
 @router.post("/{scenario_id}/create-room")
 async def create_room_from_scenario(request: Request, scenario_id: str):
+    """Create a room from a scenario. Host or admin required."""
+    from ..router_auth import get_account_from_token
+    account = get_account_from_token(request)
+    if not account:
+        raise HTTPException(401, "请先登录")
+    role = account.get("role", "")
+    if role not in ("admin", "host"):
+        raise HTTPException(403, "仅房主或管理员可创建房间")
+
     conn = request.app.state.db
     scenario = conn.execute(
         "SELECT * FROM scenarios WHERE scenario_id = %s", (scenario_id,)
@@ -128,9 +145,10 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
         raise HTTPException(404, "Scenario not found")
     room_id = str(uuid.uuid4())[:8]
     owner_token = str(uuid.uuid4())
+    owner_account_id = account["account_id"]
     conn.execute(
-        "INSERT INTO rooms (room_id, scenario_id, owner_token) VALUES (%s, %s, %s)",
-        (room_id, scenario_id, owner_token),
+        "INSERT INTO rooms (room_id, scenario_id, owner_token, owner_account_id) VALUES (%s, %s, %s, %s)",
+        (room_id, scenario_id, owner_token, owner_account_id),
     )
     conn.commit()
-    return {"room_id": room_id, "owner_token": owner_token}
+    return {"room_id": room_id, "owner_token": owner_token, "status": "lobby"}
