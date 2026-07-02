@@ -376,7 +376,7 @@ async def get_host_full_map(request: Request, room_id: str):
     _verify_owner(request, room_id)
     conn = request.app.state.db
 
-    from ...map_persistence import (
+    from ..map_persistence import (
         get_room_map_state, get_scenario_map, get_all_positions_in_room, get_character_position,
     )
     map_state = get_room_map_state(conn, room_id)
@@ -412,10 +412,10 @@ async def host_reveal_node(request: Request, room_id: str):
         raise HTTPException(400, "node_id is required")
 
     conn = request.app.state.db
-    from ...map_persistence import host_set_node_visible
+    from ..map_persistence import host_set_node_visible
     host_set_node_visible(conn, room_id, node_id, visible)
 
-    from ...engine.projection import ProjectionDispatcher
+    from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
 
     import asyncio
@@ -444,7 +444,7 @@ async def host_force_move(request: Request, room_id: str):
         raise HTTPException(400, "character_id and node_id are required")
 
     conn = request.app.state.db
-    from ...map_persistence import set_character_position, mark_node_explored
+    from ..map_persistence import set_character_position, mark_node_explored
     set_character_position(conn, character_id, room_id, target_node_id)
     mark_node_explored(conn, room_id, target_node_id)
     conn.execute(
@@ -453,7 +453,7 @@ async def host_force_move(request: Request, room_id: str):
     )
     conn.commit()
 
-    from ...engine.projection import ProjectionDispatcher
+    from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
 
     import asyncio
@@ -479,7 +479,7 @@ async def get_host_encounter(request: Request, room_id: str):
     """Get current active encounter with participants for this room."""
     _verify_owner(request, room_id)
     conn = request.app.state.db
-    from ...encounter_persistence import get_active_encounter, get_participants
+    from ..encounter_persistence import get_active_encounter, get_participants
     enc = get_active_encounter(conn, room_id)
     if not enc:
         return {"hasEncounter": False}
@@ -500,7 +500,7 @@ async def host_confirm_encounter(request: Request, room_id: str):
     encounter_id = body.get("encounter_id", body.get("encounterId", ""))
 
     conn = request.app.state.db
-    from ...encounter_persistence import (
+    from ..encounter_persistence import (
         get_encounter, create_encounter, update_encounter_status, add_participant,
         get_participants,
     )
@@ -538,7 +538,7 @@ async def host_confirm_encounter(request: Request, room_id: str):
             main_skill=p.get("main_skill", p.get("mainSkill", "")),
         )
 
-    from ...engine.projection import ProjectionDispatcher
+    from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
     import asyncio
     try:
@@ -566,7 +566,7 @@ async def host_reject_encounter(request: Request, room_id: str):
         return {"status": "ignored"}  # No encounter to reject
 
     conn = request.app.state.db
-    from ...encounter_persistence import update_encounter_status, get_encounter
+    from ..encounter_persistence import update_encounter_status, get_encounter
     enc = get_encounter(conn, encounter_id)
     if not enc or enc.get("room_id") != room_id:
         raise HTTPException(404, "Encounter not found")
@@ -579,7 +579,7 @@ async def host_next_round(request: Request, room_id: str):
     """Advance encounter to next round — resets acted_this_round for all."""
     _verify_owner(request, room_id)
     conn = request.app.state.db
-    from ...encounter_persistence import (
+    from ..encounter_persistence import (
         get_active_encounter, update_encounter_round, reset_round_actions, get_participants,
     )
     enc = get_active_encounter(conn, room_id)
@@ -592,7 +592,7 @@ async def host_next_round(request: Request, room_id: str):
     update_encounter_round(conn, enc["encounter_id"], new_round)
     reset_round_actions(conn, enc["encounter_id"])
 
-    from ...engine.projection import ProjectionDispatcher
+    from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
     import asyncio
     try:
@@ -614,14 +614,14 @@ async def host_resolve_encounter(request: Request, room_id: str):
     """Host manually ends an encounter."""
     _verify_owner(request, room_id)
     conn = request.app.state.db
-    from ...encounter_persistence import get_active_encounter, update_encounter_status
+    from ..encounter_persistence import get_active_encounter, update_encounter_status
     enc = get_active_encounter(conn, room_id)
     if not enc:
         raise HTTPException(404, "No active encounter")
 
     update_encounter_status(conn, enc["encounter_id"], "resolved", "Host manually ended")
 
-    from ...engine.projection import ProjectionDispatcher
+    from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
     import asyncio
     try:
@@ -649,7 +649,7 @@ async def host_create_npc(request: Request, room_id: str):
         raise HTTPException(400, "encounter_id is required")
 
     conn = request.app.state.db
-    from ...encounter_persistence import add_participant, get_participants, get_encounter
+    from ..encounter_persistence import add_participant, get_participants, get_encounter
     import uuid as _uuid
 
     # Verify encounter belongs to this room
