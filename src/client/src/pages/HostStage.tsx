@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BrutalProgress } from '../components/BauhausShell';
 import HostSkeletonPanels from '../components/HostSkeletonPanels';
 import { hostTabs, type HostTabKey } from '../navigation';
+import { getSlotValue } from '../shared/identity';
 
 interface PlayerStatus {
   character_id: string;
@@ -41,7 +42,8 @@ function useHostWS(roomId: string, onEvent: (event: Record<string, unknown>) => 
 
     function connect() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${protocol}//${window.location.hostname}:3001/ws?room=${roomId}&role=host&lastSequence=${lastSeqRef.current}`;
+      const ownerToken = getSlotValue('owner_token') || '';
+      const url = `${protocol}//${window.location.hostname}:3001/ws?room=${roomId}&role=host&ownerToken=${encodeURIComponent(ownerToken)}&lastSequence=${lastSeqRef.current}`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
 
@@ -258,13 +260,19 @@ export default function HostStage({ roomId }: { roomId: string }) {
   }, []);
 
   const handleReset = async () => {
-    await fetch(`/api/host/${roomId}/reset`, { method: 'POST' });
+    await fetch(`/api/host/${roomId}/reset`, {
+      method: 'POST',
+      headers: { 'X-Owner-Token': getSlotValue('owner_token') || '' },
+    });
     setMessages([]);
     setRollEvent(null);
   };
 
   const handlePause = async () => {
-    await fetch(`/api/host/${roomId}/pause`, { method: 'POST' });
+    await fetch(`/api/host/${roomId}/pause`, {
+      method: 'POST',
+      headers: { 'X-Owner-Token': getSlotValue('owner_token') || '' },
+    });
   };
 
   const unlockAudio = () => {

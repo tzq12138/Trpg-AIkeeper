@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { getSlotValue } from '../shared/identity';
 
 interface HostMapNode {
   nodeId: string; name: string; description: string;
@@ -22,11 +23,6 @@ interface HostMapPanelProps {
   mapRefresh: number;
 }
 
-function getHostToken(): string {
-  const params = new URLSearchParams(window.location.search);
-  return params.get('token') || '';
-}
-
 export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) {
   const [mapData, setMapData] = useState<HostMapData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -35,7 +31,7 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
   const [operationPending, setOperationPending] = useState(false);
 
   const fetchMap = useCallback(() => {
-    const token = getHostToken();
+    const token = getSlotValue('owner_token') || '';
     fetch(`/api/host/${encodeURIComponent(roomId)}/map/full`, {
       headers: { 'X-Owner-Token': token },
     })
@@ -59,7 +55,7 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
 
   const handleReveal = async (nodeId: string) => {
     setOperationPending(true);
-    const token = getHostToken();
+    const token = getSlotValue('owner_token') || '';
     try {
       await fetch(`/api/host/${encodeURIComponent(roomId)}/map/reveal`, {
         method: 'POST',
@@ -73,7 +69,7 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
 
   const handleHide = async (nodeId: string) => {
     setOperationPending(true);
-    const token = getHostToken();
+    const token = getSlotValue('owner_token') || '';
     try {
       await fetch(`/api/host/${encodeURIComponent(roomId)}/map/reveal`, {
         method: 'POST',
@@ -92,7 +88,7 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
     if (players.length === 0) return;
     const [characterId] = players[0];
     setOperationPending(true);
-    const token = getHostToken();
+    const token = getSlotValue('owner_token') || '';
     try {
       // Use the host move-character endpoint
       await fetch(`/api/host/${encodeURIComponent(roomId)}/map/move-character`, {
@@ -271,7 +267,7 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
                   onChange={(e) => {
                     const charId = e.target.value;
                     if (charId) {
-                      const token = getHostToken();
+                      const token = getSlotValue('owner_token') || '';
                       fetch(`/api/host/${encodeURIComponent(roomId)}/map/move-character`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },

@@ -86,7 +86,8 @@ export default function HostLobby({ roomId }: { roomId: string }) {
 
   useEffect(() => {
     if (!roomId) return;
-    const ws = new WebSocket(`ws://${window.location.hostname}:3001/ws?room=${roomId}&role=host`);
+    const ownerToken = getSlotValue('owner_token') || '';
+    const ws = new WebSocket(`ws://${window.location.hostname}:3001/ws?room=${roomId}&role=host&ownerToken=${encodeURIComponent(ownerToken)}`);
     ws.onmessage = (msg) => {
       try {
         const event = JSON.parse(msg.data);
@@ -101,7 +102,9 @@ export default function HostLobby({ roomId }: { roomId: string }) {
     ws.onerror = () => {
       // fallback to polling on WS failure
       const poll = setInterval(() => {
-        fetch(`/api/host/${roomId}/hud`)
+        fetch(`/api/host/${roomId}/hud`, {
+          headers: { 'X-Owner-Token': getSlotValue('owner_token') || '' },
+        })
           .then((r) => r.json())
           .then((data: HUDResponse) => {
             setPlayers(data.players.map(normalizePlayer));
@@ -141,6 +144,16 @@ export default function HostLobby({ roomId }: { roomId: string }) {
   };
 
   if (!room) return <p style={{ color: '#aaa', textAlign: 'center', marginTop: 40 }}>加载中...</p>;
+
+  const ownerToken = getSlotValue('owner_token') || '';
+  if (!ownerToken) {
+    return (
+      <div style={{ maxWidth: 480, margin: '60px auto', padding: 32, textAlign: 'center', fontFamily: 'sans-serif' }}>
+        <h2 style={{ marginBottom: 12 }}>需要房主身份</h2>
+        <p style={{ color: '#888', fontSize: 14 }}>请从创建房间页进入，或确认当前身份拥有房主权证。</p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ maxWidth: 480, margin: '0 auto', padding: 16, fontFamily: 'sans-serif' }}>
