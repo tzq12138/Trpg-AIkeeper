@@ -219,7 +219,6 @@ async def start_room(request: Request, room_id: str):
         "SELECT * FROM characters WHERE room_id = %s AND status IN ('active', 'joined')",
         (room_id,),
     ).fetchall()
-    not_ready = [c for c in chars if not c["is_ready"]]
 
     # Check for force_start param
     body = {}
@@ -229,16 +228,27 @@ async def start_room(request: Request, room_id: str):
         pass
     force_start = body.get("force_start", False)
 
-    if chars and not_ready and not force_start:
-        return {
-            "status": "not_ready",
-            "not_ready_players": [
-                {"character_id": c["character_id"], "player_name": c["player_name"],
-                 "is_ready": c["is_ready"]}
-                for c in not_ready
-            ],
-            "hint": "发送 force_start: true 确认强制开始",
-        }
+    # Must have at least one player
+    if not chars:
+        if force_start and is_owner:
+            logger.warning("Force-starting empty room %s", room_id)
+        else:
+            raise HTTPException(409, "至少需要一名玩家加入后才能开始")
+
+    not_ready = [c for c in chars if not c["is_ready"]]
+    if not_ready and not force_start:
+        raise HTTPException(
+            409,
+            detail={
+                "status": "not_ready",
+                "not_ready_players": [
+                    {"character_id": c["character_id"], "player_name": c["player_name"],
+                     "is_ready": c["is_ready"]}
+                    for c in not_ready
+                ],
+                "hint": "发送 force_start: true 确认强制开始",
+            },
+        )
 
     conn.execute(
         "UPDATE rooms SET status = 'active', started_at = NOW() WHERE room_id = %s",

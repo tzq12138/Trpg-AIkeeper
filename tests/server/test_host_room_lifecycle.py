@@ -110,6 +110,40 @@ class TestStartRoom:
         assert res.status_code == 200
         assert res.json()["status"] == "active"
 
+    def test_start_room_empty_returns_409(self, client_with_data):
+        """Empty room (no players) should not start."""
+        host_token = _login(client_with_data, "hostlife")
+        room = _create_room(client_with_data, host_token)
+        res = client_with_data.post(
+            f"/api/rooms/{room['room_id']}/start",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+        assert res.status_code == 409
+        assert "至少需要一名玩家" in res.json()["detail"]
+
+    def test_start_room_not_ready_returns_409(self, client_with_data, test_db):
+        """Room with a not-ready player should not start."""
+        room_id, owner_token = self._setup_room_with_player(client_with_data, test_db, ready=False)
+        res = client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            headers={"X-Owner-Token": owner_token},
+        )
+        assert res.status_code == 409
+        detail = res.json()["detail"]
+        assert detail["status"] == "not_ready"
+
+    def test_start_room_force_start_empty_succeeds(self, client_with_data):
+        """Owner can force-start an empty room."""
+        host_token = _login(client_with_data, "hostlife")
+        room = _create_room(client_with_data, host_token)
+        res = client_with_data.post(
+            f"/api/rooms/{room['room_id']}/start",
+            json={"force_start": True},
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+        assert res.status_code == 200
+        assert res.json()["status"] == "active"
+
     def test_start_room_no_scenario_fails(self, client_with_data, test_db):
         test_db.execute(
             "INSERT INTO rooms (room_id, owner_token, status) VALUES ('r-nosc', 'tok-nosc', 'lobby')"

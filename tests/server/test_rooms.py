@@ -86,12 +86,28 @@ class TestGetRoom:
 class TestStartRoom:
     def test_start_room_with_owner_token(self, client_with_data):
         data = _create_room(client_with_data)
+        # Add a ready player — empty room start is now rejected
+        client_with_data.app.state.db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, is_ready, status) "
+            "VALUES ('ch-start', %s, 'Alice', 'ptok', true, 'joined')",
+            (data['room_id'],),
+        )
+        client_with_data.app.state.db.commit()
         res = client_with_data.post(
             f"/api/rooms/{data['room_id']}/start",
             headers={"X-Owner-Token": data["owner_token"]},
         )
         assert res.status_code == 200
         assert res.json()["status"] == "active"
+
+    def test_start_room_empty_returns_409(self, client_with_data):
+        data = _create_room(client_with_data)
+        res = client_with_data.post(
+            f"/api/rooms/{data['room_id']}/start",
+            headers={"X-Owner-Token": data["owner_token"]},
+        )
+        assert res.status_code == 409
+        assert "至少需要一名玩家" in res.json()["detail"]
 
     def test_start_room_wrong_owner(self, client_with_data):
         data = _create_room(client_with_data)
