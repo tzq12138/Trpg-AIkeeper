@@ -1,4 +1,5 @@
 import openpyxl
+from tests.server.conftest import setup_auth_test_data, create_room
 
 
 def _make_cy20_like_xlsx(path: str, name: str = "阿尔伯特·格雷", occupation: str = "罪犯-独行罪犯"):
@@ -41,9 +42,9 @@ def _make_cy20_like_xlsx(path: str, name: str = "阿尔伯特·格雷", occupati
     wb.save(path)
 
 
-def _room_id(client) -> str:
-    resp = client.post("/api/rooms", json={})
-    return resp.json()["room_id"]
+def _room_id(client, test_db) -> str:
+    setup_auth_test_data(test_db)
+    return create_room(client)["room_id"]
 
 
 def test_preview_xlsx_returns_summary_without_creating_character(client, test_db, tmp_path):
@@ -68,8 +69,8 @@ def test_preview_xlsx_returns_summary_without_creating_character(client, test_db
     assert row["c"] == 0
 
 
-def test_join_with_uploaded_character_creates_player_and_character_data(client, tmp_path):
-    room_id = _room_id(client)
+def test_join_with_uploaded_character_creates_player_and_character_data(client, test_db, tmp_path):
+    room_id = _room_id(client, test_db)
     path = tmp_path / "albert.xlsx"
     _make_cy20_like_xlsx(str(path))
 
@@ -97,8 +98,8 @@ def test_join_with_uploaded_character_creates_player_and_character_data(client, 
     assert char["name"] == "阿尔伯特·格雷"
 
 
-def test_presets_list_skips_bad_files_and_marks_room_occupancy(client, tmp_path):
-    room_id = _room_id(client)
+def test_presets_list_skips_bad_files_and_marks_room_occupancy(client, test_db, tmp_path):
+    room_id = _room_id(client, test_db)
     client.app.state.character_preset_dir = str(tmp_path)
     _make_cy20_like_xlsx(str(tmp_path / "albert.xlsx"))
     (tmp_path / "broken.xlsx").write_text("not a workbook", encoding="utf-8")
@@ -113,8 +114,8 @@ def test_presets_list_skips_bad_files_and_marks_room_occupancy(client, tmp_path)
     assert presets[0]["occupied"] is False
 
 
-def test_join_with_preset_locks_that_preset_for_room(client, tmp_path):
-    room_id = _room_id(client)
+def test_join_with_preset_locks_that_preset_for_room(client, test_db, tmp_path):
+    room_id = _room_id(client, test_db)
     client.app.state.character_preset_dir = str(tmp_path)
     _make_cy20_like_xlsx(str(tmp_path / "albert.xlsx"))
 
@@ -140,7 +141,7 @@ def test_join_with_preset_locks_that_preset_for_room(client, tmp_path):
 
 
 def test_failed_import_does_not_create_placeholder_player(client, test_db, tmp_path):
-    room_id = _room_id(client)
+    room_id = _room_id(client, test_db)
     path = tmp_path / "broken.xlsx"
     path.write_text("not a workbook", encoding="utf-8")
 

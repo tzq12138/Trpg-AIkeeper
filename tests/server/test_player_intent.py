@@ -1,6 +1,9 @@
-def test_join_room(client):
-    resp = client.post("/api/rooms", json={})
-    room_id = resp.json()["room_id"]
+from tests.server.conftest import setup_auth_test_data, create_room
+
+
+def test_join_room(client, test_db):
+    setup_auth_test_data(test_db)
+    room_id = create_room(client)["room_id"]
 
     resp = client.post(f"/api/player/rooms/{room_id}/join")
     assert resp.status_code == 200
@@ -14,9 +17,9 @@ def test_join_nonexistent_room(client):
     assert resp.status_code == 404
 
 
-def test_submit_intent(client):
-    resp = client.post("/api/rooms", json={})
-    room_id = resp.json()["room_id"]
+def test_submit_intent(client, test_db):
+    setup_auth_test_data(test_db)
+    room_id = create_room(client)["room_id"]
 
     resp = client.post(f"/api/player/rooms/{room_id}/join")
     player_token = resp.json()["player_token"]
@@ -42,9 +45,9 @@ def test_submit_intent_missing_token(client):
     assert resp.status_code == 401
 
 
-def test_submit_intent_idempotent(client):
-    resp = client.post("/api/rooms", json={})
-    room_id = resp.json()["room_id"]
+def test_submit_intent_idempotent(client, test_db):
+    setup_auth_test_data(test_db)
+    room_id = create_room(client)["room_id"]
 
     resp = client.post(f"/api/player/rooms/{room_id}/join")
     player_token = resp.json()["player_token"]

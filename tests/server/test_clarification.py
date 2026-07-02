@@ -1,11 +1,12 @@
 import json
 from datetime import datetime, timezone, timedelta
 import pytest
+from tests.server.conftest import setup_auth_test_data, create_room
 
 
-def _setup_room_and_player(client):
-    resp = client.post("/api/rooms", json={})
-    room = resp.json()
+def _setup_room_and_player(client, test_db):
+    setup_auth_test_data(test_db)
+    room = create_room(client)
     room_id = room["room_id"]
     owner_token = room["owner_token"]
 
@@ -17,14 +18,14 @@ def _setup_room_and_player(client):
 def _insert_action(test_db, room_id, char_id, action_id="action-1"):
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "VALUES (%s, %s, %s, %s, %s, %s)",
         (action_id, room_id, char_id, "voice_command", "I search the room", "resolved"),
     )
     test_db.commit()
 
 
 def test_submit_clarification_within_window(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
     _insert_action(test_db, room_id, char_id)
 
     resp = client.post(
@@ -39,7 +40,7 @@ def test_submit_clarification_within_window(client, test_db):
 
 
 def test_reject_clarification_missing_target(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
 
     resp = client.post(
         "/api/player/clarification",
@@ -50,7 +51,7 @@ def test_reject_clarification_missing_target(client, test_db):
 
 
 def test_reject_clarification_nonexistent_action(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
 
     resp = client.post(
         "/api/player/clarification",
@@ -61,7 +62,7 @@ def test_reject_clarification_nonexistent_action(client, test_db):
 
 
 def test_rate_limiting_on_spam(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
     _insert_action(test_db, room_id, char_id, "action-1")
     _insert_action(test_db, room_id, char_id, "action-2")
 
@@ -81,7 +82,7 @@ def test_rate_limiting_on_spam(client, test_db):
 
 
 def test_get_clarification_result(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
     _insert_action(test_db, room_id, char_id)
 
     resp = client.post(
@@ -93,8 +94,8 @@ def test_get_clarification_result(client, test_db):
 
     result_data = {"type": "explain", "content": "The roll was 15, success."}
     test_db.execute(
-        "UPDATE clarifications SET status = 'resolved', resolved_at = ?, result = ? "
-        "WHERE clarification_id = ?",
+        "UPDATE clarifications SET status = 'resolved', resolved_at = %s, result = %s "
+        "WHERE clarification_id = %s",
         (datetime.now(timezone.utc).isoformat(), json.dumps(result_data), cl_id),
     )
     test_db.commit()
@@ -108,7 +109,7 @@ def test_get_clarification_result(client, test_db):
 
 
 def test_different_result_types(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
     _insert_action(test_db, room_id, char_id, "action-1")
 
     for rtype in ["explain", "followup", "recalc"]:
@@ -118,7 +119,7 @@ def test_different_result_types(client, test_db):
         test_db.execute(
             "INSERT INTO clarifications "
             "(clarification_id, room_id, character_id, target_action_id, text, status, result, created_at, resolved_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (cl_id, room_id, char_id, "action-1", f"Test {rtype}", "resolved",
              json.dumps(result_data), now.isoformat(), now.isoformat()),
         )

@@ -2,18 +2,13 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 from src.server.main import app
+from tests.server.conftest import setup_auth_test_data, create_room
 
 
 @pytest.fixture
-def client():
-    with TestClient(app) as c:
-        yield c
-
-
-@pytest.fixture
-def room_and_player(client):
-    res = client.post("/api/rooms", json={})
-    room = res.json()
+def room_and_player(client, test_db):
+    setup_auth_test_data(test_db)
+    room = create_room(client)
     room_id = room["room_id"]
 
     res = client.post(f"/api/player/rooms/{room_id}/join")
@@ -51,11 +46,11 @@ class TestInventory:
         room_id = room_and_player[0]
         conn = app.state.db
         conn.execute(
-            "INSERT INTO inventory (id, character_id, room_id, name, description, quantity) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO inventory (id, character_id, room_id, name, description, quantity) VALUES (%s, %s, %s, %s, %s, %s)",
             ("item1", char_id, room_id, "手电筒", "一把旧手电筒", 1),
         )
         conn.execute(
-            "INSERT INTO inventory (id, character_id, room_id, name, description, quantity, is_secret) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO inventory (id, character_id, room_id, name, description, quantity, is_secret) VALUES (%s, %s, %s, %s, %s, %s, %s)",
             ("item2", char_id, room_id, "神秘钥匙", "一把古铜钥匙", 1, 1),
         )
         conn.commit()
@@ -105,7 +100,7 @@ class TestSync:
         room_id = room_and_player[0]
         conn = app.state.db
         conn.execute(
-            "INSERT INTO inventory (id, character_id, room_id, name, description, quantity) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO inventory (id, character_id, room_id, name, description, quantity) VALUES (%s, %s, %s, %s, %s, %s)",
             ("sync-item1", char_id, room_id, "笔记本", "一本旧笔记本", 1),
         )
         conn.commit()

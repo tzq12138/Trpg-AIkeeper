@@ -1,8 +1,11 @@
-def test_full_flow(client):
-    # 1. Create room
-    resp = client.post("/api/rooms", json={"scenario_id": "sc-1"})
-    assert resp.status_code == 200
-    room = resp.json()
+from tests.server.conftest import setup_auth_test_data, create_room
+
+
+def test_full_flow(client, test_db):
+    setup_auth_test_data(test_db)
+
+    # 1. Create room (authenticated)
+    room = create_room(client)
     room_id = room["room_id"]
     owner_token = room["owner_token"]
 

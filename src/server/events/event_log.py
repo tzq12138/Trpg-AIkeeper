@@ -7,17 +7,19 @@ logger = logging.getLogger(__name__)
 
 # Tables that need per-room cleanup before snapshot restore
 SNAPSHOT_CHILD_TABLES = [
-    "actions", "events", "characters", "clues", "clue_shares",
+    "actions", "events", "characters", "clues",
     "inventory", "objectives", "room_turns", "room_map_state",
-    "character_map_positions", "encounters", "encounter_participants",
+    "character_map_positions", "encounters",
     "host_states",
 ]
 
 # Tables snapshot includes (beyond rooms)
+# Note: clue_shares and encounter_participants have no direct room_id column
+# (linked via clues.clue_id / encounters.encounter_id), excluded from snapshot
 SNAPSHOT_DATA_TABLES = [
-    "characters", "actions", "events", "clues", "clue_shares",
+    "characters", "actions", "events", "clues",
     "inventory", "objectives", "room_turns", "room_map_state",
-    "character_map_positions", "encounters", "encounter_participants",
+    "character_map_positions", "encounters",
     "host_states",
 ]
 
@@ -195,8 +197,8 @@ class EventLog:
             for row in rows:
                 row_dict = dict(row)
                 if table not in ("host_states", "room_map_state", "room_turns",
-                                 "encounters", "encounter_participants",
-                                 "clues", "clue_shares", "inventory", "objectives",
+                                 "encounters", "events",
+                                 "clues", "inventory", "objectives",
                                  "character_map_positions"):
                     continue
                 # Use simple insert: build column list from dict keys
