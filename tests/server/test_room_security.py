@@ -67,6 +67,43 @@ class TestRoomDTODesensitized:
         assert res.json()["player_count"] == 2
 
 
+class TestScenariosAvailableAuth:
+    def test_list_available_no_auth_returns_401(self, client_with_data):
+        res = client_with_data.get("/api/scenarios/available")
+        assert res.status_code == 401
+
+    def test_list_available_player_returns_403(self, client_with_data):
+        token = _login(client_with_data, "player1", "test123")
+        res = client_with_data.get(
+            "/api/scenarios/available",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 403
+
+    def test_list_available_host_succeeds(self, client_with_data):
+        token = _login(client_with_data, "hostuser", "test123")
+        res = client_with_data.get(
+            "/api/scenarios/available",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        assert data[0]["scenario_id"] == "sc-test"
+        assert data[0]["title"] == "Test Scenario"
+
+    def test_list_available_admin_succeeds(self, client_with_data):
+        token = _login(client_with_data, "admin", "test123")
+        res = client_with_data.get(
+            "/api/scenarios/available",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert isinstance(data, list)
+
+
 class TestScenarioImportAuth:
     def test_import_pdf_no_auth_returns_401(self, client_with_data):
         res = client_with_data.post(

@@ -15,7 +15,9 @@ export default function HostCreate() {
     if (token && accRaw) {
       try { setAccount(JSON.parse(accRaw)); } catch { setAccount(null); }
     }
-    fetch('/api/admin/scenarios')
+    fetch('/api/scenarios/available', {
+      headers: { Authorization: `Bearer ${getSlotValue('account_token') || ''}` },
+    })
       .then((r) => r.ok ? r.json() : [])
       .then((data) => {
         const list = Array.isArray(data) ? data : (data.scenarios || []);
@@ -94,6 +96,9 @@ export default function HostCreate() {
       </p>
       <div style={{ marginBottom: 16 }}>
         <label style={{ display: 'block', fontWeight: 700, marginBottom: 4, fontSize: 13 }}>选择剧本</label>
+        {scenarios.length === 0 ? (
+          <p style={{ color: 'var(--bh-dim)', fontSize: 13, padding: '12px 0' }}>暂无可用剧本，请管理员先导入剧本。</p>
+        ) : (
         <select
           style={{ width: '100%', padding: '8px 12px', fontSize: 14, border: '2px solid var(--bh-black)', fontFamily: 'inherit' }}
           value={selectedScenario}
@@ -104,6 +109,7 @@ export default function HostCreate() {
             <option key={s.scenario_id} value={s.scenario_id}>{s.title || s.scenario_id}</option>
           ))}
         </select>
+        )}
       </div>
       {error && <p style={{ color: 'var(--bh-red)', fontSize: 13, marginBottom: 8 }}>{error}</p>}
       <button
