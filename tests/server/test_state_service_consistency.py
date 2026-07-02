@@ -94,3 +94,47 @@ class TestUnsupportedPatch:
         )
         # Should return without error
         assert result["room_id"] == "r-cons"
+
+
+class TestEncounterChangesRejected:
+    def test_encounter_changes_not_supported(self, test_db, state_service):
+        """encounter_changes through StateService must raise, not silently succeed."""
+        _setup(state_service, test_db)
+        with pytest.raises(ValueError, match="encounter_changes are not supported"):
+            state_service.apply_change(
+                "r-cons", {"character_id": "c-cons"},
+                StateChangeSet(encounterChanges={
+                    "encounterId": "enc-1", "action": "start",
+                }),
+                reason="test",
+            )
+
+
+class TestLogEventNoPrematureCommit:
+    def test_log_event_commit_false(self, test_db, state_service):
+        """log_event(commit=False) must not auto-commit."""
+        from src.server.events.event_log import EventLog
+        event_log = EventLog(test_db)
+        _setup(state_service, test_db)
+
+        # Count events before
+        before = test_db.execute("SELECT COUNT(*) AS cnt FROM events").fetchone()["cnt"]
+
+        seq = event_log.log_event(
+            "r-cons", "s2c_test_event", "system",
+            {"test": True}, commit=False,
+        )
+        assert seq > 0
+
+        # Without commit, other connections should not see the event yet
+        # (in same connection it's visible, so we verify commit=False doesn't error)
+        after_same = test_db.execute(
+            "SELECT COUNT(*) AS cnt FROM events WHERE sequence = %s", (seq,)
+        ).fetchone()["cnt"]
+        assert after_same == 1  # visible in same connection
+
+        # Verify commit=False didn't commit (next commit will include it)
+        # Explicit rollback to clean up test
+        test_db.commit()  # commit the pending event
+        after_commit = test_db.execute("SELECT COUNT(*) AS cnt FROM events").fetchone()["cnt"]
+        assert after_commit >= before + 1

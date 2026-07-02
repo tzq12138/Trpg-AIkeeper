@@ -28,12 +28,13 @@ class EventLog:
     def __init__(self, conn):
         self.conn = conn
 
-    def log_event(self, room_id: str, event_type: str, audience: str, payload: dict) -> int:
+    def log_event(self, room_id: str, event_type: str, audience: str, payload: dict, commit: bool = True) -> int:
         cursor = self.conn.execute(
             "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, %s, %s) RETURNING sequence",
             (room_id, event_type, audience, json.dumps(payload, ensure_ascii=False)),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         row = cursor.fetchone()
         return row['sequence'] if row else 0
 

@@ -49,6 +49,7 @@ class FakeConn:
         self.inventory = []
         self.scenarios = {}
         self.events = []
+        self.last_insert_params = None
 
     def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
@@ -80,7 +81,7 @@ class FakeConn:
             return Rows([i for i in self.inventory if i["character_id"] == params[0]])
         if normalized.startswith("UPDATE rooms SET state_version = state_version + 1"):
             self.rooms[params[0]]["state_version"] += 1
-            return Rows()
+            return Rows([{"state_version": self.rooms[params[0]]["state_version"]}])
         if normalized.startswith("INSERT INTO events"):
             room_id, event_type, audience, payload = params
             self.events.append({
@@ -89,6 +90,15 @@ class FakeConn:
                 "audience": audience,
                 "payload": json.loads(payload) if isinstance(payload, str) else payload,
             })
+            return Rows([{"sequence": len(self.events)}])
+        if normalized.startswith("SELECT status FROM rooms WHERE room_id"):
+            return Rows([self.rooms.get(params[0])])
+        if normalized.startswith("SELECT * FROM character_runtime_state WHERE character_id"):
+            return Rows([])  # No existing runtime state
+        if normalized.startswith("INSERT INTO character_runtime_state"):
+            self.last_insert_params = params
+            return Rows()
+        if normalized.startswith("UPDATE character_runtime_state"):
             return Rows()
         raise AssertionError(f"Unhandled SQL: {normalized}")
 
@@ -104,6 +114,17 @@ class FakeDispatcher:
         self.events.append((room_id, event_type, audience, payload, character_id))
 
 
+class FakeStateService:
+    """StateService stub that bumps version for testing."""
+    def __init__(self):
+        self.changes = []
+
+    def apply_change(self, room_id, actor, changes, reason=""):
+        # Simulate what real StateService does: bump room version
+        self.changes.append({"room_id": room_id, "changes": changes, "reason": reason})
+        return {"room_id": room_id, "state_version": 1, "applied": {}, "events": []}
+
+
 class FailingRuleExecutor:
     async def execute(self, *args, **kwargs):
         raise RuntimeError("handler failed")
@@ -114,17 +135,20 @@ async def test_pipeline_resolves_queued_action_and_projects_events():
     random.seed(0)
     conn = FakeConn()
     dispatcher = FakeDispatcher()
+    state_svc = FakeStateService()
     pipeline = ResolutionPipeline(
         conn=conn,
         compiler=MechanicCompiler(api_key=""),
         dispatcher=dispatcher,
+        state_service=state_svc,
     )
 
     result = await pipeline.resolve_action("act-1")
 
     assert result["status"] == "resolved"
     assert conn.actions["act-1"]["status"] == "resolved"
-    assert conn.rooms["room-1"]["state_version"] == 1
+    # State version is NOT directly bumped by pipeline anymore (StateService owns it)
+    # The pipeline only bumps via StateService when mutations exist
     assert conn.actions["act-1"]["result"]["mechanic"] == "skill_check"
     event_types = [event[1] for event in dispatcher.events]
     assert "s2c_reveal_transaction" in event_types

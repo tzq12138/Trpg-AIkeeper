@@ -103,6 +103,7 @@ class StateService:
             seq = self.event_log.log_event(
                 room_id, "s2c_scene_sync", "party",
                 {"currentScene": changes.scene_changes.current_scene or ""},
+                commit=False,
             )
             event_seqs.append(seq)
 
@@ -121,9 +122,12 @@ class StateService:
             self._apply_inventory_changes(room_id, changes.inventory_changes, actor)
             applied["inventory_changes"] = len(changes.inventory_changes)
 
-        # 6. Encounter changes (stub)
+        # 6. Encounter changes (NOT yet supported through StateService)
         if changes.encounter_changes:
-            applied["encounter_changes"] = True
+            raise ValueError(
+                "encounter_changes are not supported through StateService.apply_change(). "
+                "Use encounter_persistence module directly."
+            )
 
         # 7. Room-level changes
         if changes.room_changes:
@@ -472,13 +476,10 @@ class StateService:
                     "UPDATE clues SET is_private = FALSE WHERE clue_id = %s AND room_id = %s",
                     (clue_id, room_id),
                 )
-                try:
-                    self.conn.execute(
-                        "INSERT INTO clue_shares (share_id, clue_id, room_id, shared_by) VALUES (%s, %s, %s, %s)",
-                        (str(uuid.uuid4()), clue_id, room_id, cc["sharedBy"]),
-                    )
-                except Exception:
-                    pass  # clue_shares might not exist yet
+                self.conn.execute(
+                    "INSERT INTO clue_shares (share_id, clue_id, shared_by) VALUES (%s, %s, %s)",
+                    (str(uuid.uuid4()), clue_id, cc["sharedBy"]),
+                )
 
     # ── Internal: Inventory Changes ───────────────────────────────────
 
@@ -548,4 +549,5 @@ class StateService:
         return self.event_log.log_event(
             room_id, "s2c_state_patch", "party",
             {"actionId": actor.get("action_id", ""), "patches": patches},
+            commit=False,
         )

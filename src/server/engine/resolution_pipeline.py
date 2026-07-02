@@ -115,10 +115,7 @@ class ResolutionPipeline:
             return {"status": "rejected", "action_id": action_id, "reason": str(exc)}
         resolution.narrative = self._render_fallback_narrative(intent, compiled, resolution)
 
-        self.conn.execute(
-            "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s",
-            (action["room_id"],),
-        )
+        # State version bump is handled by StateService.apply_change() — the single state writer.
         result_payload = resolution.model_dump(by_alias=True)
         self.conn.execute(
             "UPDATE actions SET status = %s, result = %s, completed_at = %s WHERE action_id = %s",
