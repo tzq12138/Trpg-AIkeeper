@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   getSlots, getActiveSlotId, getActiveSlot, setActiveSlot,
-  createSlot, deleteSlot, IdentitySlot,
+  createSlot, deleteSlot, IdentitySlot, setSlotValue,
 } from '../shared/identity';
 
 interface Props {
@@ -43,8 +43,8 @@ export default function IdentitySwitcher({ compact = false }: Props) {
     refresh();
     setNewLabel('');
     setOpen(false);
-    // Clear current tokens for new identity
-    ['account_token', 'account', 'owner_token', 'player_token'].forEach((k) => localStorage.removeItem(k));
+    // Clear current tokens for new identity — use slot system so it is synced
+    ['account_token', 'account', 'owner_token', 'player_token'].forEach((k) => setSlotValue(k, ''));
     window.location.href = '/login';
   };
 
