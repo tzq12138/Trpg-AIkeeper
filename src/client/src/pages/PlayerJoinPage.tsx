@@ -291,7 +291,7 @@ export default function PlayerJoinPage() {
         <span style={{ fontWeight: 900, fontSize: 13 }}>{account ? `👤 ${account.display_name || account.username}` : '👻 游客模式'}</span>
         <span style={{ flex: 1 }} />
         {account ? (
-          <button className="bh-button" style={{ minHeight: 30, fontSize: 11, padding: '4px 10px' }} onClick={() => { localStorage.removeItem('account_token'); localStorage.removeItem('account'); window.location.reload(); }}>登出</button>
+          <button className="bh-button" style={{ minHeight: 30, fontSize: 11, padding: '4px 10px' }} onClick={() => { setSlotValue('account_token', ''); setSlotValue('account', ''); window.location.reload(); }}>登出</button>
         ) : (
           <a className="bh-button bh-button--yellow" style={{ minHeight: 30, fontSize: 11, padding: '4px 10px' }} href="/login" onClick={(e) => { e.preventDefault(); sessionStorage.setItem('login_return_to', '/player/join'); window.location.href = '/login'; }}>登录</a>
         )}

@@ -1,10 +1,8 @@
 import { useState, useEffect } from 'react';
-
-const TOKEN_KEY = 'account_token';
-const ACCOUNT_KEY = 'account';
+import { getSlotValue, setSlotValue } from '../shared/identity';
 
 function api(path: string, opts?: RequestInit) {
-  const token = localStorage.getItem(TOKEN_KEY) || '';
+  const token = getSlotValue('account_token') || '';
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((opts?.headers as Record<string, string>) || {}),
@@ -47,7 +45,8 @@ export default function AdminDashboard() {
     );
   }
 
-  const account = JSON.parse(localStorage.getItem(ACCOUNT_KEY) || '{}');
+  const accountRaw = getSlotValue('account');
+  const account = accountRaw ? JSON.parse(accountRaw) : {};
 
   const tabs: Array<{ key: AdminTab; label: string; eyebrow: string }> = [
     { key: 'overview', label: '概览', eyebrow: 'OVERVIEW' },
@@ -64,7 +63,7 @@ export default function AdminDashboard() {
         <strong style={{ fontFamily: '"Space Grotesk", Impact, sans-serif', fontSize: 22 }}>ADMIN</strong>
         <span style={{ flex: 1 }} />
         <span style={{ fontWeight: 800, fontSize: 13 }}>{account.display_name || account.username}</span>
-        <button className="bh-button" style={{ minHeight: 36, padding: '6px 12px', fontSize: 12 }} onClick={() => { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ACCOUNT_KEY); window.location.href = '/'; }}>登出</button>
+        <button className="bh-button" style={{ minHeight: 36, padding: '6px 12px', fontSize: 12 }} onClick={() => { setSlotValue('account_token', ''); setSlotValue('account', ''); window.location.href = '/'; }}>登出</button>
       </div>
       <div style={{ display: 'flex', gap: 0, borderBottom: '4px solid var(--bh-black)' }}>
         {tabs.map((t) => (
@@ -161,7 +160,7 @@ function RoomsPanel() {
     if (!newRoomScenarioId) { setCreateError('请选择剧本'); return; }
     setCreating(true); setCreateError('');
     try {
-      const token = localStorage.getItem(TOKEN_KEY) || '';
+      const token = getSlotValue('account_token') || '';
       const res = await fetch('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -282,7 +281,7 @@ function ScenariosPanel() {
     const form = new FormData();
     form.append('file', file);
     try {
-      const token = localStorage.getItem(TOKEN_KEY) || '';
+      const token = getSlotValue('account_token') || '';
       await fetch(`/api/admin/scenarios/${sid}/assets`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
       loadAssets(sid);
     } catch { /* ignore */ }
@@ -303,7 +302,7 @@ function ScenariosPanel() {
     const form = new FormData();
     form.append('file', file);
     try {
-      const token = localStorage.getItem(TOKEN_KEY) || '';
+      const token = getSlotValue('account_token') || '';
       const res = await fetch('/api/admin/scenarios/import-pdf', {
         method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form,
       });
