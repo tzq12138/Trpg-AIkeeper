@@ -40,8 +40,9 @@ def setup_logging(level_name: str = "INFO", log_file: str = "") -> None:
     """
     level = getattr(logging, level_name.upper(), logging.INFO)
 
-    fmt = "%(asctime)s.%(msecs)03d %(coloured_level)s %(name)-28s %(message)s"
     datefmt = "%H:%M:%S"
+    console_fmt = "%(asctime)s.%(msecs)03d %(coloured_level)s %(name)-28s %(message)s"
+    file_fmt    = "%(asctime)s.%(msecs)03d %(levelname)-7s %(name)-28s %(message)s"
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -49,14 +50,14 @@ def setup_logging(level_name: str = "INFO", log_file: str = "") -> None:
 
     # Console handler (coloured)
     ch = logging.StreamHandler(sys.stdout)
-    ch.setFormatter(_ColouredConsoleFormatter(fmt, datefmt))
+    ch.setFormatter(_ColouredConsoleFormatter(console_fmt, datefmt))
     root.addHandler(ch)
 
-    # Optional file handler (plain text, UTF-8)
+    # Optional file handler (plain text, UTF-8, no ANSI codes)
     if log_file:
         try:
             fh = logging.FileHandler(log_file, encoding="utf-8")
-            fh.setFormatter(logging.Formatter(fmt, datefmt))
+            fh.setFormatter(logging.Formatter(file_fmt, datefmt))
             root.addHandler(fh)
         except OSError as exc:
             root.warning("Cannot open log file %s: %s", log_file, exc)

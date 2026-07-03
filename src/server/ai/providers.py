@@ -72,6 +72,12 @@ class DeepSeekProvider(BaseAiProvider):
                     "temperature": 0.8,
                 },
             )
+            if resp.status_code >= 400:
+                body_preview = (resp.text or "")[:500]
+                logger.warning(
+                    "DeepSeek API error: status=%s model=%s body=%s",
+                    resp.status_code, self.model, body_preview,
+                )
             resp.raise_for_status()
         data = resp.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -94,18 +100,57 @@ class DeepSeekProvider(BaseAiProvider):
 class KpMcpProvider(BaseAiProvider):
     """Minimal JSON-RPC 2.0 MCP client for Hermes KP MCP Server."""
 
+    # MCP StreamableHTTP requires both application/json and text/event-stream in
+    # Accept for ALL requests.  Using only application/json results in 406.
+    _INIT_HEADERS = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    _JSON_HEADERS = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+
     def __init__(self, server_url: str = "http://127.0.0.1:9100/mcp", timeout: int = 30):
         super().__init__("mcp")
         self.server_url = server_url
         self.timeout = timeout
         self._initialized = False
         self._session_id: str | None = None
+        self._req_headers: dict | None = None  # built after initialize
+
+    def _parse_response(self, text: str) -> dict | None:
+        """Parse MCP response, handling both SSE and plain JSON."""
+        if not text or not text.strip():
+            return None
+        # Try plain JSON first
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        # Try SSE: "event: message\ndata: {...}"
+        for line in text.split("\n"):
+            if line.startswith("data: "):
+                try:
+                    return json.loads(line[6:])
+                except json.JSONDecodeError:
+                    continue
+        return None
+
+    @property
+    def _headers(self) -> dict:
+        if self._req_headers is None:
+            h = dict(self._JSON_HEADERS)
+            if self._session_id:
+                h["Mcp-Session-Id"] = self._session_id
+            self._req_headers = h
+        return self._req_headers
 
     async def _ensure_initialized(self) -> bool:
         if self._initialized:
             return True
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, headers=self._INIT_HEADERS) as client:
                 resp = await client.post(
                     self.server_url,
                     json={
@@ -121,6 +166,10 @@ class KpMcpProvider(BaseAiProvider):
                 )
                 if resp.status_code == 200:
                     self._initialized = True
+                    sid = resp.headers.get("mcp-session-id")
+                    if sid:
+                        self._session_id = sid
+                    self._req_headers = None  # rebuild on next access
                     return True
         except Exception as e:
             logger.debug("MCP initialize failed: %s", e)
@@ -136,7 +185,7 @@ class KpMcpProvider(BaseAiProvider):
 
         arguments = context.get("arguments", context)
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers) as client:
                 resp = await client.post(
                     self.server_url,
                     json={
@@ -149,7 +198,10 @@ class KpMcpProvider(BaseAiProvider):
                 if resp.status_code != 200:
                     logger.warning("MCP call returned %d for %s", resp.status_code, task_type)
                     return None
-                data = resp.json()
+                data = self._parse_response(resp.text)
+                if data is None:
+                    logger.warning("MCP empty response for %s", task_type)
+                    return None
                 if "error" in data:
                     logger.warning("MCP error for %s: %s", task_type, data["error"])
                     return None
@@ -172,8 +224,10 @@ class KpMcpProvider(BaseAiProvider):
     async def health_check(self) -> bool:
         if not self.server_url:
             return False
+        if not await self._ensure_initialized():
+            return False
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=5, headers=self._headers) as client:
                 resp = await client.post(
                     self.server_url,
                     json={"jsonrpc": "2.0", "method": "tools/call",

@@ -6,6 +6,7 @@ export type AppPage =
   | 'host-lobby'
   | 'host-stage'
   | 'player-join'
+  | 'player-lobby'
   | 'player-action'
   | 'player-builder'
   | 'login';
@@ -44,6 +45,7 @@ export function getRouteForPath(path: string): AppRoute {
   if (path === '/player/join') return { page: 'player-join', param: '' };
   if (path === '/login') return { page: 'login', param: '' };
   if (path.startsWith('/player/builder')) return { page: 'player-builder', param: '' };
+  if (path.match(/^\/player\/[^/]+\/lobby$/)) return { page: 'player-lobby', param: path.split('/')[2] };
   if (path.startsWith('/player/')) return { page: 'player-action', param: path.split('/')[2] };
   return { page: 'home', param: '' };
 }

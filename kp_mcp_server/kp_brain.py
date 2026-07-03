@@ -65,26 +65,22 @@ class KpBrain:
 
     # ── mock (no API key) ───────────────────────────────
 
-    def _mock_response(self, user_message: str) -> dict:
+    def _mock_turn(self) -> dict:
         return {
-            "narrative": {
-                "public": "（KP MCP Server 以 mock 模式运行。设置 DEEPSEEK_API_KEY 以启用完整 AI 叙事。）",
-                "perCharacter": {},
-            },
+            "narrative": {"public": "（KP MCP mock 模式。设置 DEEPSEEK_API_KEY 启用完整 AI。）", "perCharacter": {}},
             "rollRequests": [],
             "stateMutations": [],
-            "tacticalPrompts": [
-                {"text": "（mock 模式）请选择行动",
-                 "actions": [{"label": "继续探索", "intentType": "investigate"}]}
-            ],
+            "tacticalPrompts": [{"text": "（mock）请选择行动", "actions": [{"label": "继续探索", "intentType": "investigate"}]}],
             "citations": [],
-            "keeperNotes": "mock mode",
+            "keeperNotes": "mock",
             "_error": None,
         }
 
     # ── tool implementations ─────────────────────────────
 
     async def resolve_turn(self, args: dict) -> dict:
+        if self.config.is_mock:
+            return self._mock_turn()
         action = args.get("action", {})
         context = args.get("context", {})
         room_id = args.get("roomId", "")
@@ -93,6 +89,8 @@ class KpBrain:
         return await self._call_llm(prompt, temperature=0.8)
 
     async def resolve_sanity(self, args: dict) -> dict:
+        if self.config.is_mock:
+            return self._mock_turn()
         context = args.get("context", {})
         trigger = args.get("trigger", {})
         room_id = args.get("roomId", "")
@@ -101,6 +99,8 @@ class KpBrain:
         return await self._call_llm(prompt, temperature=0.7)
 
     async def resolve_combat_round(self, args: dict) -> dict:
+        if self.config.is_mock:
+            return self._mock_turn()
         combatants = args.get("combatants", [])
         room_id = args.get("roomId", "")
 
@@ -108,6 +108,8 @@ class KpBrain:
         return await self._call_llm(prompt, temperature=0.5)
 
     async def structure_scenario(self, args: dict) -> dict:
+        if self.config.is_mock:
+            return {"scenarioTitle": "mock", "scenes": [], "npcs": [], "clues": [], "truth": {}, "endings": [], "triggerMechanics": []}
         raw_text = args.get("rawText", "")
         truncated = raw_text[:12000]
 
@@ -127,6 +129,8 @@ class KpBrain:
         return await self._call_llm(prompt, temperature=0.3)
 
     async def query_rules(self, args: dict) -> dict:
+        if self.config.is_mock:
+            return {"answer": "（mock 模式——COC 七版规则知识库未启用。设置 DEEPSEEK_API_KEY。）", "ruleReference": "mock", "mechanicSuggestion": None}
         question = args.get("question", "")
         context = args.get("context", {})
 
@@ -143,6 +147,8 @@ class KpBrain:
         return await self._call_llm(prompt, temperature=0.3)
 
     async def query_knowledge(self, args: dict) -> dict:
+        if self.config.is_mock:
+            return {"answer": "（mock 模式）", "citations": [], "confidence": "low"}
         query = args.get("query", "")
         room_id = args.get("roomId", "")
         sources = args.get("sources", ["scenario", "rules"])

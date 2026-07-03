@@ -217,7 +217,7 @@ export default function PlayerJoinPage() {
         if (!res.ok) { const d = await res.json().catch(() => ({})); setError(String(d.detail || '加入失败')); return; }
         const data = await res.json();
         setSlotValue('player_token', data.player_token);
-        window.location.href = `/player/${normalizedRoomCode}`;
+        window.location.href = `/player/${normalizedRoomCode}/lobby`;
         return;
       }
 
@@ -236,7 +236,7 @@ export default function PlayerJoinPage() {
         }
         const data = await res.json();
         setSlotValue('player_token', data.player_token);
-        window.location.href = `/player/${normalizedRoomCode}`;
+        window.location.href = `/player/${normalizedRoomCode}/lobby`;
         return;
       }
 
@@ -263,7 +263,7 @@ export default function PlayerJoinPage() {
       }
       const data = await res.json();
       setSlotValue('player_token', data.player_token);
-      window.location.href = `/player/${normalizedRoomCode}`;
+      window.location.href = `/player/${normalizedRoomCode}/lobby`;
     } catch {
       setError('加入失败，当前服务可能没有启动。');
     } finally {

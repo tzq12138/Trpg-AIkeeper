@@ -11,10 +11,11 @@ describe('navigation configuration', () => {
     expect(getRouteForPath('/host/ABCD')).toEqual({ page: 'host-lobby', param: 'ABCD' });
     expect(getRouteForPath('/player/join')).toEqual({ page: 'player-join', param: '' });
     expect(getRouteForPath('/player/ABCD')).toEqual({ page: 'player-action', param: 'ABCD' });
+    expect(getRouteForPath('/player/ABCD/lobby')).toEqual({ page: 'player-lobby', param: 'ABCD' });
   });
 
-  test('exposes the first-pass Stitch skeleton tabs', () => {
-    expect(hostTabs.map((tab) => tab.key)).toEqual(['narrative', 'combat', 'database', 'logs']);
+  test('exposes the current host and player tabs', () => {
+    expect(hostTabs.map((tab) => tab.key)).toEqual(['narrative', 'combat', 'database', 'logs', 'map']);
     expect(playerTabs.map((tab) => tab.key)).toEqual(['action', 'character', 'inventory', 'logs', 'map']);
   });
 });

@@ -328,12 +328,24 @@ async def _structure_with_ai(raw_text: str, api_key: str, api_base: str, model: 
     except json.JSONDecodeError:
         return _structure_mock(raw_text)
 
+    return _normalize_kg(result)
+
+
+def _normalize_kg(raw: dict) -> dict:
+    """Normalize AI knowledge graph output — handle camelCase/snake_case aliases."""
     return {
-        "scenes": result.get("scenes", []),
-        "npcs": result.get("npcs", []),
-        "clues": result.get("clues", []),
-        "truth": result.get("truth"),
-        "endings": result.get("endings", []),
+        "title": raw.get("scenarioTitle") or raw.get("title") or raw.get("scenario_title", ""),
+        "scenes": raw.get("scenes", []),
+        "npcs": raw.get("npcs", []),
+        "clues": raw.get("clues", []),
+        "truth": raw.get("truth", {}),
+        "endings": raw.get("endings", []),
+        "trigger_mechanics": (
+            raw.get("triggerMechanics")
+            or raw.get("trigger_mechanics")
+            or raw.get("triggerMechanisms")
+            or []
+        ),
     }
 
 

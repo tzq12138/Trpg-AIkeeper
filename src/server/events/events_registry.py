@@ -102,12 +102,12 @@ ALL_EVENTS: dict[str, EventDef] = {
 
     # ── Room management ──
     "s2c_room_lobby_snapshot": EventDef(
-        "s2c_room_lobby_snapshot", EventDomain.ROOM, "host",
-        "房间大厅快照（玩家列表、就绪状态）",
+        "s2c_room_lobby_snapshot", EventDomain.ROOM, "party",
+        "房间大厅快照（玩家列表、就绪状态）——广播给 host 和所有 player",
     ),
     "s2c_ready_toggled": EventDef(
-        "s2c_ready_toggled", EventDomain.ROOM, "host",
-        "玩家就绪状态切换",
+        "s2c_ready_toggled", EventDomain.ROOM, "party",
+        "玩家就绪状态切换——广播给 host 和所有 player",
     ),
     "s2c_campaign_ended": EventDef(
         "s2c_campaign_ended", EventDomain.ROOM, "party",

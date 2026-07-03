@@ -132,7 +132,77 @@ class MechanicCompiler:
         data = response.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         raw = json.loads(content)
-        return MechanicCompileResult(**raw)
+        normalized = self._normalize_raw_result(raw)
+        try:
+            return MechanicCompileResult(**normalized)
+        except Exception as e:
+            logger.warning(
+                "compile: validation failed after normalization. raw_keys=%s norm_keys=%s err=%s",
+                list(raw.keys()), list(normalized.keys()), e,
+            )
+            raise
+
+    def _normalize_raw_result(self, raw: dict) -> dict:
+        """Normalize DeepSeek JSON output to match MechanicCompileResult schema.
+
+        DeepSeek may return camelCase, snake_case, or Chinese enum values.
+        This maps them all to the canonical form before Pydantic validation.
+        """
+        n = dict(raw)
+
+        # ── 1. triggeredMechanic ──────────────────────────────────
+        tm = (n.get("triggeredMechanic")
+              or n.get("triggered_mechanic")
+              or n.get("triggeredmechanic")
+              or "dialogue")
+        tm_key = str(tm).lower().replace(" ", "_").replace("-", "_")
+        TM_MAP = {
+            "skill_check": "skill_check", "skillcheck": "skill_check",
+            "dialogue": "dialogue", "identity_check": "dialogue",
+            "identitycheck": "dialogue", "identity_check": "dialogue",
+            "auto_success": "auto_success", "autosuccess": "auto_success",
+            "luck_check": "luck_check", "luckcheck": "luck_check",
+            "sanity_check": "sanity_check", "sanitycheck": "sanity_check",
+            "use_item": "auto_success", "useitem": "auto_success",
+            "show_item": "dialogue", "showitem": "dialogue",
+        }
+        n["triggeredMechanic"] = TM_MAP.get(tm_key, tm_key)
+
+        # ── 2. difficulty ────────────────────────────────────────
+        diff = n.get("difficulty", "regular")
+        if diff is None:
+            diff = "regular"
+        diff_key = str(diff).lower()
+        DIFF_MAP = {
+            "normal": "regular", "medium": "regular",
+            "普通": "regular", "一般": "regular",
+            "regular": "regular", "hard": "hard",
+            "困难": "hard", "extreme": "extreme",
+            "极难": "extreme", "极限": "extreme",
+        }
+        n["difficulty"] = DIFF_MAP.get(diff_key, "regular")
+
+        # ── 3. itemConsumed ──────────────────────────────────────
+        ic = n.get("itemConsumed") or n.get("item_consumed")
+        if ic is None:
+            n["itemConsumed"] = False
+        else:
+            n["itemConsumed"] = bool(ic)
+
+        # ── 4. consequence ───────────────────────────────────────
+        cons = n.get("consequence")
+        if cons is None:
+            n["consequence"] = {}
+        elif isinstance(cons, str):
+            n["consequence"] = {"note": cons}
+        elif isinstance(cons, (int, float, bool)):
+            n["consequence"] = {"note": str(cons)}
+
+        # ── 5. skillName alias ───────────────────────────────────
+        if not n.get("skillName") and n.get("skill_name"):
+            n["skillName"] = n["skill_name"]
+
+        return n
 
     def _skill_from_text(self, text: str) -> str | None:
         patterns = [

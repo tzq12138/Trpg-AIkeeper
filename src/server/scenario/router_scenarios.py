@@ -49,9 +49,25 @@ async def import_pdf(request: Request, file: UploadFile = File(...)):
         raise HTTPException(400, "Only PDF files supported")
 
     conn = request.app.state.db
+    content = await file.read()
+
+    # SHA256 dedup — skip re-import of identical PDF
+    import hashlib
+    sha256_hash = hashlib.sha256(content).hexdigest()
+    existing = conn.execute(
+        "SELECT scenario_id, title, import_status FROM scenarios WHERE source_sha256 = %s",
+        (sha256_hash,)
+    ).fetchone()
+    if existing:
+        return {
+            "scenario_id": existing["scenario_id"],
+            "status": "already_imported",
+            "title": existing["title"],
+            "import_status": existing["import_status"],
+        }
+
     scenario_id = str(uuid.uuid4())[:8]
 
-    content = await file.read()
     tmp_path = os.path.join(tempfile.gettempdir(), f"{scenario_id}.pdf")
     with open(tmp_path, "wb") as f:
         f.write(content)
@@ -86,11 +102,35 @@ async def import_pdf(request: Request, file: UploadFile = File(...)):
             logger.warning("AI structuring failed, using mock: %s", e)
             knowledge_graph = await structure_scenario(full_text)
 
+    # Persist original PDF
+    import shutil
+    scenarios_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "scenarios", scenario_id)
+    os.makedirs(scenarios_dir, exist_ok=True)
+    dest_path = os.path.join(scenarios_dir, "original.pdf")
+    shutil.copy2(tmp_path, dest_path)
+
     conn.execute(
-        "INSERT INTO scenarios (scenario_id, title, raw_text, knowledge_graph, import_status) VALUES (%s, %s, %s, %s, %s)",
-        (scenario_id, file.filename, full_text, json.dumps(knowledge_graph, ensure_ascii=False), "structured"),
+        "INSERT INTO scenarios (scenario_id, title, raw_text, knowledge_graph, import_status, "
+        "source_filename, source_sha256, original_file_path) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (scenario_id, file.filename, full_text,
+         json.dumps(knowledge_graph, ensure_ascii=False), "structured",
+         file.filename, sha256_hash, dest_path),
     )
     conn.commit()
+
+    # Persist quality report
+    if knowledge_graph:
+        try:
+            from ..scenario.quality import QualityReportGenerator
+            report = QualityReportGenerator.evaluate(knowledge_graph)
+            conn.execute(
+                "UPDATE scenarios SET quality_report = %s WHERE scenario_id = %s",
+                (json.dumps(report.model_dump(), ensure_ascii=False), scenario_id),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.warning("Failed to save quality report for %s: %s", scenario_id, e)
 
     if hasattr(request.app.state, 'rag') and request.app.state.rag and knowledge_graph:
         try:

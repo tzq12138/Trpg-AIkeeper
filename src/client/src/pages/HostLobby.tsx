@@ -1,68 +1,75 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { getSlotValue } from '../shared/identity';
+
+// ── types ──────────────────────────────────────────────────────────
+
+interface LobbyPlayer {
+  character_id: string;
+  player_name: string;
+  investigator_name: string;
+  is_ready: boolean;
+  status?: string;
+}
 
 interface RoomData {
   room_id: string;
   status: string;
   scenario_id: string | null;
+  scenario_title?: string;
+  players: LobbyPlayer[];
 }
 
-interface PlayerInfo {
-  character_id: string;
-  player_name: string;
-  investigator_name: string;
-  is_ready: boolean;
+interface ScenarioOption {
+  scenario_id: string;
+  title: string;
+  import_status?: string;
 }
 
-interface HUDResponse {
-  room_id: string;
-  players: Array<{
-    character_id: string;
-    characterId?: string;
-    player_name: string;
-    investigator_name?: string;
-    playerName?: string;
-    investigatorName?: string;
-    hp: number;
-    hp_max: number;
-    san: number;
-    san_max: number;
-  }>;
-  scene_image_url: string | null;
-  engine_state: string;
-  queue_status: { normal: number; urgent: number };
+function normalizePlayer(p: Record<string, any>): LobbyPlayer {
+  return {
+    character_id: p.character_id || p.characterId || '',
+    player_name: p.player_name || p.playerName || '未命名玩家',
+    investigator_name: p.investigator_name || p.investigatorName || '',
+    is_ready: p.is_ready ?? p.isReady ?? false,
+    status: p.status || 'joined',
+  };
 }
+
+// ── component ──────────────────────────────────────────────────────
 
 export default function HostLobby({ roomId }: { roomId: string }) {
   const [room, setRoom] = useState<RoomData | null>(null);
-  const [players, setPlayers] = useState<PlayerInfo[]>([]);
-  const [scenarioTitle, setScenarioTitle] = useState<string | null>(null);
-  const [scenarioOptions, setScenarioOptions] = useState<any[]>([]);
+  const [players, setPlayers] = useState<LobbyPlayer[]>([]);
+  const [scenarioTitle, setScenarioTitle] = useState('');
+  const [scenarioOptions, setScenarioOptions] = useState<ScenarioOption[]>([]);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [savingScenario, setSavingScenario] = useState(false);
+  const [startError, setStartError] = useState('');
+  const [notReadyList, setNotReadyList] = useState<LobbyPlayer[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const loadRoom = () => {
+  // ── data fetching ────────────────────────────────────────────────
+
+  const loadRoom = useCallback(() => {
     fetch(`/api/rooms/${roomId}`)
       .then((r) => r.json())
-      .then((data) => {
+      .then((data: RoomData) => {
         setRoom(data);
-        if (data.scenario_title) {
-          setScenarioTitle(data.scenario_title);
-        } else if (data.scenario_id) {
-          setScenarioTitle(data.scenario_id);
-        }
+        setLoading(false);
+        if (data.players) setPlayers(data.players.map(normalizePlayer));
+        setScenarioTitle(data.scenario_title || '');
       })
-      .catch(() => {});
-  };
+      .catch(() => setLoading(false));
+  }, [roomId]);
 
-  useEffect(() => { loadRoom(); }, [roomId]);
+  useEffect(() => { loadRoom(); }, [loadRoom]);
 
   const loadScenarioOptions = () => {
     fetch(`/api/rooms/${roomId}/scenario-options`, {
       headers: { 'X-Owner-Token': getSlotValue('owner_token') || '' },
     })
       .then((r) => r.json())
-      .then((d) => { setScenarioOptions(d.scenarios || []); setSelectedScenarioId(room?.scenario_id || ''); })
+      .then((d) => setScenarioOptions(d.scenarios || []))
       .catch(() => {});
   };
 
@@ -72,246 +79,276 @@ export default function HostLobby({ roomId }: { roomId: string }) {
     try {
       const res = await fetch(`/api/rooms/${roomId}/scenario`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'X-Owner-Token': getSlotValue('owner_token') || '' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Owner-Token': getSlotValue('owner_token') || '',
+        },
         body: JSON.stringify({ scenario_id: selectedScenarioId }),
       });
       if (res.ok) {
         const updated = await res.json();
-        setRoom(updated);
         setScenarioTitle(updated.scenario_title || selectedScenarioId);
       }
-    } catch {}
+    } catch { /* ignore */ }
     setSavingScenario(false);
   };
 
+  // ── WebSocket + polling ──────────────────────────────────────────
+
   useEffect(() => {
-    if (!roomId) return;
     const ownerToken = getSlotValue('owner_token') || '';
-    const ws = new WebSocket(`ws://${window.location.hostname}:3001/ws?room=${roomId}&role=host&ownerToken=${encodeURIComponent(ownerToken)}`);
+    if (!ownerToken) return;
+
+    const ws = new WebSocket(
+      `ws://${window.location.hostname}:3001/ws?room=${roomId}&role=host&ownerToken=${encodeURIComponent(ownerToken)}`,
+    );
+
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
     ws.onmessage = (msg) => {
       try {
         const event = JSON.parse(msg.data);
-        if (event.type === 's2c_room_lobby_snapshot' || event.type === 's2c_host_snapshot') {
-          const payload = event.payload;
-          if (payload.players) {
-            setPlayers(payload.players.map(normalizePlayer));
-          }
+        const type = event.type || event.eventType;
+        if (type === 's2c_room_lobby_snapshot' || type === 's2c_host_snapshot') {
+          const payload = event.payload || {};
+          if (payload.players) setPlayers(payload.players.map(normalizePlayer));
         }
-      } catch { /* ignore parse errors */ }
+      } catch { /* ignore */ }
     };
+
     ws.onerror = () => {
-      // fallback to polling on WS failure
-      const poll = setInterval(() => {
+      // Polling fallback every 5s
+      pollTimer = setInterval(() => {
         fetch(`/api/host/${roomId}/hud`, {
-          headers: { 'X-Owner-Token': getSlotValue('owner_token') || '' },
+          headers: { 'X-Owner-Token': ownerToken },
         })
           .then((r) => r.json())
-          .then((data: HUDResponse) => {
-            setPlayers(data.players.map(normalizePlayer));
+          .then((data: any) => {
+            if (data.players) setPlayers(data.players.map(normalizePlayer));
           })
           .catch(() => {});
       }, 5000);
-      (ws as unknown as { _poll: ReturnType<typeof setInterval> })._poll = poll;
     };
+
     return () => {
-      const pollId = (ws as unknown as { _poll?: ReturnType<typeof setInterval> })._poll;
-      if (pollId) clearInterval(pollId);
+      if (pollTimer) clearInterval(pollTimer);
       ws.close();
     };
   }, [roomId]);
 
-  const [startError, setStartError] = useState('');
-  const [notReadyList, setNotReadyList] = useState<any[]>([]);
+  // ── game start ───────────────────────────────────────────────────
 
   const startGame = async (force?: boolean) => {
     const token = getSlotValue('owner_token') || '';
     setStartError('');
-    const res = await fetch(`/api/rooms/${roomId}/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
-      body: JSON.stringify({ force_start: !!force }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      setRoom((r) => r ? { ...r, status: 'active' } : r);
-      window.location.href = `/host/${roomId}/stage`;
-    } else if (data.status === 'not_ready') {
-      setNotReadyList(data.not_ready_players || []);
-      setStartError('有玩家未准备');
-    } else {
-      setStartError(data.detail || '开始失败');
+    setNotReadyList([]);
+
+    try {
+      const res = await fetch(`/api/rooms/${roomId}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
+        body: JSON.stringify({ force_start: !!force }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        window.location.href = `/host/${roomId}/stage`;
+      } else if (data.status === 'not_ready') {
+        setNotReadyList(data.not_ready_players || []);
+        setStartError('有玩家未准备');
+      } else {
+        setStartError(String(data.detail || '开始失败'));
+      }
+    } catch {
+      setStartError('网络错误');
     }
   };
 
-  if (!room) return <p style={{ color: '#aaa', textAlign: 'center', marginTop: 40 }}>加载中...</p>;
+  // ── derived ──────────────────────────────────────────────────────
 
   const ownerToken = getSlotValue('owner_token') || '';
+  const unreadyPlayers = players.filter((p) => !p.is_ready);
+  const canStart = players.length > 0 && !!scenarioTitle && unreadyPlayers.length === 0;
+
+  let disabledReason = '';
+  if (!scenarioTitle) disabledReason = '请先选择剧本再开始游戏';
+  else if (players.length === 0) disabledReason = '等待玩家加入房间';
+  else if (unreadyPlayers.length > 0)
+    disabledReason = `${unreadyPlayers.length} 名玩家未准备: ${unreadyPlayers.map((p) => p.player_name).join('、')}`;
+
+  // ── missing token ────────────────────────────────────────────────
+
   if (!ownerToken) {
     return (
-      <div style={{ maxWidth: 480, margin: '60px auto', padding: 32, textAlign: 'center', fontFamily: 'sans-serif' }}>
-        <h2 style={{ marginBottom: 12 }}>需要房主身份</h2>
-        <p style={{ color: '#888', fontSize: 14 }}>请从创建房间页进入，或确认当前身份拥有房主权证。</p>
+      <div className="bh-page bh-page--narrow">
+        <div className="bh-home">
+          <section className="bh-panel" style={{ textAlign: 'center', padding: 40 }}>
+            <span className="bh-eyebrow">HOST</span>
+            <h2 className="bh-panel-title">需要房主身份</h2>
+            <p className="bh-panel-desc">请从创建房间页进入，或确认当前身份拥有房主权证。</p>
+            <a href="/host/create" className="bh-button bh-button--yellow" style={{ marginTop: 12 }}>
+              创建房间
+            </a>
+          </section>
+        </div>
       </div>
     );
   }
 
-  return (
-    <div style={{ maxWidth: 480, margin: '0 auto', padding: 16, fontFamily: 'sans-serif' }}>
-      <h2 style={{ marginBottom: 4 }}>大厅 — {roomId}</h2>
-      <div style={{
-        background: '#1a1a2e',
-        borderRadius: 12,
-        padding: 16,
-        marginBottom: 16,
-        color: '#ccc',
-      }}>
-        <div style={{ fontSize: 13, color: '#888', marginBottom: 4 }}>剧本</div>
-        <div style={{ fontSize: 18, fontWeight: 'bold' }}>{scenarioTitle || '未选择剧本'}</div>
-        {room?.status !== 'active' && (
-          <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-            <select className="bh-input" style={{ flex: 1 }} value={selectedScenarioId}
-              onChange={(e) => setSelectedScenarioId(e.target.value)}
-              onFocus={() => { if (scenarioOptions.length === 0) loadScenarioOptions(); }}>
-              <option value="">-- 选择剧本 --</option>
-              {scenarioOptions.map((s: any) => (
-                <option key={s.scenario_id} value={s.scenario_id}>{s.title}</option>
-              ))}
-            </select>
-            <button className="bh-button bh-button--yellow" disabled={!selectedScenarioId || savingScenario}
-              onClick={saveScenario}>
-              {savingScenario ? '保存中...' : '保存'}
-            </button>
-          </div>
-        )}
-      </div>
+  // ── loading ──────────────────────────────────────────────────────
 
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 14, color: '#888', marginBottom: 8 }}>
-          已加入玩家 ({players.length})
+  if (loading) {
+    return (
+      <div className="bh-page bh-page--narrow">
+        <div className="bh-home">
+          <div className="bh-muted-box">加载房间数据...</div>
         </div>
-        {players.length === 0 && (
-          <div style={{ color: '#555', fontSize: 13, padding: '12px 0' }}>
-            等待玩家加入...
-          </div>
-        )}
-        {players.map((p) => (
-          <div key={p.character_id} style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            padding: '10px 12px',
-            background: 'rgba(255,255,255,0.04)',
-            borderRadius: 8,
-            marginBottom: 6,
-          }}>
-            <div style={{
-              width: 32,
-              height: 32,
-              borderRadius: '50%',
-              background: '#3f51b5',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 14,
-              fontWeight: 'bold',
-            }}>
-              {p.player_name.charAt(0)}
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 'bold', fontSize: 14 }}>{p.player_name}</div>
-              {p.investigator_name && (
-                <div style={{ color: '#777', fontSize: 12 }}>调查员：{p.investigator_name}</div>
-              )}
-            </div>
-            <div style={{
-              fontSize: 11,
-              color: p.is_ready ? '#4caf50' : '#888',
-              padding: '2px 8px',
-              borderRadius: 4,
-              background: p.is_ready ? 'rgba(76,175,80,0.15)' : 'rgba(255,255,255,0.05)',
-            }}>
-              {p.is_ready ? '已准备' : '未准备'}
-            </div>
-          </div>
-        ))}
       </div>
+    );
+  }
 
-      <div style={{
-        padding: 12,
-        background: 'rgba(255,255,255,0.03)',
-        borderRadius: 8,
-        marginBottom: 16,
-        fontSize: 13,
-        color: '#888',
-      }}>
-        <div>房间状态: <span style={{ color: '#eee' }}>{room.status === 'lobby' ? '大厅等待中' : '进行中'}</span></div>
-        <div style={{ marginTop: 4 }}>房间码: <strong style={{ color: '#eee', fontSize: 20 }}>{roomId}</strong></div>
+  // ── render ───────────────────────────────────────────────────────
+
+  return (
+    <div className="bh-page" style={{ padding: 0 }}>
+      <div className="bh-lobby">
+        {/* Room code bar */}
+        <div className="bh-lobby-room-bar">
+          <span>HOST</span>
+          <span style={{ flex: 1, textAlign: 'center', letterSpacing: 4 }}>{roomId}</span>
+        </div>
+
+        <div className="bh-lobby-layout">
+          {/* LEFT: Scenario + Start */}
+          <section className="bh-panel">
+            <span className="bh-eyebrow">SCENARIO</span>
+            <h2 className="bh-panel-title">
+              {scenarioTitle || '未选择剧本'}
+            </h2>
+
+            {room?.status === 'lobby' && (
+              <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                <select
+                  className="bh-input"
+                  style={{ flex: 1 }}
+                  value={selectedScenarioId}
+                  onChange={(e) => setSelectedScenarioId(e.target.value)}
+                  onFocus={() => { if (scenarioOptions.length === 0) loadScenarioOptions(); }}
+                >
+                  <option value="">-- 选择剧本 --</option>
+                  {scenarioOptions.map((s) => (
+                    <option key={s.scenario_id} value={s.scenario_id}>{s.title}</option>
+                  ))}
+                </select>
+                <button
+                  className="bh-button bh-button--yellow"
+                  disabled={!selectedScenarioId || savingScenario}
+                  onClick={saveScenario}
+                >
+                  {savingScenario ? '保存中...' : '保存'}
+                </button>
+              </div>
+            )}
+
+            {/* Start button + reason */}
+            {room?.status === 'lobby' && (
+              <div style={{ marginTop: 24 }}>
+                <button
+                  className="bh-button bh-button--yellow"
+                  style={{ width: '100%', padding: '16px 0', fontSize: 20, fontWeight: 900 }}
+                  disabled={!canStart}
+                  onClick={() => startGame()}
+                >
+                  开始游戏
+                </button>
+                {disabledReason && (
+                  <p className="bh-start-reason">{disabledReason}</p>
+                )}
+
+                {/* Force start when server returns not_ready */}
+                {startError && notReadyList.length > 0 && (
+                  <div style={{ marginTop: 12, padding: 12, border: '3px solid var(--bh-red)', background: 'var(--bh-yellow)' }}>
+                    <p style={{ fontWeight: 900, fontSize: 14 }}>{startError}</p>
+                    <p style={{ fontSize: 12, marginTop: 4 }}>
+                      未准备: {notReadyList.map((p: any) => p.player_name || p.character_id).join('、')}
+                    </p>
+                    <button
+                      className="bh-button"
+                      style={{ marginTop: 8, background: 'var(--bh-red)', color: '#fff' }}
+                      onClick={() => startGame(true)}
+                    >
+                      强制开始 (跳过准备检查)
+                    </button>
+                  </div>
+                )}
+
+                {startError && notReadyList.length === 0 && (
+                  <p className="bh-start-reason" style={{ borderColor: 'var(--bh-red)' }}>{startError}</p>
+                )}
+              </div>
+            )}
+
+            {/* Enter stage when active */}
+            {room?.status === 'active' && (
+              <div style={{ marginTop: 24, textAlign: 'center' }}>
+                <p style={{ fontWeight: 900, color: 'var(--bh-yellow)', marginBottom: 8 }}>游戏进行中</p>
+                <a
+                  className="bh-button bh-button--yellow"
+                  href={`/host/${roomId}/stage`}
+                  style={{ display: 'block', textAlign: 'center', padding: 16, fontSize: 18 }}
+                >
+                  进入舞台
+                </a>
+              </div>
+            )}
+          </section>
+
+          {/* RIGHT: Player list + room info */}
+          <section className="bh-panel">
+            <span className="bh-eyebrow">INVESTIGATORS</span>
+            <h2 className="bh-panel-title">
+              调查员 ({players.length})
+            </h2>
+
+            {players.length === 0 && (
+              <p style={{ fontSize: 13, color: 'var(--bh-dim)', padding: '12px 0' }}>
+                等待玩家加入...
+              </p>
+            )}
+
+            {players.map((p) => (
+              <div key={p.character_id} className="bh-lobby-player-item">
+                <div className="bh-lobby-avatar">
+                  {(p.player_name || '?')[0]}
+                </div>
+                <div className="bh-lobby-player-info">
+                  <div className="bh-lobby-player-name">{p.player_name}</div>
+                  <div className="bh-lobby-investigator">
+                    {p.investigator_name || '调查员'}
+                  </div>
+                </div>
+                <span className={`bh-ready-badge ${p.is_ready ? 'bh-ready-badge--ready' : 'bh-ready-badge--waiting'}`}>
+                  {p.is_ready ? '已准备' : '未准备'}
+                </span>
+              </div>
+            ))}
+
+            {/* Room status footer */}
+            <div style={{
+              marginTop: 16, padding: 12,
+              border: '3px solid var(--bh-black)',
+              background: 'var(--bh-paper)',
+              fontSize: 13, fontWeight: 700,
+            }}>
+              <div>
+                状态: <strong>{room?.status === 'lobby' ? '大厅等待中' : room?.status === 'active' ? '进行中' : room?.status || '未知'}</strong>
+              </div>
+              <div style={{ marginTop: 4, fontSize: 28, fontWeight: 900, letterSpacing: 6 }}>
+                {roomId}
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
-
-      {room.status === 'lobby' && <>
-        <button
-          onClick={() => startGame()}
-          disabled={players.length === 0 || !scenarioTitle}
-          style={{
-            width: '100%',
-            padding: '14px 0',
-            fontSize: 18,
-            fontWeight: 'bold',
-            borderRadius: 10,
-            border: 'none',
-            background: players.length > 0 && scenarioTitle ? '#3f51b5' : '#333',
-            color: players.length > 0 && scenarioTitle ? '#fff' : '#666',
-            cursor: players.length > 0 && scenarioTitle ? 'pointer' : 'not-allowed',
-          }}
-        >
-          {!scenarioTitle ? '请先选择剧本' : players.length === 0 ? '等待玩家加入' : '开始游戏'}
-        </button>
-        {startError ? (
-          <div style={{ marginTop: 8, padding: 8, border: '2px solid var(--bh-yellow)', background: 'var(--bh-paper)' }}>
-            <p style={{ fontWeight: 700, fontSize: 13 }}>{startError}</p>
-            {notReadyList.length > 0 ? (
-              <>
-                <p style={{ fontSize: 11, marginTop: 4 }}>未准备玩家：{notReadyList.map((p: any) => p.player_name || p.character_id).join('、')}</p>
-                <button className="bh-button bh-button--yellow" style={{ marginTop: 6 }} onClick={() => startGame(true)}>强制开始</button>
-              </>
-            ) : null}
-          </div>
-        ) : null}
-      </>}
-      {room.status === 'active' && (
-        <a href={`/host/${roomId}/stage`} style={{
-          display: 'block',
-          width: '100%',
-          padding: '14px 0',
-          fontSize: 18,
-          fontWeight: 'bold',
-          borderRadius: 10,
-          background: '#4caf50',
-          color: '#fff',
-          textAlign: 'center',
-          textDecoration: 'none',
-        }}>
-          进入舞台
-        </a>
-      )}
     </div>
   );
-}
-
-function normalizePlayer(p: {
-  character_id?: string;
-  characterId?: string;
-  player_name?: string;
-  playerName?: string;
-  investigator_name?: string;
-  investigatorName?: string;
-  is_ready?: boolean;
-  isReady?: boolean;
-}): PlayerInfo {
-  return {
-    character_id: p.character_id || p.characterId || '',
-    player_name: p.player_name || p.playerName || '未命名玩家',
-    investigator_name: p.investigator_name || p.investigatorName || '',
-    is_ready: p.is_ready ?? p.isReady ?? false,
-  };
 }

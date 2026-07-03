@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { getSlotValue } from '../shared/identity';
 
 type RuleDoc = {
   doc_id: string;
@@ -24,13 +25,19 @@ const SAMPLE_QUERIES = [
   '孤注一掷失败会发生什么',
 ];
 
+function authHeaders(): Record<string, string> {
+  const token = getSlotValue('account_token') || '';
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function api<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...opts,
-    headers: { 'Content-Type': 'application/json', ...opts?.headers },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...opts?.headers },
   });
   if (!res.ok) {
-    throw new Error(`${res.status}`);
+    const detail = await res.json().catch(() => ({}));
+    throw new Error((detail as any).detail || `${res.status}`);
   }
   return res.json();
 }

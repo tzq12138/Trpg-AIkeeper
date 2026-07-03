@@ -113,7 +113,15 @@ class ResolutionPipeline:
         except Exception as exc:
             await self._reject(action, f"resolution failed: {exc}")
             return {"status": "rejected", "action_id": action_id, "reason": str(exc)}
-        resolution.narrative = self._render_fallback_narrative(intent, compiled, resolution)
+        resolution.narrative = self._render_fallback_narrative(intent, compiled, resolution, dict(character))
+
+        # For dialogue intents, attempt AI-enriched narrative
+        if compiled.triggered_mechanic == "dialogue" and self.gateway:
+            enriched = await self._enrich_dialogue_narrative(
+                action, dict(character), dict(room), dict(scenario) if scenario else None,
+            )
+            if enriched:
+                resolution.narrative = enriched
 
         # State version bump is handled by StateService.apply_change() — the single state writer.
         result_payload = resolution.model_dump(by_alias=True)
@@ -355,6 +363,7 @@ class ResolutionPipeline:
         intent: PlayerIntent,
         compiled: MechanicCompileResult,
         resolution: ResolutionResult,
+        character: dict | None = None,
     ) -> str:
         if resolution.cascading_state_changes:
             facts = "；".join(resolution.cascading_state_changes)
@@ -364,9 +373,59 @@ class ResolutionPipeline:
             roll = resolution.metadata.get("roll")
             target = resolution.metadata.get("target")
             return f"{intent.declared_intent}。检定结果 {roll}/{target}，{level}。"
+
+        # Dialogue / free-form text: do NOT just echo the player's input
+        declared = intent.declared_intent or ""
+        if compiled.triggered_mechanic == "dialogue":
+            # "Who am I" type questions → respond with character identity
+            if re.search(r"我是谁|我又是谁|who am i|我的身份|我叫什么|自我介绍", declared, re.IGNORECASE):
+                if character:
+                    xlsx = self._json_value(character.get("xlsx_data")) or {}
+                    inv_name = xlsx.get("name", "") if isinstance(xlsx, dict) else ""
+                    occupation = xlsx.get("occupation", "") if isinstance(xlsx, dict) else ""
+                    parts = [f"你是{inv_name or character.get('player_name', '一名调查员')}"]
+                    if occupation:
+                        parts.append(f"职业是{occupation}")
+                    parts.append("你目前身处当前场景之中，记忆与状态以角色卡为准。")
+                    return "，".join(parts) + "。"
+                return "你是一名调查员。你目前身处当前场景之中，记忆与状态以角色卡为准。"
+            if len(declared) > 200:
+                declared = declared[:200] + "..."
+
         if resolution.is_success:
-            return intent.declared_intent or "行动完成。"
-        return f"{intent.declared_intent}。行动未能奏效。"
+            return f"你说：「{declared}」。周围暂时没有新的变化。"
+        return f"你说：「{declared}」。没有明显效果。"
+
+    async def _enrich_dialogue_narrative(
+        self, action: dict, character: dict, room: dict, scenario: dict | None,
+    ) -> str | None:
+        """Try to generate AI-enriched narrative for dialogue actions."""
+        try:
+            xlsx = self._json_value(character.get("xlsx_data")) or {}
+            context = {
+                "scenario_title": (scenario or {}).get("title", ""),
+                "investigator_name": xlsx.get("name", character.get("player_name", "")),
+                "occupation": xlsx.get("occupation", ""),
+                "background": (xlsx.get("background", "") or "")[:300],
+                "player_words": action.get("declared_intent", ""),
+                "intent_type": "dialogue",
+                "system_prompt": (
+                    "你是TRPG守秘人。玩家说了以下内容。请以场景叙事的方式回应。"
+                    "使用角色信息丰富回应。只返回JSON: {\"narrative\": {\"public\": \"...\"}}"
+                ),
+            }
+            result = await self.gateway.generate_narrative(context, action["room_id"])
+            if isinstance(result, dict):
+                narrative = result.get("narrative", {})
+                if isinstance(narrative, dict) and narrative.get("public"):
+                    return narrative["public"]
+                if result.get("public"):
+                    return result["public"]
+                if result.get("text"):
+                    return result["text"]
+            return None
+        except Exception:
+            return None
 
     async def _validate_move(self, action: dict[str, Any], intent: PlayerIntent) -> str | None:
         """Validate move pre-conditions. Returns error string or None if valid."""

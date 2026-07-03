@@ -63,9 +63,12 @@ class AiGateway:
         return await self._call_providers("generate_narrative", context, room_id)
 
     async def structure_scenario(self, raw_text: str) -> dict:
-        context = {"rawText": raw_text, "format": "full",
+        # Truncate to avoid 400 from DeepSeek (matches MCP-side 12000-char limit).
+        # 59-page PDFs can easily exceed model context windows.
+        truncated = raw_text[:12000]
+        context = {"rawText": truncated, "format": "full",
                    "system_prompt": "你是TRPG剧本分析器。提取 scenes, npcs, clues, truth, endings。",
-                   "user_message": json.dumps({"rawText": raw_text}, ensure_ascii=False)}
+                   "user_message": json.dumps({"rawText": truncated}, ensure_ascii=False)}
         return await self._call_providers("structure_scenario", context)
 
     async def compile_mechanic(self, intent: Any, scenario: dict, character: dict) -> dict:

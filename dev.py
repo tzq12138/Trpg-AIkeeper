@@ -5,9 +5,10 @@ and Vite frontend concurrently.  All output is streamed to this single
 terminal with coloured prefixes so you can scan for issues at a glance.
 
 Usage:
-    python dev.py          # start everything (default)
-    python dev.py --check  # only run health checks, don't start services
-    python dev.py --stop   # stop Docker services
+    python dev.py               # start everything (default)
+    python dev.py --skip-docker # skip Docker — use native PG/Redis on :5432/:6379
+    python dev.py --check       # only run health checks, don't start services
+    python dev.py --stop        # stop Docker services
 """
 
 import subprocess
@@ -19,7 +20,9 @@ import socket
 import urllib.request
 import urllib.error
 import json
+import re as _re
 import signal
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -127,15 +130,21 @@ def _print_health():
 
 # ── Output streaming ────────────────────────────────────────────────────
 
-def _stream(proc, prefix, colour, *, file=None):
-    """Read lines from *proc* stdout and print them with a prefix."""
-    fp = file or proc.stdout
-    for line in iter(fp.readline, b""):
+def _stream(proc, prefix, colour, *, log_files=None):
+    """Read lines from *proc* stdout, print with prefix, and write plain-text
+    to each file handle in *log_files* (a list of open file handles or None)."""
+    for line in iter(proc.stdout.readline, b""):
         text = line.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
         if text:
+            clean = _re.sub(r"\x1b\[[0-9;]*m", "", text)
             print(f"{C.get(colour, '')}{prefix}{C['RST']} {text}")
-    if fp is not proc.stdout:
-        fp.close()
+            if log_files:
+                for fh in log_files:
+                    try:
+                        fh.write(f"{prefix} {clean}\n")
+                        fh.flush()
+                    except Exception:
+                        pass
     proc.stdout.close()
 
 
@@ -143,14 +152,29 @@ def _stream(proc, prefix, colour, *, file=None):
 
 def main():
     _banner()
+    skip_docker = "--skip-docker" in sys.argv
 
     # ── 1. Prerequisites ────────────────────────────────────────────
     print(_c("CYN", "-- Prerequisites " + "-" * 40))
 
-    # Docker
-    rc, _, _ = _run(["docker", "info"], timeout=15)
-    if not _check_step("Docker engine", rc == 0, "Start Docker Desktop first"):
-        sys.exit(1)
+    # Check if essential services are already reachable (native install, etc.)
+    pg_native = _is_port_open("127.0.0.1", 5432, timeout=2)
+    redis_native = _is_port_open("127.0.0.1", 6379, timeout=2)
+    services_ready = pg_native and redis_native
+
+    if services_ready:
+        print(f"  {_c('GRN', '[OK]')}  PostgreSQL :5432 + Redis :6379 already running — skip Docker")
+        docker_ok = False
+    elif skip_docker:
+        print(f"  {_c('YEL', '[SKIP]')} Docker check skipped (--skip-docker)")
+        docker_ok = False
+    else:
+        # Docker fallback — only needed when native services aren't available
+        rc, _, _ = _run(["docker", "info"], timeout=5)
+        docker_ok = rc == 0
+        if not docker_ok:
+            print(f"  {_c('YEL', '[WARN]')} Docker not available (timeout or not running)")
+            print(f"  {_c('DIM', '       Tip: use --skip-docker if PG/Redis are running natively')}")
 
     # Python >= 3.11
     py_ok = sys.version_info >= (3, 11)
@@ -163,42 +187,55 @@ def main():
     rc, node_ver, _ = _run(["node", "--version"])
     _check_step(f"Node.js {node_ver.strip()}", rc == 0)
 
-    # ── 2. Docker services ──────────────────────────────────────────
-    print(_c("CYN", "\n-- Docker Services " + "-" * 40))
+    # ── 2. Database / cache services ────────────────────────────────
+    print(_c("CYN", "\n-- Database / Cache Services " + "-" * 40))
 
-    # Start
-    _run(["docker", "compose", "up", "-d"], cwd=ROOT, timeout=60)
+    if docker_ok:
+        # Use Docker Compose
+        _run(["docker", "compose", "up", "-d"], cwd=ROOT, timeout=60)
 
-    # Wait for PostgreSQL
-    pg_ok = False
-    for i in range(30):
-        rc, out, _ = _run(
-            ["docker", "compose", "exec", "-T", "postgres", "pg_isready", "-U", "aikeeper"],
-            cwd=ROOT, timeout=10,
-        )
-        if rc == 0:
-            pg_ok = True
-            break
-        time.sleep(1)
-    _check_step("PostgreSQL (pgvector:pg16)", pg_ok,
-                "docker compose up -d first, then retry")
+        # Wait for PostgreSQL
+        pg_ok = False
+        for i in range(30):
+            rc, out, _ = _run(
+                ["docker", "compose", "exec", "-T", "postgres", "pg_isready", "-U", "aikeeper"],
+                cwd=ROOT, timeout=10,
+            )
+            if rc == 0:
+                pg_ok = True
+                break
+            time.sleep(1)
+        _check_step("PostgreSQL (pgvector:pg16)", pg_ok,
+                    "docker compose up -d first, then retry")
 
-    # Wait for Redis
-    redis_ok = False
-    for i in range(10):
-        rc, out, _ = _run(
-            ["docker", "compose", "exec", "-T", "redis", "redis-cli", "ping"],
-            cwd=ROOT, timeout=10,
-        )
-        if rc == 0 and "PONG" in out:
-            redis_ok = True
-            break
-        time.sleep(1)
-    _check_step("Redis (7-alpine)", redis_ok)
+        # Wait for Redis
+        redis_ok = False
+        for i in range(10):
+            rc, out, _ = _run(
+                ["docker", "compose", "exec", "-T", "redis", "redis-cli", "ping"],
+                cwd=ROOT, timeout=10,
+            )
+            if rc == 0 and "PONG" in out:
+                redis_ok = True
+                break
+            time.sleep(1)
+        _check_step("Redis (7-alpine)", redis_ok)
 
-    if not pg_ok:
-        print(_c("RED", "\nPostgreSQL is required.  Check docker compose logs.\n"))
-        sys.exit(1)
+        if not pg_ok:
+            print(_c("RED", "\nPostgreSQL is required.  Check docker compose logs.\n"))
+            sys.exit(1)
+    else:
+        # Verify native services are reachable
+        pg_ok = _is_port_open("127.0.0.1", 5432, timeout=2)
+        redis_ok = _is_port_open("127.0.0.1", 6379, timeout=2)
+        _check_step("PostgreSQL :5432", pg_ok,
+                    "No native PostgreSQL found — install it or start Docker")
+        _check_step("Redis :6379", redis_ok,
+                    "No native Redis found — install it or start Docker")
+
+        if not pg_ok:
+            print(_c("RED", "\nPostgreSQL is required.  Start Docker or install natively.\n"))
+            sys.exit(1)
 
     # ── 3. Free ports ───────────────────────────────────────────────
     print(_c("CYN", "\n-- Port Check " + "-" * 40))
@@ -213,6 +250,23 @@ def main():
         else:
             _check_step(f"Port {port}", True, "free")
 
+    # ── 3.5. Log directory & file handles ──────────────────────────
+    log_date_dir = ROOT / "log" / datetime.now().strftime("%Y-%m-%d")
+    log_date_dir.mkdir(parents=True, exist_ok=True)
+
+    combined_fh = open(log_date_dir / "combined.log", "w", encoding="utf-8")
+    be_fh = open(log_date_dir / "backend.log", "w", encoding="utf-8")
+    fe_fh = open(log_date_dir / "frontend.log", "w", encoding="utf-8")
+    kp_fh = open(log_date_dir / "kp-mcp.log", "w", encoding="utf-8")
+
+    _log_files = [combined_fh, be_fh, fe_fh, kp_fh]
+
+    # UTF-8 env for all subprocesses
+    sub_env = os.environ.copy()
+    sub_env["PYTHONUTF8"] = "1"
+    sub_env["PYTHONIOENCODING"] = "utf-8"
+    sub_env["PYTHONUNBUFFERED"] = "1"
+
     # ── 4. Launch services ──────────────────────────────────────────
     print(_c("CYN", "\n-- Starting Services " + "-" * 40))
     print(f"  Backend   http://127.0.0.1:3001/docs")
@@ -220,6 +274,9 @@ def main():
     print(f"  KP MCP    http://127.0.0.1:9100/mcp")
     print(_c("YEL", "\n  Press Ctrl+C to stop all services.\n"))
     print(_c("DIM", "  " + "─" * 55))
+
+    be_env = sub_env.copy()
+    be_env["LOG_FILE"] = str(log_date_dir / "backend.log")
 
     # Backend process
     be = subprocess.Popen(
@@ -230,6 +287,7 @@ def main():
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        env=be_env,
     )
 
     # Frontend process (use shell=True on Windows because npm is a .cmd wrapper)
@@ -240,6 +298,7 @@ def main():
         stderr=subprocess.STDOUT,
         bufsize=1,
         shell=True,
+        env=sub_env,
     )
 
     # KP MCP Server process (optional — skip if module not installed)
@@ -251,24 +310,28 @@ def main():
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=1,
+            env=sub_env,
         )
     except FileNotFoundError:
         print(_c("DIM", "  KP MCP Server not found — skipping (build at hermes side)"))
     except Exception as e:
         print(_c("DIM", f"  KP MCP Server unavailable: {e}"))
 
-    # Stream output from all three
+    # Stream output from all three (terminal + dedicated log + combined log)
     be_thread = threading.Thread(
-        target=_stream, args=(be, "[BE]", "GRN"), daemon=True,
+        target=_stream, args=(be, "[BE]", "GRN"),
+        kwargs={"log_files": [combined_fh]}, daemon=True,  # backend.log written by FileHandler
     )
     fe_thread = threading.Thread(
-        target=_stream, args=(fe, "[FE]", "BLU"), daemon=True,
+        target=_stream, args=(fe, "[FE]", "BLU"),
+        kwargs={"log_files": [fe_fh, combined_fh]}, daemon=True,
     )
     be_thread.start()
     fe_thread.start()
     if kp:
         kp_thread = threading.Thread(
-            target=_stream, args=(kp, "[KP]", "MAG"), daemon=True,
+            target=_stream, args=(kp, "[KP]", "MAG"),
+            kwargs={"log_files": [kp_fh, combined_fh]}, daemon=True,
         )
         kp_thread.start()
 
@@ -286,6 +349,12 @@ def main():
                 continue
             if p.poll() is None:
                 p.kill()
+        # Close log file handles
+        for fh in _log_files:
+            try:
+                fh.close()
+            except Exception:
+                pass
         print(_c("GRN", "Stopped."))
         sys.exit(0)
 
@@ -348,7 +417,12 @@ def _cmd_check():
 
 
 def _cmd_stop():
-    """Stop Docker services."""
+    """Stop Docker services (no-op if using native PG/Redis)."""
+    rc, _, _ = _run(["docker", "info"], timeout=3)
+    if rc != 0:
+        print(_c("YEL", "Docker not running — nothing to stop."))
+        print(_c("DIM", "  If using native PG/Redis, stop them manually (e.g. net stop postgresql)."))
+        return
     print(_c("YEL", "Stopping Docker services …"))
     _run(["docker", "compose", "down"], cwd=ROOT)
     print(_c("GRN", "Done."))

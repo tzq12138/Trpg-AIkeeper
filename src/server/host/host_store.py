@@ -18,6 +18,7 @@ HOST_VISIBLE_EVENTS = {
     "s2c_map_updated", "s2c_player_moved", "s2c_map_revealed",
     "s2c_encounter_suggested", "s2c_encounter_started",
     "s2c_encounter_updated", "s2c_encounter_resolved",
+    "s2c_team_message",
 }
 
 PRIVATE_EVENTS = {

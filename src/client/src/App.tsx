@@ -4,6 +4,7 @@ import HostLobby from './pages/HostLobby';
 import AdminDashboard from './pages/AdminDashboard';
 import RagTestPage from './pages/RagTestPage';
 import PlayerActionPage from './pages/PlayerActionPage';
+import PlayerLobby from './pages/PlayerLobby';
 import PlayerJoinPage from './pages/PlayerJoinPage';
 import CharacterBuilderPage from './pages/CharacterBuilderPage';
 import LoginPage from './pages/LoginPage';
@@ -29,6 +30,9 @@ export default function App() {
   }
   if (route.page === 'rag-test') {
     return <RagTestPage />;
+  }
+  if (route.page === 'player-lobby') {
+    return <PlayerLobby roomId={route.param} />;
   }
   if (route.page === 'player-action') {
     return <PlayerActionPage roomId={route.param} />;

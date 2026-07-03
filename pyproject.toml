@@ -26,7 +26,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 # Avoid Windows system temp (C:\Users\...\AppData\Local\Temp) permission errors
 # by using a local temp directory that's always writable.
-basetemp = ".pytest-tmp-local"
+addopts = "--basetemp=.pytest-tmp-local"
 # Suppress noisy warnings from third-party libs
 filterwarnings = [
     "ignore::DeprecationWarning:defusedxml.*",

@@ -1,9 +1,49 @@
+import os
+import re
 import pytest
+import psycopg2
 from src.server.db_adapter import PgDatabase
 from src.server.engine.engine import Engine
 from src.server.main import app
 from src.server.router_auth import _hash_password
 from fastapi.testclient import TestClient
+
+# ── Test database safety ─────────────────────────────────────────────
+
+_DEFAULT_TEST_DB = "postgresql://aikeeper:aikeeper123@localhost:5432/aikeeper_test"
+
+
+def _validate_test_db_url(url: str) -> str:
+    """Refuse to run if the database name does NOT contain 'test'."""
+    # Parse dbname from DSN: postgresql://user:pass@host:port/dbname
+    m = re.search(r"/([^/?]+)(?:\?|$)", url)
+    dbname = (m.group(1) if m else "").lower()
+    if "test" not in dbname:
+        raise RuntimeError(
+            f"REFUSING to run tests against non-test database: {url}\n"
+            f"Set TEST_DATABASE_URL to a database name containing 'test' "
+            f"(e.g. {_DEFAULT_TEST_DB})."
+        )
+    return url
+
+
+def _ensure_test_db_exists(dsn: str) -> None:
+    """Create the test database if it does not already exist."""
+    # Rewrite DSN to connect to 'postgres' maintenance database
+    maint_dsn = re.sub(r"/[^/?]+(\?|$)", "/postgres\\1", dsn)
+    try:
+        maint_conn = psycopg2.connect(maint_dsn)
+        maint_conn.autocommit = True
+        cur = maint_conn.cursor()
+        dbname = dsn.rsplit("/", 1)[-1].split("?")[0]
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
+        if cur.fetchone() is None:
+            cur.execute(f'CREATE DATABASE "{dbname}"')
+        cur.close()
+        maint_conn.close()
+    except Exception as e:
+        # If we can't create it, let the fixture fail naturally with a clear error
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -16,7 +56,9 @@ def _reset_rate_limiter():
 
 @pytest.fixture
 def test_db():
-    pg = PgDatabase()
+    test_url = _validate_test_db_url(os.getenv("TEST_DATABASE_URL", _DEFAULT_TEST_DB))
+    _ensure_test_db_exists(test_url)
+    pg = PgDatabase(dsn=test_url)
     pg.connect()
     pg.initialize()
     conn = pg.get_connection()

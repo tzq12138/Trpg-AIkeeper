@@ -67,18 +67,22 @@ async def get_hud(request: Request, room_id: str):
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
-    store = get_host_store(room_id, conn)
-    characters = conn.execute(
-        "SELECT character_id, player_name FROM characters WHERE room_id = %s", (room_id,)
-    ).fetchall()
-    for char in characters:
-        if not any(p.character_id == char["character_id"] for p in store.players):
-            from ..models import PlayerPublicStatus
-            store.players.append(PlayerPublicStatus(
-                character_id=char["character_id"],
-                player_name=char["player_name"],
-            ))
-    return store.get_hud().model_dump(by_alias=True)
+
+    # Always build HUD from current DB state (never stale)
+    from .hud_builder import build_hud
+    hud = build_hud(conn, room_id)
+
+    # Merge queue/engine state from HostStore if available
+    store = _host_stores.get(room_id)
+    if store:
+        hud.queue_status = {
+            "normal": len(store.normal_queue),
+            "urgent": len(store.urgent_queue),
+        }
+        hud.engine_state = store.engine_state
+        hud.scene_image_url = store.current_scene_image_url
+
+    return hud.model_dump(by_alias=True)
 
 
 @router.post("/{room_id}/reset")
@@ -143,13 +147,29 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
 
     if not authorized:
         await websocket.close(code=1008, reason="Policy violation")
-        logger.warning("Host WS auth failed for room %s", room_id)
+        logger.warning("Host WS auth failed for room=%s ownerToken=%s accountToken=%s",
+                       room_id, bool(owner_token), bool(account_token if 'account_token' in dir() else False))
         return
 
     store = get_host_store(room_id, conn)
     await websocket.accept()
     ws_manager.register_accepted(websocket, room_id, "host")
     logger.info("Host connected to room %s", room_id)
+
+    # Push initial HUD immediately so HostStage has data without waiting
+    try:
+        from .hud_builder import build_hud
+        hud = build_hud(conn, room_id)
+        if store:
+            hud.queue_status = {"normal": len(store.normal_queue), "urgent": len(store.urgent_queue)}
+            hud.engine_state = store.engine_state
+            hud.scene_image_url = store.current_scene_image_url
+        await websocket.send_text(json.dumps({
+            "type": "host_state_update",
+            "hud": hud.model_dump(by_alias=True),
+        }))
+    except Exception:
+        logger.exception("Failed to push initial HUD to host room=%s", room_id)
 
     last_seq = 0
     try:

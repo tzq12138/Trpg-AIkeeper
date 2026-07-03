@@ -91,11 +91,31 @@ async def get_room(request: Request, room_id: str):
         ).fetchone()
         if sc:
             scenario_title = sc["title"]
-    char_count = conn.execute(
-        "SELECT COUNT(*) as c FROM characters WHERE room_id = %s AND status IN ('active', 'joined')",
+    chars = conn.execute(
+        """SELECT character_id, player_name, xlsx_data, status, is_ready
+           FROM characters WHERE room_id = %s AND status != 'left'""",
         (room_id,),
-    ).fetchone()
-    player_count = char_count["c"] if char_count else 0
+    ).fetchall()
+    player_count = len(chars)
+
+    import json as _json_mod
+    players = []
+    for c in chars:
+        xlsx_data = {}
+        raw = c.get("xlsx_data")
+        if raw:
+            try:
+                xlsx_data = raw if isinstance(raw, dict) else _json_mod.loads(raw)
+            except Exception:
+                pass
+        players.append({
+            "character_id": c["character_id"],
+            "player_name": c["player_name"],
+            "investigator_name": xlsx_data.get("name", "") if isinstance(xlsx_data, dict) else "",
+            "status": c.get("status", "joined"),
+            "is_ready": bool(c.get("is_ready")),
+        })
+
     return {
         "room_id": room["room_id"],
         "status": room["status"],
@@ -105,6 +125,7 @@ async def get_room(request: Request, room_id: str):
         "created_at": str(room.get("created_at", "")),
         "started_at": str(room.get("started_at", "")) if room.get("started_at") else None,
         "player_count": player_count,
+        "players": players,
     }
 
 
@@ -278,6 +299,37 @@ async def start_room(request: Request, room_id: str):
     # Create first turn
     tm = TurnManager(conn)
     turn = tm._create_turn(room_id)
+
+    # Broadcast active lobby snapshot so PlayerLobby auto-transitions
+    try:
+        from .engine.projection import ProjectionDispatcher
+        import json as _json2
+        dispatcher_inst = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
+        snap_players = []
+        for c in chars:
+            inv_name = ""
+            raw = c.get("xlsx_data")
+            if raw:
+                try:
+                    xd = raw if isinstance(raw, dict) else _json2.loads(raw)
+                    inv_name = xd.get("name", "") if isinstance(xd, dict) else ""
+                except Exception:
+                    pass
+            snap_players.append({
+                "character_id": c["character_id"],
+                "player_name": c["player_name"],
+                "investigator_name": inv_name,
+                "status": c.get("status", "joined"),
+                "is_ready": bool(c.get("is_ready")),
+            })
+        await dispatcher_inst.emit(room_id, "s2c_room_lobby_snapshot", "party", {
+            "room_id": room_id,
+            "room_status": "active",
+            "scenario_title": scenario_title,
+            "players": snap_players,
+        })
+    except Exception as e:
+        logger.warning("Failed to broadcast active snapshot on start: %s", e)
 
     return {"status": "active", "turn_id": turn["turn_id"], "turn_index": turn["turn_index"]}
 

@@ -21,9 +21,13 @@ export class PlayerWS {
     const url = `ws://${window.location.hostname}:3001/ws?room=${this.roomId}&role=player&token=${token}&lastSequence=${this.lastSequence}`;
     this.ws = new WebSocket(url);
     this.ws.onmessage = (msg) => {
-      const event: EngineEvent = JSON.parse(msg.data);
-      this.lastSequence = event.roomSequence;
-      this.handlers.forEach((h) => h(event));
+      try {
+        const event: EngineEvent = JSON.parse(msg.data);
+        if (typeof event.roomSequence === 'number') {
+          this.lastSequence = event.roomSequence;
+        }
+        this.handlers.forEach((h) => h(event));
+      } catch { /* ignore malformed frames — don't crash the event pipe */ }
     };
     this.ws.onopen = () => {
       this.reconnectDelay = 1000;

@@ -51,11 +51,16 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
   useEffect(() => {
     apiFetch<any>('/api/player/character', { headers: authHeaders() })
       .then((c) => {
+        // Redirect to lobby if the game hasn't started yet
+        if (c.room_status && c.room_status !== 'active') {
+          window.location.href = `/player/${roomId}/lobby`;
+          return;
+        }
         setIsReady(c.is_ready || c.status === 'ready');
         setCharStatus(c.status || 'joined');
       })
       .catch(() => {});
-  }, []);
+  }, [roomId]);
 
   const toggleReady = async () => {
     const actionId = crypto.randomUUID();

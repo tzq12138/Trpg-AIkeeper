@@ -204,6 +204,7 @@ export default function HostStage({ roomId }: { roomId: string }) {
   const [activeEncounter, setActiveEncounter] = useState<any>(null);
   const [encounterSuggestion, setEncounterSuggestion] = useState<any>(null);
   const [mapRefresh, setMapRefresh] = useState(0);
+  const [hudError, setHudError] = useState('');
 
   const handleEvent = useCallback((data: Record<string, unknown>) => {
     if (data.type === 'host_state_update' && data.hud) {
@@ -255,6 +256,26 @@ export default function HostStage({ roomId }: { roomId: string }) {
 
   useHostWS(roomId, handleEvent);
 
+  // Fetch HUD on mount — don't wait for WS to push first data
+  useEffect(() => {
+    const fetchHud = async () => {
+      try {
+        const ownerToken = getSlotValue('owner_token') || '';
+        const accountToken = getSlotValue('account_token') || '';
+        const headers: Record<string, string> = { 'X-Owner-Token': ownerToken };
+        if (accountToken) headers['Authorization'] = `Bearer ${accountToken}`;
+        const res = await fetch(`/api/host/${roomId}/hud`, { headers });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.players) { setHud(data); setHudError(''); }
+        } else {
+          setHudError('无法加载玩家状态——请检查房主身份或刷新页面');
+        }
+      } catch { setHudError('网络错误——请确认后端已启动'); }
+    };
+    fetchHud();
+  }, [roomId]);
+
   const handleDiceSettled = useCallback(() => {
     setRollEvent(null);
   }, []);
@@ -287,6 +308,16 @@ export default function HostStage({ roomId }: { roomId: string }) {
 
   return (
     <div className="bh-host">
+      {hudError && (
+        <div style={{
+          margin: 0, padding: '12px 20px',
+          border: '3px solid var(--bh-yellow)', background: 'var(--bh-paper)',
+          fontWeight: 700, fontSize: 14,
+        }}>
+          {hudError}
+          <button style={{ marginLeft: 12, fontWeight: 900, cursor: 'pointer' }} onClick={() => setHudError('')}>✕</button>
+        </div>
+      )}
       <header className="bh-host-topbar">
         <div className="bh-host-brand">
           <strong className="bh-panel-title" style={{ margin: 0 }}>阿卡姆系统</strong>

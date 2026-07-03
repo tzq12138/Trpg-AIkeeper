@@ -13,5 +13,7 @@ src/client/node_modules/
 
 data/character_presets/
 data/scenario_assets/
+data/scenarios/
+log/
 .env
 .env.*

@@ -30,7 +30,7 @@ class Settings(BaseModel):
             agent_enabled=os.getenv("AGENT_ENABLED", "").lower() in ("1", "true", "yes"),
             redis_url=os.getenv("REDIS_URL", ""),
             kp_mcp_server_url=os.getenv("KP_MCP_SERVER_URL", "http://127.0.0.1:9100/mcp"),
-            ai_provider_order=os.getenv("AI_PROVIDER_ORDER", "deepseek,mcp,local"),
+            ai_provider_order=os.getenv("AI_PROVIDER_ORDER", "mcp,deepseek,local"),
             ai_timeout_seconds=int(os.getenv("AI_TIMEOUT_SECONDS", "30")),
             stt_provider=os.getenv("STT_PROVIDER", "disabled"),
             stt_http_url=os.getenv("STT_HTTP_URL", ""),

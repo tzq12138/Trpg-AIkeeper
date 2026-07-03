@@ -303,6 +303,18 @@ async def join_room_with_character(
         except Exception as exc:
             logger.warning("StateService init failed for char=%s room=%s: %s", character_id, room_id, exc)
             pass
+
+    # Broadcast updated lobby snapshot so host sees the new player immediately
+    try:
+        snapshot = _build_lobby_snapshot(conn, room_id)
+        from ..engine.projection import ProjectionDispatcher
+        dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
+        asyncio.create_task(
+            dispatcher.emit(room_id, "s2c_room_lobby_snapshot", "party", snapshot)
+        )
+    except Exception:
+        logger.warning("Failed to broadcast lobby snapshot after join", exc_info=True)
+
     return {
         "character_id": character_id, "player_token": player_token,
         "player_name": nickname, "investigator_name": parsed.get("name", ""),
@@ -433,7 +445,7 @@ async def team_message(request: Request):
         except Exception:
             xlsx = {}
 
-    from ...models import EngineEvent
+    from ..models import EngineEvent
     import uuid as _uuid
     from datetime import datetime, timezone
 
@@ -447,13 +459,8 @@ async def team_message(request: Request):
         "createdAt": datetime.now(timezone.utc).isoformat(),
     }
 
-    # Write event
-    from ...events.event_log import EventLog
-    event_log = EventLog(conn)
-    seq = event_log.log_event(char["room_id"], "s2c_team_message", "party", payload)
-
-    # Push via dispatcher
-    from ...engine.projection import ProjectionDispatcher
+    # Write + broadcast via ProjectionDispatcher (handles both DB insert and WS push)
+    from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
     import asyncio
     try:
@@ -461,9 +468,11 @@ async def team_message(request: Request):
             dispatcher.emit(char["room_id"], "s2c_team_message", "party", payload)
         )
     except RuntimeError:
-        pass
+        # No running event loop — fall back to direct event log write
+        from ..events.event_log import EventLog
+        EventLog(conn).log_event(char["room_id"], "s2c_team_message", "party", payload)
 
-    return {"status": "sent", "messageId": payload["messageId"], "sequence": seq}
+    return {"status": "sent", "messageId": payload["messageId"]}
 
 
 @router.post("/intent")
@@ -504,6 +513,19 @@ async def submit_intent(request: Request, intent: PlayerIntent):
     result = engine.submit_intent(char["room_id"], char["character_id"], intent)
     if result.get("status") == "conflict":
         raise HTTPException(409, "State version conflict")
+
+    # After ready_toggle, broadcast updated lobby snapshot to the whole room
+    if intent.intent_type == "ready_toggle" and result.get("status") == "accepted":
+        try:
+            snapshot = _build_lobby_snapshot(conn, char["room_id"])
+            from ..engine.projection import ProjectionDispatcher
+            dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
+            asyncio.create_task(
+                dispatcher.emit(char["room_id"], "s2c_room_lobby_snapshot", "party", snapshot)
+            )
+        except Exception:
+            logger.warning("Failed to broadcast lobby snapshot after ready_toggle", exc_info=True)
+
     if getattr(request.app.state, "pipeline", None) or getattr(request.app.state, "pg_db", None):
         asyncio.create_task(_resolve_action_background(request.app, intent.action_id))
     return JSONResponse(content=result, status_code=202)
@@ -527,12 +549,32 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
 
         for action in actions:
             try:
+                # Fetch real character name from DB — NOT declared_intent
+                char_name = "未知调查员"
+                char_row = conn.execute(
+                    "SELECT player_name, xlsx_data FROM characters WHERE character_id = %s",
+                    (action["character_id"],)
+                ).fetchone()
+                if char_row:
+                    xlsx_d = _json_val(char_row.get("xlsx_data")) or {}
+                    char_name = (xlsx_d.get("name") if isinstance(xlsx_d, dict) else None) or char_row["player_name"] or "未知调查员"
+
                 if pipeline:
                     res = await pipeline.resolve_action(action["action_id"])
-                    results.append({"action_id": action["action_id"], "character_name": action.get("declared_intent", ""), "result": res})
+                    results.append({
+                        "action_id": action["action_id"],
+                        "character_name": char_name,
+                        "declared_intent": action.get("declared_intent", ""),
+                        "result": res,
+                    })
             except Exception as e:
                 logger.warning("Action %s failed in turn %s: %s", action["action_id"], turn_id, e)
-                results.append({"action_id": action["action_id"], "error": str(e)})
+                results.append({
+                    "action_id": action["action_id"],
+                    "character_name": char_name,
+                    "declared_intent": action.get("declared_intent", ""),
+                    "error": str(e),
+                })
 
         # Generate narrative
         provider = getattr(app.state, "narrative_provider", None)
@@ -799,6 +841,13 @@ async def get_character(request: Request):
     xlsx_data = _json_val(char.get("xlsx_data")) or {}
     player_name = char.get("player_name", "")
     investigator_name = char.get("investigator_name") or xlsx_data.get("name") or player_name
+
+    # Room status — needed so the client can redirect to lobby if game hasn't started
+    conn = request.app.state.db
+    room = conn.execute(
+        "SELECT status FROM rooms WHERE room_id = %s", (char["room_id"],)
+    ).fetchone()
+
     return {
         "character_id": char["character_id"],
         "player_name": player_name,
@@ -815,6 +864,10 @@ async def get_character(request: Request):
         "luck": xlsx_data.get("luck", 0),
         "skills": xlsx_data.get("skills", {}),
         "background": xlsx_data.get("background", ""),
+        # Lobby-ready fields — single source of truth from DB
+        "is_ready": bool(char.get("is_ready", False)),
+        "status": char.get("status", "joined"),
+        "room_status": room["status"] if room else "unknown",
     }
 
 
@@ -916,3 +969,44 @@ def _json_val(value):
         try: return json.loads(value)
         except json.JSONDecodeError: return None
     return value
+
+
+def _build_lobby_snapshot(conn, room_id: str) -> dict:
+    """Build a lobby snapshot for broadcast after player state changes."""
+    room = conn.execute(
+        "SELECT * FROM rooms WHERE room_id = %s", (room_id,)
+    ).fetchone()
+    if not room:
+        return {"room_id": room_id, "room_status": "unknown", "players": []}
+
+    scenario_title = ""
+    if room.get("scenario_id"):
+        sc = conn.execute(
+            "SELECT title FROM scenarios WHERE scenario_id = %s",
+            (room["scenario_id"],)
+        ).fetchone()
+        scenario_title = sc["title"] if sc else ""
+
+    chars = conn.execute(
+        """SELECT character_id, player_name, xlsx_data, status, is_ready
+           FROM characters WHERE room_id = %s AND status != 'left'""",
+        (room_id,)
+    ).fetchall()
+
+    players = []
+    for c in chars:
+        xlsx = _json_val(c.get("xlsx_data")) or {}
+        players.append({
+            "character_id": c["character_id"],
+            "player_name": c["player_name"],
+            "investigator_name": xlsx.get("name", "") if isinstance(xlsx, dict) else "",
+            "status": c.get("status", "joined"),
+            "is_ready": bool(c.get("is_ready")),
+        })
+
+    return {
+        "room_id": room_id,
+        "room_status": room["status"],
+        "scenario_title": scenario_title,
+        "players": players,
+    }

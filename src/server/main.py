@@ -50,6 +50,7 @@ from .game_loop import GameLoop
 from .redis_cache import RedisCache
 from .host.ws_manager import manager as ws_manager
 from .events.event_log import EventLog
+from .models import EngineEvent
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +60,9 @@ pg_db = PgDatabase(settings.database_url)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("─" * 50)
-    logger.info("AI-Keeper starting — initialising components …")
-    logger.info("─" * 50)
+    logger.info("-" * 50)
+    logger.info("AI-Keeper starting -- initialising components ...")
+    logger.info("-" * 50)
 
     # ── 1. Database ──
     t0 = __import__("time").monotonic()
@@ -202,13 +203,13 @@ async def lifespan(app: FastAPI):
         app.state.pipeline.gateway = app.state.gateway
 
     elapsed = __import__("time").monotonic() - t0
-    logger.info("─" * 50)
-    logger.info("Startup complete (%.1fs) — listening on :%s", elapsed, settings.port)
-    logger.info("─" * 50)
+    logger.info("-" * 50)
+    logger.info("Startup complete (%.1fs) -- listening on :%s", elapsed, settings.port)
+    logger.info("-" * 50)
 
     yield
 
-    logger.info("AI-Keeper shutting down …")
+    logger.info("AI-Keeper shutting down...")
     conn.close()
     pg_db.close()
     logger.info("Shutdown complete")
@@ -297,14 +298,17 @@ async def player_ws_endpoint(websocket: WebSocket, room_id: str, token: str, las
         event_log = EventLog(conn)
         events = event_log.get_events(room_id, since_sequence=last_sequence)
         for ev in events:
-            await websocket.send_text(json.dumps({
-                "type": "catch_up",
-                "sequence": ev.sequence,
-                "event_type": ev.event_type,
-                "audience": ev.audience,
-                "payload": ev.payload,
-                "issued_at": ev.issued_at,
-            }))
+            # Use standard EngineEvent format so the frontend parser sees
+            # roomSequence / type / payload matching its EngineEvent interface.
+            catch_up_event = EngineEvent(
+                event_id=f"catchup:{ev.sequence}",
+                room_id=room_id,
+                type=ev.event_type,
+                room_sequence=ev.sequence,
+                audience=ev.audience,
+                payload=json.loads(ev.payload) if isinstance(ev.payload, str) else (ev.payload or {}),
+            )
+            await websocket.send_text(catch_up_event.model_dump_json(by_alias=True))
         ws_manager.update_last_sequence(room_id, connection_id, last_sequence)
 
         while True:
