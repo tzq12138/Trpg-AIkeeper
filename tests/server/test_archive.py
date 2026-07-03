@@ -1,11 +1,13 @@
 import json
 import pytest
+from tests.server.conftest import setup_auth_test_data, create_room
 
 
-def _setup_player(client):
-    resp = client.post("/api/rooms", json={})
-    room_id = resp.json()["room_id"]
-    owner_token = resp.json()["owner_token"]
+def _setup_player(client, test_db):
+    setup_auth_test_data(test_db)
+    room = create_room(client)
+    room_id = room["room_id"]
+    owner_token = room["owner_token"]
 
     resp = client.post(f"/api/player/rooms/{room_id}/join")
     data = resp.json()
@@ -14,23 +16,23 @@ def _setup_player(client):
 
 def _insert_event(conn, room_id, seq, event_type, audience, payload):
     conn.execute(
-        "INSERT INTO events (sequence, room_id, event_type, audience, payload) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO events (sequence, room_id, event_type, audience, payload) VALUES (%s, %s, %s, %s, %s)",
         (seq, room_id, event_type, audience, json.dumps(payload)),
     )
     conn.commit()
 
 
 def test_action_history(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
-        "VALUES ('act-1', ?, ?, 'dialogue', 'look around', 'resolved')",
+        "VALUES ('act-1', %s, %s, 'dialogue', 'look around', 'resolved')",
         (room_id, char_id),
     )
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
-        "VALUES ('act-2', ?, ?, 'skill_check', 'spot hidden', 'queued')",
+        "VALUES ('act-2', %s, %s, 'skill_check', 'spot hidden', 'queued')",
         (room_id, char_id),
     )
     test_db.commit()
@@ -44,7 +46,7 @@ def test_action_history(client, test_db):
 
 
 def test_clue_history(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "public clue"})
     _insert_event(test_db, room_id, 2, "s2c_private_notice", "player", {"text": "private clue", "characterId": char_id})
@@ -59,16 +61,16 @@ def test_clue_history(client, test_db):
 
 
 def test_skill_check_history(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status, result) "
-        "VALUES ('sc-1', ?, ?, 'skill_check', 'spot hidden', 'resolved', '\"success\"')",
+        "VALUES ('sc-1', %s, %s, 'skill_check', 'spot hidden', 'resolved', '\"success\"')",
         (room_id, char_id),
     )
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
-        "VALUES ('dlg-1', ?, ?, 'dialogue', 'talk', 'resolved')",
+        "VALUES ('dlg-1', %s, %s, 'dialogue', 'talk', 'resolved')",
         (room_id, char_id),
     )
     test_db.commit()
@@ -81,7 +83,7 @@ def test_skill_check_history(client, test_db):
 
 
 def test_public_replay_for_host(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "public"})
     _insert_event(test_db, room_id, 2, "s2c_private_notice", "player", {"text": "private"})
@@ -99,7 +101,7 @@ def test_public_replay_for_host(client, test_db):
 
 
 def test_replay_invalid_owner(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     resp = client.get(
         f"/api/rooms/{room_id}/replay",
@@ -109,7 +111,7 @@ def test_replay_invalid_owner(client, test_db):
 
 
 def test_archive_filter_by_type(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "observation"})
     _insert_event(test_db, room_id, 2, "s2c_action_completed", "player", {"actionId": "a1", "status": "resolved"})
@@ -127,7 +129,7 @@ def test_archive_filter_by_type(client, test_db):
 
 
 def test_archive_search_keyword(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "you see a door"})
     _insert_event(test_db, room_id, 2, "s2c_public_observation", "party", {"text": "you hear a noise"})
@@ -144,7 +146,7 @@ def test_archive_missing_token(client):
 
 
 def test_archive_pagination(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     for i in range(10):
         _insert_event(test_db, room_id, i + 1, "s2c_public_observation", "party", {"text": f"event{i}"})
@@ -160,7 +162,7 @@ def test_archive_pagination(client, test_db):
 
 
 def test_replay_pagination(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     for i in range(10):
         _insert_event(test_db, room_id, i + 1, "s2c_public_observation", "party", {"text": f"event{i}"})

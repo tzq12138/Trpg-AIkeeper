@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>调查员动态面板 - 技能</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700;900&amp;family=Inter:wght@400;500;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "primary-fixed": "#ffcc00",
+                        "surface-container": "#eee9e0",
+                        "secondary-fixed": "#ffdad6",
+                        "outline": "#1a1a1a",
+                        "secondary-fixed-dim": "#ffb3ab",
+                        "primary-container": "#ffcc00",
+                        "on-tertiary-fixed": "#1a1a1a",
+                        "surface-container-highest": "#e2ddd4",
+                        "on-error-container": "#93000a",
+                        "on-surface-variant": "#4a4a4a",
+                        "inverse-primary": "#f5f0e8",
+                        "on-secondary-fixed-variant": "#1a1a1a",
+                        "on-background": "#1a1a1a",
+                        "on-secondary": "#1a1a1a",
+                        "on-primary-fixed": "#1a1a1a",
+                        "outline-variant": "#d0cbc3",
+                        "tertiary-container": "#d6e3ff",
+                        "surface-container-low": "#f2ede5",
+                        "surface-bright": "#faf7f2",
+                        "background": "#f5f0e8",
+                        "surface-dim": "#d6d1c9",
+                        "on-error": "#ffffff",
+                        "on-primary-fixed-variant": "#1a1a1a",
+                        "tertiary-fixed-dim": "#a8c6ff",
+                        "tertiary": "#0055ff",
+                        "on-tertiary-container": "#1a1a1a",
+                        "on-secondary-fixed": "#1a1a1a",
+                        "on-primary-container": "#1a1a1a",
+                        "on-primary": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "on-secondary-container": "#1a1a1a",
+                        "inverse-on-surface": "#f5f0e8",
+                        "surface-container-lowest": "#ffffff",
+                        "error": "#cc0000",
+                        "surface-container-high": "#e8e3da",
+                        "on-surface": "#1a1a1a",
+                        "tertiary-fixed": "#d6e3ff",
+                        "on-tertiary": "#ffffff",
+                        "surface-variant": "#e8e3da",
+                        "secondary-container": "#ffdad6",
+                        "primary-fixed-dim": "#e6b800",
+                        "inverse-surface": "#1a1a1a",
+                        "surface": "#f5f0e8",
+                        "primary": "#1a1a1a",
+                        "surface-tint": "#1a1a1a",
+                        "secondary": "#e63b2e",
+                        "on-tertiary-fixed-variant": "#1a1a1a"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {},
+                    "fontFamily": {
+                        "headline": ["Space Grotesk", "sans-serif"],
+                        "display": ["Space Grotesk", "sans-serif"],
+                        "body": ["Inter", "sans-serif"],
+                        "label": ["Space Grotesk", "sans-serif"]
+                    },
+                    "fontSize": {}
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        h1, h2, h3, h4, h5, h6, .font-headline, .font-display, .font-label { font-family: 'Space Grotesk', sans-serif; }
+        
+        /* Neo-Brutalist utilities */
+        .brutal-border { border: 3px solid #1a1a1a; }
+        .brutal-shadow { box-shadow: 4px 4px 0px 0px rgba(26,26,26,1); transition: transform 0.1s, box-shadow 0.1s; }
+        .brutal-shadow:active { transform: translate(4px, 4px); box-shadow: 0px 0px 0px 0px rgba(26,26,26,1); }
+        .brutal-shadow-sm { box-shadow: 2px 2px 0px 0px rgba(26,26,26,1); }
+        
+        .material-symbols-outlined {
+          font-variation-settings:
+          'FILL' 0,
+          'wght' 700,
+          'GRAD' 0,
+          'opsz' 24
+        }
+        
+        /* Spinner animation */
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        .animate-spin-slow { animation: spin 2s linear infinite; }
+
+        /* Status Change Animations (Neo-Brutalist/No Easing) */
+        @keyframes vibrate {
+            0%, 100% { transform: translate(0, 0); }
+            25% { transform: translate(-2px, 2px); }
+            50% { transform: translate(2px, -2px); }
+            75% { transform: translate(-2px, -2px); }
+        }
+        @keyframes value-pop {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.2); }
+        }
+        @keyframes flash-red {
+            0%, 100% { background-color: #1a1a1a; }
+            50% { background-color: #8B0000; }
+        }
+        
+        .animate-vibrate { animation: vibrate 0.1s steps(2, end) infinite; }
+        .animate-value-pop { animation: value-pop 0.1s steps(2, end) infinite; }
+        .animate-flash-red { animation: flash-red 0.1s steps(2, end) infinite !important; }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+</head>
+<body class="bg-background text-primary antialiased min-h-screen flex flex-col pb-24">
+<!-- TopAppBar -->
+<header class="w-full border-b-4 border-outline shadow-[4px_4px_0px_0px_rgba(26,26,26,1)] bg-background dark:bg-background flex items-center justify-between px-4 py-4 sticky top-0 z-40">
+<div class="flex items-center gap-3">
+<div class="w-12 h-12 brutal-border brutal-shadow-sm bg-surface-container overflow-hidden">
+<img class="w-full h-full object-cover grayscale" data-alt="A striking digital portrait illustration of a 1920s investigator in a trench coat, moody lighting, graphic novel style. High contrast black and white with strong geometric lines, brutalist aesthetic. The background is a solid off-white paper texture." src="https://lh3.googleusercontent.com/aida-public/AB6AXuC1FoGgNM0ZhfRafYSqhmMHZ1Fd9e6_rjDYOCG5MEmxOTY-SGecwA5YakNEYvEwgDMWRcBK0Oh4tiX3XMqsX6NJ15YN8Q_Etx64pIbk5czgdxZmznbBlFdCRQPipIRUuvvzGEbFmQfF82rcf9lSQoqYbsZvoWpWIln8z0iNaEPLPPUd-ooiBOHHrRMKMhFby7LzB3kTF6WPSAxbWpdKWHb_hjUha0wGbkgcKfiuFWEHfljVAyv5ArQ"/>
+</div>
+<h1 class="font-headline font-black text-2xl bg-primary-fixed text-on-primary-fixed px-2 uppercase tracking-tighter">INVESTIGATOR_0824</h1>
+</div>
+<div class="font-headline text-lg font-bold bg-primary text-surface px-3 py-1 brutal-shadow-sm" id="stat-container">
+            HP: 12 / SAN: <span class="inline-block transform origin-center" id="san-value">45</span>
+</div>
+</header>
+<!-- Main Canvas -->
+<main class="flex-1 w-full max-w-4xl mx-auto p-4 md:p-6 space-y-8 mt-4">
+<!-- Top Section: Core Stats -->
+<section class="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
+<!-- STR -->
+<div class="brutal-border brutal-shadow bg-surface-container p-4 flex flex-col items-center justify-center relative overflow-hidden group">
+<div class="absolute inset-0 bg-primary-fixed translate-y-[100%] group-hover:translate-y-0 transition-transform duration-300 ease-in-out z-0"></div>
+<span class="font-label text-sm font-bold uppercase tracking-widest z-10 mb-2 border-b-2 border-primary w-full text-center pb-1">Strength</span>
+<div class="font-display text-5xl font-black z-10">65</div>
+<div class="text-xs font-bold text-on-surface-variant z-10 mt-1">力量</div>
+</div>
+<!-- CON -->
+<div class="brutal-border brutal-shadow bg-surface-container p-4 flex flex-col items-center justify-center relative overflow-hidden group">
+<div class="absolute inset-0 bg-primary-fixed translate-y-[100%] group-hover:translate-y-0 transition-transform duration-300 ease-in-out z-0"></div>
+<span class="font-label text-sm font-bold uppercase tracking-widest z-10 mb-2 border-b-2 border-primary w-full text-center pb-1">Constitution</span>
+<div class="font-display text-5xl font-black z-10">70</div>
+<div class="text-xs font-bold text-on-surface-variant z-10 mt-1">体质</div>
+</div>
+<!-- POW -->
+<div class="brutal-border brutal-shadow bg-primary p-4 flex flex-col items-center justify-center text-surface relative overflow-hidden group">
+<div class="absolute inset-0 bg-secondary translate-y-[100%] group-hover:translate-y-0 transition-transform duration-300 ease-in-out z-0"></div>
+<span class="font-label text-sm font-bold uppercase tracking-widest z-10 mb-2 border-b-2 border-surface w-full text-center pb-1">Power</span>
+<div class="font-display text-5xl font-black z-10">45</div>
+<div class="text-xs font-bold text-surface-dim z-10 mt-1">意志</div>
+</div>
+<!-- DEX -->
+<div class="brutal-border brutal-shadow bg-surface-container p-4 flex flex-col items-center justify-center relative overflow-hidden group">
+<div class="absolute inset-0 bg-primary-fixed translate-y-[100%] group-hover:translate-y-0 transition-transform duration-300 ease-in-out z-0"></div>
+<span class="font-label text-sm font-bold uppercase tracking-widest z-10 mb-2 border-b-2 border-primary w-full text-center pb-1">Dexterity</span>
+<div class="font-display text-5xl font-black z-10">50</div>
+<div class="text-xs font-bold text-on-surface-variant z-10 mt-1">敏捷</div>
+</div>
+</section>
+<!-- Middle Section: High Frequency Skills -->
+<section>
+<div class="flex items-center gap-2 mb-4">
+<span class="material-symbols-outlined text-3xl">bolt</span>
+<h2 class="font-headline text-3xl font-black uppercase tracking-tight">核心技能 <span class="text-lg font-bold text-on-surface-variant ml-2">CORE SKILLS</span></h2>
+</div>
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+<!-- Skill 1: Normal Active -->
+<button class="brutal-border brutal-shadow bg-primary-fixed p-4 flex flex-col items-start justify-between min-h-[120px] hover:bg-primary hover:text-surface active:scale-95 transition-all cursor-pointer w-full text-left group/btn">
+<div class="flex justify-between w-full items-start">
+<span class="font-headline font-bold text-xl">侦查</span>
+<span class="material-symbols-outlined">visibility</span>
+</div>
+<div class="mt-auto w-full">
+<div class="text-xs uppercase font-bold tracking-wider mb-1">Spot Hidden</div>
+<div class="flex justify-between items-end">
+<div class="font-display text-4xl font-black">65</div>
+<div class="hidden group-active/btn:block">
+<div class="text-[10px] font-black uppercase bg-primary text-surface px-1 mb-1 animate-pulse">Settling...</div>
+<div class="h-1 w-12 bg-outline overflow-hidden">
+<div class="h-full bg-primary-fixed animate-spin-slow w-1/2"></div>
+</div>
+</div>
+</div>
+</div>
+</button>
+<!-- Skill 2: Normal -->
+<button class="brutal-border brutal-shadow bg-surface-container p-4 flex flex-col items-start justify-between min-h-[120px] hover:bg-primary-fixed active:scale-95 transition-all cursor-pointer w-full text-left group/btn">
+<div class="flex justify-between w-full items-start">
+<span class="font-headline font-bold text-xl">聆听</span>
+<span class="material-symbols-outlined">hearing</span>
+</div>
+<div class="mt-auto w-full">
+<div class="text-xs uppercase font-bold tracking-wider mb-1">Listen</div>
+<div class="flex justify-between items-end">
+<div class="font-display text-4xl font-black">40</div>
+<div class="hidden group-active/btn:block">
+<div class="text-[10px] font-black uppercase bg-primary text-surface px-1 mb-1 animate-pulse">Settling...</div>
+<div class="h-1 w-12 bg-outline overflow-hidden">
+<div class="h-full bg-primary-fixed animate-spin-slow w-1/2"></div>
+</div>
+</div>
+</div>
+</div>
+</button>
+<!-- Skill 3: Submitting State -->
+<button class="brutal-border bg-surface-container/50 opacity-70 p-4 flex flex-col items-start justify-between min-h-[120px] cursor-not-allowed w-full text-left relative overflow-hidden" disabled=""><div class="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPgo8cmVjdCB3aWR0aD0iNCIgaGVpZ2h0PSI0IiBmaWxsPSIjZmZmIi8+CjxwYXRoIGQ9Ik0wIDRMMCAwTDQgNE00IDBMNCA0TDAgMCIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8L3N2Zz4=')] opacity-10"></div>
+<div class="flex justify-between w-full items-start z-10">
+<span class="font-headline font-bold text-xl text-primary/50">图书馆</span>
+<span class="material-symbols-outlined animate-spin-slow">autorenew</span>
+</div>
+<div class="mt-auto z-10 w-full">
+<div class="text-xs uppercase font-bold tracking-wider mb-1 text-primary/50">Library Use</div>
+<div class="flex justify-between items-end">
+<div class="font-display text-4xl font-black text-primary/50">70</div>
+<div class="flex flex-col items-end">
+<span class="font-label text-[10px] font-black bg-primary text-surface px-2 py-0.5 animate-pulse mb-1">正在结算...</span>
+<div class="h-1.5 w-16 bg-surface-dim border border-outline overflow-hidden">
+<div class="h-full bg-primary animate-spin-slow w-1/3"></div>
+</div>
+</div>
+</div>
+</div></button>
+<!-- Skill 4: Resolving/Locked State -->
+<button class="brutal-border bg-surface-variant p-4 flex flex-col items-start justify-between min-h-[120px] cursor-not-allowed w-full text-left relative border-dashed" disabled="">
+<div class="flex justify-between w-full items-start">
+<span class="font-headline font-bold text-xl text-on-surface-variant">心理学</span>
+<span class="material-symbols-outlined text-on-surface-variant">lock</span>
+</div>
+<div class="mt-auto opacity-50">
+<div class="text-xs uppercase font-bold tracking-wider mb-1">Psychology</div>
+<div class="font-display text-4xl font-black">50</div>
+</div>
+</button>
+</div>
+</section>
+<!-- Bottom Section: Other Skills List -->
+<section class="mt-8 border-t-4 border-outline pt-6">
+<h3 class="font-headline text-2xl font-black uppercase mb-6 bg-primary text-surface inline-block px-3 py-1 brutal-shadow-sm">所有技能 <span class="text-sm font-normal ml-2">ALL SKILLS</span></h3>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-3">
+<!-- Skill Row -->
+<div class="flex items-center justify-between border-b-2 border-outline py-2 hover:bg-surface-container px-2 transition-colors">
+<div class="flex items-center gap-3">
+<span class="font-headline font-bold w-16">会计</span>
+<span class="text-xs uppercase text-on-surface-variant font-bold">Accounting</span>
+</div>
+<div class="font-display font-black text-xl">10</div>
+</div>
+<!-- Skill Row -->
+<div class="flex items-center justify-between border-b-2 border-outline py-2 hover:bg-surface-container px-2 transition-colors">
+<div class="flex items-center gap-3">
+<span class="font-headline font-bold w-16 text-secondary">急救</span>
+<span class="text-xs uppercase text-secondary font-bold">First Aid</span>
+</div>
+<div class="font-display font-black text-xl text-secondary">60</div>
+</div>
+<!-- Skill Row -->
+<div class="flex items-center justify-between border-b-2 border-outline py-2 hover:bg-surface-container px-2 transition-colors">
+<div class="flex items-center gap-3">
+<span class="font-headline font-bold w-16">魅惑</span>
+<span class="text-xs uppercase text-on-surface-variant font-bold">Charm</span>
+</div>
+<div class="font-display font-black text-xl">15</div>
+</div>
+<!-- Skill Row -->
+<div class="flex items-center justify-between border-b-2 border-outline py-2 hover:bg-surface-container px-2 transition-colors bg-primary-fixed/20">
+<div class="flex items-center gap-3">
+<span class="font-headline font-bold w-16">斗殴</span>
+<span class="text-xs uppercase text-on-surface-variant font-bold">Brawl</span>
+</div>
+<div class="font-display font-black text-xl">55</div>
+</div>
+<!-- Skill Row -->
+<div class="flex items-center justify-between border-b-2 border-outline py-2 hover:bg-surface-container px-2 transition-colors">
+<div class="flex items-center gap-3">
+<span class="font-headline font-bold w-16">神秘学</span>
+<span class="text-xs uppercase text-on-surface-variant font-bold">Occult</span>
+</div>
+<div class="font-display font-black text-xl">05</div>
+</div>
+<!-- Skill Row -->
+<div class="flex items-center justify-between border-b-2 border-outline py-2 hover:bg-surface-container px-2 transition-colors">
+<div class="flex items-center gap-3">
+<span class="font-headline font-bold w-16">潜行</span>
+<span class="text-xs uppercase text-on-surface-variant font-bold">Stealth</span>
+</div>
+<div class="font-display font-black text-xl">20</div>
+</div>
+</div>
+</section>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 left-0 w-full h-20 z-50 flex justify-around items-stretch bg-background border-t-4 border-outline md:hidden">
+<a class="flex flex-col items-center justify-center text-primary h-full px-2 hover:bg-secondary-fixed hover:text-on-secondary-fixed-variant active:scale-95 transition-transform flex-1 border-r-2 border-outline" href="#">
+<span class="material-symbols-outlined" data-icon="fitness_center">fitness_center</span>
+<span class="font-label text-xs uppercase font-black mt-1">Skills</span>
+</a>
+<a class="flex flex-col items-center justify-center text-primary h-full px-2 hover:bg-secondary-fixed hover:text-on-secondary-fixed-variant active:scale-95 transition-transform flex-1 border-r-2 border-outline" href="#">
+<span class="material-symbols-outlined" data-icon="inventory_2">inventory_2</span>
+<span class="font-label text-xs uppercase font-black mt-1">Gear</span>
+</a>
+<a class="flex flex-col items-center justify-center bg-primary-fixed text-on-primary-fixed border-x-2 border-outline h-full px-2 hover:bg-secondary-fixed hover:text-on-secondary-fixed-variant active:scale-95 transition-transform flex-1" href="#">
+<span class="material-symbols-outlined" data-icon="history_edu">history_edu</span>
+<span class="font-label text-xs uppercase font-black mt-1">Logs</span>
+</a>
+<a class="flex flex-col items-center justify-center text-primary h-full px-2 hover:bg-secondary-fixed hover:text-on-secondary-fixed-variant active:scale-95 transition-transform flex-1" href="#">
+<span class="material-symbols-outlined" data-icon="map">map</span>
+<span class="font-label text-xs uppercase font-black mt-1">Map</span>
+</a>
+</nav>
+<!-- Web nav placeholder for desktop to match spacing -->
+<div class="hidden md:block h-8 w-full bg-outline border-t-4 border-outline fixed bottom-0 z-50"></div>
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // Simulate SAN drop after 1 second
+        setTimeout(() => {
+            const container = document.getElementById('stat-container');
+            const sanValue = document.getElementById('san-value');
+            
+            if (container && sanValue) {
+                sanValue.textContent = '42';
+                container.classList.add('animate-vibrate', 'animate-flash-red');
+                sanValue.classList.add('animate-value-pop');
+                
+                setTimeout(() => {
+                    container.classList.remove('animate-vibrate', 'animate-flash-red');
+                    sanValue.classList.remove('animate-value-pop');
+                }, 300);
+            }
+        }, 1000);
+    });
+</script>
+</body></html>

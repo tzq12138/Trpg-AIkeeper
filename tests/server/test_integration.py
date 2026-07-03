@@ -1,8 +1,11 @@
-def test_full_flow(client):
-    # 1. Create room
-    resp = client.post("/api/rooms", json={"scenario_id": "sc-1"})
-    assert resp.status_code == 200
-    room = resp.json()
+from tests.server.conftest import setup_auth_test_data, create_room
+
+
+def test_full_flow(client, test_db):
+    setup_auth_test_data(test_db)
+
+    # 1. Create room (authenticated)
+    room = create_room(client)
     room_id = room["room_id"]
     owner_token = room["owner_token"]
 
@@ -11,6 +14,7 @@ def test_full_flow(client):
     assert resp.status_code == 200
     player = resp.json()
     player_token = player["player_token"]
+    character_id = player["character_id"]
 
     # 3. Submit intent
     resp = client.post(
@@ -37,7 +41,12 @@ def test_full_flow(client):
     )
     assert resp.status_code == 202
 
-    # 5. Start room
+    # 5. Mark character ready (direct DB — admin endpoint requires auth)
+    db = client.app.state.db
+    db.execute("UPDATE characters SET is_ready = TRUE WHERE character_id = %s", (character_id,))
+    db.commit()
+
+    # 6. Start room
     resp = client.post(
         f"/api/rooms/{room_id}/start",
         headers={"X-Owner-Token": owner_token},

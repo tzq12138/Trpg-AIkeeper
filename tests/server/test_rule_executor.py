@@ -3,7 +3,7 @@ import random
 import pytest
 
 from src.server.models import MechanicCompileResult, PlayerIntent
-from src.server.rule_executor import RuleExecutor
+from src.server.engine.rule_executor import RuleExecutor
 
 
 @pytest.mark.asyncio

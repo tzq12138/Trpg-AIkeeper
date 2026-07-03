@@ -1,6 +1,6 @@
 import pytest
 
-from src.server.mechanic_compiler import MechanicCompiler
+from src.server.ai.mechanic_compiler import MechanicCompiler
 from src.server.models import PlayerIntent
 
 

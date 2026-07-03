@@ -1,7 +1,11 @@
 import json
+from tests.server.conftest import setup_auth_test_data, login
 
 
 def test_rule_docs_lists_indexed_rule_documents(client, test_db):
+    setup_auth_test_data(test_db)
+    token = login(client)
+
     test_db.execute(
         "INSERT INTO rule_documents (doc_id, title, category, content) VALUES (%s, %s, %s, %s)",
         ("rule-1", "COC7th核心规则书v1.2.1.pdf", "coc7-core-rules", "abcdef"),
@@ -18,7 +22,7 @@ def test_rule_docs_lists_indexed_rule_documents(client, test_db):
     )
     test_db.commit()
 
-    resp = client.get("/api/rag/rule-docs")
+    resp = client.get("/api/rag/rule-docs", headers={"Authorization": f"Bearer {token}"})
 
     assert resp.status_code == 200
     assert resp.json() == [

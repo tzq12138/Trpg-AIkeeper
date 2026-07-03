@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Investigator Interface</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700;900&amp;family=Inter:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "surface-container": "#eee9e0",
+                        "primary-container": "#ffcc00",
+                        "surface-dim": "#d6d1c9",
+                        "on-tertiary-fixed-variant": "#1a1a1a",
+                        "secondary-fixed": "#ffdad6",
+                        "secondary-container": "#ffdad6",
+                        "secondary": "#e63b2e",
+                        "on-secondary-container": "#1a1a1a",
+                        "inverse-surface": "#1a1a1a",
+                        "on-error": "#ffffff",
+                        "surface-container-lowest": "#ffffff",
+                        "on-secondary": "#1a1a1a",
+                        "tertiary-container": "#d6e3ff",
+                        "surface-variant": "#e8e3da",
+                        "inverse-primary": "#f5f0e8",
+                        "on-primary": "#ffffff",
+                        "surface": "#f5f0e8",
+                        "error": "#cc0000",
+                        "surface-container-high": "#e8e3da",
+                        "on-surface-variant": "#4a4a4a",
+                        "error-container": "#ffdad6",
+                        "surface-container-highest": "#e2ddd4",
+                        "on-primary-fixed-variant": "#1a1a1a",
+                        "primary": "#1a1a1a",
+                        "on-tertiary-fixed": "#1a1a1a",
+                        "outline-variant": "#d0cbc3",
+                        "primary-fixed": "#ffcc00",
+                        "inverse-on-surface": "#f5f0e8",
+                        "surface-container-low": "#f2ede5",
+                        "background": "#f5f0e8",
+                        "secondary-fixed-dim": "#ffb3ab",
+                        "primary-fixed-dim": "#e6b800",
+                        "on-primary-fixed": "#1a1a1a",
+                        "tertiary-fixed-dim": "#a8c6ff",
+                        "tertiary": "#0055ff",
+                        "tertiary-fixed": "#d6e3ff",
+                        "on-surface": "#1a1a1a",
+                        "on-tertiary-container": "#1a1a1a",
+                        "on-primary-container": "#1a1a1a",
+                        "on-error-container": "#93000a",
+                        "on-secondary-fixed-variant": "#1a1a1a",
+                        "surface-bright": "#faf7f2",
+                        "outline": "#1a1a1a",
+                        "on-tertiary": "#ffffff",
+                        "on-secondary-fixed": "#1a1a1a",
+                        "on-background": "#1a1a1a",
+                        "surface-tint": "#1a1a1a"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "fontFamily": {
+                        "headline": ["Space Grotesk", "sans-serif"],
+                        "display": ["Space Grotesk", "sans-serif"],
+                        "body": ["Inter", "sans-serif"],
+                        "label": ["Space Grotesk", "sans-serif"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body {
+            background-color: #f5f0e8;
+            color: #1a1a1a;
+        }
+        .brutal-shadow {
+            box-shadow: 4px 4px 0px 0px #1a1a1a;
+        }
+        .brutal-border {
+            border: 3px solid #1a1a1a;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+</head>
+<body class="font-body min-h-screen flex flex-col antialiased selection:bg-primary-container selection:text-primary">
+<!-- TopAppBar -->
+<header class="bg-surface w-full top-0 sticky border-b-4 border-primary shadow-[4px_4px_0px_0px_#1a1a1a] z-40">
+<div class="flex justify-between items-center px-4 py-4 w-full">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-3xl font-black text-primary uppercase" style="font-variation-settings: 'FILL' 1;">account_circle</span>
+<h1 class="font-headline uppercase text-2xl font-bold tracking-tighter text-primary">调查员状态</h1>
+</div>
+<div class="font-headline uppercase text-lg font-bold tracking-tighter bg-primary text-surface px-3 py-1 brutal-border brutal-shadow">
+                生命 12 | 理智 45
+            </div>
+</div>
+</header>
+<!-- Main Content Area -->
+<main class="flex-grow flex flex-col p-4 md:p-8 gap-6 pb-40">
+<!-- TacticalMessageBubble -->
+<div class="bg-surface-container-highest brutal-border brutal-shadow p-6 relative max-w-2xl mx-auto w-full mt-8">
+<div class="absolute -top-4 left-4 bg-primary text-surface font-label uppercase px-3 py-1 text-sm font-bold brutal-border">
+                守秘人讯息
+            </div>
+<p class="font-body text-lg text-primary mt-2 mb-6 leading-relaxed">
+                走廊阴冷潮湿。你听到门后传来阵阵抓挠声。
+            </p>
+<!-- Action Buttons -->
+<div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6">
+<button class="bg-surface-container-lowest text-primary font-label uppercase font-bold py-3 px-4 brutal-border brutal-shadow hover:bg-primary hover:text-surface transition-colors flex items-center justify-center gap-2 active:translate-x-1 active:translate-y-1 active:shadow-none">
+<span class="text-xl">🎲</span> 聆听
+                </button>
+<button class="bg-surface-container-lowest text-primary font-label uppercase font-bold py-3 px-4 brutal-border brutal-shadow hover:bg-primary hover:text-surface transition-colors flex items-center justify-center gap-2 active:translate-x-1 active:translate-y-1 active:shadow-none">
+<span class="text-xl">🔦</span> 侦查
+                </button>
+<button class="bg-surface-container-lowest text-primary font-label uppercase font-bold py-3 px-4 brutal-border brutal-shadow hover:bg-primary hover:text-surface transition-colors flex items-center justify-center gap-2 active:translate-x-1 active:translate-y-1 active:shadow-none">
+<span class="text-xl">🚪</span> 推门
+                </button>
+</div>
+</div>
+<!-- Resolving State Indicator (Visual Only) -->
+<div class="max-w-2xl mx-auto w-full flex justify-center opacity-50 mt-4">
+<div class="bg-surface-variant text-on-surface-variant font-label uppercase px-4 py-2 brutal-border text-sm flex items-center gap-2">
+<span class="material-symbols-outlined text-sm">lock</span> ⚡ 正在结算中...
+             </div>
+</div>
+</main>
+<!-- Footer Area: Push-to-Talk -->
+<div class="fixed bottom-24 left-0 w-full flex justify-center z-40 pointer-events-none">
+<button class="pointer-events-auto bg-primary-container text-primary rounded-full w-20 h-20 flex items-center justify-center brutal-border brutal-shadow hover:bg-primary hover:text-primary-container transition-colors active:translate-x-1 active:translate-y-1 active:shadow-none">
+<span class="material-symbols-outlined text-4xl" style="font-variation-settings: 'FILL' 1;">mic</span>
+</button>
+</div>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex grid grid-cols-4 h-20 bg-surface border-t-4 border-primary">
+<a class="flex flex-col items-center justify-center text-primary p-2 border-r-3 border-primary hover:bg-tertiary hover:text-on-tertiary transition-colors active:scale-95" href="#">
+<span class="material-symbols-outlined text-2xl mb-1">fitness_center</span>
+<span class="font-label uppercase text-xs font-bold">技能</span>
+</a>
+<a class="flex flex-col items-center justify-center text-primary p-2 border-r-3 border-primary hover:bg-tertiary hover:text-on-tertiary transition-colors active:scale-95" href="#">
+<span class="material-symbols-outlined text-2xl mb-1">backpack</span>
+<span class="font-label uppercase text-xs font-bold">装备</span>
+</a>
+<a class="flex flex-col items-center justify-center bg-primary-container text-on-primary-container p-2 border-r-3 border-primary active:scale-95" href="#">
+<span class="material-symbols-outlined text-2xl mb-1" style="font-variation-settings: 'FILL' 1;">menu_book</span>
+<span class="font-label uppercase text-xs font-bold">日志</span>
+</a>
+<a class="flex flex-col items-center justify-center text-primary p-2 hover:bg-tertiary hover:text-on-tertiary transition-colors active:scale-95" href="#">
+<span class="material-symbols-outlined text-2xl mb-1">explore</span>
+<span class="font-label uppercase text-xs font-bold">地图</span>
+</a>
+</nav>
+</body></html>

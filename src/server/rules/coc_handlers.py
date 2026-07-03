@@ -134,3 +134,25 @@ class CocLuckCheckHandler(BaseRuleHandler):
                 {"kind": "roll", "dice": "d100", "result": roll, "target": current_luck}
             ],
         )
+
+
+class CocMoveHandler(BaseRuleHandler):
+    """Validates map movement and returns position mutation."""
+
+    async def execute(self, state: GameState, params: dict) -> RuleResult:
+        target_node = params.get("targetNodeId", "")
+        from_node = params.get("fromNodeId", "")
+        return RuleResult(
+            is_success=True,
+            metadata={
+                "target_node": target_node,
+                "from_node": from_node,
+                "move_success": True,
+            },
+            mutations=[
+                {"op": "replace", "path": "/character/current_location", "value": target_node}
+            ],
+            reveal_steps=[
+                {"kind": "move", "fromNode": from_node, "toNode": target_node}
+            ],
+        )

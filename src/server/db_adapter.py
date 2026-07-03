@@ -86,11 +86,22 @@ CREATE TABLE IF NOT EXISTS rooms (
     room_id TEXT PRIMARY KEY,
     scenario_id TEXT,
     owner_token TEXT NOT NULL,
+    owner_account_id TEXT,
     status TEXT NOT NULL DEFAULT 'lobby',
     spoiler_level TEXT DEFAULT 'standard',
     state_version INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     started_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS accounts (
+    account_id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    display_name TEXT,
+    role TEXT NOT NULL DEFAULT 'player',
+    last_seen_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS characters (
@@ -99,7 +110,9 @@ CREATE TABLE IF NOT EXISTS characters (
     player_name TEXT NOT NULL,
     player_token TEXT NOT NULL,
     xlsx_data JSONB,
-    is_ready BOOLEAN NOT NULL DEFAULT FALSE
+    is_ready BOOLEAN NOT NULL DEFAULT FALSE,
+    account_id TEXT,
+    status TEXT NOT NULL DEFAULT 'active'
 );
 
 CREATE TABLE IF NOT EXISTS scenarios (
@@ -110,6 +123,20 @@ CREATE TABLE IF NOT EXISTS scenarios (
     scenario_assets JSONB,
     quality_report JSONB,
     import_status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS character_templates (
+    template_id TEXT PRIMARY KEY,
+    scenario_id TEXT NOT NULL REFERENCES scenarios(scenario_id),
+    name TEXT NOT NULL,
+    occupation TEXT,
+    background TEXT,
+    age INTEGER DEFAULT 25,
+    gender TEXT DEFAULT '',
+    attributes JSONB DEFAULT '{}',
+    skills JSONB DEFAULT '{}',
+    backstory JSONB DEFAULT '{}',
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -235,6 +262,18 @@ CREATE TABLE IF NOT EXISTS host_states (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS room_turns (
+    turn_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id),
+    turn_index INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'collecting',
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMP,
+    summary TEXT
+);
+
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS turn_id TEXT;
+
 CREATE TABLE IF NOT EXISTS rule_documents (
     doc_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -243,8 +282,193 @@ CREATE TABLE IF NOT EXISTS rule_documents (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS scenario_assets (
+    asset_id TEXT PRIMARY KEY,
+    scenario_id TEXT NOT NULL REFERENCES scenarios(scenario_id),
+    filename TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+    file_size INTEGER NOT NULL DEFAULT 0,
+    relative_path TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS scenario_assets JSONB;
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS params JSONB DEFAULT '{}';
+ALTER TABLE characters ADD COLUMN IF NOT EXISTS account_id TEXT;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'player';
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS owner_account_id TEXT;
+ALTER TABLE characters ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS source_filename TEXT;
+ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS source_sha256 TEXT;
+ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS original_file_path TEXT;
+
+CREATE TABLE IF NOT EXISTS scenario_maps (
+    map_id TEXT PRIMARY KEY,
+    scenario_id TEXT NOT NULL REFERENCES scenarios(scenario_id),
+    generated_by TEXT NOT NULL DEFAULT 'python',
+    status TEXT NOT NULL DEFAULT 'draft',
+    nodes JSONB NOT NULL DEFAULT '[]',
+    edges JSONB NOT NULL DEFAULT '[]',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    confirmed_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS room_map_state (
+    room_id TEXT PRIMARY KEY REFERENCES rooms(room_id),
+    map_id TEXT NOT NULL,
+    explored_nodes JSONB NOT NULL DEFAULT '[]',
+    hidden_nodes JSONB NOT NULL DEFAULT '[]',
+    state_version INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS character_map_positions (
+    character_id TEXT NOT NULL,
+    room_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (character_id, room_id)
+);
+
+CREATE TABLE IF NOT EXISTS encounters (
+    encounter_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id),
+    type TEXT NOT NULL DEFAULT 'combat',
+    status TEXT NOT NULL DEFAULT 'suggested',
+    current_round INTEGER NOT NULL DEFAULT 0,
+    summary TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS encounter_participants (
+    encounter_id TEXT NOT NULL REFERENCES encounters(encounter_id),
+    character_id TEXT NOT NULL,
+    side TEXT NOT NULL DEFAULT 'player',
+    hp INTEGER NOT NULL DEFAULT 0,
+    hp_max INTEGER NOT NULL DEFAULT 0,
+    san INTEGER NOT NULL DEFAULT 0,
+    san_max INTEGER NOT NULL DEFAULT 0,
+    dex INTEGER NOT NULL DEFAULT 0,
+    mov INTEGER NOT NULL DEFAULT 7,
+    current_position TEXT DEFAULT '',
+    distance_band TEXT NOT NULL DEFAULT 'medium',
+    status_tags JSONB DEFAULT '[]',
+    acted_this_round BOOLEAN NOT NULL DEFAULT FALSE,
+    weapon_name TEXT DEFAULT '',
+    damage_expression TEXT DEFAULT '1d3',
+    main_skill TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    PRIMARY KEY (encounter_id, character_id)
+);
+
+CREATE TABLE IF NOT EXISTS ai_call_logs (
+    id BIGSERIAL PRIMARY KEY,
+    room_id VARCHAR(64),
+    action_id VARCHAR(64),
+    task_type VARCHAR(32),
+    provider VARCHAR(32),
+    provider_order VARCHAR(128),
+    duration_ms INTEGER,
+    status VARCHAR(16),
+    fallback_chain TEXT[],
+    response_summary VARCHAR(256),
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    error_message TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS spoiler_sensitive_items (
+    item_id TEXT PRIMARY KEY,
+    scenario_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    label TEXT NOT NULL,
+    aliases JSONB NOT NULL DEFAULT '[]',
+    source_ref TEXT NOT NULL DEFAULT '',
+    default_audience TEXT NOT NULL DEFAULT 'host',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_spoiler_items_scenario ON spoiler_sensitive_items(scenario_id, category);
+
+CREATE TABLE IF NOT EXISTS spoiler_audits (
+    audit_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    action_id TEXT DEFAULT '',
+    original_text TEXT NOT NULL,
+    violations JSONB NOT NULL DEFAULT '[]',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    final_status TEXT NOT NULL DEFAULT 'blocked_fallback',
+    final_text TEXT NOT NULL DEFAULT '',
+    unlock_snapshot JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_spoiler_audits_room ON spoiler_audits(room_id, created_at);
+
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS spoiler_review_status VARCHAR(32);
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS spoiler_hit_items JSONB;
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS character_profiles (
+    profile_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    occupation TEXT DEFAULT '',
+    attributes JSONB NOT NULL DEFAULT '{}',
+    skills JSONB NOT NULL DEFAULT '{}',
+    background TEXT DEFAULT '',
+    backstory JSONB DEFAULT '{}',
+    permanent_injuries JSONB DEFAULT '[]',
+    permanent_insanities JSONB DEFAULT '[]',
+    experience_points INTEGER DEFAULT 0,
+    inheritable_items JSONB DEFAULT '[]',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS character_runtime_state (
+    character_id TEXT NOT NULL,
+    room_id TEXT NOT NULL,
+    profile_id TEXT,
+    hp INTEGER NOT NULL DEFAULT 0,
+    hp_max INTEGER NOT NULL DEFAULT 0,
+    san INTEGER NOT NULL DEFAULT 0,
+    san_max INTEGER NOT NULL DEFAULT 0,
+    mp INTEGER NOT NULL DEFAULT 0,
+    mp_max INTEGER NOT NULL DEFAULT 0,
+    luck INTEGER NOT NULL DEFAULT 0,
+    status_tags JSONB DEFAULT '[]',
+    temp_modifiers JSONB DEFAULT '{}',
+    visibility TEXT DEFAULT 'visible',
+    version INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (character_id, room_id)
+);
+
+CREATE TABLE IF NOT EXISTS room_scene_state (
+    room_id TEXT PRIMARY KEY REFERENCES rooms(room_id),
+    current_scene TEXT DEFAULT '',
+    visited_scenes JSONB DEFAULT '[]',
+    triggered_triggers JSONB DEFAULT '[]',
+    public_facts JSONB DEFAULT '[]',
+    scene_variables JSONB DEFAULT '{}',
+    current_bgm TEXT DEFAULT '',
+    current_asset_url TEXT DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE characters ADD COLUMN IF NOT EXISTS profile_id TEXT;
+ALTER TABLE encounter_participants ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 0;
+ALTER TABLE encounters ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 0;
+ALTER TABLE clues ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 0;
+ALTER TABLE inventory ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_events_room ON events(room_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 """
 
 

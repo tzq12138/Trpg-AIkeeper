@@ -7,6 +7,35 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/api/rag')
 
 
+def _require_auth_for_room(request: Request, room_id: str, write: bool = False):
+    """Verify the request is from admin, room owner, or room player.
+    For write operations, only admin or room owner is allowed."""
+    from .router_auth import get_account_from_token
+    account = get_account_from_token(request)
+    if not account:
+        raise HTTPException(401, "请先登录")
+    if account.get("role") == "admin":
+        return account
+    conn = request.app.state.db
+    room = conn.execute(
+        "SELECT owner_account_id FROM rooms WHERE room_id = %s", (room_id,)
+    ).fetchone()
+    if not room:
+        raise HTTPException(404, "房间不存在")
+    if room.get("owner_account_id") == account.get("account_id"):
+        return account
+    if write:
+        raise HTTPException(403, "仅房主或管理员可操作")
+    # For read/search: check if the account has a character in this room
+    char = conn.execute(
+        "SELECT character_id FROM characters WHERE room_id = %s AND account_id = %s LIMIT 1",
+        (room_id, account.get("account_id")),
+    ).fetchone()
+    if not char:
+        raise HTTPException(403, "不是该房间的房主或玩家")
+    return account
+
+
 class IndexRequest(BaseModel):
     scenario_id: str
     room_id: str | None = None
@@ -21,6 +50,14 @@ class SearchRequest(BaseModel):
 
 @router.post('/index')
 async def index_scenario(request: Request, body: IndexRequest):
+    """Index scenario text — admin or room owner only."""
+    if body.room_id:
+        _require_auth_for_room(request, body.room_id, write=True)
+    else:
+        from .router_auth import get_account_from_token
+        account = get_account_from_token(request)
+        if not account or account.get("role") != "admin":
+            raise HTTPException(403, "仅管理员可索引全局剧本")
     rag = request.app.state.rag
     if not rag:
         raise HTTPException(503, 'RAG not available')
@@ -34,10 +71,18 @@ async def index_scenario(request: Request, body: IndexRequest):
 
 @router.post('/index-character')
 async def index_character(request: Request, body: dict):
+    """Index character data — admin or room owner only."""
+    room_id = body.get('room_id')
+    if room_id:
+        _require_auth_for_room(request, room_id, write=True)
+    else:
+        from .router_auth import get_account_from_token
+        account = get_account_from_token(request)
+        if not account or account.get("role") != "admin":
+            raise HTTPException(403, "仅管理员可操作")
     rag = request.app.state.rag
     if not rag:
         raise HTTPException(503, 'RAG not available')
-    room_id = body.get('room_id')
     character_id = body.get('character_id')
     xlsx_data = body.get('xlsx_data', {})
     count = rag.index_character(room_id, character_id, xlsx_data)
@@ -46,18 +91,32 @@ async def index_character(request: Request, body: dict):
 
 @router.post('/index-npc')
 async def index_npc(request: Request, body: dict):
+    """Index NPC graph — admin or room owner only."""
+    room_id = body.get('room_id')
+    if room_id:
+        _require_auth_for_room(request, room_id, write=True)
+    else:
+        from .router_auth import get_account_from_token
+        account = get_account_from_token(request)
+        if not account or account.get("role") != "admin":
+            raise HTTPException(403, "仅管理员可操作")
     rag = request.app.state.rag
     if not rag:
         raise HTTPException(503, 'RAG not available')
     scenario_id = body.get('scenario_id')
     knowledge_graph = body.get('knowledge_graph', {})
-    room_id = body.get('room_id')
     count = rag.index_npc_graph(scenario_id, knowledge_graph, room_id)
     return {'chunks': count}
 
 
 @router.post('/index-rules')
 async def index_rules(request: Request, body: dict):
+    """Index rules — admin or room owner."""
+    room_id = body.get('doc_id')
+    from .router_auth import get_account_from_token
+    account = get_account_from_token(request)
+    if not account or account.get("role") != "admin":
+        raise HTTPException(403, "仅管理员可索引规则书")
     rag = request.app.state.rag
     if not rag:
         raise HTTPException(503, 'RAG not available')
@@ -71,6 +130,17 @@ async def index_rules(request: Request, body: dict):
 
 @router.post('/search')
 async def search(request: Request, body: SearchRequest):
+    """Search RAG — must be room player, owner, or admin."""
+    from .router_auth import get_account_from_token
+    account = get_account_from_token(request)
+    if not account:
+        raise HTTPException(401, "请先登录")
+    if account.get("role") == "admin":
+        pass  # admin can search any room
+    elif body.room_id:
+        _require_auth_for_room(request, body.room_id, write=False)
+    else:
+        raise HTTPException(403, "请提供 room_id 或使用管理员账号")
     rag = request.app.state.rag
     if not rag:
         raise HTTPException(503, 'RAG not available')
@@ -80,6 +150,11 @@ async def search(request: Request, body: SearchRequest):
 
 @router.get('/rule-docs')
 async def rule_docs(request: Request):
+    """List rule documents — requires login."""
+    from .router_auth import get_account_from_token
+    account = get_account_from_token(request)
+    if not account:
+        raise HTTPException(401, "请先登录")
     conn = request.app.state.db
     rows = conn.execute(
         """
@@ -106,6 +181,11 @@ async def rule_docs(request: Request):
 
 @router.get('/stats')
 async def stats(request: Request):
+    """RAG index stats — requires login."""
+    from .router_auth import get_account_from_token
+    account = get_account_from_token(request)
+    if not account:
+        raise HTTPException(401, "请先登录")
     rag = request.app.state.rag
     if not rag:
         raise HTTPException(503, 'RAG not available')

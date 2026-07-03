@@ -1,9 +1,10 @@
 import pytest
+from tests.server.conftest import setup_auth_test_data, create_room
 
 
-def _setup_room_and_player(client):
-    resp = client.post("/api/rooms", json={})
-    room = resp.json()
+def _setup_room_and_player(client, test_db):
+    setup_auth_test_data(test_db)
+    room = create_room(client)
     room_id = room["room_id"]
     owner_token = room["owner_token"]
 
@@ -13,7 +14,7 @@ def _setup_room_and_player(client):
 
 
 def test_team_objectives_visible_to_all(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
 
     resp = client.post(f"/api/player/rooms/{room_id}/join")
     player2 = resp.json()
@@ -21,7 +22,7 @@ def test_team_objectives_visible_to_all(client, test_db):
 
     test_db.execute(
         "INSERT INTO objectives (objective_id, room_id, character_id, text, type) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "VALUES (%s, %s, %s, %s, %s)",
         ("obj-1", room_id, None, "Investigate the mansion", "team"),
     )
     test_db.commit()
@@ -40,7 +41,7 @@ def test_team_objectives_visible_to_all(client, test_db):
 
 
 def test_personal_objectives_only_to_owner(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
 
     resp = client.post(f"/api/player/rooms/{room_id}/join")
     player2 = resp.json()
@@ -49,7 +50,7 @@ def test_personal_objectives_only_to_owner(client, test_db):
 
     test_db.execute(
         "INSERT INTO objectives (objective_id, room_id, character_id, text, type) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "VALUES (%s, %s, %s, %s, %s)",
         ("obj-p1", room_id, char_id, "Find your lost sibling", "personal"),
     )
     test_db.commit()
@@ -65,11 +66,11 @@ def test_personal_objectives_only_to_owner(client, test_db):
 
 
 def test_objective_status_changes(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
 
     test_db.execute(
         "INSERT INTO objectives (objective_id, room_id, character_id, text, type, status) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "VALUES (%s, %s, %s, %s, %s, %s)",
         ("obj-2", room_id, None, "Find the key", "team", "active"),
     )
     test_db.commit()
@@ -78,7 +79,7 @@ def test_objective_status_changes(client, test_db):
     assert resp.json()["objectives"][0]["status"] == "active"
 
     test_db.execute(
-        "UPDATE objectives SET status = 'completed' WHERE objective_id = ?", ("obj-2",)
+        "UPDATE objectives SET status = 'completed' WHERE objective_id = %s", ("obj-2",)
     )
     test_db.commit()
 

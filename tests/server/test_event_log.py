@@ -1,6 +1,6 @@
 import json
 import pytest
-from src.server.event_log import EventLog
+from src.server.events.event_log import EventLog
 
 
 @pytest.fixture
@@ -79,8 +79,9 @@ def test_checkpoint_restore_overwrites_state(event_log, test_db):
     event_log.create_checkpoint("room-1", "cp-1")
 
     event_log.log_event("room-1", "s2c_chat_stream", "party", {"text": "after"})
+    # create_checkpoint also logs a s2c_checkpoint_created event, so 3 events total
     events_before = event_log.get_events("room-1")
-    assert len(events_before) == 2
+    assert len(events_before) == 3
 
     event_log.restore_checkpoint("room-1", "cp-1")
 

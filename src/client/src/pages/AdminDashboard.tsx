@@ -1,575 +1,498 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
+import { getSlotValue, setSlotValue } from '../shared/identity';
 
-const owner = () => localStorage.getItem('owner_token') || '';
-const player = () => localStorage.getItem('player_token') || '';
-
-async function api(path: string, opts?: RequestInit) {
-  const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...opts?.headers } });
-  if (!res.ok) throw new Error(`${res.status}`);
-  return res.json();
+function api(path: string, opts?: RequestInit) {
+  const token = getSlotValue('account_token') || '';
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...((opts?.headers as Record<string, string>) || {}),
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetch(path, { ...opts, headers }).then((r) => {
+    if (!r.ok) return r.json().then((d) => { throw new Error(d.detail || `${r.status}`); });
+    return r.json();
+  });
 }
 
-// ─── 主入口 ───
+type AdminTab = 'overview' | 'rooms' | 'scenarios' | 'characters' | 'accounts';
 
-type AdminTab =
-  | 'rooms' | 'scenarios' | 'players' | 'ai' | 'events' | 'campaign' | 'rag';
+export default function AdminDashboard() {
+  const [tab, setTab] = useState<AdminTab>('overview');
+  const [authed, setAuthed] = useState(false);
+  const [checking, setChecking] = useState(true);
 
-const TABS: { key: AdminTab; label: string }[] = [
-  { key: 'rooms', label: '房间管理' },
-  { key: 'scenarios', label: '剧本导入' },
-  { key: 'players', label: '玩家管理' },
-  { key: 'ai', label: 'AI KP' },
-  { key: 'events', label: '事件日志' },
-  { key: 'campaign', label: '战役档案' },
-  { key: 'rag', label: 'RAG 知识库' },
-];
+  useEffect(() => {
+    api('/api/admin/overview')
+      .then(() => setAuthed(true))
+      .catch(() => setAuthed(false))
+      .finally(() => setChecking(false));
+  }, []);
 
-export default function AdminDashboard({ roomId: initialRoom }: { roomId?: string }) {
-  const [tab, setTab] = useState<AdminTab>('rooms');
-  const [roomId, setRoomId] = useState(initialRoom || localStorage.getItem('admin_room_id') || '');
+  if (checking) return <div className="bh-page bh-page--narrow"><div className="bh-home"><div className="bh-muted-box">验证管理员身份...</div></div></div>;
 
-  const selectRoom = (id: string) => {
-    setRoomId(id);
-    localStorage.setItem('admin_room_id', id);
-  };
+  if (!authed) {
+    return (
+      <div className="bh-page bh-page--narrow">
+        <div className="bh-home">
+          <section className="bh-panel">
+            <span className="bh-eyebrow">ADMIN</span>
+            <h2 className="bh-panel-title">管理后台</h2>
+            <p className="bh-error">需要管理员账号登录。</p>
+            <a className="bh-button bh-button--yellow" href="/login" onClick={() => sessionStorage.setItem('login_return_to', '/admin')}>去登录</a>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  const accountRaw = getSlotValue('account');
+  const account = accountRaw ? JSON.parse(accountRaw) : {};
+
+  const tabs: Array<{ key: AdminTab; label: string; eyebrow: string }> = [
+    { key: 'overview', label: '概览', eyebrow: 'OVERVIEW' },
+    { key: 'rooms', label: '房间', eyebrow: 'ROOMS' },
+    { key: 'scenarios', label: '剧本', eyebrow: 'SCENARIOS' },
+    { key: 'characters', label: '角色', eyebrow: 'CHARS' },
+    { key: 'accounts', label: '账号', eyebrow: 'ACCOUNTS' },
+  ];
 
   return (
-    <div style={{ fontFamily: 'sans-serif', color: '#ddd', background: '#0a0a0a', minHeight: '100vh' }}>
-      <div style={{ display: 'flex', alignItems: 'center', padding: '12px 20px', background: '#111', borderBottom: '1px solid #222' }}>
-        <h1 style={{ fontSize: 18, margin: 0, color: '#8c9eff' }}>AI-Keeper 管理后台</h1>
-        {roomId && <span style={{ marginLeft: 16, fontSize: 13, color: '#666' }}>房间: {roomId}</span>}
-        <a href="/" style={{ marginLeft: 'auto', color: '#666', fontSize: 13 }}>返回首页</a>
+    <div className="bh-page" style={{ padding: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '16px 24px', borderBottom: '6px solid var(--bh-black)', background: 'var(--bh-paper)' }}>
+        <div className="bh-logo-mark" style={{ width: 44, height: 44, fontSize: 20 }}>AK</div>
+        <strong style={{ fontFamily: '"Space Grotesk", Impact, sans-serif', fontSize: 22 }}>ADMIN</strong>
+        <span style={{ flex: 1 }} />
+        <span style={{ fontWeight: 800, fontSize: 13 }}>{account.display_name || account.username}</span>
+        <button className="bh-button" style={{ minHeight: 36, padding: '6px 12px', fontSize: 12 }} onClick={() => { setSlotValue('account_token', ''); setSlotValue('account', ''); window.location.href = '/'; }}>登出</button>
       </div>
-
-      <div style={{ display: 'flex', borderBottom: '1px solid #222', padding: '0 16px' }}>
-        {TABS.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)} style={{
-            padding: '10px 16px', border: 'none', background: 'transparent',
-            color: tab === t.key ? '#8c9eff' : '#666', fontSize: 13, fontWeight: 'bold',
-            borderBottom: tab === t.key ? '2px solid #3f51b5' : '2px solid transparent',
-            cursor: 'pointer',
-          }}>{t.label}</button>
+      <div style={{ display: 'flex', gap: 0, borderBottom: '4px solid var(--bh-black)' }}>
+        {tabs.map((t) => (
+          <button key={t.key} className={`bh-tab ${tab === t.key ? 'bh-tab--active' : ''}`} style={{ borderBottom: 0 }} onClick={() => setTab(t.key)} aria-selected={tab === t.key}>
+            <span className="bh-tab-eyebrow">{t.eyebrow}</span>
+            {t.label}
+          </button>
         ))}
       </div>
-
-      <div style={{ padding: 20, maxWidth: 900 }}>
-        {tab === 'rooms' && <RoomsPanel roomId={roomId} selectRoom={selectRoom} />}
-        {tab === 'scenarios' && <ScenariosPanel selectRoom={selectRoom} />}
-        {tab === 'players' && <PlayersPanel roomId={roomId} />}
-        {tab === 'ai' && <AIPanel roomId={roomId} />}
-        {tab === 'events' && <EventsPanel roomId={roomId} />}
-        {tab === 'campaign' && <CampaignPanel roomId={roomId} />}
-        {tab === 'rag' && <RAGPanel />}
+      <div style={{ padding: 24, maxWidth: 1200 }}>
+        {tab === 'overview' && <OverviewPanel />}
+        {tab === 'rooms' && <RoomsPanel />}
+        {tab === 'scenarios' && <ScenariosPanel />}
+        {tab === 'characters' && <CharactersPanel />}
+        {tab === 'accounts' && <AccountsPanel />}
       </div>
     </div>
   );
 }
 
-// ─── 房间管理 ───
+// ── Overview ──
 
-function RoomsPanel({ roomId, selectRoom }: { roomId: string; selectRoom: (id: string) => void }) {
-  const [room, setRoom] = useState<any>(null);
-  const [hud, setHud] = useState<any>(null);
-  const [log, setLog] = useState<string[]>([]);
+function OverviewPanel() {
+  const [data, setData] = useState<Record<string, number> | null>(null);
+  useEffect(() => { api('/api/admin/overview').then(setData).catch(() => {}); }, []);
+  if (!data) return <div className="bh-muted-box">加载中...</div>;
 
-  const addLog = (msg: string) => setLog(p => [...p.slice(-29), `${new Date().toLocaleTimeString()} ${msg}`]);
+  const cards: Array<{ label: string; value: number; eyebrow: string }> = [
+    { label: '总房间', value: data.total_rooms, eyebrow: 'ROOMS' },
+    { label: '进行中', value: data.active_rooms, eyebrow: 'ACTIVE' },
+    { label: '注册账号', value: data.total_accounts, eyebrow: 'USERS' },
+    { label: '在线角色', value: data.online_players, eyebrow: 'ONLINE' },
+    { label: '待处理行动', value: data.pending_actions, eyebrow: 'QUEUE' },
+  ];
 
-  const loadRoom = useCallback(async () => {
-    if (!roomId) return;
+  return (
+    <section>
+      <h2 className="bh-panel-title">全局概览</h2>
+      <div className="bh-grid-links" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
+        {cards.map((c) => (
+          <div key={c.eyebrow} className="bh-link-card" style={{ minHeight: 100 }}>
+            <span className="bh-eyebrow">{c.eyebrow}</span>
+            <strong>{c.value}</strong>
+            <span>{c.label}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ── Rooms ──
+
+function RoomsPanel() {
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [selected, setSelected] = useState<string>('');
+  const [detail, setDetail] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    api('/api/admin/rooms').then(setRooms).finally(() => setLoading(false));
+  };
+  useEffect(load, []);
+
+  const showDetail = (id: string) => {
+    setSelected(id);
+    api(`/api/admin/rooms/${id}`).then(setDetail).catch(() => setDetail(null));
+  };
+
+  const patchRoom = async (id: string, status: string) => {
+    await api(`/api/admin/rooms/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+    load();
+    showDetail(id);
+  };
+
+  const statusColors: Record<string, string> = {
+    draft: 'var(--bh-muted)', lobby: 'var(--bh-blue)', active: 'var(--bh-yellow-dim)',
+    paused: 'var(--bh-yellow)', completed: 'var(--bh-red)', archived: 'var(--bh-paper-3)',
+  };
+  const statusLabel: Record<string, string> = {
+    draft: '草稿', lobby: '大厅等待', active: '进行中', paused: '已暂停', completed: '已完成', archived: '已归档',
+  };
+
+  const [showCreate, setShowCreate] = useState(false);
+  const [newRoomScenarioId, setNewRoomScenarioId] = useState('');
+  const [newRoomOwnerId, setNewRoomOwnerId] = useState('');
+  const [scenarioList, setScenarioList] = useState<any[]>([]);
+  const [accountList, setAccountList] = useState<any[]>([]);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
+
+  const handleCreateRoom = async () => {
+    if (!newRoomScenarioId) { setCreateError('请选择剧本'); return; }
+    setCreating(true); setCreateError('');
     try {
-      const r = await api(`/api/rooms/${roomId}`);
-      setRoom(r);
-    } catch { setRoom(null); }
-  }, [roomId]);
-
-  const loadHud = useCallback(async () => {
-    if (!roomId) return;
-    try {
-      const h = await api(`/api/host/${roomId}/hud`);
-      setHud(h);
-    } catch { setHud(null); }
-  }, [roomId]);
-
-  useEffect(() => { loadRoom(); loadHud(); }, [loadRoom, loadHud]);
-
-  const createRoom = async () => {
-    const r = await api('/api/rooms', { method: 'POST', body: '{}' });
-    localStorage.setItem('owner_token', r.owner_token);
-    selectRoom(r.room_id);
-    addLog(`创建房间 ${r.room_id}`);
-  };
-
-  const startGame = async () => {
-    await api(`/api/rooms/${roomId}/start`, { method: 'POST', headers: { 'X-Owner-Token': owner() } });
-    addLog('游戏已开始');
-    loadRoom();
-  };
-
-  const pause = async () => {
-    await api(`/api/host/${roomId}/pause`, { method: 'POST', headers: { 'X-Owner-Token': owner() } });
-    addLog('已暂停');
-  };
-
-  const retryTurn = async () => {
-    await api(`/api/host/${roomId}/retry-turn`, { method: 'POST', headers: { 'X-Owner-Token': owner() } });
-    addLog('已重试回合');
-  };
-
-  const reset = async () => {
-    if (!confirm('确定紧急重置？')) return;
-    await api(`/api/host/${roomId}/reset`, { method: 'POST', headers: { 'X-Owner-Token': owner() } });
-    addLog('已紧急重置');
-    loadHud();
+      const token = getSlotValue('account_token') || '';
+      const res = await fetch('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ scenario_id: newRoomScenarioId, owner_account_id: newRoomOwnerId || undefined, spoiler_level: 'standard' }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || '创建失败'); }
+      const data = await res.json();
+      setShowCreate(false); setNewRoomScenarioId(''); setNewRoomOwnerId('');
+      load(); showDetail(data.room_id);
+    } catch (e: any) { setCreateError(e.message); }
+    setCreating(false);
   };
 
   return (
-    <div>
-      <h2 style={{ color: '#8c9eff', fontSize: 16 }}>房间管理</h2>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        <button onClick={createRoom} style={btnStyle}>创建新房间</button>
-        <input placeholder="输入房间码" value={roomId} onChange={e => selectRoom(e.target.value)}
-          style={{ ...inputStyle, width: 160 }} />
-        <button onClick={() => { loadRoom(); loadHud(); }} style={btnStyle}>刷新</button>
+    <section>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 className="bh-panel-title">房间管理</h2>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="bh-button bh-button--yellow" onClick={() => { setShowCreate(!showCreate); if (!showCreate) { api('/api/admin/scenarios').then(setScenarioList); api('/api/admin/accounts').then(setAccountList); } }}>{showCreate ? '取消' : '新建房间'}</button>
+          <button className="bh-button" onClick={load} disabled={loading}>刷新</button>
+        </div>
       </div>
 
-      {room && (
-        <div style={cardStyle}>
-          <div><b>房间 ID:</b> {room.room_id}</div>
-          <div><b>状态:</b> <span style={{ color: room.status === 'active' ? '#4caf50' : '#ff9800' }}>{room.status}</span></div>
-          <div><b>Owner Token:</b> <code style={{ fontSize: 11 }}>{room.owner_token?.slice(0, 12)}...</code></div>
-          <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {room.status === 'lobby' && <button onClick={startGame} style={btnGreen}>开始游戏</button>}
-            <button onClick={pause} style={btnYellow}>暂停 AI</button>
-            <button onClick={retryTurn} style={btnYellow}>重试回合</button>
-            <button onClick={reset} style={btnRed}>紧急重置</button>
+      {showCreate && (
+        <div className="bh-panel" style={{ marginTop: 8, padding: 12 }}>
+          <span className="bh-eyebrow">新建房间</span>
+          <select className="bh-input" style={{ marginTop: 8 }} value={newRoomScenarioId} onChange={(e) => setNewRoomScenarioId(e.target.value)}>
+            <option value="">-- 选择剧本 --</option>
+            {scenarioList.map((s: any) => <option key={s.scenario_id} value={s.scenario_id}>{s.title || s.scenario_id}</option>)}
+          </select>
+          <select className="bh-input" style={{ marginTop: 4 }} value={newRoomOwnerId} onChange={(e) => setNewRoomOwnerId(e.target.value)}>
+            <option value="">-- 房主账号（默认自己） --</option>
+            {accountList.map((a: any) => <option key={a.account_id} value={a.account_id}>{a.display_name || a.username} ({a.role})</option>)}
+          </select>
+          <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button className="bh-button bh-button--yellow" onClick={handleCreateRoom} disabled={creating}>
+              {creating ? '创建中...' : '确认创建'}
+            </button>
+            {createError && <span style={{ color: 'var(--bh-red)', fontSize: 12 }}>{createError}</span>}
           </div>
         </div>
       )}
 
-      {hud && (
-        <div style={cardStyle}>
-          <h3 style={{ fontSize: 14, color: '#8c9eff' }}>HUD 状态</h3>
-          <pre style={{ fontSize: 12, color: '#aaa', whiteSpace: 'pre-wrap' }}>{JSON.stringify(hud, null, 2)}</pre>
+      <div style={{ display: 'grid', gridTemplateColumns: selected ? '1fr 1fr' : '1fr', gap: 16, marginTop: 16 }}>
+        <div className="bh-preset-list">
+          {rooms.map((r) => (
+            <button key={r.room_id} className={`bh-preset-card ${selected === r.room_id ? 'bh-preset-card--selected' : ''}`}
+              onClick={() => showDetail(r.room_id)}>
+              <strong>{r.room_id}</strong>
+              <span>{r.scenario_title || '无剧本'}</span>
+              <small style={{ color: statusColors[r.status] || 'var(--bh-muted)' }}>{r.status}</small>
+            </button>
+          ))}
         </div>
-      )}
 
-      <div style={cardStyle}>
-        <h3 style={{ fontSize: 14, color: '#8c9eff' }}>操作日志</h3>
-        {log.map((l, i) => <div key={i} style={{ fontSize: 12, color: '#888' }}>{l}</div>)}
+        {selected && detail && (
+          <div className="bh-preview-box">
+            <span className="bh-eyebrow">房间详情</span>
+            <h3>{detail.room_id}</h3>
+            <p>剧本：{detail.scenario_title || '未指定'}</p>
+            <p>状态：<strong style={{ color: statusColors[detail.status] }}>{statusLabel[detail.status] || detail.status}</strong></p>
+            <p>创建时间：{detail.created_at}</p>
+            {detail.started_at && <p>开始时间：{detail.started_at}</p>}
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+              {['draft', 'lobby', 'active', 'paused', 'completed', 'archived'].map((s) => (
+                <button key={s} className="bh-button" style={{ minHeight: 32, padding: '4px 10px', fontSize: 12 }}
+                  disabled={detail.status === s} onClick={() => patchRoom(selected, s)}>
+                  {statusLabel[s] || s}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ marginTop: 12, borderTop: '3px solid var(--bh-black)', paddingTop: 8 }}>
+              <strong>玩家 ({detail.characters?.length || 0})</strong>
+              {detail.characters?.map((c: any) => {
+                const pStatusLabels: Record<string, string> = { joined: '已加入', active: '在线', pending_approval: '待审批', removed: '已移除', left: '已离开' };
+                return (
+                <div key={c.character_id} className="bh-skill-row" style={{ padding: '4px 0' }}>
+                  <span>{c.investigator_name || c.player_name}</span>
+                  <span style={{ fontSize: 11 }}>HP {c.hp}/{c.max_hp}</span>
+                  <span style={{ fontSize: 11 }}>{c.is_ready ? '[OK]' : '[--]'} {pStatusLabels[c.status] || c.status}</span>
+                </div>
+                );
+              })}
+            </div>
+
+            <div className="bh-action-row" style={{ marginTop: 12 }}>
+              <a className="bh-button bh-button--yellow" href={`/host/${detail.room_id}`}>房主大厅</a>
+              <a className="bh-button bh-button--yellow" href={`/host/${detail.room_id}/stage`}>房主舞台</a>
+              <a className="bh-button" href={`/player/${detail.room_id}`}>玩家入口</a>
+            </div>
+          </div>
+        )}
       </div>
-    </div>
+    </section>
   );
 }
 
-// ─── 剧本导入 ───
+// ── Scenarios ──
 
-function ScenariosPanel({ selectRoom }: { selectRoom: (id: string) => void }) {
-  const [file, setFile] = useState<File | null>(null);
-  const [importResult, setImportResult] = useState<any>(null);
-  const [qualityReport, setQualityReport] = useState<any>(null);
-  const [scenarioId, setScenarioId] = useState('');
+function ScenariosPanel() {
+  const [scenarios, setScenarios] = useState<any[]>([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [assets, setAssets] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
 
-  const uploadPdf = async () => {
-    if (!file) return;
+  const loadScenarios = () => api('/api/admin/scenarios').then(setScenarios);
+  useEffect(() => { loadScenarios(); }, []);
+
+  const loadAssets = (sid: string) => {
+    setSelectedId(sid);
+    api(`/api/admin/scenarios/${sid}/assets`).then(setAssets).catch(() => setAssets([]));
+  };
+
+  const uploadAsset = async (sid: string, file: File) => {
     setUploading(true);
+    const form = new FormData();
+    form.append('file', file);
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const res = await fetch('/api/scenarios/import-pdf', { method: 'POST', body: fd });
-      const data = await res.json();
-      setImportResult(data);
-      setScenarioId(data.scenario_id);
-    } catch (e: any) { setImportResult({ error: e.message }); }
+      const token = getSlotValue('account_token') || '';
+      await fetch(`/api/admin/scenarios/${sid}/assets`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
+      loadAssets(sid);
+    } catch { /* ignore */ }
     setUploading(false);
   };
 
-  const loadQuality = async () => {
-    if (!scenarioId) return;
-    try {
-      const r = await api(`/api/scenarios/${scenarioId}/quality-report`);
-      setQualityReport(r);
-    } catch { setQualityReport(null); }
+  const deleteAsset = async (sid: string, aid: string) => {
+    await api(`/api/admin/scenarios/${sid}/assets/${aid}`, { method: 'DELETE' });
+    loadAssets(sid);
   };
 
-  const createRoomFromScenario = async () => {
-    if (!scenarioId) return;
-    const r = await api(`/api/scenarios/${scenarioId}/create-room`, { method: 'POST' });
-    localStorage.setItem('owner_token', r.owner_token);
-    selectRoom(r.room_id);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState('');
+
+  const handleImportPdf = async (file: File) => {
+    setImporting(true);
+    setImportError('');
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const token = getSlotValue('account_token') || '';
+      const res = await fetch('/api/admin/scenarios/import-pdf', {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form,
+      });
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || '导入失败'); }
+      await loadScenarios();
+      // Auto-select the newly imported scenario
+      const latest = await api('/api/admin/scenarios');
+      if (latest.length > 0) { const s = latest[0]; setSelectedId(s.scenario_id); loadAssets(s.scenario_id); }
+    } catch (e: any) {
+      setImportError(e.message || '导入失败，请检查文件格式');
+    }
+    setImporting(false);
   };
 
   return (
-    <div>
-      <h2 style={{ color: '#8c9eff', fontSize: 16 }}>剧本导入</h2>
-
-      <div style={cardStyle}>
-        <h3 style={{ fontSize: 14 }}>上传 PDF</h3>
-        <input type="file" accept=".pdf" onChange={e => setFile(e.target.files?.[0] || null)} style={{ color: '#aaa', marginBottom: 8 }} />
-        <button onClick={uploadPdf} disabled={!file || uploading} style={btnStyle}>
-          {uploading ? '导入中...' : '开始导入'}
-        </button>
-        {importResult && (
-          <pre style={{ fontSize: 12, color: '#aaa', marginTop: 8 }}>{JSON.stringify(importResult, null, 2)}</pre>
-        )}
+    <section>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <h2 className="bh-panel-title">剧本 & 素材</h2>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <label className="bh-button bh-button--yellow" style={{ cursor: 'pointer' }}>
+            {importing ? '导入中...' : '导入剧本 PDF'}
+            <input type="file" accept=".pdf" style={{ display: 'none' }} disabled={importing}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImportPdf(f); e.target.value = ''; }} />
+          </label>
+          <button className="bh-button" onClick={loadScenarios}>刷新</button>
+        </div>
       </div>
+      {importError && <div className="bh-muted-box" style={{ color: 'var(--bh-red)', marginTop: 8 }}>{importError}</div>}
 
-      {scenarioId && (
-        <div style={cardStyle}>
-          <h3 style={{ fontSize: 14 }}>质量报告</h3>
-          <p style={{ fontSize: 12, color: '#888' }}>剧本 ID: {scenarioId}</p>
-          <button onClick={loadQuality} style={btnStyle}>查看质量报告</button>
-          {qualityReport && (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ fontSize: 14, fontWeight: 'bold', color: levelColor(qualityReport.level) }}>
-                等级: {qualityReport.level} ({Math.round(qualityReport.completeness * 100)}% 完整)
-              </div>
-              {qualityReport.issues?.map((i: any, idx: number) => (
-                <div key={idx} style={{ fontSize: 12, color: '#aaa', marginTop: 4 }}>
-                  [{i.severity}] {i.category}: {i.message}
+      <div style={{ display: 'grid', gridTemplateColumns: selectedId ? '1fr 1fr' : '1fr', gap: 16, marginTop: 16 }}>
+        <div className="bh-preset-list">
+          {scenarios.length === 0 ? (
+            <div className="bh-muted-box" style={{ padding: 24, textAlign: 'center' }}>
+              还没有剧本，点击"导入剧本 PDF"开始
+            </div>
+          ) : (
+            scenarios.map((s) => (
+            <button key={s.scenario_id} className={`bh-preset-card ${selectedId === s.scenario_id ? 'bh-preset-card--selected' : ''}`}
+              onClick={() => loadAssets(s.scenario_id)}>
+              <strong>{s.title || s.scenario_id}</strong>
+              <span style={{ fontSize: 10, opacity: 0.6 }}>{s.import_status === 'structured' ? '已结构化' : s.import_status}</span>
+            </button>
+          )))}
+        </div>
+
+        {selectedId && (
+          <div className="bh-preview-box">
+            <span className="bh-eyebrow">ASSETS</span>
+            <h3>{scenarios.find((s) => s.scenario_id === selectedId)?.title || selectedId}</h3>
+
+            <label className="bh-upload-box">
+              <span>{uploading ? '上传中...' : '上传素材文件'}</span>
+              <input type="file" accept="image/*,audio/*,video/*,.pdf" multiple disabled={uploading}
+                onChange={(e) => { if (e.target.files) { for (let i = 0; i < e.target.files.length; i++) uploadAsset(selectedId, e.target.files[i]); } e.target.value = ''; }} />
+            </label>
+
+            <div className="bh-preset-list">
+              {assets.length === 0 && <div className="bh-muted-box">暂无素材</div>}
+              {assets.map((a: any) => (
+                <div key={a.asset_id} className="bh-skill-row" style={{ padding: '8px' }}>
+                  <span>{a.original_name}</span>
+                  <span style={{ fontSize: 11, color: 'var(--bh-muted)' }}>{(a.file_size / 1024).toFixed(0)} KB</span>
+                  <button className="bh-button bh-button--red" style={{ minHeight: 28, padding: '2px 8px', fontSize: 11 }}
+                    onClick={() => deleteAsset(selectedId, a.asset_id)}>删除</button>
                 </div>
               ))}
             </div>
-          )}
-          <button onClick={createRoomFromScenario} style={{ ...btnGreen, marginTop: 12 }}>一键开局</button>
-        </div>
-      )}
-    </div>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
-function levelColor(level: string) {
-  if (level === 'ready') return '#4caf50';
-  if (level === 'warning') return '#ff9800';
-  if (level === 'highRisk') return '#f44336';
-  return '#666';
-}
+// ── Characters ──
 
-// ─── 玩家管理 ───
+function CharactersPanel() {
+  const [chars, setChars] = useState<any[]>([]);
+  const [roomFilter, setRoomFilter] = useState('');
+  const [editing, setEditing] = useState<string | null>(null);
+  const [form, setForm] = useState<Record<string, any>>({});
 
-function PlayersPanel({ roomId }: { roomId: string }) {
-  const [players, setPlayers] = useState<any[]>([]);
-  const [clues, setClues] = useState<any[]>([]);
-  const [objectives, setObjectives] = useState<any[]>([]);
-  const [archive, setArchive] = useState<any[]>([]);
-  const [skillCheck, setSkillCheck] = useState({ skill: 'library_use', difficulty: 'regular' });
-  const [skillResult, setSkillResult] = useState<any>(null);
+  const load = () => api(`/api/admin/characters?room_id=${roomFilter}`).then(setChars);
+  useEffect(() => { load(); }, [roomFilter]);
 
-  const loadPlayers = useCallback(async () => {
-    if (!roomId) return;
-    try {
-      const h = await api(`/api/host/${roomId}/hud`);
-      setPlayers(h.players || []);
-    } catch {}
-  }, [roomId]);
-
-  useEffect(() => { loadPlayers(); }, [loadPlayers]);
-
-  const loadClues = async () => {
-    try { setClues(await api('/api/player/clues', { headers: { 'X-Room-Token': player() } })); } catch {}
+  const saveChar = async (id: string) => {
+    await api(`/api/admin/characters/${id}`, { method: 'PATCH', body: JSON.stringify(form) });
+    setEditing(null);
+    load();
   };
 
-  const loadObjectives = async () => {
-    try { setObjectives(await api('/api/player/objectives', { headers: { 'X-Room-Token': player() } })); } catch {}
-  };
-
-  const loadArchive = async () => {
-    try { setArchive(await api('/api/player/archive', { headers: { 'X-Room-Token': player() } })); } catch {}
-  };
-
-  const doSkillCheck = async () => {
-    try {
-      const r = await api('/api/player/skill-check', {
-        method: 'POST',
-        headers: { 'X-Room-Token': player() },
-        body: JSON.stringify({ skill_name: skillCheck.skill, difficulty: skillCheck.difficulty }),
-      });
-      setSkillResult(r);
-    } catch {}
+  const startEdit = (c: any) => {
+    setEditing(c.character_id);
+    const xlsx = c.xlsx_data || {};
+    setForm({ hp: xlsx.hp, max_hp: xlsx.max_hp, san: xlsx.san, max_san: xlsx.max_san, mp: xlsx.mp, max_mp: xlsx.max_mp, luck: xlsx.luck, is_ready: c.is_ready, status: c.status });
   };
 
   return (
-    <div>
-      <h2 style={{ color: '#8c9eff', fontSize: 16 }}>玩家管理</h2>
-
-      <div style={cardStyle}>
-        <h3 style={{ fontSize: 14 }}>当前玩家 ({players.length})</h3>
-        {players.length === 0 && <p style={muted}>暂无玩家</p>}
-        {players.map((p: any, i: number) => (
-          <div key={i} style={{ padding: 8, borderBottom: '1px solid #222', display: 'flex', gap: 16, fontSize: 13 }}>
-            <span style={{ color: '#ddd' }}>{p.name || p.playerName || `玩家${i + 1}`}</span>
-            <span style={{ color: '#888' }}>HP:{p.hp ?? '?'} SAN:{p.san ?? '?'}</span>
-            <span style={{ color: p.isReady ? '#4caf50' : '#ff9800' }}>{p.isReady ? '✓ Ready' : '未准备'}</span>
-          </div>
-        ))}
+    <section>
+      <h2 className="bh-panel-title">角色管理</h2>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <input className="bh-input" placeholder="按房间码过滤" value={roomFilter} onChange={(e) => setRoomFilter(e.target.value)} style={{ width: 200 }} />
+        <button className="bh-button" onClick={load}>刷新</button>
       </div>
 
-      <div style={cardStyle}>
-        <h3 style={{ fontSize: 14 }}>技能检定</h3>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-          <select value={skillCheck.skill} onChange={e => setSkillCheck(s => ({ ...s, skill: e.target.value }))} style={inputStyle}>
-            {['library_use', 'listen', 'spot_hidden', 'persuade', 'fast_talk', 'locksmith',
-              'first_aid', 'medicine', 'psychology', 'stealth', 'dodge', 'fight_brawl'].map(s =>
-              <option key={s} value={s}>{s}</option>
+      <div className="bh-preset-list">
+        {chars.map((c) => (
+          <div key={c.character_id} className="bh-preset-card" style={{ textAlign: 'left' }}>
+            <strong>{c.summary?.investigator_name || c.player_name}</strong>
+            <span>{c.player_name} | 房间 {c.room_id} | {c.status}</span>
+            <small>HP:{c.summary?.hp} SAN:{c.summary?.san} Ready:{c.is_ready ? 'Y' : 'N'}</small>
+
+            {editing === c.character_id ? (
+              <div style={{ display: 'grid', gap: 6, marginTop: 8, padding: 8, border: '3px solid var(--bh-black)', background: 'var(--bh-paper)' }}>
+                {['hp', 'max_hp', 'san', 'max_san', 'mp', 'max_mp', 'luck'].map((k) => (
+                  <label key={k} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
+                    <span style={{ width: 50 }}>{k}</span>
+                    <input className="bh-input" type="number" value={form[k] || 0} style={{ padding: '4px 8px', width: 80 }}
+                      onChange={(e) => setForm({ ...form, [k]: Number(e.target.value) })} />
+                  </label>
+                ))}
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
+                  <span style={{ width: 50 }}>Ready</span>
+                  <input type="checkbox" checked={!!form.is_ready} onChange={(e) => setForm({ ...form, is_ready: e.target.checked })} />
+                </label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
+                  <span style={{ width: 50 }}>状态</span>
+                  <select className="bh-input" style={{ padding: '4px 8px', width: 100 }} value={form.status || 'active'}
+                    onChange={(e) => setForm({ ...form, status: e.target.value })}>
+                    <option value="active">active</option>
+                    <option value="removed">removed</option>
+                  </select>
+                </label>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button className="bh-button bh-button--yellow" style={{ minHeight: 28, fontSize: 12, padding: '2px 10px' }} onClick={() => saveChar(c.character_id)}>保存</button>
+                  <button className="bh-button" style={{ minHeight: 28, fontSize: 12, padding: '2px 10px' }} onClick={() => setEditing(null)}>取消</button>
+                </div>
+              </div>
+            ) : (
+              <button className="bh-button" style={{ minHeight: 28, fontSize: 11, padding: '2px 10px', marginTop: 6 }}
+                onClick={() => startEdit(c)}>编辑</button>
             )}
-          </select>
-          <select value={skillCheck.difficulty} onChange={e => setSkillCheck(s => ({ ...s, difficulty: e.target.value }))} style={inputStyle}>
-            <option value="regular">普通</option>
-            <option value="hard">困难</option>
-            <option value="extreme">极限</option>
-          </select>
-          <button onClick={doSkillCheck} style={btnStyle}>掷骰</button>
-        </div>
-        {skillResult && (
-          <pre style={{ fontSize: 12, color: '#aaa' }}>{JSON.stringify(skillResult, null, 2)}</pre>
-        )}
-      </div>
-
-      <div style={cardStyle}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-          <button onClick={loadClues} style={btnStyle}>加载线索</button>
-          <button onClick={loadObjectives} style={btnStyle}>加载目标</button>
-          <button onClick={loadArchive} style={btnStyle}>加载档案</button>
-        </div>
-        {clues.length > 0 && (
-          <div>
-            <h3 style={{ fontSize: 14 }}>线索 ({clues.length})</h3>
-            {clues.map((c: any, i: number) => (
-              <div key={i} style={{ fontSize: 12, color: '#aaa', padding: 4, borderBottom: '1px solid #1a1a1a' }}>
-                {c.is_private ? '🔒' : '🌐'} {c.text} <span style={{ color: '#555' }}>({c.source})</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {objectives.length > 0 && (
-          <div>
-            <h3 style={{ fontSize: 14 }}>目标 ({objectives.length})</h3>
-            {objectives.map((o: any, i: number) => (
-              <div key={i} style={{ fontSize: 12, color: '#aaa', padding: 4 }}>
-                [{o.type}] {o.text} — <span style={{ color: o.status === 'active' ? '#4caf50' : '#666' }}>{o.status}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {archive.length > 0 && (
-          <div>
-            <h3 style={{ fontSize: 14 }}>档案 ({archive.length})</h3>
-            {archive.slice(0, 20).map((e: any, i: number) => (
-              <div key={i} style={{ fontSize: 11, color: '#666', padding: 2 }}>
-                #{e.sequence} [{e.event_type}] {JSON.stringify(e.payload).slice(0, 80)}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── AI KP ───
-
-function AIPanel({ roomId }: { roomId: string }) {
-  const [status, setStatus] = useState<any>(null);
-  const [triggerResult, setTriggerResult] = useState<any>(null);
-
-  const loadStatus = async () => {
-    if (!roomId) return;
-    try { setStatus(await api(`/api/rooms/${roomId}/ai-status`)); } catch {}
-  };
-
-  const triggerTurn = async () => {
-    try {
-      const r = await api(`/api/rooms/${roomId}/ai-turn`, { method: 'POST' });
-      setTriggerResult(r);
-    } catch {}
-  };
-
-  useEffect(() => { loadStatus(); }, [loadStatus]);
-
-  return (
-    <div>
-      <h2 style={{ color: '#8c9eff', fontSize: 16 }}>AI KP 控制</h2>
-      <div style={cardStyle}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-          <button onClick={loadStatus} style={btnStyle}>刷新状态</button>
-          <button onClick={triggerTurn} style={btnGreen}>手动触发 AI 回合</button>
-        </div>
-        {status && <pre style={{ fontSize: 12, color: '#aaa' }}>{JSON.stringify(status, null, 2)}</pre>}
-        {triggerResult && (
-          <div style={{ marginTop: 12 }}>
-            <h3 style={{ fontSize: 14, color: '#8c9eff' }}>触发结果</h3>
-            <pre style={{ fontSize: 12, color: '#aaa' }}>{JSON.stringify(triggerResult, null, 2)}</pre>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── 事件日志 ───
-
-function EventsPanel({ roomId }: { roomId: string }) {
-  const [events, setEvents] = useState<any[]>([]);
-  const [replay, setReplay] = useState<any[]>([]);
-  const [checkpoints, setCheckpoints] = useState<any[]>([]);
-
-  const loadEvents = async () => {
-    if (!roomId) return;
-    try { setEvents(await api(`/api/rooms/${roomId}/events?limit=50`)); } catch {}
-  };
-
-  const loadReplay = async () => {
-    if (!roomId) return;
-    try { setReplay(await api(`/api/rooms/${roomId}/events/public?limit=50`)); } catch {}
-  };
-
-  const loadCheckpoints = async () => {
-    if (!roomId) return;
-    try { setCheckpoints(await api(`/api/rooms/${roomId}/checkpoints`)); } catch {}
-  };
-
-  const createCheckpoint = async () => {
-    await api(`/api/rooms/${roomId}/checkpoint`, { method: 'POST' });
-    loadCheckpoints();
-  };
-
-  useEffect(() => { loadEvents(); loadCheckpoints(); }, [loadEvents, loadCheckpoints]);
-
-  return (
-    <div>
-      <h2 style={{ color: '#8c9eff', fontSize: 16 }}>事件日志</h2>
-      <div style={cardStyle}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-          <button onClick={loadEvents} style={btnStyle}>全部事件</button>
-          <button onClick={loadReplay} style={btnStyle}>公共回放</button>
-          <button onClick={loadCheckpoints} style={btnStyle}>检查点列表</button>
-          <button onClick={createCheckpoint} style={btnGreen}>创建检查点</button>
-        </div>
-
-        {events.length > 0 && (
-          <div>
-            <h3 style={{ fontSize: 14 }}>事件 ({events.length})</h3>
-            <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-              {events.map((e: any, i: number) => (
-                <div key={i} style={{ fontSize: 11, color: '#888', padding: 3, borderBottom: '1px solid #1a1a1a', fontFamily: 'monospace' }}>
-                  <span style={{ color: '#555' }}>#{e.sequence}</span>{' '}
-                  <span style={{ color: '#8c9eff' }}>{e.event_type}</span>{' '}
-                  <span style={{ color: '#666' }}>[{e.audience}]</span>{' '}
-                  {JSON.stringify(e.payload).slice(0, 100)}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {checkpoints.length > 0 && (
-          <div>
-            <h3 style={{ fontSize: 14 }}>检查点 ({checkpoints.length})</h3>
-            {checkpoints.map((c: any, i: number) => (
-              <div key={i} style={{ fontSize: 12, color: '#aaa', padding: 4 }}>
-                {c.checkpoint_id} — {c.created_at}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── 战役档案 ───
-
-function CampaignPanel({ roomId }: { roomId: string }) {
-  const [campaign, setCampaign] = useState<any>(null);
-
-  const loadCampaign = async () => {
-    if (!roomId) return;
-    try { setCampaign(await api(`/api/rooms/${roomId}/campaign`)); } catch {}
-  };
-
-  const endCampaign = async () => {
-    if (!confirm('确定结束战役？')) return;
-    try {
-      const r = await api(`/api/rooms/${roomId}/end`, { method: 'POST' });
-      setCampaign(r);
-    } catch {}
-  };
-
-  return (
-    <div>
-      <h2 style={{ color: '#8c9eff', fontSize: 16 }}>战役档案</h2>
-      <div style={cardStyle}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-          <button onClick={loadCampaign} style={btnStyle}>查看战役摘要</button>
-          <button onClick={endCampaign} style={btnRed}>结束战役</button>
-        </div>
-        {campaign && <pre style={{ fontSize: 12, color: '#aaa', whiteSpace: 'pre-wrap' }}>{JSON.stringify(campaign, null, 2)}</pre>}
-      </div>
-    </div>
-  );
-}
-
-// ─── RAG 知识库 ───
-
-function RAGPanel() {
-  const [stats, setStats] = useState<any>(null);
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<any[]>([]);
-
-  const loadStats = async () => {
-    try { setStats(await api('/api/rag/stats')); } catch {}
-  };
-
-  const doSearch = async () => {
-    if (!query.trim()) return;
-    try {
-      const r = await api('/api/rag/search', {
-        method: 'POST',
-        body: JSON.stringify({ query, top_k: 5 }),
-      });
-      setResults(r);
-    } catch {}
-  };
-
-  return (
-    <div>
-      <h2 style={{ color: '#8c9eff', fontSize: 16 }}>RAG 知识库</h2>
-      <div style={cardStyle}>
-        <button onClick={loadStats} style={btnStyle}>加载统计</button>
-        {stats && <pre style={{ fontSize: 12, color: '#aaa', marginTop: 8 }}>{JSON.stringify(stats, null, 2)}</pre>}
-      </div>
-      <div style={cardStyle}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="语义搜索..." style={{ ...inputStyle, flex: 1 }}
-            onKeyDown={e => e.key === 'Enter' && doSearch()} />
-          <button onClick={doSearch} style={btnStyle}>搜索</button>
-        </div>
-        {results.map((r: any, i: number) => (
-          <div key={i} style={{ fontSize: 12, padding: 8, borderBottom: '1px solid #222' }}>
-            <div style={{ color: '#8c9eff' }}>[{r.source_type}] sim: {r.similarity?.toFixed(3)}</div>
-            <div style={{ color: '#aaa' }}>{r.content?.slice(0, 200)}</div>
           </div>
         ))}
       </div>
-    </div>
+    </section>
   );
 }
 
-// ─── 样式 ───
+// ── Accounts ──
 
-const btnStyle: React.CSSProperties = {
-  padding: '8px 16px', border: 'none', borderRadius: 6, background: '#333',
-  color: '#ddd', fontSize: 13, cursor: 'pointer',
-};
-const btnGreen: React.CSSProperties = { ...btnStyle, background: '#2e7d32', color: '#fff' };
-const btnYellow: React.CSSProperties = { ...btnStyle, background: '#f57f17', color: '#fff' };
-const btnRed: React.CSSProperties = { ...btnStyle, background: '#c62828', color: '#fff' };
-const inputStyle: React.CSSProperties = {
-  padding: '8px 12px', borderRadius: 6, border: '1px solid #333',
-  background: '#111', color: '#ddd', fontSize: 13,
-};
-const cardStyle: React.CSSProperties = {
-  background: '#111', borderRadius: 8, padding: 16, marginBottom: 16,
-  border: '1px solid #222',
-};
-const muted: React.CSSProperties = { color: '#555', fontSize: 13 };
+function AccountsPanel() {
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const load = () => api('/api/admin/accounts').then(setAccounts);
+  useEffect(() => { load(); }, []);
+
+  return (
+    <section>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 className="bh-panel-title">账号管理</h2>
+        <button className="bh-button" onClick={load}>刷新</button>
+      </div>
+      <div className="bh-preset-list" style={{ marginTop: 16 }}>
+        {accounts.map((a) => (
+          <div key={a.account_id} className="bh-preset-card" style={{ textAlign: 'left' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <strong>{a.display_name || a.username}</strong>
+                <span>{a.username}</span>
+                <small>角色：{a.role} | 最后活跃：{a.last_seen_at || '从未'}</small>
+              </div>
+              {a.role === 'player' && (
+                <button
+                  className="bh-button bh-button--yellow"
+                  style={{ fontSize: 11, padding: '4px 8px' }}
+                  onClick={async () => {
+                    await api('/api/admin/accounts/' + a.account_id, {
+                      method: 'PATCH',
+                      body: JSON.stringify({ role: 'host' }),
+                    });
+                    load();
+                  }}
+                >
+                  提升为房主
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}

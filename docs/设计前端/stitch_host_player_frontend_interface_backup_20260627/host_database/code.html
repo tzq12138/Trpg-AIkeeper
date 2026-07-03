@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>ARKHAM OS // 资料库</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700;900&amp;family=Inter:wght@400;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "surface-container-low": "#f2ede5",
+                        "on-tertiary-container": "#1a1a1a",
+                        "tertiary-fixed": "#d6e3ff",
+                        "on-primary": "#ffffff",
+                        "on-background": "#1a1a1a",
+                        "on-secondary-container": "#1a1a1a",
+                        "on-primary-fixed": "#1a1a1a",
+                        "error": "#cc0000",
+                        "secondary-container": "#ffdad6",
+                        "tertiary": "#0055ff",
+                        "on-secondary": "#1a1a1a",
+                        "surface-dim": "#d6d1c9",
+                        "outline-variant": "#d0cbc3",
+                        "primary-fixed-dim": "#e6b800",
+                        "tertiary-container": "#d6e3ff",
+                        "secondary-fixed-dim": "#ffb3ab",
+                        "on-tertiary-fixed": "#1a1a1a",
+                        "on-primary-fixed-variant": "#1a1a1a",
+                        "inverse-on-surface": "#f5f0e8",
+                        "error-container": "#ffdad6",
+                        "secondary-fixed": "#ffdad6",
+                        "surface-container": "#eee9e0",
+                        "surface-tint": "#1a1a1a",
+                        "on-primary-container": "#1a1a1a",
+                        "primary-fixed": "#ffcc00",
+                        "tertiary-fixed-dim": "#a8c6ff",
+                        "on-surface-variant": "#4a4a4a",
+                        "background": "#f5f0e8",
+                        "outline": "#1a1a1a",
+                        "on-error": "#ffffff",
+                        "inverse-surface": "#1a1a1a",
+                        "surface-variant": "#e8e3da",
+                        "inverse-primary": "#f5f0e8",
+                        "on-tertiary-fixed-variant": "#1a1a1a",
+                        "on-secondary-fixed": "#1a1a1a",
+                        "primary-container": "#ffcc00",
+                        "primary": "#1a1a1a",
+                        "on-surface": "#1a1a1a",
+                        "on-secondary-fixed-variant": "#1a1a1a",
+                        "surface-container-high": "#e8e3da",
+                        "secondary": "#e63b2e",
+                        "on-error-container": "#93000a",
+                        "surface-container-highest": "#e2ddd4",
+                        "surface-bright": "#faf7f2",
+                        "on-tertiary": "#ffffff",
+                        "surface": "#f5f0e8",
+                        "surface-container-lowest": "#ffffff"
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    fontFamily: {
+                        "headline": ["Space Grotesk"],
+                        "display": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Space Grotesk"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .neo-shadow {
+            box-shadow: 6px 6px 0px 0px #1a1a1a;
+        }
+        .neo-shadow-sm {
+            box-shadow: 4px 4px 0px 0px #1a1a1a;
+        }
+        .neo-shadow-hover:hover {
+            box-shadow: 2px 2px 0px 0px #1a1a1a;
+            transform: translate(2px, 2px);
+        }
+    </style>
+</head>
+<body class="bg-background text-primary font-body overflow-x-hidden selection:bg-primary-container selection:text-on-primary-container flex h-screen">
+<!-- TopNavBar -->
+<nav class="fixed top-0 left-0 right-0 z-50 bg-background dark:bg-primary text-primary dark:text-primary-fixed font-headline font-black uppercase tracking-tighter w-full border-b-4 border-primary dark:border-primary-fixed shadow-[4px_4px_0px_0px_#1a1a1a] flex justify-between items-center px-6 py-4 hidden md:flex">
+<div class="text-2xl font-black text-primary dark:text-primary-fixed uppercase tracking-widest flex items-center gap-2">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">terminal</span>
+            ARKHAM OS
+        </div>
+<div class="flex items-center gap-2">
+<a class="text-primary hover:bg-primary-container transition-colors px-4 py-1" href="#">时间轴</a>
+<a class="text-primary hover:bg-primary-container transition-colors px-4 py-1" href="#">参战者</a>
+<a class="text-on-primary bg-tertiary px-4 py-1 border-2 border-primary active:translate-x-1 active:translate-y-1 active:shadow-none transition-all" href="#">资料库</a>
+<a class="text-primary hover:bg-primary-container transition-colors px-4 py-1" href="#">日志</a>
+</div>
+<div class="flex items-center gap-4">
+<button aria-label="Settings" class="text-primary hover:text-secondary transition-colors">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<button aria-label="Help" class="text-primary hover:text-secondary transition-colors">
+<span class="material-symbols-outlined">help</span>
+</button>
+<div class="w-10 h-10 border-2 border-primary overflow-hidden neo-shadow-sm">
+<img alt="Keeper Avatar" class="w-full h-full object-cover" data-alt="A striking high-contrast portrait of a rugged individual in a retro-futuristic keeper uniform, rendered in a harsh black and white neo-brutalist style. Bold geometric lighting creates deep shadows and sharp highlights. The background is a stark, textured off-white, emphasizing the starkness of the subject. A bright yellow accent element is visible on the uniform." src="https://lh3.googleusercontent.com/aida-public/AB6AXuD5DgJeNAgaZvo7RDFy1xlBxNv5QxEWVMDiRqA5d_zDpjNLBdbaAwA2UpMk1pvqFjbpeKYMBRBmHpBahLBUV5QDHheW4GXPTplrB9x71A92FF5x_Xq8j1qGhtXliIk6Gv9ho4Vqx8zNybwrfAOSQ_K9Gaf22MYmK-lg4O3AtPEyc5ZY9ZDopmVeLgQkBUNaGTfLW8M08_1rclTbjEVSqJUy2MafaqAt_V0yi9817w1zxtRH4RXmU14"/>
+</div>
+</div>
+</nav>
+<!-- SideNavBar (Hidden on Mobile) -->
+<aside class="bg-surface-container-high dark:bg-primary text-primary dark:text-primary-fixed font-body font-bold text-sm uppercase h-full w-64 border-r-4 border-primary dark:border-primary-fixed flex flex-col fixed left-0 top-0 pt-20 z-40 hidden lg:flex">
+<div class="p-6 border-b-2 border-primary">
+<h2 class="font-headline font-black text-xl text-secondary">KEEPER</h2>
+<p class="text-xs text-on-surface-variant mt-1">V2.0.4-STABLE</p>
+<button class="mt-4 w-full bg-primary-container text-on-primary-container border-2 border-primary py-2 font-bold hover:bg-primary hover:text-on-primary active:scale-95 transition-all neo-shadow-sm hover:neo-shadow-hover">INITIATE PROTOCOL</button>
+</div>
+<nav class="flex-1 overflow-y-auto py-4">
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-primary-fixed-dim hover:bg-secondary hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">terminal</span>
+                主控台
+            </a>
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-primary-fixed-dim hover:bg-secondary hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">visibility</span>
+                实体监测
+            </a>
+<a class="bg-primary-fixed text-on-primary-fixed border-y-2 border-primary px-6 py-4 flex items-center gap-3 active:scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">layers</span>
+                资料库
+            </a>
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-primary-fixed-dim hover:bg-secondary hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">rule</span>
+                规则校验
+            </a>
+<a class="text-primary px-6 py-4 flex items-center gap-3 hover:bg-primary-fixed-dim hover:bg-secondary hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">bolt</span>
+                脚本触发
+            </a>
+</nav>
+<div class="border-t-2 border-primary py-4">
+<a class="text-primary px-6 py-3 flex items-center gap-3 hover:bg-secondary hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">lock</span>
+                系统锁定
+            </a>
+<a class="text-secondary px-6 py-3 flex items-center gap-3 hover:bg-primary hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">power_settings_new</span>
+                关机
+            </a>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="flex-1 lg:ml-64 mt-20 p-6 md:p-8 flex flex-col md:flex-row gap-8 overflow-hidden h-[calc(100vh-5rem)]">
+<!-- Left Panel: List -->
+<div class="w-full md:w-1/3 flex flex-col gap-4 border-2 border-primary bg-surface p-4 neo-shadow overflow-y-auto">
+<div class="flex justify-between items-center border-b-2 border-primary pb-2 mb-2">
+<h2 class="font-headline font-black text-2xl uppercase">档案索引</h2>
+<div class="flex gap-2">
+<span class="material-symbols-outlined cursor-pointer hover:text-secondary">sort</span>
+<span class="material-symbols-outlined cursor-pointer hover:text-secondary">filter_list</span>
+</div>
+</div>
+<!-- Search -->
+<div class="relative w-full border-2 border-primary bg-white flex">
+<span class="material-symbols-outlined p-2 text-primary border-r-2 border-primary">search</span>
+<input class="w-full p-2 bg-transparent focus:outline-none focus:bg-primary-container font-bold text-sm" placeholder="查询实体编号 / 关键词..." type="text"/>
+</div>
+<!-- List Items -->
+<div class="flex flex-col gap-3 mt-2">
+<!-- Active Item -->
+<div class="border-2 border-primary bg-primary-container p-3 flex gap-3 cursor-pointer neo-shadow-sm transform translate-x-1 -translate-y-1">
+<div class="w-12 h-12 border-2 border-primary bg-black flex items-center justify-center text-white shrink-0">
+<span class="font-headline font-black text-lg">E-01</span>
+</div>
+<div class="flex flex-col justify-center">
+<h3 class="font-headline font-black text-lg uppercase leading-tight">星之眷族 (Star Spawn)</h3>
+<p class="text-xs font-bold text-on-surface-variant uppercase tracking-wide">分类: 极度危险生物</p>
+</div>
+</div>
+<!-- Inactive Item -->
+<div class="border-2 border-primary bg-white p-3 flex gap-3 cursor-pointer hover:bg-tertiary-fixed transition-colors">
+<div class="w-12 h-12 border-2 border-primary bg-surface-variant flex items-center justify-center shrink-0">
+<span class="font-headline font-black text-lg">A-42</span>
+</div>
+<div class="flex flex-col justify-center">
+<h3 class="font-headline font-bold text-lg uppercase leading-tight">米斯卡托尼克大学</h3>
+<p class="text-xs font-bold text-on-surface-variant uppercase tracking-wide">分类: 核心地点</p>
+</div>
+</div>
+<div class="border-2 border-primary bg-white p-3 flex gap-3 cursor-pointer hover:bg-tertiary-fixed transition-colors">
+<div class="w-12 h-12 border-2 border-primary bg-surface-variant flex items-center justify-center shrink-0">
+<span class="font-headline font-black text-lg">I-13</span>
+</div>
+<div class="flex flex-col justify-center">
+<h3 class="font-headline font-bold text-lg uppercase leading-tight">闪耀的偏方三八面体</h3>
+<p class="text-xs font-bold text-on-surface-variant uppercase tracking-wide">分类: 神秘遗物</p>
+</div>
+</div>
+<div class="border-2 border-primary bg-white p-3 flex gap-3 cursor-pointer hover:bg-tertiary-fixed transition-colors">
+<div class="w-12 h-12 border-2 border-primary bg-surface-variant flex items-center justify-center shrink-0">
+<span class="font-headline font-black text-lg">E-99</span>
+</div>
+<div class="flex flex-col justify-center">
+<h3 class="font-headline font-bold text-lg uppercase leading-tight">修格斯 (Shoggoth)</h3>
+<p class="text-xs font-bold text-on-surface-variant uppercase tracking-wide">分类: 不定形生物</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Panel: Details -->
+<div class="w-full md:w-2/3 border-2 border-primary bg-white p-6 neo-shadow overflow-y-auto flex flex-col gap-6">
+<!-- Header Section -->
+<div class="flex justify-between items-start border-b-4 border-primary pb-4">
+<div>
+<div class="flex items-center gap-3 mb-2">
+<span class="bg-secondary text-white px-2 py-1 font-bold text-xs uppercase border-2 border-primary">TOP SECRET</span>
+<span class="font-headline font-bold text-sm tracking-widest">RECORD ID: E-01-CCT</span>
+</div>
+<h1 class="font-headline font-black text-4xl md:text-5xl uppercase tracking-tighter">星之眷族</h1>
+<h2 class="font-headline font-bold text-xl text-on-surface-variant italic">Star Spawn of Cthulhu</h2>
+</div>
+<button class="w-12 h-12 border-2 border-primary bg-primary-container flex items-center justify-center hover:bg-primary hover:text-white transition-colors neo-shadow-sm hover:neo-shadow-hover">
+<span class="material-symbols-outlined">print</span>
+</button>
+</div>
+<!-- Content Split -->
+<div class="flex flex-col xl:flex-row gap-6">
+<!-- Image & Stats Column -->
+<div class="w-full xl:w-1/2 flex flex-col gap-6">
+<!-- Retro Illustration -->
+<div class="border-4 border-primary p-2 bg-surface-variant neo-shadow relative group overflow-hidden">
+<div class="absolute top-2 left-2 bg-primary text-white font-bold px-2 py-1 text-xs border border-white z-10 opacity-80">FIG 1. OBSERVATION SKETCH</div>
+<img class="w-full aspect-square object-cover grayscale contrast-150 filter sepia-[0.2]" data-alt="A large, vintage scientific illustration in stark black and white ink style depicting a massive, grotesque tentacled monstrosity, reminiscent of Lovecraftian horrors. The drawing features heavy hatching and cross-hatching, giving it a raw, brutalist texture. The creature is monolithic, dominating the frame against an aged, slightly off-white background paper texture. The stark contrast and aggressive line work fit a neo-brutalist, Bauhaus-inspired aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBvpl92hdaAOU_ezn4rE9wvlMaGHELY0gPJooSRcDHwNUigqwVPox5-x0CxPH93SiSPpBFrUbYXhuPmPJ3ueWuWiFcCAWhMDp4DPcGs2kebPbL-r53Ucp8a9bvLwSX6TSrL86xMPa1YwgAfZLkSo6SPRSH7HFl6D_ycQZhrWk_ubsSiSc0OvLGSUxeqUdktuhnlfy9rwnxvhetGpajp2nnA6w2HpzncBK1ljk0xaiWMNjAQV99PpkI"/>
+</div>
+<!-- Attribute Parameters -->
+<div class="border-2 border-primary p-4 bg-primary text-white">
+<h3 class="font-headline font-black text-xl mb-4 border-b-2 border-white pb-2 flex items-center gap-2">
+<span class="material-symbols-outlined">vital_signs</span>
+                            物理参数 (ESTIMATED)
+                        </h3>
+<ul class="flex flex-col gap-2 font-body text-sm font-bold">
+<li class="flex justify-between border-b border-surface-variant pb-1">
+<span class="text-surface-variant">体型等级:</span>
+<span class="text-primary-container">巨型 (Colossal)</span>
+</li>
+<li class="flex justify-between border-b border-surface-variant pb-1">
+<span class="text-surface-variant">威胁评估:</span>
+<span class="text-secondary">OMEGA - 极度危险</span>
+</li>
+<li class="flex justify-between border-b border-surface-variant pb-1">
+<span class="text-surface-variant">主要栖息地:</span>
+<span>拉莱耶 / 深海地质带</span>
+</li>
+<li class="flex justify-between border-b border-surface-variant pb-1">
+<span class="text-surface-variant">理智消耗 (SAN Loss):</span>
+<span class="text-secondary">1D6 / 1D20</span>
+</li>
+</ul>
+</div>
+</div>
+<!-- Narrative Column -->
+<div class="w-full xl:w-1/2 flex flex-col gap-4">
+<div class="bg-surface p-6 border-2 border-primary relative h-full flex flex-col">
+<span class="absolute top-0 right-0 bg-primary text-white px-3 py-1 font-headline font-bold text-sm border-l-2 border-b-2 border-primary">NARRATIVE LOG</span>
+<h3 class="font-headline font-black text-2xl mb-4 mt-2">形态描述</h3>
+<div class="prose prose-sm md:prose-base font-body text-justify leading-relaxed max-w-none">
+<p class="mb-4">
+                                这些生物是伟大之克苏鲁的眷属，在形态上类似于它们伟大的主人，但体型较小。尽管如此，成年个体的体型依然如同小山般庞大。它们拥有令人作呕的绿色、湿润的表皮，头部生有无数触须，身体粗壮，背部长有不成比例的退化双翼。
+                            </p>
+<p class="mb-4">
+                                它们并非完全由我们宇宙中已知的普通物质构成，其生理结构违背了现有的生物学和物理学常识。星之眷族具有极强的可塑性，能够在一定程度上改变自身的形状，以适应深海的极端压力或狭窄的地质构造。
+                            </p>
+<div class="my-6 border-l-4 border-secondary pl-4 bg-error-container p-3">
+<p class="font-bold text-error text-sm m-0 flex items-start gap-2">
+<span class="material-symbols-outlined text-secondary">warning</span>
+<span>警告：目击该实体会导致严重的心理创伤。必须配备认知干预设备后方可进行现场勘探。</span>
+</p>
+</div>
+<h3 class="font-headline font-black text-2xl mb-4">行为模式</h3>
+<p>
+                                目前大多数星之眷族与克苏鲁一同沉睡于太平洋海底的拉莱耶城中。然而，有零星报告指出，在特定的星象排列下，某些个体可能会在偏远的深海海沟或古老的地下遗迹中苏醒。它们对人类展现出极端的敌意和蔑视。
+                            </p>
+</div>
+<div class="mt-auto pt-6 border-t-2 border-primary flex justify-end gap-4">
+<button class="px-6 py-2 border-2 border-primary font-bold hover:bg-surface-variant transition-colors">请求权限</button>
+<button class="px-6 py-2 border-2 border-primary bg-primary text-white font-bold hover:bg-secondary hover:text-white transition-colors neo-shadow-sm hover:neo-shadow-hover">加载关联日志</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- BottomNavBar (Mobile Only) -->
+<nav class="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-background border-t-4 border-primary shadow-[0_-4px_0_0_#1a1a1a] flex justify-around items-center py-3 px-2">
+<a class="flex flex-col items-center gap-1 text-primary p-2" href="#">
+<span class="material-symbols-outlined">terminal</span>
+<span class="text-[10px] font-bold uppercase">主控</span>
+</a>
+<a class="flex flex-col items-center gap-1 text-primary p-2" href="#">
+<span class="material-symbols-outlined">visibility</span>
+<span class="text-[10px] font-bold uppercase">监测</span>
+</a>
+<a class="flex flex-col items-center gap-1 text-on-primary bg-primary p-2 border-2 border-primary -translate-y-2 neo-shadow-sm" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">layers</span>
+<span class="text-[10px] font-bold uppercase">资料</span>
+</a>
+<a class="flex flex-col items-center gap-1 text-primary p-2" href="#">
+<span class="material-symbols-outlined">rule</span>
+<span class="text-[10px] font-bold uppercase">规则</span>
+</a>
+</nav>
+</body></html>

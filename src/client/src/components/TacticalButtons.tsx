@@ -30,22 +30,13 @@ export default function TacticalButtons({ actions, disabled, onSubmitted }: Tact
   if (!actions || actions.length === 0) return null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+    <div className="bh-tactical-buttons">
       {actions.map((action) => (
         <button
           key={action.action_id}
           onClick={() => handleClick(action)}
           disabled={disabled}
-          style={{
-            padding: '10px 14px',
-            borderRadius: 8,
-            border: '1px solid #3f51b5',
-            background: disabled ? '#222' : 'rgba(63,81,181,0.15)',
-            color: disabled ? '#555' : '#8c9eff',
-            fontSize: 14,
-            cursor: disabled ? 'not-allowed' : 'pointer',
-            textAlign: 'left',
-          }}
+          className="bh-button bh-button--black bh-tactical-button"
         >
           {action.label}
         </button>

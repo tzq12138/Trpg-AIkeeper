@@ -1,7 +1,7 @@
 import pytest
 from src.server.db_pg import PgDatabase
-from src.server.embedding import HybridEmbedding
-from src.server.rag import RAGStore
+from src.server.ai.embedding import HybridEmbedding
+from src.server.ai.rag import RAGStore
 
 
 @pytest.fixture

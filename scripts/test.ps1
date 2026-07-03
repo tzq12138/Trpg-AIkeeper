@@ -73,7 +73,7 @@ if (-not $FrontendOnly) {
         }
     }
     Ensure-Postgres
-    $env:DATABASE_URL = "postgresql://aikeeper:aikeeper123@localhost:5432/aikeeper"
+    $env:TEST_DATABASE_URL = "postgresql://aikeeper:aikeeper123@localhost:5432/aikeeper_test"
     Invoke-Native "python" @("-m", "pytest", "tests/server", "-q")
 }
 

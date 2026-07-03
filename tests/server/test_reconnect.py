@@ -1,11 +1,13 @@
 import json
 import pytest
+from tests.server.conftest import setup_auth_test_data, create_room, login
 
 
-def _setup_player(client):
-    resp = client.post("/api/rooms", json={})
-    room_id = resp.json()["room_id"]
-    owner_token = resp.json()["owner_token"]
+def _setup_player(client, test_db):
+    setup_auth_test_data(test_db)
+    room = create_room(client)
+    room_id = room["room_id"]
+    owner_token = room["owner_token"]
 
     resp = client.post(f"/api/player/rooms/{room_id}/join")
     data = resp.json()
@@ -14,14 +16,14 @@ def _setup_player(client):
 
 def _insert_event(conn, room_id, seq, event_type, audience, payload):
     conn.execute(
-        "INSERT INTO events (sequence, room_id, event_type, audience, payload) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO events (sequence, room_id, event_type, audience, payload) VALUES (%s, %s, %s, %s, %s)",
         (seq, room_id, event_type, audience, json.dumps(payload)),
     )
     conn.commit()
 
 
 def test_reconnect_returns_missed_events(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "event1"})
     _insert_event(test_db, room_id, 2, "s2c_public_observation", "party", {"text": "event2"})
@@ -43,7 +45,7 @@ def test_reconnect_returns_missed_events(client, test_db):
 
 
 def test_reconnect_long_disconnect_returns_snapshot(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     for i in range(1, 105):
         _insert_event(test_db, room_id, i, "s2c_public_observation", "party", {"text": f"event{i}"})
@@ -72,7 +74,7 @@ def test_reconnect_missing_token(client):
 
 
 def test_reconnect_idempotent(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "event1"})
     _insert_event(test_db, room_id, 2, "s2c_public_observation", "party", {"text": "event2"})
@@ -88,7 +90,7 @@ def test_reconnect_idempotent(client, test_db):
 
 
 def test_reconnect_first_time_returns_snapshot(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "event1"})
     _insert_event(test_db, room_id, 2, "s2c_private_notice", "player", {"text": "secret", "characterId": char_id})
@@ -101,11 +103,11 @@ def test_reconnect_first_time_returns_snapshot(client, test_db):
 
 
 def test_reconnect_with_pending_actions(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
-        "VALUES ('act-pending', ?, ?, 'dialogue', 'test action', 'queued')",
+        "VALUES ('act-pending', %s, %s,'dialogue', 'test action', 'queued')",
         (room_id, char_id),
     )
     test_db.commit()
@@ -118,11 +120,11 @@ def test_reconnect_with_pending_actions(client, test_db):
 
 
 def test_action_status_endpoint(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status, result) "
-        "VALUES ('act-1', ?, ?, 'dialogue', 'test', 'resolved', 'done')",
+        "VALUES ('act-1', %s, %s,'dialogue', 'test', 'resolved', 'done')",
         (room_id, char_id),
     )
     test_db.commit()
@@ -136,21 +138,21 @@ def test_action_status_endpoint(client, test_db):
 
 
 def test_action_status_not_found(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     resp = client.get("/api/player/actions/nonexistent", headers={"X-Room-Token": token})
     assert resp.status_code == 404
 
 
 def test_action_status_wrong_owner(client, test_db):
-    room_id, owner_token, char_id, token = _setup_player(client)
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
     resp2 = client.post(f"/api/player/rooms/{room_id}/join")
     other_token = resp2.json()["player_token"]
 
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
-        "VALUES ('act-owner', ?, ?, 'dialogue', 'test', 'queued')",
+        "VALUES ('act-owner', %s, %s,'dialogue', 'test', 'queued')",
         (room_id, char_id),
     )
     test_db.commit()

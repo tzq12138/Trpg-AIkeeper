@@ -1,4 +1,4 @@
-from src.server.quality import QualityReportGenerator, QualityLevel
+from src.server.scenario.quality import QualityReportGenerator, QualityLevel
 
 
 def test_ready_scenario():

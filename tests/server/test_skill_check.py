@@ -1,5 +1,5 @@
 import pytest
-from src.server.skill_check import roll_skill_check, _compute_threshold, _determine_success
+from src.server.engine.skill_check import roll_skill_check, _compute_threshold, _determine_success
 
 
 class TestComputeThreshold:

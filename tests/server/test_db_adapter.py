@@ -35,7 +35,10 @@ class TestTranslateSql:
 
 @pytest.fixture
 def pg_db():
-    db = PgDatabase()
+    import os
+    from tests.server.conftest import _validate_test_db_url, _DEFAULT_TEST_DB
+    test_url = _validate_test_db_url(os.getenv("TEST_DATABASE_URL", _DEFAULT_TEST_DB))
+    db = PgDatabase(dsn=test_url)
     try:
         pool = db.connect()
         db.initialize()

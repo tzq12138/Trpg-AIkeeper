@@ -1,5 +1,5 @@
 import json
-from src.server.spoiler_control import SpoilerController, SPOILER_VISIBILITY
+from src.server.ai.spoiler_control import SpoilerController, SPOILER_VISIBILITY
 
 
 def _setup_db(test_db):

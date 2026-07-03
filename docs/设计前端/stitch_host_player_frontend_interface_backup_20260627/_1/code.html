@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+
+<html class="light" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>调查员状态 - 技能</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700;900&amp;family=Inter:wght@400;500;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "surface-bright": "#faf7f2",
+                        "primary-container": "#ffcc00",
+                        "on-primary": "#ffffff",
+                        "surface-container-highest": "#e2ddd4",
+                        "on-secondary-fixed": "#1a1a1a",
+                        "outline-variant": "#d0cbc3",
+                        "on-tertiary-fixed-variant": "#1a1a1a",
+                        "on-primary-fixed-variant": "#1a1a1a",
+                        "secondary-fixed": "#ffdad6",
+                        "on-surface-variant": "#4a4a4a",
+                        "secondary-container": "#ffdad6",
+                        "inverse-primary": "#f5f0e8",
+                        "secondary": "#e63b2e",
+                        "primary": "#1a1a1a",
+                        "inverse-on-surface": "#f5f0e8",
+                        "tertiary-fixed-dim": "#a8c6ff",
+                        "on-tertiary-container": "#1a1a1a",
+                        "surface-container-high": "#e8e3da",
+                        "inverse-surface": "#1a1a1a",
+                        "outline": "#1a1a1a",
+                        "tertiary-fixed": "#d6e3ff",
+                        "primary-fixed": "#ffcc00",
+                        "surface": "#f5f0e8",
+                        "error-container": "#ffdad6",
+                        "surface-variant": "#e8e3da",
+                        "on-secondary-container": "#1a1a1a",
+                        "on-error": "#ffffff",
+                        "background": "#f5f0e8",
+                        "primary-fixed-dim": "#e6b800",
+                        "on-error-container": "#93000a",
+                        "surface-dim": "#d6d1c9",
+                        "on-tertiary-fixed": "#1a1a1a",
+                        "on-secondary": "#1a1a1a",
+                        "on-primary-fixed": "#1a1a1a",
+                        "on-tertiary": "#ffffff",
+                        "tertiary-container": "#d6e3ff",
+                        "surface-tint": "#1a1a1a",
+                        "surface-container-lowest": "#ffffff",
+                        "surface-container": "#eee9e0",
+                        "on-surface": "#1a1a1a",
+                        "on-background": "#1a1a1a",
+                        "tertiary": "#0055ff",
+                        "on-primary-container": "#1a1a1a",
+                        "surface-container-low": "#f2ede5",
+                        "secondary-fixed-dim": "#ffb3ab",
+                        "error": "#cc0000",
+                        "on-secondary-fixed-variant": "#1a1a1a"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "fontFamily": {
+                        "headline": ["Space Grotesk", "sans-serif"],
+                        "display": ["Space Grotesk", "sans-serif"],
+                        "body": ["Inter", "sans-serif"],
+                        "label": ["Space Grotesk", "sans-serif"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .neo-shadow {
+            box-shadow: 4px 4px 0px 0px #1a1a1a;
+        }
+        .neo-shadow-sm {
+            box-shadow: 2px 2px 0px 0px #1a1a1a;
+        }
+        .neo-card {
+            border: 3px solid #1a1a1a;
+            transition: all 0.1s ease-in-out;
+        }
+        .neo-card:active {
+            transform: translate(4px, 4px);
+            box-shadow: none;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background font-body min-h-screen flex flex-col pt-16 pb-20">
+<!-- TopAppBar -->
+<header class="fixed top-0 left-0 w-full bg-surface dark:bg-primary z-50 flex justify-between items-center px-4 py-4 border-b-4 border-primary dark:border-primary-fixed shadow-[6px_6px_0px_0px_rgba(26,26,26,1)] dark:shadow-[6px_6px_0px_0px_rgba(255,204,0,1)]">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary dark:text-primary-fixed text-3xl">terminal</span>
+<h1 class="font-headline font-black text-primary dark:text-primary-fixed italic uppercase tracking-tighter text-2xl">INVESTIGATOR TERMINAL</h1>
+</div>
+<button class="bg-primary-container text-on-primary-container font-headline font-bold uppercase tracking-wider px-3 py-1 border-2 border-primary neo-shadow-sm active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all">
+            SAN 50/50
+        </button>
+</header>
+<main class="flex-grow p-4 md:p-8 max-w-5xl mx-auto w-full">
+<!-- Status Header (Custom for this view) -->
+<div class="mb-8 flex flex-col md:flex-row gap-4 justify-between items-start md:items-center bg-primary text-surface-bright p-4 border-4 border-primary neo-shadow">
+<h2 class="font-headline font-bold text-3xl">调查员状态</h2>
+<div class="flex gap-4 font-headline text-xl">
+<div class="bg-secondary text-on-error px-4 py-2 border-2 border-primary-container">生命 12</div>
+<div class="bg-tertiary text-on-tertiary px-4 py-2 border-2 border-primary-container">理智 45</div>
+</div>
+</div>
+<!-- Core Skills -->
+<section class="mb-12">
+<h3 class="font-headline font-black text-4xl uppercase tracking-tighter mb-6 border-b-4 border-primary inline-block pb-1">核心技能 (Core Skills)</h3>
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+<button class="neo-card neo-shadow bg-primary-container p-6 flex flex-col items-center justify-center gap-2 group">
+<span class="material-symbols-outlined text-4xl text-primary group-active:scale-90 transition-transform">visibility</span>
+<span class="font-headline font-bold text-xl text-primary">侦查</span>
+<span class="font-display font-black text-5xl text-primary">65</span>
+</button>
+<button class="neo-card neo-shadow bg-surface-bright p-6 flex flex-col items-center justify-center gap-2 group">
+<span class="material-symbols-outlined text-4xl text-primary group-active:scale-90 transition-transform">hearing</span>
+<span class="font-headline font-bold text-xl text-primary">聆听</span>
+<span class="font-display font-black text-5xl text-primary">40</span>
+</button>
+<button class="neo-card neo-shadow bg-surface-bright p-6 flex flex-col items-center justify-center gap-2 group">
+<span class="material-symbols-outlined text-4xl text-primary group-active:scale-90 transition-transform">menu_book</span>
+<span class="font-headline font-bold text-xl text-primary">图书馆使用</span>
+<span class="font-display font-black text-5xl text-primary">70</span>
+</button>
+<button class="neo-card neo-shadow bg-surface-bright p-6 flex flex-col items-center justify-center gap-2 group">
+<span class="material-symbols-outlined text-4xl text-primary group-active:scale-90 transition-transform">psychology</span>
+<span class="font-headline font-bold text-xl text-primary">心理学</span>
+<span class="font-display font-black text-5xl text-primary">50</span>
+</button>
+</div>
+</section>
+<!-- All Skills -->
+<section>
+<h3 class="font-headline font-black text-4xl uppercase tracking-tighter mb-6 border-b-4 border-primary inline-block pb-1">所有技能 (All Skills)</h3>
+<div class="bg-surface border-4 border-primary neo-shadow p-0">
+<!-- Header row -->
+<div class="grid grid-cols-3 bg-primary text-surface-bright font-headline font-bold text-lg p-3 border-b-4 border-primary uppercase">
+<div>技能名称</div>
+<div class="text-center">基础值</div>
+<div class="text-right">当前值</div>
+</div>
+<!-- Skill List -->
+<div class="flex flex-col">
+<div class="grid grid-cols-3 p-3 border-b-2 border-outline-variant hover:bg-primary-container hover:text-primary transition-colors cursor-pointer group font-body text-lg font-bold">
+<div>会计 (Accounting)</div>
+<div class="text-center text-on-surface-variant group-hover:text-primary">10</div>
+<div class="text-right font-display text-2xl font-black">10</div>
+</div>
+<div class="grid grid-cols-3 p-3 border-b-2 border-outline-variant hover:bg-primary-container hover:text-primary transition-colors cursor-pointer group font-body text-lg font-bold">
+<div>急救 (First Aid)</div>
+<div class="text-center text-on-surface-variant group-hover:text-primary">30</div>
+<div class="text-right font-display text-2xl font-black">45</div>
+</div>
+<div class="grid grid-cols-3 p-3 border-b-2 border-outline-variant hover:bg-primary-container hover:text-primary transition-colors cursor-pointer group font-body text-lg font-bold">
+<div>魅惑 (Charm)</div>
+<div class="text-center text-on-surface-variant group-hover:text-primary">15</div>
+<div class="text-right font-display text-2xl font-black">15</div>
+</div>
+<div class="grid grid-cols-3 p-3 border-b-2 border-outline-variant hover:bg-primary-container hover:text-primary transition-colors cursor-pointer group font-body text-lg font-bold">
+<div>斗殴 (Brawl)</div>
+<div class="text-center text-on-surface-variant group-hover:text-primary">25</div>
+<div class="text-right font-display text-2xl font-black">50</div>
+</div>
+<div class="grid grid-cols-3 p-3 border-b-2 border-outline-variant hover:bg-primary-container hover:text-primary transition-colors cursor-pointer group font-body text-lg font-bold">
+<div>神秘学 (Occult)</div>
+<div class="text-center text-on-surface-variant group-hover:text-primary">5</div>
+<div class="text-right font-display text-2xl font-black">20</div>
+</div>
+<div class="grid grid-cols-3 p-3 hover:bg-primary-container hover:text-primary transition-colors cursor-pointer group font-body text-lg font-bold">
+<div>潜行 (Stealth)</div>
+<div class="text-center text-on-surface-variant group-hover:text-primary">20</div>
+<div class="text-right font-display text-2xl font-black">60</div>
+</div>
+</div>
+</div>
+</section>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-between items-stretch h-20 bg-primary dark:bg-surface-container-highest border-t-4 border-primary dark:border-primary-fixed md:hidden">
+<!-- Active Tab: SKILLS -->
+<a class="flex flex-col items-center justify-center bg-primary-fixed dark:bg-primary text-on-primary-fixed dark:text-primary-fixed p-3 h-full flex-1 active:scale-95 transition-transform duration-100" href="#">
+<span class="material-symbols-outlined text-3xl mb-1">psychology</span>
+<span class="font-label font-bold text-xs uppercase tracking-widest">SKILLS</span>
+</a>
+<!-- Inactive Tab: GEAR -->
+<a class="flex flex-col items-center justify-center text-surface-bright dark:text-on-surface-variant p-3 h-full flex-1 hover:bg-primary-fixed-dim dark:hover:bg-primary-container active:scale-95 transition-transform duration-100" href="#">
+<span class="material-symbols-outlined text-3xl mb-1">inventory_2</span>
+<span class="font-label font-bold text-xs uppercase tracking-widest">GEAR</span>
+</a>
+<!-- Inactive Tab: LOGS -->
+<a class="flex flex-col items-center justify-center text-surface-bright dark:text-on-surface-variant p-3 h-full flex-1 hover:bg-primary-fixed-dim dark:hover:bg-primary-container active:scale-95 transition-transform duration-100" href="#">
+<span class="material-symbols-outlined text-3xl mb-1">menu_book</span>
+<span class="font-label font-bold text-xs uppercase tracking-widest">LOGS</span>
+</a>
+<!-- Inactive Tab: MAP -->
+<a class="flex flex-col items-center justify-center text-surface-bright dark:text-on-surface-variant p-3 h-full flex-1 hover:bg-primary-fixed-dim dark:hover:bg-primary-container active:scale-95 transition-transform duration-100" href="#">
+<span class="material-symbols-outlined text-3xl mb-1">explore</span>
+<span class="font-label font-bold text-xs uppercase tracking-widest">MAP</span>
+</a>
+</nav>
+</body></html>

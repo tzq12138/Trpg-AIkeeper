@@ -1,10 +1,11 @@
 import json
 import pytest
+from tests.server.conftest import setup_auth_test_data, create_room
 
 
-def _setup_room_and_player(client):
-    resp = client.post("/api/rooms", json={})
-    room = resp.json()
+def _setup_room_and_player(client, test_db):
+    setup_auth_test_data(test_db)
+    room = create_room(client)
     room_id = room["room_id"]
     owner_token = room["owner_token"]
 
@@ -21,7 +22,7 @@ def _insert_clue(conn, room_id, character_id, text, is_private=True):
     clue_id = f"clue-{_clue_counter}"
     conn.execute(
         "INSERT INTO clues (clue_id, room_id, character_id, text, source, is_private) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "VALUES (%s, %s, %s, %s, %s, %s)",
         (clue_id, room_id, character_id, text, "test", int(is_private)),
     )
     conn.commit()
@@ -29,7 +30,7 @@ def _insert_clue(conn, room_id, character_id, text, is_private=True):
 
 
 def test_private_clue_discovery(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
     _insert_clue(test_db, room_id, char_id, "A secret message")
 
     resp = client.get("/api/player/clues", headers={"X-Room-Token": token})
@@ -42,7 +43,7 @@ def test_private_clue_discovery(client, test_db):
 
 
 def test_clue_sharing_creates_public_version(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
     clue_id = _insert_clue(test_db, room_id, char_id, "Secret clue text")
 
     resp = client.post(
@@ -58,7 +59,7 @@ def test_clue_sharing_creates_public_version(client, test_db):
 
 
 def test_unshared_clues_stay_private(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
 
     resp = client.post(f"/api/player/rooms/{room_id}/join")
     player2 = resp.json()
@@ -73,7 +74,7 @@ def test_unshared_clues_stay_private(client, test_db):
 
 
 def test_clue_list_includes_private_and_shared(client, test_db):
-    room_id, _, char_id, token = _setup_room_and_player(client)
+    room_id, _, char_id, token = _setup_room_and_player(client, test_db)
 
     resp = client.post(f"/api/player/rooms/{room_id}/join")
     player2 = resp.json()
