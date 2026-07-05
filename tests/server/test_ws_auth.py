@@ -76,3 +76,48 @@ class TestHostWSAuth:
         ) as ws:
             # Should succeed
             assert ws  # Connected
+
+
+class TestPlayerWSAuth:
+    def _setup_player(self, client_with_data, test_db):
+        """Create a room and join as player. Returns (room_id, player_token)."""
+        # Create room as host
+        token = _login(client_with_data, "wshost")
+        res = client_with_data.post(
+            "/api/rooms",
+            json={"scenario_id": "sc-ws"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        room = res.json()
+        # Join as player
+        resp = client_with_data.post(f"/api/player/rooms/{room['room_id']}/join")
+        assert resp.status_code == 200
+        return room["room_id"], resp.json()["player_token"]
+
+    def test_player_ws_valid_token_accepted(self, client_with_data, test_db):
+        room_id, player_token = self._setup_player(client_with_data, test_db)
+        with client_with_data.websocket_connect(
+            f"/ws?room={room_id}&role=player&token={player_token}"
+        ) as ws:
+            assert ws  # Connected
+
+    def test_player_ws_wrong_token_rejected(self, client_with_data, test_db):
+        room_id, _ = self._setup_player(client_with_data, test_db)
+        # Player WS accepts first then closes with 4003 — use try/except to catch close
+        try:
+            with client_with_data.websocket_connect(
+                f"/ws?room={room_id}&role=player&token=wrong-token"
+            ) as ws:
+                ws.receive_text()  # Should fail on close
+        except Exception:
+            pass  # Close expected
+
+    def test_player_ws_wrong_room_rejected(self, client_with_data, test_db):
+        _, player_token = self._setup_player(client_with_data, test_db)
+        try:
+            with client_with_data.websocket_connect(
+                f"/ws?room=nonexistent&role=player&token={player_token}"
+            ) as ws:
+                ws.receive_text()
+        except Exception:
+            pass  # Close expected

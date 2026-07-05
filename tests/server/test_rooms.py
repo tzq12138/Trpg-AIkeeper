@@ -83,6 +83,57 @@ class TestGetRoom:
         assert res.status_code == 404
 
 
+    def test_create_room_invalid_scenario_returns_404(self, client_with_data):
+        token = _login(client_with_data)
+        res = client_with_data.post(
+            "/api/rooms",
+            json={"scenario_id": "nonexistent"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 404
+
+
+class TestScenarioOptions:
+    def test_get_scenario_options_requires_auth(self, client_with_data):
+        data = _create_room(client_with_data)
+        res = client_with_data.get(f"/api/rooms/{data['room_id']}/scenario-options")
+        assert res.status_code in (401, 403)
+
+    def test_get_scenario_options_with_owner_token(self, client_with_data):
+        data = _create_room(client_with_data)
+        res = client_with_data.get(
+            f"/api/rooms/{data['room_id']}/scenario-options",
+            headers={"X-Owner-Token": data["owner_token"]},
+        )
+        assert res.status_code == 200
+        result = res.json()
+        assert "scenarios" in result
+        assert isinstance(result["scenarios"], list)
+        assert len(result["scenarios"]) >= 1
+
+    def test_set_scenario_on_active_room_returns_409(self, client_with_data):
+        data = _create_room(client_with_data)
+        room_id = data["room_id"]
+        # Make room active by starting it with a ready player
+        client_with_data.app.state.db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, is_ready, status) "
+            "VALUES ('ch-sc-sw', %s, 'Alice', 'pt-sw', true, 'joined')",
+            (room_id,),
+        )
+        client_with_data.app.state.db.commit()
+        client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            headers={"X-Owner-Token": data["owner_token"]},
+        )
+        # Now attempt to switch scenario on active room
+        res = client_with_data.patch(
+            f"/api/rooms/{room_id}/scenario",
+            json={"scenario_id": "sc-test"},
+            headers={"X-Owner-Token": data["owner_token"]},
+        )
+        assert res.status_code == 409
+
+
 class TestStartRoom:
     def test_start_room_with_owner_token(self, client_with_data):
         data = _create_room(client_with_data)
@@ -116,3 +167,84 @@ class TestStartRoom:
             headers={"X-Owner-Token": "wrong-token"},
         )
         assert res.status_code == 403
+
+    def test_start_creates_first_turn(self, client_with_data):
+        data = _create_room(client_with_data)
+        room_id = data["room_id"]
+        db = client_with_data.app.state.db
+        db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, is_ready, status) "
+            "VALUES ('ch-turn', %s, 'Alice', 'pt-turn', true, 'joined')",
+            (room_id,),
+        )
+        db.commit()
+        res = client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            headers={"X-Owner-Token": data["owner_token"]},
+        )
+        assert res.status_code == 200
+        result = res.json()
+        assert result["status"] == "active"
+        assert result["turn_id"]
+        assert result["turn_index"] >= 1
+        # Verify turn exists in DB
+        turn = db.execute(
+            "SELECT * FROM room_turns WHERE room_id = %s ORDER BY turn_index DESC LIMIT 1",
+            (room_id,),
+        ).fetchone()
+        assert turn is not None
+        assert turn["status"] == "collecting"
+
+    def test_start_broadcasts_active_snapshot(self, client_with_data):
+        data = _create_room(client_with_data)
+        room_id = data["room_id"]
+        db = client_with_data.app.state.db
+        db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, is_ready, status) "
+            "VALUES ('ch-snap', %s, 'Alice', 'pt-snap', true, 'joined')",
+            (room_id,),
+        )
+        db.commit()
+        res = client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            headers={"X-Owner-Token": data["owner_token"]},
+        )
+        assert res.status_code == 200
+        # Verify lobby snapshot event was logged
+        events = db.execute(
+            "SELECT * FROM events WHERE room_id = %s AND event_type = 's2c_room_lobby_snapshot' "
+            "ORDER BY sequence DESC LIMIT 1",
+            (room_id,),
+        ).fetchone()
+        assert events is not None, "Expected lobby snapshot event after start"
+
+
+class TestTurnEndpoints:
+    def test_get_current_turn_requires_auth(self, client_with_data):
+        data = _create_room(client_with_data)
+        res = client_with_data.get(f"/api/rooms/{data['room_id']}/turns/current")
+        assert res.status_code == 403
+
+    def test_get_current_turn_with_owner_token(self, client_with_data):
+        data = _create_room(client_with_data)
+        room_id = data["room_id"]
+        db = client_with_data.app.state.db
+        # Must start room first to create a turn
+        db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, is_ready, status) "
+            "VALUES ('ch-ct', %s, 'Alice', 'pt-ct', true, 'joined')",
+            (room_id,),
+        )
+        db.commit()
+        client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            headers={"X-Owner-Token": data["owner_token"]},
+        )
+        res = client_with_data.get(
+            f"/api/rooms/{room_id}/turns/current",
+            headers={"X-Owner-Token": data["owner_token"]},
+        )
+        assert res.status_code == 200
+        result = res.json()
+        assert "turn_id" in result
+        assert "players" in result

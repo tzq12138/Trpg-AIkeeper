@@ -25,7 +25,7 @@ PRIVATE_EVENTS = {
     "s2c_full_snapshot", "s2c_state_patch", "s2c_private_notice",
     "s2c_tactical_prompt", "s2c_clarification_prompt", "s2c_clarification_result",
     "s2c_action_queued", "s2c_action_batched", "s2c_action_completed",
-    "s2c_room_lobby_snapshot", "s2c_campaign_ended",
+    "s2c_campaign_ended",
 }
 
 
@@ -224,7 +224,7 @@ class HostStore:
         """Persist current state to database."""
         state = {
             "current_scene_image_url": self.current_scene_image_url,
-            "chat_messages": self.chat_messages[-50:],
+            "chat_messages": self.chat_messages,
             "atmosphere": self.atmosphere,
             "engine_state": self.engine_state,
             "is_paused": self.is_paused,

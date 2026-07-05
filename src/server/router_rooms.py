@@ -300,6 +300,15 @@ async def start_room(request: Request, room_id: str):
     tm = TurnManager(conn)
     turn = tm._create_turn(room_id)
 
+    # Fetch scenario_title for broadcast (must query after commit)
+    scenario_title = ""
+    if room.get("scenario_id"):
+        sc = conn.execute(
+            "SELECT title FROM scenarios WHERE scenario_id = %s", (room["scenario_id"],)
+        ).fetchone()
+        if sc:
+            scenario_title = sc["title"]
+
     # Broadcast active lobby snapshot so PlayerLobby auto-transitions
     try:
         from .engine.projection import ProjectionDispatcher
