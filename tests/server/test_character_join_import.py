@@ -140,6 +140,39 @@ def test_join_with_preset_locks_that_preset_for_room(client, test_db, tmp_path):
     assert duplicate.status_code == 409
 
 
+def test_join_with_multiple_sources_rejected(client, test_db, tmp_path):
+    """Passing both preset_id and file should be rejected (400)."""
+    room_id = _room_id(client, test_db)
+    path = tmp_path / "albert.xlsx"
+    _make_cy20_like_xlsx(str(path))
+    with path.open("rb") as f:
+        resp = client.post(
+            f"/api/player/rooms/{room_id}/join-with-character",
+            data={"player_name": "Test", "preset_id": "albert"},
+            files={"file": ("albert.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+    assert resp.status_code == 400
+
+
+def test_join_triggers_lobby_snapshot(client, test_db, tmp_path):
+    """Joining a room should write a s2c_room_lobby_snapshot event."""
+    room_id = _room_id(client, test_db)
+    path = tmp_path / "albert.xlsx"
+    _make_cy20_like_xlsx(str(path))
+    with path.open("rb") as f:
+        resp = client.post(
+            f"/api/player/rooms/{room_id}/join-with-character",
+            data={"player_name": "Test"},
+            files={"file": ("albert.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+    assert resp.status_code == 200
+    events = test_db.execute(
+        "SELECT * FROM events WHERE room_id = %s AND event_type = 's2c_room_lobby_snapshot'",
+        (room_id,),
+    ).fetchall()
+    assert len(events) >= 1, "Expected lobby snapshot event after join"
+
+
 def test_failed_import_does_not_create_placeholder_player(client, test_db, tmp_path):
     room_id = _room_id(client, test_db)
     path = tmp_path / "broken.xlsx"
@@ -155,3 +188,44 @@ def test_failed_import_does_not_create_placeholder_player(client, test_db, tmp_p
     assert resp.status_code == 400
     row = test_db.execute("SELECT COUNT(*) AS c FROM characters").fetchone()
     assert row["c"] == 0
+
+
+def test_copy_character_wrong_account_rejected(client, test_db, tmp_path):
+    """Cannot copy a character belonging to a different account."""
+    from tests.server.conftest import create_account, create_scenario
+    create_account(test_db, "acc-owner", "owneruser", "host")
+    create_account(test_db, "acc-thief", "thiefuser", "player")
+    create_scenario(test_db, "sc-copy", "Copy Test")
+    test_db.commit()
+
+    # Create room and character owned by acc-owner
+    owner_token = client.post("/api/auth/login", json={
+        "username": "owneruser", "password": "test123",
+    }).json()["token"]
+    room = client.post(
+        "/api/rooms",
+        json={"scenario_id": "sc-copy"},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    ).json()
+    path = tmp_path / "albert.xlsx"
+    _make_cy20_like_xlsx(str(path))
+    with path.open("rb") as f:
+        join_resp = client.post(
+            f"/api/player/rooms/{room['room_id']}/join-with-character",
+            data={"player_name": "Owner"},
+            files={"file": ("albert.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+    assert join_resp.status_code == 200
+    src_char_id = join_resp.json()["character_id"]
+
+    # acc-thief tries to copy owner's character
+    thief_token = client.post("/api/auth/login", json={
+        "username": "thiefuser", "password": "test123",
+    }).json()["token"]
+    resp = client.post(
+        f"/api/player/rooms/{room['room_id']}/join-with-character",
+        data={"player_name": "Thief", "copy_character_id": src_char_id},
+        headers={"Authorization": f"Bearer {thief_token}"},
+    )
+    assert resp.status_code == 403

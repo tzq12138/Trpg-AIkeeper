@@ -679,8 +679,13 @@ def _char_detail(row) -> dict:
     r = dict(row) if not isinstance(row, dict) else row
     xlsx = _json_val(r.get("xlsx_data")) or {}
     return {
-        **r,
+        "character_id": r.get("character_id"),
+        "room_id": r.get("room_id"),
+        "player_name": r.get("player_name"),
         "xlsx_data": xlsx,
+        "is_ready": r.get("is_ready"),
+        "account_id": r.get("account_id"),
+        "status": r.get("status"),
         "summary": _char_summary(r),
     }
 

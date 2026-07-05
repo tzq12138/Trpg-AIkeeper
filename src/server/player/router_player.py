@@ -56,12 +56,14 @@ async def join_room(request: Request, room_id: str):
         raise HTTPException(404, "Room not found")
     player_token = str(uuid.uuid4())
     character_id = str(uuid.uuid4())[:8]
+    # Set status based on room state: active rooms put joiners in pending_approval
+    char_status = "pending_approval" if room["status"] == "active" else "joined"
     conn.execute(
-        "INSERT INTO characters (character_id, room_id, player_name, player_token) VALUES (%s, %s, %s, %s)",
-        (character_id, room_id, "未命名玩家", player_token),
+        "INSERT INTO characters (character_id, room_id, player_name, player_token, status) VALUES (%s, %s, %s, %s, %s)",
+        (character_id, room_id, "未命名玩家", player_token, char_status),
     )
     conn.commit()
-    return {"character_id": character_id, "player_token": player_token}
+    return {"character_id": character_id, "player_token": player_token, "status": char_status}
 
 
 @router.get("/rooms/{room_id}/join-info")

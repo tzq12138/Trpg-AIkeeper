@@ -147,8 +147,8 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
 
     if not authorized:
         await websocket.close(code=1008, reason="Policy violation")
-        logger.warning("Host WS auth failed for room=%s ownerToken=%s accountToken=%s",
-                       room_id, bool(owner_token), bool(account_token if 'account_token' in dir() else False))
+        logger.warning("Host WS auth failed for room=%s ownerToken=%s authorized=%s",
+                       room_id, bool(owner_token), authorized)
         return
 
     store = get_host_store(room_id, conn)
@@ -343,6 +343,11 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
                     "type": "team_message",
                     "payload": event.payload,
                 }))
+            elif event.type == "s2c_room_lobby_snapshot":
+                await websocket.send_text(json.dumps({
+                    "type": "s2c_room_lobby_snapshot",
+                    "payload": event.payload,
+                }))
 
     except WebSocketDisconnect:
         logger.info("Host disconnected from room %s", room_id)
@@ -367,6 +372,18 @@ async def approve_character(request: Request, room_id: str, character_id: str):
         raise HTTPException(409, "Character is not pending approval")
     conn.execute("UPDATE characters SET status = 'joined' WHERE character_id = %s", (character_id,))
     conn.commit()
+
+    # Broadcast updated lobby snapshot
+    try:
+        from ..player.router_player import _build_lobby_snapshot
+        snapshot = _build_lobby_snapshot(conn, room_id)
+        from ..engine.projection import ProjectionDispatcher
+        dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
+        import asyncio as _asyncio
+        _asyncio.create_task(dispatcher.emit(room_id, "s2c_room_lobby_snapshot", "party", snapshot))
+    except Exception:
+        logger.warning("Failed to broadcast lobby snapshot after approve", exc_info=True)
+
     return {"status": "approved", "character_id": character_id}
 
 
@@ -385,6 +402,18 @@ async def reject_character(request: Request, room_id: str, character_id: str):
         raise HTTPException(409, "Character is not pending approval")
     conn.execute("UPDATE characters SET status = 'left' WHERE character_id = %s", (character_id,))
     conn.commit()
+
+    # Broadcast updated lobby snapshot
+    try:
+        from ..player.router_player import _build_lobby_snapshot
+        snapshot = _build_lobby_snapshot(conn, room_id)
+        from ..engine.projection import ProjectionDispatcher
+        dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
+        import asyncio as _asyncio
+        _asyncio.create_task(dispatcher.emit(room_id, "s2c_room_lobby_snapshot", "party", snapshot))
+    except Exception:
+        logger.warning("Failed to broadcast lobby snapshot after reject", exc_info=True)
+
     return {"status": "rejected", "character_id": character_id}
 
 

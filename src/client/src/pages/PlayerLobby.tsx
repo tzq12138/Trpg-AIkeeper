@@ -48,6 +48,13 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
   const wsRef = useRef<PlayerWS | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const seenMsgIds = useRef<Set<string>>(new Set());
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // ── auto-scroll chat ───────────────────────────────────────────────
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   // ── fetch helpers ────────────────────────────────────────────────
 
@@ -278,6 +285,7 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
                   <div>{m.text}</div>
                 </div>
               ))}
+              <div ref={chatEndRef} />
             </div>
 
             {/* Chat input */}

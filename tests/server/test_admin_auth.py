@@ -1,0 +1,131 @@
+"""Admin endpoint auth tests: accounts, role management."""
+
+import pytest
+from fastapi.testclient import TestClient
+from src.server.main import app
+from src.server.router_auth import _hash_password
+
+
+@pytest.fixture
+def client_with_data(test_db):
+    from src.server.engine.engine import Engine
+    c = TestClient(app)
+    app.state.db = test_db
+    app.state.engine = Engine(test_db)
+
+    for aid, uname, role in [
+        ("acc-admin", "admin", "admin"),
+        ("acc-host", "hostuser", "host"),
+        ("acc-player", "player1", "player"),
+    ]:
+        test_db.execute(
+            "INSERT INTO accounts (account_id, username, password_hash, display_name, role) "
+            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (username) DO UPDATE "
+            "SET role = %s, account_id = EXCLUDED.account_id",
+            (aid, uname, _hash_password("test123"), uname, role, role),
+        )
+    test_db.commit()
+    return c
+
+
+def _login(client, username: str, password: str = "test123") -> str:
+    res = client.post("/api/auth/login", json={
+        "username": username, "password": password,
+    })
+    assert res.status_code == 200, f"Login failed: {res.text}"
+    return res.json()["token"]
+
+
+class TestAdminAccounts:
+    def test_list_accounts_requires_admin(self, client_with_data):
+        res = client_with_data.get("/api/admin/accounts")
+        assert res.status_code == 401
+
+    def test_list_accounts_player_rejected(self, client_with_data):
+        token = _login(client_with_data, "player1")
+        res = client_with_data.get(
+            "/api/admin/accounts",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 403
+
+    def test_list_accounts_as_admin(self, client_with_data):
+        token = _login(client_with_data, "admin")
+        res = client_with_data.get(
+            "/api/admin/accounts",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert isinstance(data, list)
+        assert len(data) >= 3
+        # Must not expose password_hash
+        for acct in data:
+            assert "password_hash" not in acct
+
+    def test_promote_player_to_host(self, client_with_data, test_db):
+        token = _login(client_with_data, "admin")
+        res = client_with_data.patch(
+            "/api/admin/accounts/acc-player",
+            json={"role": "host"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200
+        assert res.json()["status"] == "updated"
+        # Verify role changed in DB
+        acc = test_db.execute(
+            "SELECT role FROM accounts WHERE account_id = 'acc-player'"
+        ).fetchone()
+        assert acc["role"] == "host"
+
+    def test_promote_invalid_role_rejected(self, client_with_data):
+        token = _login(client_with_data, "admin")
+        res = client_with_data.patch(
+            "/api/admin/accounts/acc-player",
+            json={"role": "superadmin"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 400
+
+    def test_player_cannot_access_admin(self, client_with_data):
+        token = _login(client_with_data, "player1")
+        res = client_with_data.patch(
+            "/api/admin/accounts/acc-player",
+            json={"role": "host"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 403
+
+
+class TestAdminCharacterDetail:
+    def test_char_detail_excludes_player_token(self, client_with_data, test_db):
+        """Admin character detail must not leak player_token."""
+        token = _login(client_with_data, "admin")
+        # Create a room and character for testing
+        test_db.execute(
+            "INSERT INTO scenarios (scenario_id, title, raw_text, import_status) "
+            "VALUES ('sc-adm', 'Admin Test', 'text', 'structured')"
+        )
+        host_token = _login(client_with_data, "hostuser")
+        res = client_with_data.post(
+            "/api/rooms",
+            json={"scenario_id": "sc-adm"},
+            headers={"Authorization": f"Bearer {host_token}"},
+        )
+        room_id = res.json()["room_id"]
+        test_db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, status) "
+            "VALUES ('ch-adm-det', %s, 'TestPlayer', 'secret-pt-adm', 'joined')",
+            (room_id,),
+        )
+        test_db.commit()
+
+        res = client_with_data.get(
+            f"/api/admin/characters?room_id={room_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200
+        import json
+        body = json.dumps(res.json())
+        assert "secret-pt-adm" not in body
+        assert "player_token" not in body

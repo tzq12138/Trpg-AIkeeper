@@ -154,3 +154,82 @@ class TestStartRoom:
             headers={"X-Owner-Token": "tok-nosc"},
         )
         assert res.status_code in (400, 404)
+
+    def test_force_start_by_non_owner_rejected(self, client_with_data, test_db):
+        room_id, _ = self._setup_room_with_player(client_with_data, test_db, ready=False)
+        res = client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            json={"force_start": True},
+            headers={"X-Owner-Token": "wrong-token"},
+        )
+        assert res.status_code == 403
+
+    def test_force_start_with_not_ready_succeeds(self, client_with_data, test_db):
+        room_id, owner_token = self._setup_room_with_player(client_with_data, test_db, ready=False)
+        res = client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            json={"force_start": True},
+            headers={"X-Owner-Token": owner_token},
+        )
+        assert res.status_code == 200
+        assert res.json()["status"] == "active"
+
+
+class TestApproveReject:
+    def _setup_active_room_with_pending(self, client_with_data, test_db):
+        """Create an active room with one joined and one pending player."""
+        host_token = _login(client_with_data, "hostlife")
+        room = _create_room(client_with_data, host_token)
+        room_id = room["room_id"]
+        owner_token = room["owner_token"]
+
+        test_db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, is_ready, status) "
+            "VALUES ('ch-host', %s, 'HostPlayer', 'pt-host', true, 'joined')",
+            (room_id,),
+        )
+        test_db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, is_ready, status) "
+            "VALUES ('ch-pend', %s, 'Pending', 'pt-pend', false, 'pending_approval')",
+            (room_id,),
+        )
+        test_db.commit()
+        client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            headers={"X-Owner-Token": owner_token},
+        )
+        return room_id, owner_token
+
+    def test_approve_pending_character(self, client_with_data, test_db):
+        room_id, owner_token = self._setup_active_room_with_pending(client_with_data, test_db)
+        resp = client_with_data.post(
+            f"/api/host/{room_id}/approve/ch-pend",
+            headers={"X-Owner-Token": owner_token},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "approved"
+        char = test_db.execute(
+            "SELECT status FROM characters WHERE character_id = 'ch-pend'"
+        ).fetchone()
+        assert char["status"] == "joined"
+
+    def test_reject_pending_character(self, client_with_data, test_db):
+        room_id, owner_token = self._setup_active_room_with_pending(client_with_data, test_db)
+        resp = client_with_data.post(
+            f"/api/host/{room_id}/reject/ch-pend",
+            headers={"X-Owner-Token": owner_token},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "rejected"
+        char = test_db.execute(
+            "SELECT status FROM characters WHERE character_id = 'ch-pend'"
+        ).fetchone()
+        assert char["status"] == "left"
+
+    def test_non_owner_cannot_approve(self, client_with_data, test_db):
+        room_id, _ = self._setup_active_room_with_pending(client_with_data, test_db)
+        resp = client_with_data.post(
+            f"/api/host/{room_id}/approve/ch-pend",
+            headers={"X-Owner-Token": "wrong-token"},
+        )
+        assert resp.status_code == 403

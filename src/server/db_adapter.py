@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS characters (
     xlsx_data JSONB,
     is_ready BOOLEAN NOT NULL DEFAULT FALSE,
     account_id TEXT,
-    status TEXT NOT NULL DEFAULT 'active'
+    status TEXT NOT NULL DEFAULT 'joined'
 );
 
 CREATE TABLE IF NOT EXISTS scenarios (
@@ -299,7 +299,9 @@ ALTER TABLE characters ADD COLUMN IF NOT EXISTS account_id TEXT;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'player';
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS owner_account_id TEXT;
-ALTER TABLE characters ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+ALTER TABLE characters ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'joined';
+-- Fix default for databases created before migration
+ALTER TABLE characters ALTER COLUMN status SET DEFAULT 'joined';
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS source_filename TEXT;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS source_sha256 TEXT;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS original_file_path TEXT;

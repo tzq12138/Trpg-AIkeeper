@@ -111,6 +111,47 @@ class TestRuleDocs:
         assert res.status_code == 200
 
 
+class TestRAGHostAdmin:
+    def test_index_as_host_succeeds(self, client_with_data):
+        """Host (room owner) can index their own room."""
+        class MockRagFull:
+            def index_scenario(self, *a, **kw): return {"indexed": 0}
+        app.state.rag = MockRagFull()
+        token = _login(client_with_data, "raghost", "test123")
+        res = client_with_data.post(
+            "/api/rag/index",
+            json={"scenario_id": "rag-sc1", "room_id": "rag-room"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200
+
+    def test_index_as_admin_succeeds(self, client_with_data):
+        """Admin can index any room."""
+        class MockRagFull:
+            def index_scenario(self, *a, **kw): return {"indexed": 0}
+        app.state.rag = MockRagFull()
+        token = _login(client_with_data, "admin", "test123")
+        res = client_with_data.post(
+            "/api/rag/index",
+            json={"scenario_id": "rag-sc1", "room_id": "rag-room"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200
+
+    def test_search_as_host_succeeds(self, client_with_data):
+        """Host (room owner) can search their room."""
+        class MockRagSearch:
+            def search(self, *a, **kw): return []
+        app.state.rag = MockRagSearch()
+        token = _login(client_with_data, "raghost", "test123")
+        res = client_with_data.post(
+            "/api/rag/search",
+            json={"query": "test", "room_id": "rag-room"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200
+
+
 def _login(client, username: str, password: str) -> str:
     res = client.post("/api/auth/login", json={
         "username": username, "password": password,

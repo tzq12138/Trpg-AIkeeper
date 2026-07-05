@@ -93,46 +93,58 @@ export default function HostLobby({ roomId }: { roomId: string }) {
     setSavingScenario(false);
   };
 
-  // ── WebSocket + polling ──────────────────────────────────────────
+  // ── WebSocket with reconnect ──────────────────────────────────────
 
   useEffect(() => {
     const ownerToken = getSlotValue('owner_token') || '';
     if (!ownerToken) return;
 
-    const ws = new WebSocket(
-      `ws://${window.location.hostname}:3001/ws?room=${roomId}&role=host&ownerToken=${encodeURIComponent(ownerToken)}`,
-    );
+    let wsRef: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectDelay = 1000;
+    const maxDelay = 30000;
+    let mounted = true;
 
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    function connect() {
+      if (!mounted) return;
+      wsRef = new WebSocket(
+        `ws://${window.location.hostname}:3001/ws?room=${roomId}&role=host&ownerToken=${encodeURIComponent(ownerToken)}`,
+      );
 
-    ws.onmessage = (msg) => {
-      try {
-        const event = JSON.parse(msg.data);
-        const type = event.type || event.eventType;
-        if (type === 's2c_room_lobby_snapshot' || type === 's2c_host_snapshot') {
-          const payload = event.payload || {};
-          if (payload.players) setPlayers(payload.players.map(normalizePlayer));
-        }
-      } catch { /* ignore */ }
-    };
+      wsRef.onmessage = (msg) => {
+        try {
+          const event = JSON.parse(msg.data);
+          const type = event.type || event.eventType;
+          if (type === 's2c_room_lobby_snapshot' || type === 's2c_host_snapshot') {
+            const payload = event.payload || {};
+            if (payload.players) setPlayers(payload.players.map(normalizePlayer));
+          }
+        } catch { /* ignore */ }
+      };
 
-    ws.onerror = () => {
-      // Polling fallback every 5s
-      pollTimer = setInterval(() => {
-        fetch(`/api/host/${roomId}/hud`, {
-          headers: { 'X-Owner-Token': ownerToken },
-        })
-          .then((r) => r.json())
-          .then((data: any) => {
-            if (data.players) setPlayers(data.players.map(normalizePlayer));
-          })
-          .catch(() => {});
-      }, 5000);
-    };
+      wsRef.onopen = () => {
+        reconnectDelay = 1000;
+      };
+
+      wsRef.onclose = () => {
+        if (!mounted) return;
+        reconnectTimer = setTimeout(() => {
+          connect();
+          reconnectDelay = Math.min(reconnectDelay * 1.5 + Math.random() * 1000, maxDelay);
+        }, reconnectDelay);
+      };
+
+      wsRef.onerror = () => {
+        // onclose will fire after this, triggering reconnect
+      };
+    }
+
+    connect();
 
     return () => {
-      if (pollTimer) clearInterval(pollTimer);
-      ws.close();
+      mounted = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      wsRef?.close();
     };
   }, [roomId]);
 

@@ -368,8 +368,9 @@ class TestHostStorePersistence:
         store.save_state(test_db)
 
         loaded = HostStore.load_state("chat-cap-room", test_db)
-        assert len(loaded["chat_messages"]) == 50
-        assert loaded["chat_messages"][0]["text"] == "msg-50"
+        # save_state now persists all in-memory messages (append_chat_message caps at MAX=200)
+        assert len(loaded["chat_messages"]) == 100
+        assert loaded["chat_messages"][0]["text"] == "msg-0"
 
 
 class TestHostRESTEndpoints:
