@@ -118,16 +118,17 @@ def add_participant(
     distance_band: str = "medium", current_position: str = "",
     weapon_name: str = "", damage_expression: str = "1d3",
     main_skill: str = "", notes: str = "",
+    display_name: str = "",
 ) -> dict:
     conn.execute(
         "INSERT INTO encounter_participants "
         "(encounter_id, character_id, side, hp, hp_max, san, san_max, dex, mov, "
         "current_position, distance_band, status_tags, acted_this_round, "
-        "weapon_name, damage_expression, main_skill, notes) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        "weapon_name, damage_expression, main_skill, notes, display_name) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (encounter_id, character_id, side, hp, hp_max, san, san_max, dex, mov,
          current_position, distance_band, _ensure_json([]), False,
-         weapon_name, damage_expression, main_skill, notes),
+         weapon_name, damage_expression, main_skill, notes, display_name),
     )
     conn.commit()
     return get_participant(conn, encounter_id, character_id)

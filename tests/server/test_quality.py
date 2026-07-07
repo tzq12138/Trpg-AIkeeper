@@ -5,7 +5,7 @@ def test_ready_scenario():
     gen = QualityReportGenerator()
     graph = {
         "scenes": [{"name": "intro"}, {"name": "climax"}],
-        "npcs": [{"name": "Bob"}],
+        "npcs": [{"name": "Bob", "npc_id": "npc-bob", "personality": "可疑"}],
         "clues": [{"name": "letter"}],
         "truth": {"summary": "Bob did it"},
         "spoiler_boundaries": {"public": ["intro"]},
@@ -20,7 +20,7 @@ def test_warning_missing_ending():
     gen = QualityReportGenerator()
     graph = {
         "scenes": [{"name": "intro"}],
-        "npcs": [{"name": "Bob"}],
+        "npcs": [{"name": "Bob", "npc_id": "npc-bob", "personality": "可疑"}],
         "clues": [{"name": "letter"}],
         "truth": {"summary": "Bob did it"},
         "spoiler_boundaries": {"public": ["intro"]},
@@ -52,6 +52,6 @@ def test_blocked_empty_graph():
 
 def test_blocked_no_scenes():
     gen = QualityReportGenerator()
-    graph = {"scenes": [], "npcs": [{"name": "Bob"}], "clues": [], "truth": {}, "endings": []}
+    graph = {"scenes": [], "npcs": [{"name": "Bob", "npc_id": "npc-bob", "personality": "可疑"}], "clues": [], "truth": {}, "endings": []}
     report = gen.evaluate(graph)
     assert report.level == QualityLevel.BLOCKED

@@ -4,6 +4,12 @@
 
 Rule 第一轮只修 COC 7e 主链路和规则口径，不扩完整多规则平台。DeepSeek 必须优先保证：骰点服务端生成、成功等级全链路一致、AI 只建议不裁决、状态写入仍由 StateService 负责。
 
+当前阶段说明：
+
+- 本计划对应的是“P0 主链路 + 规则口径风险识别版”的执行包，不是 Rule 的最终生产安全完成版。
+- 当前文档已识别成功等级漂移、bonusDice 主链路缺失、`/api/player/skill-check` fallback 混淆、RollResult 字段不统一、visibility 边界、StateService 写入边界和触发器 DSL 风险。
+- 文档完成不等于生产安全完成；只有相关工程批次实现并通过测试后，这些风险才算真正关闭。
+
 ## 代码现状依据
 
 | 方向 | 文件 |
@@ -33,6 +39,7 @@ Rule 第一轮只修 COC 7e 主链路和规则口径，不扩完整多规则平�
 
 - 明确当前两套成功等级：`critical/extreme/hard/regular/failure/fumble` 与 `critical_success/success/failure/fumble`。
 - 写出或调整测试，暴露主链路 `s2c_action_completed` 缺 `success_level/successLevel` 的问题。
+- 测试应覆盖关键边界值：`roll=1`、`roll=100`、`roll=96`、`skill=49`、`skill=50`、`hard`、`extreme` 门限。
 - 不为了通过测试而先改前端兜底。
 
 验收命令：
@@ -65,8 +72,10 @@ python -m pytest tests/server/test_skill_check.py tests/server/test_rules.py tes
 执行要点：
 
 - 统一枚举为 `critical/extreme/hard/regular/failure/fumble`。
+- 明确默认判定顺序：`critical -> fumble -> extreme -> hard -> regular -> failure`。
 - `CocSkillCheckHandler` 应返回统一枚举，并保留 `is_success`。
 - `s2c_action_completed` payload 同时给出 `success_level` 与 `successLevel`，保留 `level` 兼容。
+- `level` 仅作为兼容字段，值必须与 `success_level/successLevel` 等价，不能三者漂移。
 - 前端不应把未知成功等级默认为 regular；未知值应显示为 failure 或系统提示。
 
 验收命令：
@@ -101,7 +110,8 @@ cd src/client && npm run build
 - 参数统一接受 `bonusDice` 和兼容 `bonus_dice`。
 - `CocSkillCheckHandler` 复用或等价实现 `roll_skill_check` 的十位骰逻辑。
 - metadata 与 reveal step 写明 `bonusDice`。
-- `bonusDice` 允许负数表示惩罚骰，限制绝对值上限，避免异常循环。
+- `bonusDice` 允许负数表示惩罚骰，限制绝对值上限；默认建议收敛到 `[-2, 2]`。
+- 保存原始骰子组成，例如 ones、候选 tens、selected tens，便于归档解释和回放。
 
 验收命令：
 
@@ -131,10 +141,11 @@ python -m pytest tests/server/test_skill_check.py tests/server/test_rules.py tes
 
 执行要点：
 
-- 定义统一 RollResult payload 字段：`dice/roll/target/skillName/successLevel/difficulty/visibility/actionId`。
+- 定义统一 RollResult payload 字段：`rollId/actionId/characterId/dice/roll/target/skillName/difficulty/successLevel/success_level/isSuccess/bonusDice/visibility/source`。
 - action result 中保留完整 metadata。
 - 玩家 archive 的 `skill_checks` 能返回 roll、target、successLevel。
 - Host timeline 能识别 roll 相关事件或 action result 摘要。
+- 私密骰结果进入 Channel/Archive 时仍要带 `visibility`，不能把其他玩家私密骰暴露给当前玩家。
 
 验收命令：
 
@@ -167,9 +178,11 @@ cd src/client && npm run build
 执行要点：
 
 - SAN/HP mutation 路径与 StateService 支持路径保持一致。
+- `RuleResult.mutations` 必须继续保持 RFC 6902 风格 patch 或等价标准 StateMutation DTO，不退回自由 dict。
 - `parse_dice` 可扩展到 `XdY+N`，但不做复杂表达式解释器。
 - RuleExecutor 不直接写库；StateService 失败时要有日志和 rejected/partial 策略。
 - Luck 检定与 Luck 花费分开，不在本批偷偷加入花费规则。
+- Rule Handler 异常时，玩家端必须收到 `rejected + s2c_action_completed` 解锁；普通玩家不拿内部异常栈，只拿 `reasonCode/debugId`。
 
 验收命令：
 
@@ -199,7 +212,7 @@ python -m pytest tests/server/test_rules.py tests/server/test_rule_executor.py t
 执行要点：
 
 - 定义 triggers 支持的最小 schema：`condition.$action`、`condition.itemId`、`mechanics[].type`、`mechanics[].params`。
-- 剧本质量报告能发现未知 mechanic、缺 params、非法 dice 表达式。
+- 剧本质量报告能发现未知 mechanic、缺 params、非法 dice 表达式，并区分 `error` 与 `warning`。
 - registry 只接受 `BaseRuleHandler` 实例。
 - 未注册 mechanic 在运行时给 warning，并让 action 有可理解结果。
 
@@ -229,6 +242,8 @@ python -m pytest tests/server/test_rules.py tests/server/test_quality.py tests/s
 6. Player 收到 `s2c_action_completed`，角色卡显示检定结果。
 7. 如果触发 SAN/HP mutation，StateService 写入状态并推送 patch。
 8. 玩家归档可查到该次检定。
+9. 前端恶意提交 `roll/result/successLevel` 时，服务端忽略。
+10. AI 返回 `roll/result` 数值时，RuleExecutor 不采纳，只采纳 mechanic 建议。
 
 验收命令：
 
@@ -242,6 +257,7 @@ cd src/client && npm run build
 - 不把 `/api/player/skill-check` 作为端到端验收主入口。
 - 不绕过 `POST /api/player/intent`。
 - 不修改 Room/User/Channel 无关行为。
+- 不让 fallback `/skill-check` 静默替代正式 action lifecycle。
 
 ## DeepSeek 交付要求
 
@@ -249,4 +265,5 @@ cd src/client && npm run build
 - 涉及随机数的测试要使用 seed 或 monkeypatch，避免 flaky。
 - 涉及权限和私密骰时，必须补 REST/WS/Archive 服务端过滤测试。
 - 所有规则字段要同时考虑 Python snake_case、API camelCase、前端 TypeScript 类型。
+- `/api/player/skill-check` 只作为 debug/兼容/降级入口记录，不得在交付说明中包装成正式主链路完成。
 

@@ -1,190 +1,344 @@
-# Plugin / Admin / Ops 开放 API 与后台运维 PRD V2.0
+# Plugin / Admin / Ops 开放 API 与后台运维 PRD V2.1
 
-## 背景
+## 当前阶段说明
 
-AI-Keeper 的核心跑团链路越强，后台和运维边界越重要。Admin 能管理账号、房间、剧本、素材、AI、RAG 和安全审计；Ops 要保证配置、部署、健康、日志、备份和恢复可靠；Open API 和 Plugin 未来会把能力开放给外部集成和扩展，但这也会带来越权、剧透、数据泄露和不可审计写入的风险。
+- 当前阶段为 `P0 控制面基线 + Admin 权限、生产安全、日志脱敏、MCP/Agent 治理与 Open API 设计风险识别版`。
+- 本 PRD 通过，不等于允许对外开放第三方 API、发放 API key、注册插件、开放 Webhook 或让插件/MCP/Agent 直写状态。
+- 当前代码以内部后台、开发运维、AI/RAG/MCP 辅助为主；Open API 与 Plugin 仍处于设计层。
 
-当前仓库已经有 Admin API、AdminDashboard、RAG 管理、AI Gateway、KP MCP Server、`/api/health`、Docker Compose、`dev.py`、日志配置和测试数据库隔离。当前没有第三方开发者平台、API key、插件注册、Webhook、多租户、正式备份恢复和生产监控。
+## 1. 背景
 
-## 目标
+AI-Keeper 的核心跑团链路越稳定，平台控制面越需要明确边界。当前仓库已经有可用的后台接口、RAG 管理、AI Gateway、KP MCP Server、健康检查和本地运维脚本，但这些能力仍偏开发态：
 
-1. 固化当前 Admin/Ops 能力和真实缺口。
-2. 建立生产安全基线：强 secret、CORS、MCP 暴露、日志脱敏、health 分级。
-3. 为未来 Open API 和 Plugin 定义 scope、凭证、审计和禁止边界。
-4. 把 AI、RAG、MCP、Agent tools 的管理能力纳入受控后台。
-5. 给 DeepSeek 后续工程批次提供可执行的文件方向、测试命令和禁止事项。
+- 后台强能力已存在，但高风险操作审计不统一；
+- `main.py` 已拒绝生产默认 `JWT_SECRET`，但 `CORS=*`、public health 细节、MCP 暴露策略仍需收紧；
+- `ai_call_logs`、RAG 预览、MCP、Agent tools 已经触达敏感数据边界；
+- `engine_save_clue` 暴露出“工具写入绕过业务链路”的真实风险；
+- 数据库仍以初始化脚本为主，没有正式 migration / backup / restore 体系。
 
-## 非目标
+因此 24 模块的 v1 重点不是“把系统开放出去”，而是“先把控制面、安全面和运维面收稳”。
 
-- 不在本轮实现插件市场。
-- 不开放第三方 API key。
-- 不实现 Webhook、OAuth app、计费、多租户。
-- 不重做 AdminDashboard 全套 UI。
-- 不让插件或 MCP 直接写数据库状态。
-- 不让 Admin/Ops 改写跑团规则、裁决、状态事务口径。
+## 2. 目标
 
-## 用户角色
+1. 固化 Admin / Ops / AI / RAG / MCP / Agent 的治理边界。
+2. 建立 production 配置基线：secret、CORS、health 分级、MCP 暴露、日志脱敏。
+3. 固化高风险后台操作的审计契约。
+4. 为 migration / backup / restore 建立安全前置约束。
+5. 为 future Open API / Plugin 定义 scope、DTO、禁止清单，但不实现第三方运行时。
+
+## 3. 非目标
+
+- 不在本轮发放真实 API key。
+- 不实现插件注册中心、插件运行时、插件市场。
+- 不实现 Webhook 订阅执行。
+- 不实现多租户、付费、配额、正式监控告警平台。
+- 不让 Admin/Ops 改写 Room / Rule / AI / State / Transaction 的业务真相边界。
+- 不允许 Plugin / MCP / Agent 直接写数据库主状态。
+
+## 4. 角色与权限
 
 | 角色 | 诉求 | 权限边界 |
 | --- | --- | --- |
-| Admin | 管理账号、房间、剧本、素材、AI、RAG、安全审计 | 当前唯一后台角色；所有高风险操作应审计 |
-| Ops | 部署、配置、日志、备份、恢复、健康和告警 | 通过环境变量、脚本和受控后台操作，不直接篡改业务数据 |
-| Developer | 本地启动、调试接口、跑测试 | 使用 `/docs`、`dev.py`、pytest、前端 build |
-| Plugin Developer | 未来开发受控扩展 | 当前未开放；未来必须申请 API key 和 scope |
-| Internal AI/MCP | 通过 MCP 和 provider 链辅助 AI-Keeper | 只能返回建议或结构化结果，不能越权落库 |
-| Host | 通过受限后台或房间配置管理自己的房间 | 不是 Admin，不能访问全局后台 |
-| Auditor | 未来查看审计记录和安全事件 | 只读，不改配置 |
+| Admin | 账号、房间、剧本、素材、AI、RAG、审计管理 | 全局后台能力，但必须被 audit |
+| Ops | 配置、部署、健康、日志、备份恢复治理 | 通过环境变量、脚本和受控后台能力操作，不直接改业务真相 |
+| Developer | 本地开发、调试、验证 | 使用 `dev.py`、`/docs`、pytest、前端 build |
+| InternalService | 内部服务间调用 | 必须有服务间身份，不借用前端 token |
+| Host | 管理自己房间 | 不是 Admin，不读全局后台 |
+| Player | 使用跑团主链路 | 不接触后台与运维面 |
+| Future Auditor | 查审计与安全事件 | 只读，不写配置 |
 
-## 范围
+## 5. 当前现状
 
-### v1 进入
+### 已存在
 
-- Admin API 和 AdminDashboard 当前能力盘点。
-- `/api/health` 和运行组件健康口径。
-- Settings、Docker Compose、`dev.py`、日志配置、本地开发命令。
-- AI Gateway、AI logs、RAG 管理、Spoiler audit、KP MCP Server 的边界。
-- 生产安全基线设计。
-- 插件和开放 API 的权限模型设计，不实现市场。
+- `src/server/router_admin.py`：后台 overview、rooms、accounts、characters、assets、AI、RAG、spoiler audits。
+- `src/client/src/pages/AdminDashboard.tsx`：基础后台 UI。
+- `src/server/main.py`：`/api/health`、组件初始化、生产默认 secret 启动拒绝。
+- `src/server/ai/gateway.py`：AI provider 链与 `ai_call_logs`。
+- `kp_mcp_server/`：7 个 MCP 工具。
+- `src/server/agent/tools.py`：查询工具与 `engine_save_clue`。
+- `tests/server/test_admin_auth.py`、`test_rag_security.py`、`test_db_isolation.py`、`test_ws_auth.py`：已有关键安全基线。
 
-### v1 不进入
+### 未存在
 
-- API key 实现。
-- 插件 manifest 解析和插件运行时。
-- 第三方 Webhook。
-- 多租户隔离。
-- 付费、配额、账单。
-- 完整监控告警平台。
-- 生产级备份调度服务。
+- `admin_audit_logs`
+- `migration_versions`
+- `backup_jobs`
+- 第三方 `ApiClient` / `ApiKey`
+- `PluginManifest` runtime
+- `WebhookSubscription`
+- 多租户与插件市场
 
-## 当前接口分区
+## 6. 产品边界
 
-| 分区 | 当前接口 | 权限口径 | 说明 |
+### 本模块负责
+
+- Admin 控制面与后台读写规范；
+- Ops 配置、health、日志、migration/backup 的治理口径；
+- AI/RAG/MCP/Agent 的运维和权限治理；
+- 未来 external OpenAPI / Plugin 的准入规则。
+
+### 本模块不负责
+
+- AI 裁决内容本身；
+- 规则结算逻辑；
+- 世界真相写入；
+- Projection 可见性判定本体；
+- Journal 跑团事件归档本体。
+
+## 7. 数据分层
+
+| 层级 | 数据对象 | 产品含义 | 边界要求 |
 | --- | --- | --- | --- |
-| Public health | `GET /api/health` | 当前公开 | 返回较多内部组件状态，生产应分级 |
-| Auth | `/api/auth/register`、`/login`、`/me` | 登录态 | 手写 HS256 token，缺撤销 |
-| Admin | `/api/admin/*` | admin only | 后台强能力集中 |
-| Room/Host | `/api/rooms/*`、`/api/host/*` | owner/admin 或房间公开 DTO | 房间生命周期和 Host 操作 |
-| Player | `/api/player/*` | player token 或账号 | 玩家行动、归档、加入 |
-| RAG | `/api/rag/*` | admin/owner/player 按读写分级 | 内部受控 API 样板 |
-| Scenario | `/api/scenarios/*` | admin/host/player 分接口 | 导入 admin-only，可用列表 host/admin |
-| WebSocket | `/ws` | host owner token 或 player token | 实时投影入口 |
-| MCP | `kp_mcp_server /mcp` | 当前无平台鉴权 | 内部 AI provider 服务 |
+| L0 | `RuntimeConfig` | 运行配置 | 不暴露 secret |
+| L1 | `Principal` | 调用主体 | 不信任前端角色自报 |
+| L2 | `AdminOperation` | 后台操作 | 必须可追责 |
+| L3 | `AdminAuditLog` | 审计记录 | admin only，never export |
+| L4 | `HealthReport` | 健康状态 | public/admin 分层 |
+| L5 | `RedactionPolicy` | 脱敏规则 | 后端统一执行 |
+| L6 | `AiOpsLog` | AI 运维日志 | 摘要化，不留 raw |
+| L7 | `RagOpsAction` | RAG 运维操作 | owner/admin 分层 |
+| L8 | `McpToolCall` | MCP 调用审计 | 服务间身份、不可直写状态 |
+| L9 | `AgentToolCall` | Agent tool 权限/审计 | 写工具默认禁写或受控 |
+| L10 | `MigrationVersion` | schema 版本 | 可追踪、可重复执行 |
+| L11 | `BackupJob` | 备份恢复任务 | 高风险确认 |
+| L12 | `ApiClient` | 未来外部调用方 | 本轮不实现 |
+| L13 | `PluginManifest` | 未来插件声明 | 本轮不实现 |
+| L14 | `WebhookSubscription` | 未来事件订阅 | 本轮不实现 |
 
-## 未来 Open API 分层
+## 8. DTO 契约
 
-| 层级 | 调用方 | 凭证 | 能力 |
+### 8.1 当前必须定义
+
+- `OpsConfigSnapshotDTO`
+- `PublicHealthDTO`
+- `AdminHealthDTO`
+- `AdminAuditLogDTO`
+- `AdminAuditQueryDTO`
+- `AdminAuditResultDTO`
+- `RedactionRuleDTO`
+- `AiProviderStatusDTO`
+- `AiCallLogSafeDTO`
+- `RagOpsStatusDTO`
+- `McpToolStatusDTO`
+- `McpToolCallAuditDTO`
+- `AgentToolPermissionDTO`
+- `AgentToolCallAuditDTO`
+- `MigrationVersionDTO`
+- `BackupJobDTO`
+- `RestoreRequestDTO`
+- `OpsApiErrorDTO`
+
+### 8.2 仅设计
+
+- `ApiClientDTO`
+- `ApiKeyCreateRequestDTO`
+- `ApiKeyCreatedDTO`
+- `PluginManifestDTO`
+- `PluginScopeDTO`
+- `WebhookSubscriptionDTO`
+
+### 8.3 关键规则
+
+- `PublicHealthDTO` 只返回 `status/version/environment` 等安全摘要。
+- `AdminHealthDTO` 允许返回组件细节与脱敏配置快照，但仅 Admin 可见。
+- `AdminAuditLogDTO` 固定字段，不允许漂移成“整包 request dump”。
+- `AiCallLogSafeDTO` 只返回 provider/status/task/duration/summary hash 或截断摘要，不返回 raw prompt/raw response。
+
+## 9. 环境模式矩阵
+
+| 配置项 | development | test | production |
 | --- | --- | --- | --- |
-| Internal REST | 前端和服务内部 | account token、owner token、player token | 当前主要接口 |
-| Admin API | AdminDashboard 和内部工具 | admin account token | 全局管理和审计 |
-| Room API | Host/Player 客户端 | owner/player token | 房间内操作 |
-| Plugin API | 未来插件 | API key + scope + 可选用户授权 | 受控扩展 |
-| Public API | 未来公开内容 | 无登录或低权限 token | 只读公开内容 |
+| 默认 `JWT_SECRET` | 允许但告警 | 允许测试值 | 禁止启动或 health degraded |
+| CORS `*` | 允许 | 允许本地测试 | 禁止 |
+| MCP `0.0.0.0` 无鉴权 | 仅本地 mock/dev | 默认禁止 | 禁止 |
+| `/docs` | 允许 | 可允许 | 默认关闭或仅内网/admin |
+| public health 细节 | 简要 | 简要 | 简要 |
+| admin health 细节 | admin only | admin only | admin only |
+| secrets 写日志 | 禁止 | 禁止 | 禁止 |
+| destructive fixture | 仅 test DB | 仅 test DB | 禁止 |
 
-原则：
+## 10. 核心需求
 
-- 自动 `/docs` 是内部开发文档，不等于 external OpenAPI。
-- external OpenAPI 必须按 scope 过滤接口和 schema。
-- 所有写接口都要有调用主体、目标资源、scope、审计和限流。
+### 10.1 Admin 控制面
 
-## 插件权限模型方向
+用户故事：
 
-| Scope | 示例能力 | 默认 |
-| --- | --- | --- |
-| `read:public` | 读取公开模组、公开招募、公开战报 | 可申请 |
-| `read:room` | 读取授权房间公开状态 | 需要房间 owner 授权 |
-| `read:player:self` | 读取当前玩家自己的角色摘要 | 需要玩家授权 |
-| `write:intent` | 代玩家提交 intent | 高风险，需要玩家授权和限流 |
-| `write:message` | 发送队伍消息或通知 | 高风险，需要房间授权 |
-| `write:clue` | 写线索 | 默认禁用，必须通过 Engine/State 验证 |
-| `admin:read` | 读取后台信息 | 内部 only |
-| `admin:write` | 改后台配置 | 内部 only，默认不开放 |
-| `ai:invoke` | 调 AI provider 或 MCP 工具 | 内部 only，必须记录 AI call log |
-| `rag:read` | 检索 RAG | 按房间成员权限裁剪 |
-| `rag:write` | 重建索引 | admin/owner only |
+- 作为 Admin，我需要稳定地查看房间、账号、角色、素材、AI、RAG 状态。
+- 作为平台负责人，我需要知道哪些操作是谁做的、改了什么、为什么改。
 
-## 数据模型方向
+需求：
 
-| 表 | 主要字段方向 | 说明 |
-| --- | --- | --- |
-| `admin_audit_logs` | `audit_id`、`actor_account_id`、`action`、`target_type`、`target_id`、`before`、`after`、`ip`、`created_at` | Admin/Ops 操作审计 |
-| `api_clients` | `client_id`、`owner_account_id`、`name`、`status`、`created_at` | 未来开放 API 调用方 |
-| `api_keys` | `key_id`、`client_id`、`key_hash`、`prefix`、`status`、`expires_at`、`last_used_at` | key 只存 hash 和短 prefix |
-| `api_scopes` | `client_id`、`scope`、`resource_type`、`resource_id` | API 权限声明 |
-| `plugin_manifests` | `plugin_id`、`name`、`version`、`author_account_id`、`entry_type`、`status`、`requested_scopes` | 插件注册和审核 |
-| `plugin_installs` | `install_id`、`plugin_id`、`room_id`、`installed_by`、`granted_scopes`、`status` | 房间或平台安装 |
-| `webhook_subscriptions` | `subscription_id`、`client_id`、`event_types`、`target_url`、`secret_hash`、`status` | 未来事件推送 |
-| `migration_versions` | `version`、`name`、`applied_at`、`checksum` | DB 版本化 |
-| `backup_jobs` | `job_id`、`scope`、`status`、`path`、`started_at`、`finished_at`、`error` | 备份恢复审计 |
-| `ops_incidents` | `incident_id`、`severity`、`component`、`status`、`summary`、`created_at` | 未来告警和故障记录 |
+- `/api/admin/*` 保持 admin only。
+- 高风险操作必须写 `AdminAuditLogDTO`。
+- Admin API 默认返回脱敏 DTO，不透出 `password_hash`、token、raw prompt、绝对路径。
 
-## 生产安全基线
+### 10.2 health 分层
 
-| 项目 | 当前状态 | 目标 |
-| --- | --- | --- |
-| `JWT_SECRET` | 有开发默认值 | 非开发环境必须强制自定义 |
-| CORS | `allow_origins=["*"]` | 生产使用 allowlist |
-| MCP 绑定 | 默认 `0.0.0.0:9100` | 生产默认 localhost 或内网，并增加服务间 token |
-| Docker 密码 | 默认 `aikeeper123` | 生产必须使用外部 secret |
-| 日志 | 普通文本 | 增加 token/API key/prompt 脱敏 |
-| Health | 公开详细组件 | public 简要，admin 详细 |
-| Upload | 基础文件写入 | 增加大小、MIME、文件头、路径、清理测试 |
-| DB schema | 自动建表和 ALTER | 增加 versioned migration |
-| Backup | 未实现 | 定期备份、恢复演练、测试库保护 |
-| AI logs | 保存摘要 | 摘要不能含密钥、token、完整 prompt、未公开真相 |
+用户故事：
 
-## MCP 和 Agent 工具边界
+- 作为外部调用者，我只能知道服务是否活着。
+- 作为 Admin/Ops，我需要看到更细的组件级状态和脱敏配置。
 
-KP MCP Server 当前工具：
+需求：
 
-- `kp_resolve_turn`
-- `kp_resolve_sanity`
-- `kp_resolve_combat_round`
-- `kp_structure_scenario`
-- `kp_query_rules`
-- `kp_query_knowledge`
-- `kp_health_check`
+- public health 与 admin health 分离。
+- public health 不透出 DSN、provider key、完整错误栈、绝对路径。
+- admin health 允许细节，但仍需脱敏。
 
-边界：
+### 10.3 配置与生产安全
 
-- MCP 只返回结构化建议或 AI 结果，不直接写主库。
-- 后端必须继续做 schema 校验、反剧透、Engine/State 验证。
-- MCP 服务生产环境不得无鉴权公网暴露。
-- MCP 输入不应包含未授权玩家私密内容。
+需求：
 
-Agent tools 当前有查询工具、掷骰工具和 `engine_save_clue` 写入工具。写入工具必须进入高风险治理：默认禁用或改为提交建议，由 Engine/State/Journal 统一落库。
+- production 禁用默认 `JWT_SECRET`。
+- production 禁用 `CORS=*`。
+- MCP 在 production 下默认不能无鉴权暴露到 `0.0.0.0`。
+- `/docs` 不能直接被当作 external OpenAPI。
 
-## 与核心模块关系
+### 10.4 Admin 审计
 
-- User 决定账号、角色和 token。
-- Safety 决定脱敏、CORS、secret、日志、公开 export、MCP 暴露边界。
-- State 和 Transaction 决定状态写入，不允许 Plugin/MCP 直接改表。
-- Projection 决定实时可见性，不允许 Webhook 或 Plugin 绕过过滤。
-- Journal 记录事件、导出、审计和回放。
-- AI-Keeper 通过 Gateway/MCP 获取建议，但最终写入必须经 Engine/State。
-- Community 未来消费 Open API 的公开内容，但不获得内部 Admin 能力。
+`AdminAuditLogDTO` 最低字段：
 
-## 验收标准
+- `auditId`
+- `actorAccountId`
+- `actorRole`
+- `action`
+- `targetType`
+- `targetId`
+- `roomId?`
+- `scenarioId?`
+- `beforeSummary?`
+- `afterSummary?`
+- `reason?`
+- `ipHash?`
+- `userAgentHash?`
+- `requestId?`
+- `createdAt`
+
+禁止写入审计：
+
+- `password_hash`
+- `owner_token`
+- `player_token`
+- JWT / account token
+- API key / provider key / webhook secret
+- raw prompt / raw response
+- 完整 request body
+- 本地绝对路径
+
+### 10.5 日志脱敏
+
+必须脱敏：
+
+- `owner_token`
+- `player_token`
+- JWT
+- API key
+- provider key
+- webhook secret
+- DSN password
+- `password_hash`
+- raw prompt
+- raw response
+- RAG raw context
+- local absolute path
+- `original_file_path`
+
+允许保留：
+
+- `provider`
+- `status`
+- `durationMs`
+- `task`
+- `roomId`
+- `actionId`
+- `scenarioId`
+- `errorClass`
+- 摘要 hash / 截断摘要
+
+### 10.6 MCP / Agent 治理
+
+MCP 规则：
+
+- 生产模式必须有服务间 token 或仅限 localhost/内网。
+- MCP tool call 必须被 audit。
+- MCP 不得直写主库状态。
+
+Agent tools 规则：
+
+- 权限档位固定为 `read_only / suggest_only / controlled_write / disabled`。
+- `engine_save_clue` 第一轮默认 `disabled` 或 `suggest_only`。
+- 如启用写入，必须经过 `Clue / State / Journal` 服务链。
+
+### 10.7 migration / backup
+
+需求：
+
+- `migration_versions` 必须记录 `version/name/checksum/applied_at`。
+- migration 要可重复执行，失败不能半应用。
+- 禁止 silent destructive reset。
+- backup 默认只读。
+- restore 必须 `confirm + target DB`。
+- production restore 必须二次确认。
+- 测试不得连接生产库。
+
+### 10.8 future Open API / Plugin 设计约束
+
+`read:public`：不能读 `raw_text / truth / private events`。  
+`read:room`：只能读授权房间 safe DTO。  
+`write:intent`：必须有玩家授权与 rate limit，不能绕过 Player Intent。  
+`write:message`：不能伪造系统消息或越 audience。  
+`write:clue`：默认禁用，必须走 `Clue / State / Journal`。  
+`admin:read` / `admin:write`：internal only。  
+`ai:invoke`：internal only。  
+`rag:write`：admin/owner only。  
+
+## 11. 高风险 Admin 操作矩阵
+
+| 操作 | 是否审计 | 是否要求 reason | 是否可撤销 |
+| --- | --- | --- | --- |
+| `account.role.update` | 是 | 建议 | 可通过再次修改修正 |
+| `room.status.update` | 是 | 是 | 视状态而定 |
+| `scenario.import/delete/archive` | 是 | 是 | 删除不可逆 |
+| `asset.upload/delete/force_delete` | 是 | `force_delete` 强制 | 删除不可逆 |
+| `ai.provider_config.update` | 是 | 是 | 可恢复上一配置 |
+| `rag.reindex` | 是 | 可选 | 不适用 |
+| `spoiler.index.rebuild` | 是 | 可选 | 不适用 |
+| `mcp.config.update` | 是 | 是 | 可恢复上一配置 |
+| `backup.restore` | 是 | 强制 | 高风险二次确认 |
+
+## 12. `/docs` 与 external OpenAPI 边界
+
+### Internal `/docs`
+
+- 当前 FastAPI 自动生成文档。
+- 服务开发使用。
+- 生产默认关闭或只给 admin/internal。
+- 不构成对外 API 承诺。
+
+### external OpenAPI
+
+- 未来必须由 allowlist routes + scope schema 生成。
+- 不包含 Admin API。
+- 不包含 raw scenario、raw events、truth、private events。
+- 不包含 `owner_token` / `player_token`。
+- 不包含 MCP 内部接口、AI provider 内部调用。
+
+## 13. 验收标准
 
 ### 文档阶段
 
-- 明确当前无第三方插件系统、API key、Webhook 和多租户。
-- 明确当前已有 Admin、RAG、AI、MCP、dev、Docker、health 能力。
-- 明确生产安全风险和 P1 补强顺序。
-- DeepSeek 计划每批都有测试命令和禁止事项。
+1. 明确哪些能力已存在，哪些尚未实现。
+2. 明确当前阶段不是第三方开放版。
+3. 明确数据分层、DTO 契约、环境矩阵、审计字段、脱敏规则、MCP/Agent 治理、migration/backup 安全策略。
 
 ### 工程阶段
 
-- Admin API 权限测试通过。
-- RAG 权限测试通过。
-- test DB 隔离测试通过。
-- health 能区分 public 和 admin 细节。
-- 默认 secret、开放 CORS、无鉴权 MCP 在生产配置下被拦截。
-- Admin 高风险操作有审计。
-- AI/RAG/MCP 调用不泄露 token 和完整 prompt。
-
-### 回归阶段
-
-- 创建房间、玩家加入、ready、开局、AI 裁决、投影、日志仍能跑通。
-- Open API 或插件相关改动不改变核心链路行为。
-- 前端 AdminDashboard build 通过。
-- 本地 `python dev.py --check` 仍能使用。
+1. Admin API 未登录 401、Player 403、Admin 200。
+2. public health 不泄露 secret / DSN / provider key。
+3. admin health admin only，且返回脱敏细节。
+4. 高风险操作产生 audit。
+5. logs / AI logs / export 不泄露 token / key / raw prompt / raw response。
+6. `engine_save_clue` 不可 direct write。
+7. production 下不允许无鉴权 MCP 公网暴露。
+8. 仍未开放真实 API key / plugin runtime / webhook。

@@ -1,5 +1,6 @@
 """Map router — player map view with team-shared fog of war, move via engine intent."""
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, Request, HTTPException
@@ -24,17 +25,23 @@ logger = logging.getLogger(__name__)
 
 @router.get("/{room_id}")
 async def get_map_view(request: Request, room_id: str):
-    """Player map view with team-shared fog of war."""
+    """Player map view — pure read, no side-effects. Requires valid player token."""
     token = request.headers.get("X-Room-Token", "")
-    character_id = None
-    if token:
-        try:
-            char = _get_character(request)
-            character_id = char["character_id"]
-        except HTTPException:
-            pass  # anonymous viewer
+    if not token:
+        raise HTTPException(401, "需要玩家身份令牌")
 
+    # Validate token and get character — no anonymous fallback
+    try:
+        char = _get_character(request)
+    except HTTPException:
+        raise HTTPException(403, "无效或过期的玩家令牌")
+
+    character_id = char["character_id"]
     conn = request.app.state.db
+
+    # Verify character belongs to this room (cross-room check)
+    if char.get("room_id") != room_id:
+        raise HTTPException(403, "无权访问此房间的地图")
 
     # Check room has initialized map
     map_state = get_room_map_state(conn, room_id)
@@ -44,39 +51,52 @@ async def get_map_view(request: Request, room_id: str):
             "currentNodeId": None, "hiddenCount": 0, "mapStatus": "no_map",
         }
 
-    if character_id:
-        # Auto-place player at start node if not yet positioned
-        pos = get_character_position(conn, character_id, room_id)
-        if not pos:
-            scenario_map = get_scenario_map(conn, map_state["map_id"])
-            if scenario_map:
-                nodes = scenario_map.get("nodes", [])
-                start_node = next(
-                    (n for n in nodes if n.get("is_start") or n.get("isStart")), None
-                )
-                start_id = start_node.get("node_id", start_node.get("nodeId", "")) if start_node else (
-                    nodes[0].get("node_id", nodes[0].get("nodeId", "")) if nodes else ""
-                )
-                if start_id:
-                    set_character_position(conn, character_id, room_id, start_id)
-                    mark_node_explored(conn, room_id, start_id)
-
-        return build_player_map_view(conn, room_id, character_id)
-
-    # Anonymous: return basic layout without fog filtering
-    scenario_map = get_scenario_map(conn, map_state["map_id"])
-    if not scenario_map:
+    # Check player has a current position (no auto-placement on GET)
+    pos = get_character_position(conn, character_id, room_id)
+    if not pos:
         return {
-            "roomId": room_id, "nodes": [],
-            "currentNodeId": None, "hiddenCount": 0, "mapStatus": "no_map",
+            "roomId": room_id,
+            "nodes": [],
+            "currentNodeId": None,
+            "hiddenCount": 0,
+            "mapStatus": "no_current_position",
         }
-    return {
-        "roomId": room_id,
-        "nodes": scenario_map.get("nodes", []),
-        "currentNodeId": None,
-        "hiddenCount": 0,
-        "mapStatus": map_state.get("status", "active") or "active",
-    }
+
+    view = build_player_map_view(conn, room_id, character_id)
+
+    # Filter hidden NPCs from player map nodes
+    try:
+        room_row = conn.execute(
+            "SELECT scenario_id FROM rooms WHERE room_id = %s", (room_id,)
+        ).fetchone()
+        if room_row:
+            scenario_row = conn.execute(
+                "SELECT knowledge_graph FROM scenarios WHERE scenario_id = %s",
+                (room_row["scenario_id"],),
+            ).fetchone()
+            if scenario_row:
+                kg = scenario_row["knowledge_graph"]
+                if isinstance(kg, str):
+                    kg = json.loads(kg)
+                hidden_npc_names = set()
+                for npc in (kg or {}).get("npcs", []):
+                    if npc.get("is_hidden"):
+                        hidden_npc_names.add(npc.get("name", ""))
+                        hidden_npc_names.add(npc.get("public_name", ""))
+                for node in view.get("nodes", []):
+                    raw_npcs = node.get("npcsPresent", [])
+                    if raw_npcs:
+                        node["npcsPresent"] = [
+                            n for n in raw_npcs if n not in hidden_npc_names
+                        ]
+    except Exception:
+        pass
+
+    # Strip cluesAvailable from player view (only visible via clue system)
+    for node in view.get("nodes", []):
+        node.pop("cluesAvailable", None)
+
+    return view
 
 
 @router.post("/{room_id}/move")

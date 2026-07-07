@@ -124,13 +124,18 @@ class SpoilerGuard:
         for i, npc in enumerate(knowledge_graph.get("npcs", []) or []):
             if npc.get("is_hidden"):
                 name = npc.get("name", "")
+                public_name = npc.get("public_name", "")
                 desc = npc.get("description", "")
                 role = npc.get("role", "")
+                npc_id = npc.get("npc_id", "")
                 label = name or f"隐藏NPC{i + 1}"
-                text_parts = [name, role, desc]
+                text_parts = [name, public_name, role, desc]
                 aliases = self._extract_aliases(" ".join([p for p in text_parts if p]), "npc")
+                # Also include public_name as alias for interception
+                if public_name and public_name != name:
+                    aliases = list(set(aliases + [public_name]))
                 items.append(SpoilerSensitiveItem(
-                    itemId=f"{scenario_id}:hidden_npc:{i}",
+                    itemId=f"{scenario_id}:hidden_npc:{npc_id}" if npc_id else f"{scenario_id}:hidden_npc:{i}",
                     scenarioId=scenario_id,
                     category="hidden_npc",
                     label=label,
@@ -289,7 +294,7 @@ class SpoilerGuard:
         except Exception:
             pass
 
-        # 5. NPC appearances from events
+        # 5. NPC appearances from events — extract both npcName (legacy) and npcId (target)
         try:
             npc_rows = self.conn.execute(
                 "SELECT payload FROM events WHERE room_id = %s AND event_type = %s ORDER BY sequence",
@@ -305,6 +310,9 @@ class SpoilerGuard:
                 npc_name = payload.get("npcName", "") or payload.get("npc_name", "")
                 if npc_name and npc_name not in state.revealed_npc_names:
                     state.revealed_npc_names.append(npc_name)
+                npc_id = payload.get("npcId", "") or payload.get("npc_id", "")
+                if npc_id and npc_id not in state.revealed_npc_ids:
+                    state.revealed_npc_ids.append(npc_id)
         except Exception:
             pass
 
@@ -418,6 +426,11 @@ class SpoilerGuard:
             return False
 
         if category == "hidden_npc":
+            # Check by npcId first (preferred)
+            for npc_id in unlock.revealed_npc_ids:
+                if npc_id and (npc_id in item_id or npc_id in item.source_ref):
+                    return True
+            # Fallback: check by npcName (legacy compatibility)
             for name in unlock.revealed_npc_names:
                 if name.lower() == label_lower or name.lower() in label_lower or label_lower in name.lower():
                     return True

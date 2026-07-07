@@ -419,6 +419,26 @@ async def speech_to_text(
     }
 
 
+# ── Simple rate limiter for team messages ──
+_team_msg_rates: dict[str, list[float]] = {}  # character_id -> [timestamps]
+
+def _check_team_msg_rate(character_id: str, max_per_sec: int = 3) -> bool:
+    import time as _time
+    now = _time.monotonic()
+    stamps = _team_msg_rates.get(character_id, [])
+    stamps = [s for s in stamps if now - s < 1.0]
+    if len(stamps) >= max_per_sec:
+        _team_msg_rates[character_id] = stamps
+        return False
+    stamps.append(now)
+    _team_msg_rates[character_id] = stamps
+    return True
+
+
+ALLOWED_SOURCES = {"text", "voice"}  # system_import is server/internal only, not player-facing
+MAX_TEAM_MSG_LENGTH = 2000
+
+
 @router.post("/team-message")
 async def team_message(request: Request):
     """Send a team chat message (not an action, not resolved by AI)."""
@@ -436,7 +456,15 @@ async def team_message(request: Request):
     text = (body.get("text") or "").strip()
     if not text:
         raise HTTPException(400, "text is required")
+    if len(text) > MAX_TEAM_MSG_LENGTH:
+        raise HTTPException(400, f"text exceeds {MAX_TEAM_MSG_LENGTH} characters")
     source = body.get("source", "text")
+    if source not in ALLOWED_SOURCES:
+        raise HTTPException(400, f"source must be one of: {', '.join(sorted(ALLOWED_SOURCES))}")
+
+    # Rate limit: max 3 messages per second per character
+    if not _check_team_msg_rate(char["character_id"]):
+        raise HTTPException(429, "Too many messages — slow down")
 
     # Build payload
     xlsx = char.get("xlsx_data") or {}
@@ -498,12 +526,23 @@ async def submit_intent(request: Request, intent: PlayerIntent):
 
     if is_active and intent.intent_type not in ("ready_toggle",):
         # Turn-based mode: queue action in current turn
+        # Check duplicate BEFORE writing action (prevents orphan actions)
         from ..turn_manager import TurnManager
         tm = TurnManager(conn)
+        turn = tm.ensure_current_turn(char["room_id"])
+        existing = conn.execute(
+            "SELECT action_id FROM actions WHERE turn_id = %s AND character_id = %s AND status != 'rejected'",
+            (turn["turn_id"], char["character_id"]),
+        ).fetchone()
+        if existing:
+            return JSONResponse(
+                content={"status": "duplicate", "turn_id": turn["turn_id"], "turn_index": turn["turn_index"],
+                         "message": "Already submitted this turn"},
+                status_code=409,
+            )
+
         result = engine.submit_intent(char["room_id"], char["character_id"], intent)
         turn_result = tm.submit_action(char["room_id"], char["character_id"], intent.action_id)
-        if turn_result.get("status") == "duplicate":
-            return JSONResponse(content=turn_result, status_code=409)
         result["turnId"] = turn_result.get("turn_id")
         result["turnIndex"] = turn_result.get("turn_index")
         # Check if all submitted → auto-settle
@@ -541,7 +580,11 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
         conn = pg_db.get_connection() if pg_db else app.state.db
         from ..turn_manager import TurnManager
         tm = TurnManager(conn)
-        tm.mark_resolving(turn_id)
+
+        # Atomically claim resolving — skip if another worker already took this turn
+        if not tm.mark_resolving(turn_id):
+            logger.info("Turn %s already claimed by another worker, skipping", turn_id)
+            return
 
         # Resolve each queued action through the pipeline
         actions = tm.get_pending_actions(turn_id)
@@ -607,8 +650,15 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
 
         tm.mark_resolved(turn_id, narrative[:500])
 
-        # Create next turn
-        tm._create_turn(room_id)
+        # Create next turn — only if no newer collecting turn already exists
+        existing_next = conn.execute(
+            "SELECT turn_id FROM room_turns WHERE room_id = %s AND status = 'collecting' AND turn_index > %s",
+            (room_id, conn.execute("SELECT turn_index FROM room_turns WHERE turn_id = %s", (turn_id,)).fetchone()["turn_index"]),
+        ).fetchone()
+        if not existing_next:
+            tm._create_turn(room_id)
+        else:
+            logger.info("Next turn already exists for room %s (turn %s), skipping creation", room_id, existing_next["turn_id"])
 
         # Broadcast turn resolved event
         dispatcher = getattr(app.state, "dispatcher", None)
@@ -781,16 +831,40 @@ def _add_claimed_inventory_item(conn, char: dict, item: dict) -> dict:
 
 
 def _character_luck(char: dict) -> int:
-    data = _json_value(char.get("xlsx_data")) or {}
+    # Read from character_runtime_state first (authoritative), fallback to xlsx_data
+    conn2 = None
     try:
-        return int(data.get("luck", 0))
+        # Check if we have a connection available
+        data = _json_value(char.get("xlsx_data")) or {}
+        luck_xlsx = data.get("luck", 0)
+    except (TypeError, ValueError):
+        luck_xlsx = 0
+    try:
+        return int(luck_xlsx)
     except (TypeError, ValueError):
         return 0
 
 
 def _decrement_luck(conn, char: dict, luck: int):
+    new_luck = max(0, luck - 1)
+    # Write to character_runtime_state as authoritative source
+    existing = conn.execute(
+        "SELECT * FROM character_runtime_state WHERE character_id = %s",
+        (char["character_id"],),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE character_runtime_state SET luck = %s, updated_at = NOW() WHERE character_id = %s",
+            (new_luck, char["character_id"]),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO character_runtime_state (character_id, luck) VALUES (%s, %s)",
+            (char["character_id"], new_luck),
+        )
+    # Also sync xlsx_data for backward compatibility (derived, not authoritative)
     data = _json_value(char.get("xlsx_data")) or {}
-    data["luck"] = max(0, luck - 1)
+    data["luck"] = new_luck
     conn.execute(
         "UPDATE characters SET xlsx_data = %s WHERE character_id = %s",
         (json.dumps(data, ensure_ascii=False), char["character_id"]),
@@ -820,9 +894,29 @@ async def player_sync(request: Request):
     items = conn.execute(
         "SELECT * FROM inventory WHERE character_id = %s", (character_id,)
     ).fetchall()
-    clues = conn.execute(
+    owned_clues = conn.execute(
         "SELECT * FROM clues WHERE character_id = %s", (character_id,)
     ).fetchall()
+    # Include shared clues from teammates (public_version only)
+    shared_clues = conn.execute(
+        "SELECT cs.clue_id, cs.public_version AS text, cs.shared_by, cs.shared_at, c.source, c.discovered_at "
+        "FROM clue_shares cs JOIN clues c ON cs.clue_id = c.clue_id "
+        "WHERE c.room_id = %s AND c.character_id != %s",
+        (char["room_id"], character_id),
+    ).fetchall()
+
+    all_clues = []
+    for c in owned_clues:
+        all_clues.append(dict(c))
+    for c in shared_clues:
+        all_clues.append({
+            "clue_id": c["clue_id"],
+            "text": c["text"],
+            "source": c["source"],
+            "discovered_at": c["discovered_at"],
+            "shared_by": c["shared_by"],
+            "is_owner": False,
+        })
 
     room_row = conn.execute(
         "SELECT state_version FROM rooms WHERE room_id = %s", (char["room_id"],)
@@ -832,7 +926,7 @@ async def player_sync(request: Request):
     return {
         **char,
         "inventory": [dict(i) for i in items],
-        "clues": [dict(c) for c in clues],
+        "clues": all_clues,
         "stateVersion": state_version,
     }
 
@@ -850,6 +944,13 @@ async def get_character(request: Request):
         "SELECT status FROM rooms WHERE room_id = %s", (char["room_id"],)
     ).fetchone()
 
+    # Merge character_runtime_state for live HP/SAN/MP/Luck values
+    crs = conn.execute(
+        "SELECT * FROM character_runtime_state WHERE character_id = %s",
+        (char["character_id"],),
+    ).fetchone()
+    runtime = dict(crs) if crs else {}
+
     return {
         "character_id": char["character_id"],
         "player_name": player_name,
@@ -857,13 +958,13 @@ async def get_character(request: Request):
         "investigator_name": investigator_name,
         "investigatorName": investigator_name,
         "name": investigator_name,
-        "hp": xlsx_data.get("hp", 0),
+        "hp": runtime.get("hp") if runtime.get("hp") is not None else xlsx_data.get("hp", 0),
         "max_hp": xlsx_data.get("max_hp", 0),
-        "san": xlsx_data.get("san", 0),
+        "san": runtime.get("san") if runtime.get("san") is not None else xlsx_data.get("san", 0),
         "max_san": xlsx_data.get("max_san", 0),
-        "mp": xlsx_data.get("mp", 0),
+        "mp": runtime.get("mp") if runtime.get("mp") is not None else xlsx_data.get("mp", 0),
         "max_mp": xlsx_data.get("max_mp", 0),
-        "luck": xlsx_data.get("luck", 0),
+        "luck": runtime.get("luck") if runtime.get("luck") is not None else xlsx_data.get("luck", 0),
         "skills": xlsx_data.get("skills", {}),
         "background": xlsx_data.get("background", ""),
         # Lobby-ready fields — single source of truth from DB

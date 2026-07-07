@@ -15,7 +15,8 @@ router = APIRouter(prefix="/api/scenarios")
 
 @router.get("/available")
 async def list_available_scenarios(request: Request):
-    """List scenarios that a host or admin can use to create rooms."""
+    """List scenarios that a host or admin can use to create rooms.
+    Excludes blocked scenarios. Includes quality diagnostics."""
     from ..router_auth import get_account_from_token
     account = get_account_from_token(request)
     if not account:
@@ -24,15 +25,40 @@ async def list_available_scenarios(request: Request):
         raise HTTPException(403, "仅房主或管理员可访问")
     conn = request.app.state.db
     rows = conn.execute(
-        "SELECT scenario_id, title, import_status, created_at "
+        "SELECT scenario_id, title, import_status, quality_report, created_at "
         "FROM scenarios WHERE import_status = 'structured' ORDER BY created_at DESC"
     ).fetchall()
-    return [{
-        "scenario_id": r["scenario_id"],
-        "title": r["title"],
-        "status": r["import_status"],
-        "created_at": str(r.get("created_at", "")),
-    } for r in rows]
+    result = []
+    for r in rows:
+        quality_level = "unknown"
+        completeness = 0.0
+        if r.get("quality_report"):
+            qr = r["quality_report"]
+            if isinstance(qr, str):
+                try:
+                    qr = json.loads(qr)
+                except json.JSONDecodeError:
+                    qr = {}
+            quality_level = qr.get("level", "unknown")
+            completeness = qr.get("completeness", 0.0)
+        # Exclude blocked scenarios from available list
+        if quality_level == "blocked":
+            continue
+        entry = {
+            "scenario_id": r["scenario_id"],
+            "title": r["title"],
+            "status": r["import_status"],
+            "quality_level": quality_level,
+            "completeness": completeness,
+            "created_at": str(r.get("created_at", "")),
+        }
+        # Add risk warning for highRisk scenarios
+        if quality_level == "highRisk":
+            entry["risk_warning"] = "该剧本质量评级为高风险，开房需显式确认"
+        elif quality_level == "warning":
+            entry["risk_warning"] = "该剧本存在质量警告"
+        result.append(entry)
+    return result
 
 
 @router.post("/import-pdf")
@@ -132,9 +158,21 @@ async def import_pdf(request: Request, file: UploadFile = File(...)):
         except Exception as e:
             logger.warning("Failed to save quality report for %s: %s", scenario_id, e)
 
+    # Track indexing diagnostics
+    index_diagnostics = {"rag_scenario": False, "rag_npc": False, "spoiler": False}
+
     if hasattr(request.app.state, 'rag') and request.app.state.rag and knowledge_graph:
+        # Index scenario chunks (raw_text for RAG retrieval)
+        try:
+            request.app.state.rag.index_scenario(scenario_id, full_text)
+            index_diagnostics["rag_scenario"] = True
+            logger.info("Scenario RAG index built for %s (%d pages)", scenario_id, len(pages))
+        except Exception as e:
+            logger.warning('Scenario RAG indexing failed: %s', e)
+        # Index NPC chunks
         try:
             request.app.state.rag.index_npc_graph(scenario_id, knowledge_graph)
+            index_diagnostics["rag_npc"] = True
         except Exception as e:
             logger.warning('NPC RAG indexing failed: %s', e)
 
@@ -143,15 +181,49 @@ async def import_pdf(request: Request, file: UploadFile = File(...)):
         from ..engine.spoiler_guard import SpoilerGuard
         sg = SpoilerGuard(conn)
         sg.build_sensitive_index(scenario_id, knowledge_graph, {})
+        index_diagnostics["spoiler"] = True
         logger.info("Spoiler index built for scenario %s", scenario_id)
     except Exception as e:
         logger.warning("Spoiler index build failed for %s: %s", scenario_id, e)
+
+    # Compute derived readiness and index status
+    quality_level = "unknown"
+    if knowledge_graph:
+        try:
+            qr_raw = conn.execute(
+                "SELECT quality_report FROM scenarios WHERE scenario_id = %s", (scenario_id,)
+            ).fetchone()
+            if qr_raw and qr_raw.get("quality_report"):
+                qr = json.loads(qr_raw["quality_report"]) if isinstance(qr_raw["quality_report"], str) else qr_raw["quality_report"]
+                quality_level = qr.get("level", "unknown")
+        except Exception:
+            pass
+
+    rag_ok = index_diagnostics["rag_scenario"]
+    spoiler_ok = index_diagnostics["spoiler"]
+    if quality_level == "blocked":
+        readiness_status = "blocked"
+    elif not rag_ok or not spoiler_ok:
+        readiness_status = "partial"
+    else:
+        readiness_status = "ready"
+
+    if rag_ok and spoiler_ok:
+        index_status = "ready"
+    elif not rag_ok and not spoiler_ok:
+        index_status = "failed"
+    else:
+        index_status = "partial"
 
     return {
         "scenario_id": scenario_id,
         "status": "structured",
         "pages": len(pages),
         "chunks": len(chunks),
+        "readiness_status": readiness_status,
+        "index_status": index_status,
+        "index_diagnostics": index_diagnostics,
+        "quality_level": quality_level,
     }
 
 
@@ -190,7 +262,13 @@ async def get_quality_report(request: Request, scenario_id: str):
 
 @router.post("/{scenario_id}/create-room")
 async def create_room_from_scenario(request: Request, scenario_id: str):
-    """Create a room from a scenario. Host or admin required."""
+    """Create a room from a scenario. Host or admin required.
+
+    Quality gate:
+    - blocked scenarios: rejected (403)
+    - highRisk scenarios: require confirm_quality_risk=true in body
+    - Admin can override any quality gate
+    """
     from ..router_auth import get_account_from_token
     account = get_account_from_token(request)
     if not account:
@@ -205,6 +283,29 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
     ).fetchone()
     if not scenario:
         raise HTTPException(404, "Scenario not found")
+
+    # Quality gate check
+    body = None
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    quality_level = "unknown"
+    if scenario.get("quality_report"):
+        qr = scenario["quality_report"]
+        if isinstance(qr, str):
+            try:
+                qr = json.loads(qr)
+            except json.JSONDecodeError:
+                qr = {}
+        quality_level = qr.get("level", "unknown")
+
+    if quality_level == "blocked" and role != "admin":
+        raise HTTPException(403, "该剧本质量评级为 blocked，无法创建房间。请联系管理员检查剧本。")
+    if quality_level == "highRisk" and role != "admin":
+        if body.get("confirm_quality_risk") is not True:
+            raise HTTPException(400, "该剧本质量评级为 highRisk，请确认风险后重试 (confirm_quality_risk: true)")
+
     room_id = str(uuid.uuid4())[:8]
     owner_token = str(uuid.uuid4())
     owner_account_id = account["account_id"]
@@ -213,4 +314,24 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
         (room_id, scenario_id, owner_token, owner_account_id),
     )
     conn.commit()
-    return {"room_id": room_id, "owner_token": owner_token, "status": "lobby"}
+
+    # Write audit event for highRisk/blocked override
+    if quality_level in ("highRisk", "blocked") and role == "admin":
+        try:
+            from ..events.event_log import EventLog
+            el = EventLog(conn)
+            el.write_event(room_id, "admin_quality_override", {
+                "scenario_id": scenario_id,
+                "quality_level": quality_level,
+                "action": "create_room",
+                "admin_account_id": account["account_id"],
+            }, audience="system")
+        except Exception as e:
+            logger.warning("Failed to write quality override audit: %s", e)
+
+    return {
+        "room_id": room_id,
+        "owner_token": owner_token,
+        "status": "lobby",
+        "quality_level": quality_level,
+    }

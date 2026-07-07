@@ -14,6 +14,8 @@ interface Participant {
   damageExpression: string;
   mainSkill: string;
   notes: string;
+  displayName?: string;
+  display_name?: string;
 }
 
 interface Encounter {
@@ -172,7 +174,7 @@ export default function EncounterPanel({
         className={`bh-encounter-participant ${p.side === 'enemy' ? 'bh-encounter-participant--enemy' : ''} ${p.actedThisRound ? 'bh-encounter-participant--acted' : ''}`}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <strong>{p.characterId.startsWith('npc:') ? p.characterId.slice(4, 10) : p.characterId.slice(0, 6)}</strong>
+          <strong>{p.displayName || p.display_name || (p.characterId.startsWith('npc:') ? p.characterId.slice(4, 10) : p.characterId.slice(0, 6))}</strong>
           <span style={{ fontSize: 10, opacity: 0.6 }}>{p.side === 'player' ? '我方' : '敌方'}</span>
         </div>
         {/* HP Bar */}

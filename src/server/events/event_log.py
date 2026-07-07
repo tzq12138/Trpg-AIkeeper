@@ -5,21 +5,27 @@ from ..models import EventLogEntry, Checkpoint
 
 logger = logging.getLogger(__name__)
 
+# System event types that are safe for Player visibility
+# Events NOT in this list are host-only/internal and must NOT be returned to players
+PLAYER_VISIBLE_SYSTEM_EVENTS: set[str] = {
+    "s2c_turn_resolved",
+    "s2c_checkpoint_created",
+}
+
 # Tables that need per-room cleanup before snapshot restore
 SNAPSHOT_CHILD_TABLES = [
-    "actions", "events", "characters", "clues",
+    "actions", "events", "characters", "clues", "clue_shares",
     "inventory", "objectives", "room_turns", "room_map_state",
-    "character_map_positions", "encounters",
+    "character_map_positions", "encounters", "encounter_participants",
     "host_states",
 ]
 
 # Tables snapshot includes (beyond rooms)
-# Note: clue_shares and encounter_participants have no direct room_id column
-# (linked via clues.clue_id / encounters.encounter_id), excluded from snapshot
+# Note: encounter_participants linked via encounters.encounter_id (no direct room_id)
 SNAPSHOT_DATA_TABLES = [
-    "characters", "actions", "events", "clues",
+    "characters", "actions", "events", "clues", "clue_shares",
     "inventory", "objectives", "room_turns", "room_map_state",
-    "character_map_positions", "encounters",
+    "character_map_positions", "encounters", "encounter_participants",
     "host_states",
 ]
 
@@ -54,12 +60,59 @@ class EventLog:
             ) for r in rows
         ]
 
-    def get_public_events(self, room_id: str, since_sequence: int = 0, limit: int = 100) -> list[EventLogEntry]:
+    def _can_player_see_event(self, event_type: str, audience: str, payload: dict, character_id: str) -> bool:
+        """Unified visibility helper for player archive/reconnect/catch-up.
+
+        Rules (in priority order):
+        - host audience: never visible
+        - party audience: always visible
+        - player audience: visible only if payload.character_id matches (supports both camel/snake)
+        - system audience: only whitelisted types
+        """
+        if audience == "host":
+            return False
+        if audience == "party":
+            return True
+        if audience == "player":
+            cid = payload.get("characterId") or payload.get("character_id") or ""
+            return cid == character_id
+        if audience == "system":
+            return event_type in PLAYER_VISIBLE_SYSTEM_EVENTS
+        return False
+
+    def get_events_for_player(self, room_id: str, character_id: str,
+                              since_sequence: int = 0, limit: int = 100) -> list[EventLogEntry]:
+        """Get events visible to a specific player on catch-up.
+
+        Uses unified visibility helper — same rules as archive/reconnect.
+        """
         rows = self.conn.execute(
             "SELECT sequence, room_id, event_type, audience, payload, issued_at "
-            "FROM events WHERE room_id = %s AND sequence > %s AND audience != 'player' "
+            "FROM events WHERE room_id = %s AND sequence > %s "
+            "AND audience != 'host' "
             "ORDER BY sequence LIMIT %s",
             (room_id, since_sequence, limit),
+        ).fetchall()
+        result = []
+        for r in rows:
+            payload = _decode_json(r["payload"])
+            if self._can_player_see_event(r["event_type"], r["audience"], payload, character_id):
+                result.append(EventLogEntry(
+                    sequence=r["sequence"], room_id=r["room_id"],
+                    event_type=r["event_type"], audience=r["audience"],
+                    payload=payload, issued_at=_to_iso(r["issued_at"]),
+                ))
+        return result
+
+    def get_public_events(self, room_id: str, since_sequence: int = 0, limit: int = 100) -> list[EventLogEntry]:
+        """Get public events — party audience + whitelisted system_safe events only.
+        Does NOT return host, player:self, player:other, or non-whitelisted system events."""
+        rows = self.conn.execute(
+            "SELECT sequence, room_id, event_type, audience, payload, issued_at "
+            "FROM events WHERE room_id = %s AND sequence > %s "
+            "AND (audience = 'party' OR (audience = 'system' AND event_type = ANY(%s))) "
+            "ORDER BY sequence LIMIT %s",
+            (room_id, since_sequence, list(PLAYER_VISIBLE_SYSTEM_EVENTS), limit),
         ).fetchall()
         return [
             EventLogEntry(
@@ -154,16 +207,31 @@ class EventLog:
         room = self.conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
         snapshot["room"] = dict(room) if room else {}
         for table in SNAPSHOT_DATA_TABLES:
-            rows = self.conn.execute(
-                f"SELECT * FROM {table} WHERE room_id = %s", (room_id,)
-            ).fetchall()
+            if table == "encounter_participants":
+                # Linked via encounters.encounter_id — JOIN to get room-scoped participants
+                rows = self.conn.execute(
+                    "SELECT ep.* FROM encounter_participants ep "
+                    "JOIN encounters e ON ep.encounter_id = e.encounter_id "
+                    "WHERE e.room_id = %s", (room_id,)
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    f"SELECT * FROM {table} WHERE room_id = %s", (room_id,)
+                ).fetchall()
             snapshot[table] = [dict(r) for r in rows]
         return snapshot
 
     def _apply_snapshot(self, room_id: str, snapshot: dict):
         for table in SNAPSHOT_CHILD_TABLES:
             try:
-                self.conn.execute(f"DELETE FROM {table} WHERE room_id = %s", (room_id,))
+                if table == "encounter_participants":
+                    # Delete via JOIN — participants linked through encounters
+                    self.conn.execute(
+                        "DELETE FROM encounter_participants WHERE encounter_id IN "
+                        "(SELECT encounter_id FROM encounters WHERE room_id = %s)", (room_id,)
+                    )
+                else:
+                    self.conn.execute(f"DELETE FROM {table} WHERE room_id = %s", (room_id,))
             except Exception as e:
                 logger.warning("Failed to delete from %s: %s", table, e)
 

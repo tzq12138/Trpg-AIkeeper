@@ -42,7 +42,7 @@ class RAGStore:
                         'INSERT INTO document_chunks (chunk_id, source_type, source_id, room_id, content, metadata, embedding) '
                         'VALUES (%s, %s, %s, %s, %s, %s, %s)',
                         (str(uuid.uuid4()), 'scenario', scenario_id, room_id, chunk,
-                         json.dumps({'index': i, 'total': len(chunks)}),
+                         json.dumps({'index': i, 'total': len(chunks), 'scenario_id': scenario_id, 'visibility': 'internal'}),
                          vec)
                     )
         logger.info('Indexed %d chunks for scenario %s', len(chunks), scenario_id)
@@ -118,13 +118,24 @@ class RAGStore:
             return 0
 
         chunks = []
+        metadatas = []
         for npc in npcs:
             parts = [f"NPC: {npc.get('name', '未知')}"]
             if npc.get("role"):
                 parts.append(f"角色定位: {npc['role']}")
+            if npc.get("public_description"):
+                parts.append(f"公开描述: {npc['public_description']}")
             if npc.get("description"):
-                parts.append(f"描述: {npc['description']}")
+                parts.append(f"详细描述: {npc['description']}")
             chunks.append("\n".join(parts))
+            metadatas.append({
+                'npc_id': npc.get('npc_id', ''),
+                'npc_name': npc.get('name', ''),
+                'index': npcs.index(npc),
+                'scenario_id': scenario_id,
+                'is_hidden': npc.get('is_hidden', False),
+                'role': npc.get('role', ''),
+            })
 
         if not chunks:
             return 0
@@ -141,7 +152,7 @@ class RAGStore:
                         'INSERT INTO document_chunks (chunk_id, source_type, source_id, room_id, content, metadata, embedding) '
                         'VALUES (%s, %s, %s, %s, %s, %s, %s)',
                         (str(uuid.uuid4()), 'npc', scenario_id, room_id, chunk,
-                         json.dumps({'npc_name': npcs[i].get('name', ''), 'index': i}),
+                         json.dumps(metadatas[i]),
                          vec)
                     )
         logger.info('Indexed %d NPC chunks for scenario %s', len(chunks), scenario_id)

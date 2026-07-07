@@ -128,6 +128,7 @@ export default function HostLogsPanel({ roomId }: { roomId: string }) {
           <option value="s2c_map_updated">地图</option>
           <option value="s2c_encounter_started">遭遇开始</option>
           <option value="s2c_encounter_resolved">遭遇结束</option>
+          <option value="s2c_team_message">💬 队伍消息</option>
         </select>
         <input className="bh-input" placeholder="关键词搜索..." value={keyword}
                onChange={(e) => setKeyword(e.target.value)}

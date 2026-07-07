@@ -78,28 +78,33 @@ class StateService:
         """Apply a set of state changes in one logical unit.
 
         Returns:
-            {"room_id": str, "state_version": int,
-             "applied": {...}, "events": [...]}
+            {"room_id": str, "state_version": int, "base_state_version": int,
+             "applied": {...}, "event_refs": [...], "no_op": bool}
         """
         self._validate_room(room_id)
 
-        new_version = self._bump_room_version(room_id)
+        base_version = self._read_room_version(room_id)
         applied: dict[str, Any] = {}
         event_seqs: list[int] = []
+        has_changes = False
 
         # 1. Character mutations
         if changes.character_mutations:
-            applied["character_mutations"] = self._apply_character_mutations(
+            result = self._apply_character_mutations(
                 room_id, changes.character_mutations,
             )
-            seq = self._write_state_patch_event(room_id, actor, changes)
-            if seq:
-                event_seqs.append(seq)
+            if result:
+                applied["character_mutations"] = result
+                has_changes = True
+                seq = self._write_state_patch_event(room_id, actor, changes)
+                if seq:
+                    event_seqs.append(seq)
 
         # 2. Scene changes
         if changes.scene_changes:
             self._apply_scene_changes(room_id, changes.scene_changes)
             applied["scene_changes"] = True
+            has_changes = True
             seq = self.event_log.log_event(
                 room_id, "s2c_scene_sync", "party",
                 {"currentScene": changes.scene_changes.current_scene or ""},
@@ -111,16 +116,19 @@ class StateService:
         if changes.map_changes:
             self._apply_map_changes(room_id, changes.map_changes, actor)
             applied["map_changes"] = True
+            has_changes = True
 
         # 4. Clue changes
         if changes.clue_changes:
             self._apply_clue_changes(room_id, changes.clue_changes, actor)
             applied["clue_changes"] = len(changes.clue_changes)
+            has_changes = True
 
         # 5. Inventory changes
         if changes.inventory_changes:
             self._apply_inventory_changes(room_id, changes.inventory_changes, actor)
             applied["inventory_changes"] = len(changes.inventory_changes)
+            has_changes = True
 
         # 6. Encounter changes (NOT yet supported through StateService)
         if changes.encounter_changes:
@@ -133,14 +141,30 @@ class StateService:
         if changes.room_changes:
             self._apply_room_changes(room_id, changes.room_changes)
             applied["room_changes"] = True
+            has_changes = True
 
+        # Only bump version if there were actual changes
+        if not has_changes:
+            self.conn.commit()
+            return {
+                "room_id": room_id,
+                "base_state_version": base_version,
+                "state_version": base_version,
+                "applied": applied,
+                "event_refs": event_seqs,
+                "no_op": True,
+            }
+
+        new_version = self._bump_room_version(room_id)
         self.conn.commit()
 
         return {
             "room_id": room_id,
+            "base_state_version": base_version,
             "state_version": new_version,
             "applied": applied,
-            "events": event_seqs,
+            "event_refs": event_seqs,
+            "no_op": False,
         }
 
     def initialize_character_state(
@@ -232,6 +256,13 @@ class StateService:
         ).fetchone()
         if not room:
             raise ValueError(f"Room {room_id} not found")
+
+    def _read_room_version(self, room_id: str) -> int:
+        """Read current rooms.state_version without bumping."""
+        row = self.conn.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s", (room_id,)
+        ).fetchone()
+        return row["state_version"] if row else 0
 
     def _bump_room_version(self, room_id: str) -> int:
         row = self.conn.execute(
@@ -465,20 +496,25 @@ class StateService:
     # ── Internal: Clue Changes ────────────────────────────────────────
 
     def _apply_clue_changes(self, room_id: str, changes: list, actor: dict):
+        SAFE_DEFAULT = "玩家分享了一条线索，但未公开完整内容。"
         for item in changes:
             cc = item if isinstance(item, dict) else item.model_dump()
             clue_id = cc.get("clueId", "")
             if not clue_id:
                 continue
             if cc.get("shared") and cc.get("sharedBy"):
+                public_version = cc.get("publicVersion", "") or cc.get("public_version", "")
+                if not public_version:
+                    public_version = SAFE_DEFAULT
                 # Forward to clue sharing logic
                 self.conn.execute(
                     "UPDATE clues SET is_private = FALSE WHERE clue_id = %s AND room_id = %s",
                     (clue_id, room_id),
                 )
                 self.conn.execute(
-                    "INSERT INTO clue_shares (share_id, clue_id, shared_by) VALUES (%s, %s, %s)",
-                    (str(uuid.uuid4()), clue_id, cc["sharedBy"]),
+                    "INSERT INTO clue_shares (share_id, clue_id, shared_by, public_version, room_id) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (str(uuid.uuid4()), clue_id, cc["sharedBy"], public_version, room_id),
                 )
 
     # ── Internal: Inventory Changes ───────────────────────────────────
@@ -546,8 +582,16 @@ class StateService:
                 })
         if not patches:
             return None
+        # Read current version for trace (new version is bumped after changes)
+        base_ver = self._read_room_version(room_id)
         return self.event_log.log_event(
             room_id, "s2c_state_patch", "party",
-            {"actionId": actor.get("action_id", ""), "patches": patches},
+            {
+                "actionId": actor.get("action_id", ""),
+                "schemaVersion": 1,
+                "baseStateVersion": base_ver,
+                "stateVersion": base_ver + 1,  # post-bump version (applied later in apply_change)
+                "patches": patches,
+            },
             commit=False,
         )

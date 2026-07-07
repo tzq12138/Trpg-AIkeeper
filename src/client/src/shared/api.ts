@@ -17,12 +17,10 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
 }
 
 export function getPlayerToken(): string {
-  let token = getSlotValue('player_token');
-  if (!token) {
-    token = crypto.randomUUID();
-    setSlotValue('player_token', token);
-  }
-  return token;
+  // Player token MUST come from the server (join/restore-session response).
+  // NEVER generate a local UUID as player_token — self-made tokens are always rejected.
+  // The local storage is a dev convenience only; production should use secure session storage.
+  return getSlotValue('player_token') || '';
 }
 
 export function authHeaders(): Record<string, string> {

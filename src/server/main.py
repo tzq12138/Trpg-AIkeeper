@@ -57,6 +57,14 @@ logger = logging.getLogger(__name__)
 settings = Settings.from_env()
 pg_db = PgDatabase(settings.database_url)
 
+# ── Production safety: refuse to start with default JWT_SECRET ──
+_jwt_secret = os.getenv("JWT_SECRET", "")
+_dev_mode = os.getenv("AIKEEPER_DEV_MODE", "").lower() in ("1", "true", "yes")
+if not _dev_mode and (not _jwt_secret or _jwt_secret == "aikeeper-change-me-in-production"):
+    print("FATAL: JWT_SECRET is set to the default value (or is empty).", file=sys.stderr)
+    print("       Set JWT_SECRET to a strong random value, or set AIKEEPER_DEV_MODE=1 to bypass.", file=sys.stderr)
+    sys.exit(1)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -296,7 +304,7 @@ async def player_ws_endpoint(websocket: WebSocket, room_id: str, token: str, las
 
     try:
         event_log = EventLog(conn)
-        events = event_log.get_events(room_id, since_sequence=last_sequence)
+        events = event_log.get_events_for_player(room_id, character_id, since_sequence=last_sequence)
         for ev in events:
             # Use standard EngineEvent format so the frontend parser sees
             # roomSequence / type / payload matching its EngineEvent interface.

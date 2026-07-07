@@ -244,20 +244,22 @@ class TestStateService:
 
     # ── Version & Events ──
 
-    def test_bumps_room_version(self, test_db, state_service):
+    def test_empty_changes_no_bump(self, test_db, state_service):
+        """Empty StateChangeSet should NOT bump state_version (no-op)."""
         self._setup_room_and_char(test_db)
         before = test_db.execute(
             "SELECT state_version FROM rooms WHERE room_id = 'r1'"
         ).fetchone()["state_version"]
-        state_service.apply_change(
+        result = state_service.apply_change(
             "r1", {"character_id": "c1"},
             StateChangeSet(),
             reason="test",
         )
+        assert result.get("no_op") is True
         after = test_db.execute(
             "SELECT state_version FROM rooms WHERE room_id = 'r1'"
         ).fetchone()["state_version"]
-        assert after == before + 1
+        assert after == before  # no-op, version unchanged
 
     def test_apply_change_writes_events(self, test_db, state_service):
         self._setup_room_and_char(test_db)
@@ -271,9 +273,9 @@ class TestStateService:
             ]),
             reason="test",
         )
-        assert len(result["events"]) > 0
+        assert len(result["event_refs"]) > 0
         event = test_db.execute(
-            "SELECT * FROM events WHERE sequence = %s", (result["events"][0],)
+            "SELECT * FROM events WHERE sequence = %s", (result["event_refs"][0],)
         ).fetchone()
         assert event is not None
         assert event["event_type"] == "s2c_state_patch"

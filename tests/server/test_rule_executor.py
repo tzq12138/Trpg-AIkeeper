@@ -8,7 +8,7 @@ from src.server.engine.rule_executor import RuleExecutor
 
 @pytest.mark.asyncio
 async def test_rule_executor_runs_compiled_skill_check_with_character_skill():
-    random.seed(0)
+    random.seed(36)  # roll=50, success against skill 60
     executor = RuleExecutor()
     intent = PlayerIntent(intent_type="dialogue", declared_intent="我侦查书桌")
     compiled = MechanicCompileResult(

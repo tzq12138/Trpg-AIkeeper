@@ -1,4 +1,5 @@
 from src.server.models import EngineEvent, EngineEventType
+from src.server.events.events_registry import ALL_EVENTS
 
 
 def test_engine_event_envelope_fields():
@@ -24,15 +25,8 @@ def test_audience_allows_only_valid_values():
 
 
 def test_engine_event_type_enum():
-    valid_types = [
-        "s2c_reveal_transaction", "s2c_resume_transaction", "s2c_cancel_transaction",
-        "s2c_chat_stream", "s2c_atmosphere", "s2c_engine_state", "s2c_scene_sync",
-        "s2c_host_snapshot", "s2c_full_snapshot", "s2c_state_patch",
-        "s2c_private_notice", "s2c_public_observation", "s2c_tactical_prompt",
-        "s2c_room_lobby_snapshot", "s2c_campaign_ended",
-        "s2c_action_queued", "s2c_action_batched", "s2c_action_completed",
-        "s2c_clarification_prompt", "s2c_clarification_result",
-    ]
-    assert len(valid_types) == 20
-    for t in valid_types:
-        assert t in EngineEventType.__args__
+    """All registered event types must be in EngineEventType Literal."""
+    registry_types = [ev.type for ev in ALL_EVENTS.values()]
+    assert len(registry_types) >= 29, f"Expected 29+ events, got {len(registry_types)}"
+    for t in registry_types:
+        assert t in EngineEventType.__args__, f"Missing EngineEventType: {t}"

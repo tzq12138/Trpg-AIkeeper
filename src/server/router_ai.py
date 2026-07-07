@@ -2,6 +2,7 @@ import json
 from fastapi import APIRouter, Request, HTTPException
 from .ai.ai_kp import AIKP
 from .ai.spoiler_control import SpoilerController
+from .router_auth import get_account_from_token
 
 router = APIRouter(prefix="/api/rooms")
 
@@ -20,6 +21,36 @@ def _get_ai_kp(request: Request) -> AIKP:
     )
 
 
+def _verify_room_owner_or_admin(request: Request, room_id: str) -> dict:
+    """Verify the requester is room owner or admin. Returns account dict."""
+    account = get_account_from_token(request)
+    if not account:
+        raise HTTPException(401, "请先登录")
+    conn = request.app.state.db
+    room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
+    if not room:
+        raise HTTPException(404, "房间不存在")
+    room = dict(room)
+    if account.get("role") == "admin":
+        return account
+    if account.get("account_id") == room.get("owner_account_id"):
+        return account
+    # Legacy X-Owner-Token fallback
+    owner_token = request.headers.get("X-Owner-Token", "")
+    if owner_token and room.get("owner_token") == owner_token:
+        return account
+    raise HTTPException(403, "仅房主或管理员可执行此操作")
+
+
+def _get_account_role(request: Request) -> str:
+    """Get account role. Returns 'anonymous' if not logged in."""
+    try:
+        account = get_account_from_token(request)
+        return account.get("role", "player") if account else "anonymous"
+    except Exception:
+        return "anonymous"
+
+
 def _get_scenario_for_room(conn, room_id: str) -> dict | None:
     room = conn.execute(
         "SELECT scenario_id FROM rooms WHERE room_id = %s", (room_id,)
@@ -36,11 +67,9 @@ def _get_scenario_for_room(conn, room_id: str) -> dict | None:
 
 @router.post("/{room_id}/ai-turn")
 async def trigger_ai_turn(request: Request, room_id: str):
+    """Trigger AI to process queued actions. Owner/Admin only."""
+    _verify_room_owner_or_admin(request, room_id)
     conn = request.app.state.db
-    room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
-    if not room:
-        raise HTTPException(404, "Room not found")
-
     pipeline = getattr(request.app.state, "pipeline", None)
     if not pipeline:
         raise HTTPException(500, "Resolution pipeline unavailable")
@@ -52,15 +81,29 @@ async def trigger_ai_turn(request: Request, room_id: str):
 
 @router.get("/{room_id}/ai-status")
 async def get_ai_status(request: Request, room_id: str):
+    """Get AI status. Player: low-sensitivity. Owner/Admin: full diagnostics."""
     conn = request.app.state.db
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
 
     ai_kp = _get_ai_kp(request)
-    return {
-        "room_id": room_id,
-        "is_mock": ai_kp.is_mock,
-        "consecutive_failures": ai_kp.get_failure_count(room_id),
-        "model": ai_kp.model,
-    }
+    role = _get_account_role(request)
+
+    if role in ("admin", "host"):
+        # Full diagnostics for owner/admin
+        return {
+            "room_id": room_id,
+            "enabled": not ai_kp.is_mock,
+            "is_mock": ai_kp.is_mock,
+            "consecutive_failures": ai_kp.get_failure_count(room_id),
+            "model": ai_kp.model if role == "admin" else "configured",
+        }
+    else:
+        # Player-safe: only low-sensitivity fields
+        return {
+            "room_id": room_id,
+            "enabled": not ai_kp.is_mock,
+            "is_mock": ai_kp.is_mock,
+            "degraded": ai_kp.get_failure_count(room_id) >= 3,
+        }

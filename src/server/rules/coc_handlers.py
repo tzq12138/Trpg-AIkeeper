@@ -17,31 +17,19 @@ class CocSkillCheckHandler(BaseRuleHandler):
         skill_name = params.get("skillName", "")
         skill_value = params.get("skillValue", 0)
         difficulty = params.get("difficulty", "regular")
+        bonus_dice = params.get("bonusDice", params.get("bonus_dice", 0))
 
-        roll = random.randint(1, 100)
+        # Use the shared CoC D100 engine that supports bonus/penalty dice
+        # and produces unified success levels: critical/extreme/hard/regular/failure/fumble
+        from ..engine.skill_check import roll_skill_check, _compute_threshold
+        result = roll_skill_check(skill_value=skill_value, difficulty=difficulty,
+                                  bonus_dice=bonus_dice)
 
-        if difficulty == "hard":
-            target = skill_value // 2
-        elif difficulty == "extreme":
-            target = skill_value // 5
-        else:
-            target = skill_value
-
-        if roll == 1:
-            success_level = "critical_success"
-            is_success = True
-        elif roll == 100:
-            success_level = "fumble"
-            is_success = False
-        elif roll >= 96 and skill_value < 50:
-            success_level = "fumble"
-            is_success = False
-        elif roll <= target:
-            success_level = "success"
-            is_success = True
-        else:
-            success_level = "failure"
-            is_success = False
+        roll = result["roll"]
+        target = _compute_threshold(skill_value, difficulty)
+        success_level = result["success_level"]
+        detail = result.get("detail", "")
+        is_success = success_level in ("critical", "extreme", "hard", "regular")
 
         return RuleResult(
             is_success=is_success,
@@ -52,9 +40,14 @@ class CocSkillCheckHandler(BaseRuleHandler):
                 "target": target,
                 "difficulty": difficulty,
                 "success_level": success_level,
+                "is_success": is_success,
+                "bonus_dice": bonus_dice,
+                "detail": detail,
             },
             reveal_steps=[
-                {"kind": "roll", "dice": "d100", "result": roll, "target": target}
+                {"kind": "roll", "dice": "d100", "result": roll, "target": target,
+                 "successLevel": success_level, "skillName": skill_name,
+                 "bonusDice": bonus_dice},
             ],
         )
 

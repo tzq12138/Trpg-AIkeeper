@@ -6,9 +6,21 @@ Rule v1 的目标是稳定 COC 7e 主链路：玩家提交意图，AI 或本地�
 
 第一轮不追求完整多规则平台，而是先统一当前已经存在的技能检定、SAN/HP/Luck、剧本触发器、战斗/追逐 Handler 和前端展示口径。
 
+当前阶段说明：
+
+- 本 PRD 已可进入工程执行，但当前阶段仍是“P0 主链路 + 规则口径风险识别版”。
+- 文档已经识别成功等级漂移、bonusDice 主链路缺失、`/api/player/skill-check` fallback 混淆、RollResult 字段不统一、SAN/HP mutation 与 StateService 边界、触发器 DSL 安全等问题，但不代表这些风险已在代码里全部关闭。
+- 本文优先锁定 Rule 的边界、接口方向和验收口径，不把生产硬化写成既成事实。
+
 ## 产品定位
 
 Rule 是 Engine 内部的规则事实层。它接收 `PlayerIntent + MechanicCompileResult + Character/Inventory/ScenarioAssets`，输出 `ResolutionResult`。Rule 不直接保存聊天消息，不直接修改数据库真相，不替代 StateService。
+
+补充边界：
+
+- Rule 不做玩家身份鉴权，不做 Projection，不做 Journal，不做 Host UI。
+- Rule 不把 AI 变成裁判，AI 只能建议机制，不能提供权威数值结果。
+- Rule 不通过 fallback 接口绕过正式 action lifecycle。
 
 ## 角色与权限
 
@@ -38,7 +50,7 @@ Rule 是 Engine 内部的规则事实层。它接收 `PlayerIntent + MechanicCom
 - 不实现完整 DND 5e、PF2e、双规则共存。
 - 不做创作者可视化规则编辑器。
 - 不允许上传或执行自定义 Python 规则脚本。
-- 不把 `/api/player/skill-check` 当作长期主入口。
+- 不把 `/api/player/skill-check` 当作长期主入口；它只应作为 debug/兼容/降级入口，不写状态、不触发事务、不进入正式 action lifecycle。
 - 不做 3D 骰子动画和复杂物理骰。
 
 ## 核心数据结构
@@ -104,6 +116,40 @@ AI 或 Python fallback 只能输出机制建议：
 }
 ```
 
+### 标准 RollResult
+
+Rule v1 应逐步统一骰子结果结构，至少覆盖：
+
+```json
+{
+  "rollId": "roll_xxx",
+  "actionId": "act_xxx",
+  "roomId": "room_xxx",
+  "characterId": "char_xxx",
+  "mechanic": "skill_check",
+  "dice": "d100",
+  "roll": 42,
+  "target": 60,
+  "difficulty": "regular",
+  "skillName": "侦查",
+  "successLevel": "regular",
+  "success_level": "regular",
+  "isSuccess": true,
+  "bonusDice": 0,
+  "visibility": "self",
+  "source": "server",
+  "rolledAt": "2026-07-04T00:00:00+00:00"
+}
+```
+
+其中至少有几项必须固定：
+
+- `source=server`：明确不是前端伪造结果。
+- `characterId`：私密骰过滤需要。
+- `bonusDice`：奖励/惩罚骰归档需要。
+- `visibility`：Projection/Archive 需要。
+- `rollId`：后续动画、日志、审计引用需要。
+
 ### ResolutionResult
 
 RuleExecutor 合并多个 Handler 后输出给 pipeline：
@@ -161,14 +207,57 @@ v1 应统一为：
 
 当前 `CocSkillCheckHandler` 仍返回 `critical_success/success/failure/fumble`，需要在 DeepSeek 第一批收敛，不要让前端把未知等级默认为 regular。
 
+推荐把默认 COC 7e 判定顺序写死为：
+
+1. `roll == 1` -> `critical`
+2. 命中大失败规则 -> `fumble`
+3. `roll <= floor(skill / 5)` -> `extreme`
+4. `roll <= floor(skill / 2)` -> `hard`
+5. `roll <= skill` -> `regular`
+6. 否则 -> `failure`
+
+默认大失败规则建议先锁为：
+
+- `skill < 50`：`roll >= 96` 为 `fumble`
+- `skill >= 50`：`roll == 100` 为 `fumble`
+
+若以后支持房规，应由 Room/Module 配置切换，而不是让前后端各自猜测。
+
+## 骰子可见性
+
+Rule 应至少先定义骰子 visibility 契约，便于 Projection/Archive/Channel 复用：
+
+| visibility | 含义 |
+|---|---|
+| `public` | Host 和全体玩家都能看到结果。 |
+| `self` | Host 和当前玩家能看到结果，其他玩家不可见。 |
+| `keeperOnly` | 仅 Host / AI-Keeper 可见，玩家只收到叙事或模糊结果。 |
+| `hidden` | 系统内部使用，不直接投影。 |
+
 ## 权限与安全边界
 
 - 权威骰点只能由服务端生成。
-- `skillValue` 应优先从角色卡读取；前端传入值只作为兼容或显示辅助，不应长期作为权威来源。
+- 正式 `skill_check` 中，target/`skillValue` 必须由服务端从角色卡或状态快照读取；前端传入值只作为兼容或显示辅助，不得覆盖权威值。
 - AI 输出的 `rollRequests` 只是请求，不是结果。
+- AI 即使返回 `roll/result/successLevel` 数值，也不得被 RuleExecutor 采纳为权威结果。
 - 暗骰、私密骰、私密状态变化必须走 Projection 的服务端受众过滤。
 - 剧本触发器只能是 JSON 描述，不允许任意代码执行。
 - Rule Handler 异常时 action 必须 rejected，并发送 `s2c_action_completed` 解锁玩家端。
+- `POST /api/player/skill-check` 不得写世界状态，不得触发 `s2c_reveal_transaction`，不得悄悄替代正式 action。
+
+建议 Rule 异常回执至少稳定到以下结构：
+
+```json
+{
+  "actionId": "act_xxx",
+  "status": "rejected",
+  "reasonCode": "rule_handler_error",
+  "message": "规则结算失败，请稍后重试或联系 Host。",
+  "debugId": "dbg_xxx"
+}
+```
+
+普通玩家只应看到可读错误和 `debugId`，不能收到内部异常栈。
 
 ## 验收标准
 
@@ -180,6 +269,7 @@ v1 应统一为：
 | SAN 触发器 | 使用指定物品命中剧本 trigger，执行 SAN 检定并产生 mutation。 |
 | AI 边界 | DeepSeek 返回非法/异常时 fallback 到 Python 编译器。 |
 | 前端防作弊 | 前端提交 roll/result 字段不会被采纳为权威结果。 |
+| AI 防越权 | AI 返回 roll/result/successLevel 数值时，RuleExecutor 不采纳，只采纳 mechanic 建议。 |
 | 状态写入 | HP/SAN mutation 由 StateService 应用，Rule 不直接落库。 |
 
 ## 当前风险
@@ -189,7 +279,10 @@ v1 应统一为：
 | `skill_check.py` 与 `CocSkillCheckHandler` 成功等级不一致 | 前端展示、日志、NarrativeProvider 容易错判 | P0 |
 | `s2c_action_completed` 使用 `level` 而非统一 `success_level/successLevel` | PlayerCharacter 可能把真实等级退回 regular | P0 |
 | 主 Handler 不支持 bonus_dice | AI/前端传入 bonusDice 后无效 | P0 |
-| fallback `/skill-check` 不写 action/event | 结果不可复盘，容易和主链路混淆 | P1 |
+| fallback `/skill-check` 不写 action/event | 结果不可复盘，且容易被前端静默误用成主链路 | P1 |
+| `skillValue` 权威来源未彻底锁死 | 玩家可能试图通过前端传值抬高目标值 | P1 |
+| RollResult 缺 `visibility/source/rollId` 等标准字段 | Projection、Archive、审计和动画引用会继续分叉 | P1 |
+| 暗骰/私密骰 visibility 未系统定义 | Projection 后续不知道该给谁看骰点 | P1 |
 | `parse_dice` 只支持 `XdY` | 无法表达常见 `1d6+1` SAN/伤害 | P1 |
 | Handler 直接用 random，无 RollRecord | 事后审计随机来源较弱 | P2 |
 

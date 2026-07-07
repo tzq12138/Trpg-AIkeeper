@@ -59,18 +59,31 @@ def export_markdown(conn, room_id: str, scope: str = "public") -> dict:
             elif "encounter_resolved" in ev_type:
                 lines.append(f"- ✅ 遭遇结束: {payload.get('reason', '')}")
 
-    # Clues
-    clues = conn.execute(
-        "SELECT * FROM clues WHERE room_id = %s OR room_id IS NULL", (room_id,)
-    ).fetchall()
-    if clues:
-        lines.append("## 发现的线索")
-        for cl in clues:
-            is_private = cl.get("is_private", False)
-            if scope == "public" and is_private:
-                continue  # skip private clues in public export
-            lines.append(f"- {'🔒' if is_private else '📋'} {cl.get('text', '')}")
-        lines.append("")
+    # Clues — public export uses public_version, not raw text
+    if scope == "public":
+        # Public export: show shared public_version only
+        shared = conn.execute(
+            "SELECT cs.clue_id, cs.public_version, cs.shared_by "
+            "FROM clue_shares cs JOIN clues c ON cs.clue_id = c.clue_id "
+            "WHERE c.room_id = %s",
+            (room_id,),
+        ).fetchall()
+        if shared:
+            lines.append("## 队伍证据链")
+            for sh in shared:
+                lines.append(f"- 📋 {sh.get('public_version', '')}")
+            lines.append("")
+    else:
+        # Private/debug export: include owned clues
+        clues = conn.execute(
+            "SELECT * FROM clues WHERE room_id = %s", (room_id,)
+        ).fetchall()
+        if clues:
+            lines.append("## 发现的线索")
+            for cl in clues:
+                is_private = cl.get("is_private", False)
+                lines.append(f"- {'🔒' if is_private else '📋'} ({cl.get('character_id', '')[:8]}) {cl.get('text', '')}")
+            lines.append("")
 
     # Campaign ending
     ending_row = conn.execute(

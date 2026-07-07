@@ -18,10 +18,14 @@ JWT_EXPIRY = 86400 * 7  # 7 days
 PBKDF2_ITERATIONS = 100_000
 
 
+BOOTSTRAP_ADMIN_CODE = os.getenv("BOOTSTRAP_ADMIN_CODE", "")
+
+
 class RegisterRequest(BaseModel):
     username: str
     password: str
     display_name: str | None = None
+    admin_code: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -123,9 +127,15 @@ async def register(request: Request, body: RegisterRequest):
     password_hash = _hash_password(body.password)
     display_name = body.display_name or body.username
 
-    # First registered account becomes admin
+    # First registered account becomes admin — but if BOOTSTRAP_ADMIN_CODE is
+    # configured in production, the caller must provide the matching code.
     existing_count = conn.execute("SELECT COUNT(*) as c FROM accounts").fetchone()["c"]
     role = "admin" if existing_count == 0 else "player"
+
+    if existing_count == 0 and BOOTSTRAP_ADMIN_CODE:
+        code = (body.admin_code or "").strip()
+        if code != BOOTSTRAP_ADMIN_CODE:
+            raise HTTPException(400, "admin_code required for first account registration")
 
     conn.execute(
         "INSERT INTO accounts (account_id, username, password_hash, display_name, role) "

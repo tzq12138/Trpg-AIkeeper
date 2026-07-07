@@ -89,7 +89,7 @@ export interface TacticalPrompt {
 
 export interface PlayerChatMessage {
   id: string;
-  sender: 'kp' | 'player' | 'system';
+  sender: 'kp' | 'player' | 'system' | 'team';
   text: string;
   actions?: TacticalAction[];
   timestamp: number;

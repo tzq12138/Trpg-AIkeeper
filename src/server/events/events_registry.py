@@ -24,7 +24,7 @@ class EventDef:
     description: str
 
 
-# ---- All 21 event types ----
+# ---- All 29 event types ----
 ALL_EVENTS: dict[str, EventDef] = {
     # ── Narrative / reveal ──
     "s2c_reveal_transaction": EventDef(
@@ -112,6 +112,26 @@ ALL_EVENTS: dict[str, EventDef] = {
     "s2c_campaign_ended": EventDef(
         "s2c_campaign_ended", EventDomain.ROOM, "party",
         "团期结束通知",
+    ),
+    "s2c_turn_resolved": EventDef(
+        "s2c_turn_resolved", EventDomain.ACTION, "party",
+        "回合结算完成——广播给全队",
+    ),
+
+    # ── Clue ──
+    "s2c_clue_discovered": EventDef(
+        "s2c_clue_discovered", EventDomain.ACTION, "player",
+        "玩家发现新线索（仅拥有者可见）",
+    ),
+    "s2c_clue_shared": EventDef(
+        "s2c_clue_shared", EventDomain.ACTION, "party",
+        "玩家分享线索（公开版本）",
+    ),
+
+    # ── Checkpoint ──
+    "s2c_checkpoint_restored": EventDef(
+        "s2c_checkpoint_restored", EventDomain.SYSTEM, "host",
+        "checkpoint 恢复审计事件——仅 Host 可见",
     ),
 
     # ── System ──

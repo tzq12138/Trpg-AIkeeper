@@ -116,7 +116,7 @@ class SpoilerController:
                 if visibility.get("hidden_npc", 0) >= 0.2:
                     filtered["visible_npcs"].append({
                         "npc_id": npc.get("npc_id", ""),
-                        "name": npc.get("name", "???"),
+                        "name": npc.get("public_name", npc.get("name", "???")),
                         "description": npc.get("public_description", "一个神秘的身影"),
                         "hidden": True,
                     })
@@ -124,8 +124,8 @@ class SpoilerController:
                 if visibility.get("npc_appearance", 0) >= 0.3:
                     filtered["visible_npcs"].append({
                         "npc_id": npc.get("npc_id", ""),
-                        "name": npc.get("name", ""),
-                        "description": npc.get("description", ""),
+                        "name": npc.get("public_name", npc.get("name", "")),
+                        "description": npc.get("public_description", npc.get("description", "")),
                         "hidden": False,
                     })
 

@@ -314,7 +314,13 @@ class ResolutionPipeline:
     def _action_completed_payload(
         self, action: dict[str, Any], resolution: ResolutionResult
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"actionId": action["action_id"], "status": "resolved"}
+        payload: dict[str, Any] = {
+            "actionId": action["action_id"],
+            "status": "resolved",
+            "turnId": action.get("turn_id", ""),
+            "roomId": action.get("room_id", ""),
+            "characterId": action.get("character_id", ""),
+        }
         metadata = resolution.metadata or {}
         if resolution.mechanic == "skill_check" or "roll" in metadata:
             skill_name = metadata.get("skill_name") or metadata.get("skillName") or ""
@@ -328,6 +334,8 @@ class ResolutionPipeline:
                 "target": metadata.get("target"),
                 "difficulty": metadata.get("difficulty"),
                 "level": level,
+                "success_level": level,
+                "successLevel": level,
                 "success": resolution.is_success,
             })
         return payload

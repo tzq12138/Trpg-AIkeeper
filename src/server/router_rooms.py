@@ -135,11 +135,32 @@ async def get_scenario_options(request: Request, room_id: str):
     _verify_owner_or_admin(request, room_id, request.app.state.db)
     conn = request.app.state.db
     rows = conn.execute(
-        "SELECT scenario_id, title, import_status FROM scenarios "
+        "SELECT scenario_id, title, import_status, quality_report FROM scenarios "
         "WHERE import_status IN ('structured', 'pending') OR title IS NOT NULL "
         "ORDER BY created_at DESC"
     ).fetchall()
-    return {"scenarios": [{"scenario_id": r["scenario_id"], "title": r["title"] or "未命名剧本", "import_status": r["import_status"]} for r in rows]}
+    scenarios = []
+    for r in rows:
+        quality_level = "unknown"
+        if r.get("quality_report"):
+            qr = r["quality_report"]
+            if isinstance(qr, str):
+                try:
+                    import json
+                    qr = json.loads(qr)
+                except Exception:
+                    qr = {}
+            quality_level = qr.get("level", "unknown")
+        # Skip blocked scenarios
+        if quality_level == "blocked":
+            continue
+        scenarios.append({
+            "scenario_id": r["scenario_id"],
+            "title": r["title"] or "未命名剧本",
+            "import_status": r["import_status"],
+            "quality_level": quality_level,
+        })
+    return {"scenarios": scenarios}
 
 
 @router.patch("/{room_id}/scenario")
@@ -249,10 +270,25 @@ async def start_room(request: Request, room_id: str):
         pass
     force_start = body.get("force_start", False)
 
+    # ── force_start hardening ──
+    # New clients MUST send reason + confirm.  Old {force_start: true} payload
+    # is tolerated as transitional but logged as a warning.
+    if force_start:
+        if "confirm" in body or "reason" in body:
+            reason = str(body.get("reason", "")).strip()
+            confirm = body.get("confirm", False)
+            if not reason:
+                raise HTTPException(400, "force_start requires reason")
+            if not confirm:
+                raise HTTPException(400, "force_start requires confirm: true")
+        else:
+            logger.warning("Room %s force_start used without reason/confirm (legacy payload)", room_id)
+            reason = "force_start (legacy — no reason provided)"
+
     # Must have at least one player
     if not chars:
         if force_start and is_owner:
-            logger.warning("Force-starting empty room %s", room_id)
+            logger.warning("Force-starting empty room %s reason=%s", room_id, reason if force_start else "N/A")
         else:
             raise HTTPException(409, "至少需要一名玩家加入后才能开始")
 
@@ -276,6 +312,17 @@ async def start_room(request: Request, room_id: str):
         (room_id,),
     )
     conn.commit()
+
+    # Write force_start audit event if used
+    if force_start:
+        try:
+            from .events.event_log import EventLog
+            audit_reason = reason
+            EventLog(conn).log_event(room_id, "s2c_force_start_audit", "system",
+                                     {"reason": audit_reason, "player_count": len(chars),
+                                      "not_ready_count": len(not_ready)})
+        except Exception as e:
+            logger.warning("Failed to log force_start audit: %s", e)
 
     # Initialize room map state from confirmed scenario map
     scenario_id = room.get("scenario_id")

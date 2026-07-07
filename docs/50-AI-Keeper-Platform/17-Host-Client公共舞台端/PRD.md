@@ -1,222 +1,435 @@
-# Host Client 公共舞台端 PRD V2.0
+# Host Client 公共舞台端 PRD V2.1
+
+## 当前阶段说明
+
+- 本文档当前阶段为：`P0 主链路 + Host 公共舞台可用性、鉴权与审计风险识别版`。
+- 目标是把 Host Client 定义成一个“可信的公共舞台和房主控制台”，而不是完整的平台级导演工具。
+- 当前代码已经具备 `HostCreate / HostLobby / HostStage / HostMapPanel / HostLogsPanel / EncounterPanel / host/router_host.py / router_archive.py` 等真实锚点；本 PRD 必须以这些现状为基础，不回退到旧 PRD 想象状态。
 
 ## 背景
 
-Host Client 是 AI-Keeper 跑团体验的公共舞台。它既是房主控制台，也是玩家共同观看的主持端：房主在这里看队伍状态、接收 AI/规则裁决后的公共演出、监管地图、处理遭遇、查看日志和管理检查点。
+AI-Keeper 的 Host Client 不是普通后台页面，而是跑团主链路中的公共舞台端。房主在这里完成三件事：
 
-当前代码已经有 `HostCreate`、`HostLobby`、`HostStage`、HUD、Host WS、HostStore、地图面板、遭遇面板、日志面板和相关后端接口。但现状仍有明显缺口：前端中文乱码和 TSX 字符串风险会阻断可用性，Host 事件协议混合标准 `s2c_*` 与内部 frame，Host 操作审计与 State/Projection 口径还没有完全收口。
+1. 管理房间开局前协作：创建房间、选剧本、观察成员、ready 检查、显式 `force_start`；
+2. 管理开局后的公共舞台：展示 HUD、接收可公开裁决结果、控制地图可见内容、处理遭遇公开节奏；
+3. 管理复盘与恢复：查看 Host timeline、创建 checkpoint、恢复、导出和留审计痕迹。
+
+当前仓库已经有一条可运行的 Host 主链路，但还存在明显产品和工程边界问题：
+
+- Host 前端历史上出现过中文乱码和 TSX 字符串损坏风险；
+- Host WS 当前主要依赖 query `ownerToken`，前后端鉴权路径没有完全收口；
+- `HostStage.tsx` 同时消费标准 `s2c_*` 事件和 Host UI frame，协议边界不清；
+- `retry-turn` 当前实现只重置舞台步进，不能被误写成完整回合重算；
+- `owner_token` 当前会被同步到本地身份槽位，必须明确这是开发态便利，不是生产态安全闭环；
+- 地图、遭遇、恢复、导出的特权操作审计仍需统一字段口径。
 
 ## 目标
 
-1. 让 Host 可以完成 `创建房间 -> 等待室 -> 开局 -> 公共舞台 -> 日志/地图/遭遇` 主流程。
-2. 让 Host 端只负责演出、监管和授权操作，不承担规则裁决和世界状态真相写入。
-3. 让 Host WS、Host REST、日志、导出都经过 owner/admin 鉴权。
-4. 让 Host 舞台可以稳定展示 reveal transaction、公共观察、地图变化、遭遇变化和玩家 HUD。
-5. 让 Host-only、Player-only、Party 事件边界清晰，避免私密内容被错误投影。
-6. 让 Host 操作具备审计路径，方便长团恢复和排障。
+1. 让 Host 可以完成 `创建房间 -> 等待室 -> 开局 -> 进入舞台 -> 查看日志/恢复` 主链路。
+2. 让 Host 端只承担“演出、监管、授权操作”职责，不承担规则裁决、AI 真相生成和世界状态权威写入。
+3. 让 Host REST、Host WS、checkpoint、export 都只接受 owner/admin 授权访问。
+4. 让 Host 舞台只展示 `host`/`party` 可见的安全内容，不显示 `player-only` 私密 payload。
+5. 让 Host 特权操作形成统一审计链，便于长团恢复和线上排障。
 
 ## 非目标
 
-- 不在 Host 前端实现规则判定、骰子结算或伤害计算。
-- 不在 Host 前端直接修改角色运行时数值。
-- 不把 Host 舞台做成完整导演软件或直播系统。
-- 不在本轮实现多 Host 协作。
-- 不把 Database tab 扩展成完整世界书编辑器。
-- 不让 Host 端绕过 Projection 直接把内容发给 Player。
-- 不用前端隐藏字段保护私密信息。
+- 不在 Host 前端计算规则结果、伤害、成功等级或判定结论。
+- 不在 Host 前端直接修改角色运行时数值、物品归属、线索真相或世界状态。
+- 不把 Host 舞台做成完整多屏导演软件、直播系统或音视频控制台。
+- 不在本轮实现多 Host 协作权限。
+- 不把 `database` tab 扩展成完整资料库编辑器。
+- 不允许 Host 端绕过 Projection，把未授权内容直接投给 Player。
 
 ## 用户角色
 
-| 角色 | 需要什么 | 不能做什么 |
+| 角色 | 能做什么 | 不能做什么 |
 | --- | --- | --- |
-| Host | 创建房间、管理等待室、开局、看 HUD、播放公共叙事、监管地图和遭遇、查日志 | 直接改规则结果、读取玩家端 token、把 Host-only 真相公开给玩家 |
-| Admin | 以管理身份进入 Host 能力排障和维护 | 无审计篡改日志或隐藏权限来源 |
-| Player | 间接受益于 Host 舞台输出的公共叙事和地图揭示 | 访问 Host Client、Host WS、Host API |
-| AI-Keeper | 向 Host 投递已安全处理的 reveal 和建议 | 直接绕过 Host 把隐藏真相投给 Player |
-| Future Observer | 延迟观看公共舞台 | 控制房间或读取 Host-only 内容 |
+| Host | 创建房间、开局、看 HUD、投影公共叙事、监管地图、处理遭遇、查看日志、恢复 checkpoint | 直接改规则结果、直接写世界真相、把 Host-only 真相公开给玩家 |
+| Admin | 以管理员身份进入 Host 能力做排障、恢复、审计 | 无审计地绕过权限来源 |
+| Player | 间接受益于公共舞台输出 | 访问 Host REST、Host WS、全图、Host timeline |
+| AI-Keeper | 产出建议、叙事、公开 reveal 候选 | 绕过 Host/Projection 直接公开隐藏真相 |
+| Future Observer | 未来可能只读观看公共舞台 | 控制房间或读取 Host-only 内容 |
 
 ## 产品范围
 
 ### 本轮进入
 
-- Host 创建房间和保存 `owner_token`。
-- Host 等待室：玩家列表、ready、剧本选择、开局、force_start。
-- Host Stage：叙事投影、骰子/步骤展示、玩家 HUD、队列状态。
-- Host WS 鉴权和初始 HUD。
-- 暂停/恢复、紧急重置、retry-turn 的基础反馈。
-- 地图全图、揭示/隐藏、强制移动。
-- 遭遇建议确认、下一轮、结束、临时 NPC。
-- 日志时间线、事件详情、检查点、恢复、导出。
-- 中文文案修复和前端 build 恢复。
+- Host 创建房间与 `owner_token` 会话落地；
+- Host Lobby：剧本选择、成员观察、ready 检查、显式 `force_start`；
+- Host Stage：HUD、公共叙事投影、地图/遭遇/日志 tab；
+- Host REST/WS 鉴权；
+- 暂停/恢复、reset、最小 `retry-turn`；
+- Host timeline、checkpoint、restore、public/full export；
+- 前端中文可读性与 Host 触达页面构建恢复。
 
 ### 本轮不做
 
-- 多 Host 协同权限。
-- 直播观众端。
-- 大屏独立投影模式。
-- 完整音效/灯光/镜头导演台。
-- 完整世界书和资料库编辑。
-- Host 插件系统。
+- 多 Host 协作与精细权限矩阵；
+- 观众端和直播输出；
+- 完整演播台（字幕、音效、镜头、灯光）；
+- 真实资料库编辑器；
+- 独立的 Host 插件系统。
 
-## 核心流程
+## 数据分层
 
-### 创建房间
-
-1. Host 打开 `/host/create`。
-2. 未登录时跳转登录。
-3. 后端校验账号角色为 host 或 admin。
-4. Host 选择一个可用剧本。
-5. 前端提交 `POST /api/rooms`。
-6. 后端创建 room、owner token、owner account 关系。
-7. 前端保存 `owner_token` 并进入 `/host/{roomId}`。
-
-### 等待室与开局
-
-1. HostLobby 调用 `GET /api/rooms/{room_id}` 获取房间和玩家摘要。
-2. Host WS 订阅 lobby snapshot，轮询 HUD 作为降级。
-3. Host 可在 lobby 状态切换剧本。
-4. 玩家加入和 ready 后，Host 看到成员状态变化。
-5. 普通 start 要求至少一名玩家且已 ready。
-6. 显式 force_start 作为急救能力。
-7. start 成功后房间 active，首回合创建，Host 进入 Stage。
-
-### 公共舞台
-
-1. HostStage 建立 Host WS，并先拉取 `/api/host/{room_id}/hud`。
-2. Host WS 推送 `host_state_update` 作为 UI frame，源头仍应可追到标准事件或 DB 状态。
-3. `s2c_reveal_transaction` 被转换为舞台演出步骤：骰子、叙事、状态摘要。
-4. `s2c_public_observation` 和 `s2c_team_message` 进入公共叙事流。
-5. `s2c_map_*` 触发地图面板刷新。
-6. `s2c_encounter_*` 触发遭遇面板状态变化。
-7. Host 暂停只影响舞台播放，不修改权威裁决结果。
-
-### 地图与遭遇
-
-1. HostMapPanel 调用 `/api/host/{room_id}/map/full` 查看全图。
-2. Host 可揭示/隐藏节点，后端写入地图状态并发 map 事件。
-3. Host 可强制移动角色，用于纠错或主持干预。
-4. EncounterPanel 接收 AI/规则建议，Host 确认后创建 active encounter。
-5. Host 可新增 NPC、进入下一轮或结束遭遇。
-6. 每个 Host 操作都应进入事件或审计链路。
-
-### 日志与恢复
-
-1. HostLogsPanel 调用 `/api/rooms/{room_id}/timeline` 查看完整房间时间线。
-2. Host 可筛选事件类型和关键词。
-3. Host 可查看单条事件 payload。
-4. Host 可创建手动检查点。
-5. Host 可恢复检查点，恢复操作必须确认并记录事件。
-6. Host 可导出 public markdown 或 full json；public 版本必须脱敏。
-
-## 功能需求
-
-| 编号 | 需求 | 优先级 |
+| 层级 | 数据对象 | 说明 |
 | --- | --- | --- |
-| HC-FR-1 | Host 创建房间必须要求 host/admin 账号。 | P0 |
-| HC-FR-2 | Host 创建房间必须选择有效剧本。 | P0 |
-| HC-FR-3 | 创建房间成功后前端保存 `owner_token` 到当前身份槽。 | P0 |
-| HC-FR-4 | Host Lobby 必须展示 room code、剧本、玩家、调查员、ready 状态。 | P0 |
-| HC-FR-5 | Host 正常开局必须受玩家人数、剧本和 ready 限制。 | P0 |
-| HC-FR-6 | Host force_start 必须是显式操作，并在 UI 上标明风险。 | P0 |
-| HC-FR-7 | Host REST 和 WS 必须支持 owner token、owner account、admin 鉴权。 | P0 |
-| HC-FR-8 | Host Stage 必须能在无 WS 首帧时通过 HUD API 初始化。 | P0 |
-| HC-FR-9 | Host HUD 必须优先展示 runtime state 中的玩家当前状态。 | P0 |
-| HC-FR-10 | Host Stage 必须展示 reveal transaction，但不得改写 transaction 结果。 | P0 |
-| HC-FR-11 | Host 不得接收或显示 Player-only 私密事件。 | P0 |
-| HC-FR-12 | Host 暂停、重置、重试必须有可读反馈和后端鉴权。 | P0 |
-| HC-FR-13 | Host 地图全图只对 Host 可见，Player 不得复用该接口。 | P0 |
-| HC-FR-14 | Host 地图揭示、隐藏、强制移动必须产生投影或审计记录。 | P0 |
-| HC-FR-15 | Host 遭遇确认、下一轮、结束、NPC 创建必须可追踪。 | P0 |
-| HC-FR-16 | Host 日志可查完整主持时间线，Player 日志仍按可见性过滤。 | P0 |
-| HC-FR-17 | 检查点恢复必须二次确认，并记录恢复事件。 | P0 |
-| HC-FR-18 | public 导出不得包含 owner token、player token、Host-only 真相和玩家私密 payload。 | P0 |
-| HC-FR-19 | Host 前端中文文案和 TSX 字符串必须恢复到可构建状态。 | P0 |
-| HC-FR-20 | Host 事件 adapter 必须把标准事件和 UI frame 边界固定下来。 | P1 |
-| HC-FR-21 | Host WS 重连必须有 catch-up 或 HUD 重拉策略。 | P1 |
-| HC-FR-22 | Database tab 在接入真实资料库前必须标明为占位或隐藏。 | P1 |
+| L0 `AccountSession` | `account_token`、账号摘要 | 账号态，用于创建房间和 owner/admin 身份校验 |
+| L1 `HostRoomSession` | `room_id`、`owner_token`、owner/admin 身份 | Host 房间会话，是 Host 能力入口 |
+| L2 `HostLobbyView` | 房间状态、剧本、玩家列表、ready、pending approval | 开局前协作视图 |
+| L3 `HostHUDView` | 玩家公开状态、队列状态、引擎状态、场景图 | Host 舞台 HUD 视图 |
+| L4 `EngineEvent` | 标准 `s2c_*` 事件 | 权威可审计事件源 |
+| L5 `HostFrame` | `host_state_update`、`scene_update`、`chat_message` 等 | Host UI 展示协议 |
+| L6 `RevealTransactionView` | `s2c_reveal_transaction` 的舞台展示结果 | 只读投影层 |
+| L7 `HostStoreStageState` | 队列、暂停态、延迟私密事件、当前遭遇建议 | 舞台态，不是世界真相源 |
+| L8 `HostMapFullView` | 全图、隐藏节点、位置、探索状态 | Host-only 读模型 |
+| L9 `HostOperationAudit` | 特权操作审计记录 | 必须可追踪 |
+| L10 `HostTimelineView` | Host timeline、checkpoint、恢复标记 | 复盘/恢复视图 |
+| L11 `ExportView` | `public/full` 导出结果 | 导出范围视图，不等于数据库原始数据 |
 
-## 接口方向
+## DTO 契约
 
-| 接口或事件 | 当前状态 | 用途 | 备注 |
-| --- | --- | --- | --- |
-| `POST /api/rooms` | 已有 | 创建房间 | host/admin 账号 |
-| `GET /api/rooms/{room_id}` | 已有 | HostLobby 房间摘要 | 不返回 owner token |
-| `GET /api/rooms/{room_id}/scenario-options` | 已有 | lobby 选择剧本 | owner/admin |
-| `PATCH /api/rooms/{room_id}/scenario` | 已有 | lobby 切换剧本 | active 后禁止 |
-| `POST /api/rooms/{room_id}/start` | 已有 | 开局/force_start | owner/admin |
-| `GET /api/host/{room_id}/hud` | 已有 | Host HUD | 从 DB/runtime 构建 |
-| `POST /api/host/{room_id}/pause` | 已有 | 暂停/恢复舞台 | HostStore 状态 |
-| `POST /api/host/{room_id}/reset` | 已有 | 紧急重置舞台 | 不回滚世界状态 |
-| `POST /api/host/{room_id}/retry-turn` | 已有 | 重试当前 HostStore transaction | 与 Room turn retry 需区分 |
-| `GET /api/host/{room_id}/map/full` | 已有 | Host 全图 | Host-only |
-| `POST /api/host/{room_id}/map/reveal` | 已有 | 揭示或隐藏地图节点 | 发 `s2c_map_revealed` |
-| `POST /api/host/{room_id}/map/move-character` | 已有 | 强制移动角色 | 发 `s2c_player_moved` |
-| `GET /api/host/{room_id}/encounter` | 已有 | 当前遭遇 | Host-only |
-| `POST /api/host/{room_id}/encounter/confirm` | 已有 | 确认遭遇 | 发 `s2c_encounter_started` |
-| `POST /api/host/{room_id}/encounter/reject` | 已有 | 拒绝建议 | 审计需补强 |
-| `POST /api/host/{room_id}/encounter/next-round` | 已有 | 下一轮 | 发 `s2c_encounter_updated` |
-| `POST /api/host/{room_id}/encounter/resolve` | 已有 | 结束遭遇 | 发 `s2c_encounter_resolved` |
-| `POST /api/host/{room_id}/encounter/npc` | 已有 | 临时 NPC | 事件需补强 |
-| `GET /api/rooms/{room_id}/timeline` | 已有 | Host 时间线 | owner/admin |
-| `POST /api/rooms/{room_id}/checkpoint` | 已有 | 创建检查点 | owner/admin |
-| `POST /api/rooms/{room_id}/restore/{checkpoint_id}` | 已有 | 恢复检查点 | owner/admin |
-| `GET /api/rooms/{room_id}/export` | 已有 | 导出 | scope 需安全过滤 |
-| `Host WS /ws?role=host` | 已有 | 实时舞台 | ownerToken query 当前可用 |
-| `s2c_reveal_transaction` | 已有 | Host 演出事务 | host |
-| `s2c_host_snapshot` | 已有 | Host HUD/状态快照 | host |
-| `s2c_public_observation` | 已有 | 公共叙事 | party |
-| `s2c_team_message` | 已有 | 队内消息 | party |
-| `s2c_map_updated/s2c_player_moved/s2c_map_revealed` | 已有 | 地图变化 | party |
-| `s2c_encounter_suggested/started/updated/resolved` | 已有 | 遭遇变化 | party 或 host 展示 |
+### 最小 DTO 集合
 
-## 数据边界
+- `HostCreateRequestDTO`
+- `HostCreateResultDTO`
+- `HostRoomSessionDTO`
+- `HostLobbySnapshotDTO`
+- `HostHUDDTO`
+- `HostEventEnvelopeDTO`
+- `HostFrameDTO`
+- `HostRevealTransactionDTO`
+- `HostMapFullViewDTO`
+- `HostMapOperationRequestDTO`
+- `HostEncounterDTO`
+- `HostEncounterOperationDTO`
+- `HostTimelineEventDTO`
+- `HostCheckpointDTO`
+- `HostExportRequestDTO`
+- `HostApiErrorDTO`
+- `HostOperationAuditDTO`
 
-- `owner_token` 是房主房间凭证，不能写入日志、导出或 Player 响应。
-- Host HUD 是展示模型，不是世界状态表。
-- HostStore 是舞台播放状态，不是规则事实来源。
-- `events` 是可审计投影日志，Host 日志从这里读。
-- Host map full view 是 Host-only 读模型。
-- Host 操作请求里的 node、character、encounter 参数都需要服务端校验归属。
-- public export 是脱敏战报，full export 是管理调试包。
+### 关键 DTO 口径
+
+#### `HostRoomSessionDTO`
+
+```json
+{
+  "roomId": "room_xxx",
+  "authMode": "owner_token|owner_account|admin",
+  "ownerAccountId": "acct_xxx",
+  "hasOwnerToken": true,
+  "tokenRiskLevel": "dev_storage"
+}
+```
+
+说明：
+
+- `tokenRiskLevel` 用于明确当前实现风险，不得在回执里写成“已生产安全完成”。
+- `owner_token` 不进入任何 public DTO、日志导出或 URL 展示。
+
+#### `HostLobbySnapshotDTO`
+
+```json
+{
+  "roomId": "room_xxx",
+  "status": "draft|lobby|active|paused|completed|archived",
+  "scenarioId": "scenario_xxx",
+  "scenarioTitle": "示例模组",
+  "players": [],
+  "pendingApprovals": [],
+  "canStart": false,
+  "unreadyPlayerIds": []
+}
+```
+
+说明：
+
+- `players` 与 `pendingApprovals` 需要清晰区分；
+- `canStart` 只是服务端规则的 UI 显示摘要，不是前端本地决定开局权限。
+
+#### `HostHUDDTO`
+
+```json
+{
+  "roomId": "room_xxx",
+  "players": [],
+  "sceneImageUrl": null,
+  "engineState": "idle|thinking|busy",
+  "queueStatus": {
+    "normal": 0,
+    "urgent": 0
+  }
+}
+```
+
+说明：
+
+- HUD 优先来自服务端 `build_hud`；
+- HostStore 只能补充舞台态，如队列数量、暂停态、当前场景图。
+
+#### `HostEventEnvelopeDTO`
+
+```json
+{
+  "roomId": "room_xxx",
+  "type": "s2c_reveal_transaction",
+  "audience": "host|party",
+  "roomSequence": 123,
+  "payload": {},
+  "issuedAt": "2026-07-07T12:00:00Z"
+}
+```
+
+说明：
+
+- 这是标准事件协议；
+- 只有它和 HUD API 才能作为 Host UI 的真实来源。
+
+#### `HostFrameDTO`
+
+```json
+{
+  "frameType": "host_state_update|scene_update|chat_message|map_updated|encounter_started",
+  "sourceEventType": "s2c_reveal_transaction",
+  "sourceSequence": 123,
+  "hud": {},
+  "payload": {}
+}
+```
+
+说明：
+
+- `HostFrameDTO` 是 UI 展示协议，不回写 `events`；
+- `HostFrameDTO` 不得额外承载规则结果、状态写入、玩家私密 payload；
+- Host Stage 渲染的每一帧都应能追到 `sourceEventType/sourceSequence` 或 HUD API 来源。
+
+#### `HostRevealTransactionDTO`
+
+```json
+{
+  "transactionId": "tx_xxx",
+  "priority": "normal|urgent",
+  "steps": [],
+  "summaryText": "公开摘要",
+  "sourceSequence": 123
+}
+```
+
+说明：
+
+- Host 只读取并展示 reveal；
+- Host 不得修改步骤内容后再写回事件表。
+
+#### `HostOperationAuditDTO`
+
+```json
+{
+  "operation": "force_start|restore|force_move|retry_turn|map_reveal|encounter_resolve",
+  "roomId": "room_xxx",
+  "actorAccountId": "acct_xxx",
+  "actorRole": "owner|admin",
+  "targetType": "room|checkpoint|map_node|character|encounter|transaction",
+  "targetId": "target_xxx",
+  "targetCharacterId": "char_xxx",
+  "fromState": "lobby",
+  "toState": "active",
+  "reason": "人工恢复",
+  "confirm": true,
+  "transactionId": "tx_xxx",
+  "stateVersion": 12,
+  "eventSequence": 345,
+  "createdAt": "2026-07-07T12:00:00Z"
+}
+```
+
+说明：
+
+- `force_start / restore / retry-turn / force_move` 至少要对齐这组字段；
+- 当前已有 `host_force_move` 审计可作为起点，但字段还不完整。
+
+## Token 与会话策略
+
+### 当前实现口径
+
+- `HostCreate.tsx` 在创建房间成功后会把 `owner_token` 写入当前身份槽位；
+- `shared/identity.ts` 会把 `owner_token` 同步到 slot 和 legacy `localStorage`；
+- `HostLobby.tsx` 与 `HostStage.tsx` 当前主要通过 `ownerToken` query 连接 Host WS；
+- `router_host.py` 已支持 `X-Owner-Token`、owner account、admin account 作为 Host REST 和 Host WS 入口。
+
+### 文档边界
+
+- 开发态可以保留 identity slot/localStorage 方案，支持单机多身份测试；
+- `owner_token` 不得出现在日志、导出、URL 明文展示、公共 DTO、错误文案和截图样例中；
+- 生产目标是不再长期依赖 `localStorage` 中的长效 `owner_token` 和 WS query token；
+- 如本轮未引入短期 WS ticket，回执必须明确写为“开发态风险已标注，未完成生产态收口”。
 
 ## 权限边界
 
-1. 非 owner/admin 不能访问 Host REST。
-2. 非 owner/admin 不能连接 Host WS。
-3. Player 不能通过 `owner_token` 为空、错误或 player token 访问 Host 接口。
-4. Host 不能直接读取玩家本地 `player_token`。
-5. Host 不接收 Player-only 私密状态 patch。
-6. Host 可看全图和主持日志，但 public projection/export 不能包含 Host-only 真相。
-7. Host 的强制操作必须有事件或审计痕迹。
+1. 只有房主账号、管理员账号、房间 `owner_token` 可以访问 Host REST/WS。
+2. 普通 `player_token` 不能访问 Host REST、Host WS、全图接口、Host timeline。
+3. 跨房间 `owner_token` 必须拒绝。
+4. 无 token、错 token、账号不匹配都必须失败，不允许前端静默降级成“匿名可看 Host”。
+5. Host 可见“比玩家更多”的主持视角，但不等于可把 Host-only 真相投给玩家。
+6. 最终可见性安全边界必须由 Projection/Archive 后端决定，而不是靠 Host 前端不渲染。
 
-## 客户端状态模型
+## HostEventAdapter 契约
 
-| 状态 | 含义 | 进入条件 | 退出条件 |
+当前代码已经存在两层协议：
+
+- 标准事件层：`s2c_reveal_transaction`、`s2c_public_observation`、`s2c_map_revealed`、`s2c_encounter_started` 等；
+- Host UI frame 层：`host_state_update`、`scene_update`、`chat_message`、`map_updated`、`encounter_started` 等。
+
+本 PRD 要求明确：
+
+1. 标准 `EngineEvent` 是审计、补发、重连和时间线追踪的权威来源；
+2. `HostFrameDTO` 只是 Host UI 的展示协议；
+3. `HostFrameDTO` 不写回 `events`，也不替代标准事件；
+4. Host Stage 不得直接把 `s2c_state_patch`、`s2c_private_notice`、`s2c_action_completed` 的玩家私密 payload 显示到舞台；
+5. HostStage 渲染时，如遇未知 `s2c_*`，默认不自动公开，先按未识别事件处理。
+
+## Host ACK 与延迟私密释放契约
+
+当前后端已有 `host_step_complete` 和 HostStore `delayed_events` 机制。本 PRD 固化以下边界：
+
+1. Host ACK 只表示“舞台某一步已演出完成”；
+2. Host ACK 必须绑定 `transactionId`、`stepId`/`stepIndex`、`actorAccountId`；
+3. Host ACK 不承载规则结果、骰子结果或状态变更；
+4. 玩家私密结果是否释放，由 14-Transaction 的 `ReleaseGate` 决定；
+5. Host Client 不能自己决定“现在把某个私密 patch 放给玩家”。
+
+## `retry-turn` 语义
+
+### 当前实现
+
+当前 `router_host.py` 的 `retry-turn` 只在 `store.active_transaction` 存在时把 `current_step_index` 重置为 `0`。它是舞台步进重试，不是完整事务重算，更不是世界状态回滚。
+
+### 产品目标
+
+后续可演进为三种模式，但本轮文档只定义语义，不得伪称已全部实现：
+
+- `replay_only`：只重放已存在 reveal；
+- `recompute_unresolved`：只重算未完成事务；
+- `restore_from_checkpoint`：从 checkpoint 恢复出新的历史分支。
+
+默认不允许“对已结算回合自动重算”。
+
+## 核心流程
+
+### 1. 创建房间
+
+1. Host 打开 `/host/create`；
+2. 未登录则跳转登录；
+3. host/admin 账号选择剧本；
+4. 调用 `POST /api/rooms`；
+5. 后端创建房间并返回 `owner_token`；
+6. 前端把 `owner_token` 写入当前身份槽位并进入 Lobby。
+
+### 2. Lobby 与开局
+
+1. HostLobby 获取房间摘要；
+2. 通过 snapshot 观察玩家、ready、pending approval；
+3. 开局前可切换剧本；
+4. 普通 start 必须满足最小 ready 条件；
+5. `force_start` 必须显式触发，并带 `reason + confirm`；
+6. start 成功后房间进入 `active`，首回合、初始 checkpoint、地图初始化由后端执行。
+
+### 3. Stage 舞台
+
+1. 先通过 `/api/host/{room_id}/hud` 拿初始 HUD；
+2. 再通过 Host WS 接收增量更新；
+3. `s2c_reveal_transaction` 进入叙事投影；
+4. `s2c_public_observation`、`s2c_team_message` 进入公共舞台消息流；
+5. 地图和遭遇事件只触发对应面板更新；
+6. Host 舞台暂停只暂停舞台态，不修改规则裁决真相。
+
+### 4. 地图与遭遇
+
+1. Host 全图读取只对 owner/admin 可见；
+2. reveal/hide、force move 必须经后端校验 room 归属；
+3. confirm/reject/next-round/resolve/NPC 必须经后端校验 encounter 归属；
+4. 特权操作应带 reason、actor、target 和 stateVersion/eventSequence 等审计信息。
+
+### 5. 日志、恢复与导出
+
+1. Host timeline 只对 owner/admin 开放；
+2. restore 必须 `confirm=true + reason`，并写 `s2c_checkpoint_restored`；
+3. Player 不能看到 restore 原始审计 payload；
+4. public export 必须复用 Projection 的 public view；
+5. full export 也不是数据库原样导出，仍然禁止 token、secret、raw AI prompt/response。
+
+## 接口方向
+
+| 接口或事件 | 当前现状 | 作用 | 权限口径 |
 | --- | --- | --- | --- |
-| `not_authenticated` | 未登录或无 Host 权限 | 进入 `/host/create` 无有效账号 | 登录 host/admin |
-| `creating` | 正在创建房间 | 提交创建请求 | 创建成功或失败 |
-| `lobby_loading` | 等待室加载中 | 进入 `/host/{roomId}` | room 数据返回 |
-| `lobby_ready_check` | 等待玩家 ready | room 为 lobby | 所有玩家 ready 或 force_start |
-| `starting` | 正在开局 | 点击开始 | active 或错误 |
-| `stage_connecting` | 舞台连接中 | 进入 Stage | HUD/WS 成功或失败 |
-| `stage_live` | 公共舞台在线 | Host WS 打开 | WS 断开、暂停、离开 |
-| `stage_paused` | 舞台暂停 | 点击 pause | 再次 pause 或 reset |
-| `stage_error` | 舞台错误 | 鉴权失败、HUD 失败、WS 失败 | 重试、刷新、返回 lobby |
-| `map_operating` | 地图操作中 | reveal/hide/move | 操作成功或失败 |
-| `encounter_operating` | 遭遇操作中 | confirm/next/resolve/npc | 操作成功或失败 |
-| `restoring` | 检查点恢复中 | 确认 restore | 恢复完成或失败 |
+| `POST /api/rooms` | 已有 | 创建房间 | host/admin 账号 |
+| `GET /api/rooms/{room_id}` | 已有 | Host Lobby 房间摘要 | 不返回 `owner_token` |
+| `GET /api/rooms/{room_id}/scenario-options` | 已有 | 开局前选剧本 | owner/admin |
+| `PATCH /api/rooms/{room_id}/scenario` | 已有 | 开局前切剧本 | owner/admin |
+| `POST /api/rooms/{room_id}/start` | 已有 | start / force_start | owner/admin；force 需 `reason + confirm` |
+| `GET /api/host/{room_id}/hud` | 已有 | 初始 HUD | owner/admin |
+| `POST /api/host/{room_id}/pause` | 已有 | 暂停/恢复舞台 | owner/admin |
+| `POST /api/host/{room_id}/reset` | 已有 | 重置 HostStore | owner/admin |
+| `POST /api/host/{room_id}/retry-turn` | 已有 | 舞台最小重试 | owner/admin |
+| `GET /api/host/{room_id}/map/full` | 已有 | Host 全图 | owner/admin |
+| `POST /api/host/{room_id}/map/reveal` | 已有 | reveal/hide 节点 | owner/admin |
+| `POST /api/host/{room_id}/map/move-character` | 已有 | force move 角色 | owner/admin，必须 `reason` |
+| `GET /api/host/{room_id}/encounter` | 已有 | 当前遭遇 | owner/admin |
+| `POST /api/host/{room_id}/encounter/confirm` | 已有 | 确认遭遇 | owner/admin |
+| `POST /api/host/{room_id}/encounter/reject` | 已有 | 拒绝遭遇建议 | owner/admin |
+| `POST /api/host/{room_id}/encounter/next-round` | 已有 | 推进下一轮 | owner/admin |
+| `POST /api/host/{room_id}/encounter/resolve` | 已有 | 结束遭遇 | owner/admin |
+| `POST /api/host/{room_id}/encounter/npc` | 已有 | 创建临时 NPC | owner/admin |
+| `GET /api/rooms/{room_id}/timeline` | 已有 | Host timeline | owner/admin |
+| `POST /api/rooms/{room_id}/checkpoint` | 已有 | 创建 checkpoint | owner/admin |
+| `POST /api/rooms/{room_id}/restore/{checkpoint_id}` | 已有 | 恢复 checkpoint | owner/admin；必须 `confirm + reason` |
+| `GET /api/rooms/{room_id}/export` | 已有 | `public/full` 导出 | `full` 仅 owner/admin；`public` 走 player auth |
+| `Host WS /ws?role=host` | 已有 | Host 实时舞台 | 当前主要靠 query `ownerToken`；后端支持 owner/admin |
+
+## Export 边界
+
+### `public export` 禁止包含
+
+- `owner_token`
+- `player_token`
+- `account_id`、`email`
+- Host-only reveal payload
+- 全图节点和隐藏地图信息
+- 未公开真相、隐藏 NPC、隐藏 clue、世界真相字段
+- 玩家私密 patch、private notice、action completed 私密结果
+- `raw AI prompt`、`raw AI response`
+- debug/admin payload
+
+### `full export` 仍禁止包含
+
+- 原始 token
+- API key
+- 明文 secret
+- `raw AI prompt` / `raw AI response`
+- 账号敏感字段
+- 运维原始内部日志
+
+如未来需要导出 AI/Ops 原始审计，必须另设 `admin_audit export scope`，不能复用 `full export`。
+
+## Database Tab 占位边界
+
+当前 `navigation.ts` 中 `database` 仍是可见 tab，但本轮没有真实资料库功能。产品要求：
+
+1. 如果本轮不接真实数据，必须标记“开发中/占位”，或直接隐藏；
+2. 不允许展示看似真实的假知识条目，让主持人误以为已接入 WorldBook；
+3. 真正的资料检索能力应归属于后续 WorldBook/Asset/RAG 方案。
 
 ## 验收标准
 
-1. host/admin 可以创建房间，player 创建房间返回 403。
-2. HostLobby 能显示剧本、玩家、ready 状态和开局限制。
-3. 正常 start 创建 active 房间和首回合，force_start 只在显式点击时发生。
-4. HostStage 打开后通过 HUD API 或 WS 首帧显示玩家状态。
-5. Host WS 无 token、错 token 被拒绝，owner token 连接成功。
-6. Host 收到 `s2c_reveal_transaction` 时显示公共演出内容。
-7. Host 不显示 `s2c_state_patch`、`s2c_private_notice`、`s2c_action_completed` 等 Player-only 私密 payload。
-8. Host map full 接口只允许 owner/admin，Player 不可访问。
-9. Host map reveal/move 和 encounter 操作可在事件或日志中追踪。
-10. Host timeline/checkpoint/export 均需 owner/admin 鉴权。
-11. public export 不含敏感 token、Host-only 真相和玩家私密内容。
-12. Host 前端通过 `npm run build`，主要页面中文可读。
+1. host/admin 可创建房间，player 创建房间返回 403。
+2. Host Lobby 能看到成员、ready、pending approval 和剧本状态。
+3. 普通 start 受 ready 条件限制；`force_start` 必须显式并带 `reason + confirm`。
+4. Host WS 无 token、错 token、跨房间 token 均失败；owner/admin 成功。
+5. Host Stage 先能用 HUD API 初始化，再接收 WS 增量。
+6. Host 只展示 reveal/public 内容，不展示 `player-only` 私密 payload。
+7. 全图接口只对 owner/admin 开放。
+8. `force_move`、restore、force_start 等特权操作可追踪。
+9. restore 必须写 `s2c_checkpoint_restored`，且 Player 看不到原始审计 payload。
+10. `public export` 与 `full export` 都符合脱敏边界。
+11. `database` tab 不误导用户为真实资料库。
+12. Host 触达页面通过 `npm run build`，主要中文文案可读。

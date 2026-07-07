@@ -6,21 +6,22 @@
 
 1. [平台能力分层与 MVP 边界](./00-路线图/平台能力分层与MVP边界.md)
 2. [当前项目状态与风险](./10-现状盘点/当前项目状态与风险.md)
-3. [AI-Keeper 核心链路架构](./20-核心链路/AI-Keeper核心链路架构.md)
-4. [DeepSeek 任务包索引](./30-DeepSeek任务包/README.md)
-5. [平台补全文档索引](./40-平台补全/README.md)
-6. [AI-Keeper Platform 模块化施工图](./50-AI-Keeper-Platform/README.md)
-7. [最终版本 PRD 索引](./PRDs/README.md)
-8. [最终版本开发文档](./开发文档/AI-Keeper最终版本开发文档.md)
-9. [测试覆盖文档](./TEST_COVERAGE.md)
-10. [AI KP soul 设定](./20-核心链路/soul.md)
+3. [最近更新文件索引](./10-现状盘点/最近更新文件索引.md)
+4. [AI-Keeper 核心链路架构](./20-核心链路/AI-Keeper核心链路架构.md)
+5. [DeepSeek 任务包索引](./30-DeepSeek任务包/README.md)
+6. [平台补全文档索引](./40-平台补全/README.md)
+7. [AI-Keeper Platform 模块化施工图](./50-AI-Keeper-Platform/README.md)
+8. [最终版本 PRD 索引](./PRDs/README.md)
+9. [最终版本开发文档](./开发文档/AI-Keeper最终版本开发文档.md)
+10. [测试覆盖文档](./TEST_COVERAGE.md)
+11. [AI KP soul 设定](./20-核心链路/soul.md)
 
 ## 目录说明
 
 | 目录 | 用途 |
 |---|---|
 | `00-路线图/` | 从完整平台清单中压缩出短中长期路线、MVP 边界和优先级。 |
-| `10-现状盘点/` | 记录当前代码、测试、已有文档和工作区风险，避免 DeepSeek 脱离现状执行。 |
+| `10-现状盘点/` | 记录当前代码、测试、已有文档、近期更新索引和工作区风险，避免 DeepSeek 脱离现状执行。 |
 | `20-核心链路/` | 固化 AI-KP 区别于普通网团工具的核心架构。 |
 | `30-DeepSeek任务包/` | 面向 DeepSeek 的可执行批次，每批都有范围、文件方向、验收命令和禁止事项。 |
 | `40-平台补全/` | 收纳核心链路之外的平台能力、后续阶段路线、工程安全运营护栏。 |

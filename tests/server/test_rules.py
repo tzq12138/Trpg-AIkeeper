@@ -47,17 +47,17 @@ def test_parse_dice_invalid():
 @pytest.mark.asyncio
 async def test_skill_check_critical_success():
     handler = CocSkillCheckHandler()
-    random.seed(139)  # roll=1
+    random.seed(2)  # roll=1 (tens=0,ones=1→1)
     result = await handler.execute(make_state(), {"skillName": "侦查", "skillValue": 60})
     assert result.is_success is True
-    assert result.metadata["success_level"] == "critical_success"
+    assert result.metadata["success_level"] == "critical"
     assert result.metadata["roll"] == 1
 
 
 @pytest.mark.asyncio
 async def test_skill_check_fumble():
     handler = CocSkillCheckHandler()
-    random.seed(23)  # roll=100
+    random.seed(165)  # roll=100
     result = await handler.execute(make_state(), {"skillName": "侦查", "skillValue": 60})
     assert result.is_success is False
     assert result.metadata["success_level"] == "fumble"
@@ -66,16 +66,16 @@ async def test_skill_check_fumble():
 @pytest.mark.asyncio
 async def test_skill_check_success():
     handler = CocSkillCheckHandler()
-    random.seed(0)  # roll=50, under 60
+    random.seed(36)  # roll=50, under 60 threshold -> regular
     result = await handler.execute(make_state(), {"skillName": "侦查", "skillValue": 60})
     assert result.is_success is True
-    assert result.metadata["success_level"] == "success"
+    assert result.metadata["success_level"] == "regular"
 
 
 @pytest.mark.asyncio
 async def test_skill_check_failure():
     handler = CocSkillCheckHandler()
-    random.seed(5)  # roll=80, over 60
+    random.seed(56)  # roll=80, over 60
     result = await handler.execute(make_state(), {"skillName": "侦查", "skillValue": 60})
     assert result.is_success is False
     assert result.metadata["success_level"] == "failure"
@@ -84,7 +84,7 @@ async def test_skill_check_failure():
 @pytest.mark.asyncio
 async def test_skill_check_hard_difficulty():
     handler = CocSkillCheckHandler()
-    random.seed(1)  # roll=18, skill=60 hard target=30 -> success
+    random.seed(160)  # roll=18, skill=60 hard target=30 -> regular (18<=30 but not <=15)
     result = await handler.execute(
         make_state(), {"skillName": "侦查", "skillValue": 60, "difficulty": "hard"}
     )
@@ -95,7 +95,7 @@ async def test_skill_check_hard_difficulty():
 @pytest.mark.asyncio
 async def test_skill_check_fumble_low_skill():
     handler = CocSkillCheckHandler()
-    random.seed(26)  # roll=96, skill=40 (<50) -> fumble
+    random.seed(136)  # roll=96, skill=40 (<50) -> fumble
     result = await handler.execute(make_state(), {"skillName": "闪避", "skillValue": 40})
     assert result.is_success is False
     assert result.metadata["success_level"] == "fumble"

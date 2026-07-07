@@ -82,7 +82,7 @@ class TestRollSkillCheck:
         for _ in range(100):
             result = roll_skill_check(0)
             if result["roll"] not in (1, 100):
-                assert result["success_level"] == "failure"
+                assert result["success_level"] in ("failure", "fumble")
                 failures += 1
         assert failures > 50
 

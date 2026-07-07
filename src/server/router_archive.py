@@ -165,18 +165,33 @@ async def list_checkpoints(request: Request, room_id: str):
 async def restore_checkpoint(request: Request, room_id: str, checkpoint_id: str):
     _verify_owner_or_admin(request, room_id)
     body = await request.json()
-    if not body.get("confirm", False):
+    if body.get("confirm") is not True:
         raise HTTPException(400, "需要二次确认（发送 confirm: true）")
+    reason = body.get("reason", "").strip()
+    if not reason:
+        raise HTTPException(400, "恢复 checkpoint 必须提供 reason")
     conn = request.app.state.db
     event_log = EventLog(conn)
     try:
         snapshot = event_log.restore_checkpoint(room_id, checkpoint_id)
     except ValueError as e:
         raise HTTPException(404, str(e))
-    # Log audit event
-    event_log.log_event(room_id, "s2c_checkpoint_restored", "system", {
+    # Log strengthened audit event (host-only, NOT for player visibility)
+    from datetime import datetime, timezone
+    actor_id = "host"
+    try:
+        from .router_auth import get_account_from_token
+        acct = get_account_from_token(request)
+        if acct:
+            actor_id = acct.get("account_id", "host")
+    except Exception:
+        pass
+    event_log.log_event(room_id, "s2c_checkpoint_restored", "host", {
         "checkpointId": checkpoint_id,
-        "restoredBy": request.headers.get("X-Owner-Token", "admin")[:8],
+        "actorAccountId": actor_id,
+        "reason": reason,
+        "restoreMode": "full",
+        "createdAt": datetime.now(timezone.utc).isoformat(),
     })
     return {"status": "restored", "snapshot": snapshot}
 
@@ -184,14 +199,20 @@ async def restore_checkpoint(request: Request, room_id: str, checkpoint_id: str)
 # ── Campaign endpoints ──
 
 @router.get("/{room_id}/campaign")
-async def get_campaign_summary(request: Request, room_id: str):
+async def get_campaign_summary(request: Request, room_id: str,
+                                scope: str = Query("public")):
+    """Get campaign summary. scope=public for players, scope=full for owner/admin."""
     conn = request.app.state.db
+    if scope == "full":
+        _verify_owner_or_admin(request, room_id)
+    else:
+        _verify_player(request, room_id)
     archive = CampaignArchive(conn)
     try:
-        summary = archive.get_campaign_summary(room_id)
+        summary = archive.get_campaign_summary(room_id, scope=scope)
     except ValueError as e:
         raise HTTPException(404, str(e))
-    return summary.model_dump()
+    return summary.model_dump() if hasattr(summary, 'model_dump') else summary
 
 
 @router.post("/{room_id}/end")

@@ -9,6 +9,7 @@ ARCHIVE_EVENT_TYPES = {
     "actions": ["s2c_action_queued", "s2c_action_batched", "s2c_action_completed"],
     "skill_checks": ["s2c_action_completed"],
     "state_changes": ["s2c_state_patch", "s2c_full_snapshot", "s2c_engine_state"],
+    "messages": ["s2c_team_message"],
 }
 
 
@@ -21,7 +22,7 @@ def _get_character(conn, token: str):
 @router.get("/player/archive")
 async def player_archive(
     request: Request,
-    type: Literal["clues", "actions", "skill_checks", "state_changes", "all"] = "all",
+    type: Literal["clues", "actions", "skill_checks", "state_changes", "messages", "all"] = "all",
     keyword: str = Query(default=""),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),

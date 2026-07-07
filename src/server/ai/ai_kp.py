@@ -284,11 +284,25 @@ STRUCTURE_SYSTEM_PROMPT = """你是一个TRPG剧本分析器。给定一段剧�
 返回格式：
 {
   "scenes": [{"name": "场景名", "description": "描述", "order": 1}],
-  "npcs": [{"name": "NPC名", "role": "角色定位", "description": "描述"}],
-  "clues": [{"name": "线索名", "description": "描述", "location": "所在场景"}],
+  "npcs": [{
+    "npc_id": "稳定ID（英文slug，如 'professor-zhang'）",
+    "name": "NPC真名（truth层）",
+    "public_name": "玩家可见称呼（如NPC有伪装身份则为伪装名）",
+    "role": "角色定位（如 关键证人/反派/受害者/盟友/路人）",
+    "type": "类型（story/monster/ally/neutral）",
+    "public_description": "玩家可见的简短描述（不超过80字）",
+    "description": "Host/AI可见详细描述",
+    "personality": "性格特征",
+    "motivation": "动机目标",
+    "is_hidden": false
+  }],
+  "clues": [{"name": "线索名", "description": "描述", "location": "所在场景", "is_hidden": false}],
   "truth": {"summary": "真相摘要"},
   "endings": [{"name": "结局名", "description": "描述", "type": "victory/defeat/mixed"}]
-}"""
+}
+
+注意：隐藏NPC（真相尚未公开的反派/幕后人物）必须设置 is_hidden=true，并提供 public_description 作为玩家初步印象。
+npc_id 必须稳定且唯一，建议使用角色英文名/定位的slug格式。"""
 
 
 async def structure_scenario(raw_text: str, api_key: str = "", api_base: str = "https://api.deepseek.com", model: str = "deepseek-v4-pro") -> dict:
@@ -331,12 +345,53 @@ async def _structure_with_ai(raw_text: str, api_key: str, api_base: str, model: 
     return _normalize_kg(result)
 
 
+def _generate_npc_id(name: str, role: str = "", index: int = 0) -> str:
+    """Generate a stable npc_id when AI doesn't provide one.
+
+    Strategy: slugify the name (keep alphanumeric + Chinese chars), append role hint if ambiguous.
+    Falls back to index-based ID for unparseable names.
+    """
+    import hashlib
+    raw = f"{name}:{role}"
+    # Use first 8 hex chars of sha256 for stability
+    slug = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    return f"npc-{slug}"
+
+
+def _ensure_npc_ids(npcs: list[dict], scenario_id: str = "") -> list[dict]:
+    """Ensure every NPC in the list has a stable npc_id.
+
+    - If AI provides npc_id, use it.
+    - Otherwise generate from name+role.
+    - Deduplicate: if multiple NPCs share the same generated id, append index suffix.
+    """
+    seen_ids: dict[str, int] = {}
+    result = []
+    for i, npc in enumerate(npcs):
+        npc = dict(npc)  # shallow copy to avoid mutating caller
+        if not npc.get("npc_id"):
+            name = npc.get("name", "")
+            role = npc.get("role", "")
+            npc["npc_id"] = _generate_npc_id(name, role, i)
+        # Deduplicate
+        nid = npc["npc_id"]
+        if nid in seen_ids:
+            seen_ids[nid] += 1
+            npc["npc_id"] = f"{nid}-{seen_ids[nid]}"
+        else:
+            seen_ids[nid] = 0
+        result.append(npc)
+    return result
+
+
 def _normalize_kg(raw: dict) -> dict:
-    """Normalize AI knowledge graph output — handle camelCase/snake_case aliases."""
+    """Normalize AI knowledge graph output — handle camelCase/snake_case aliases and ensure npc_id."""
+    npcs = raw.get("npcs", [])
+    npcs = _ensure_npc_ids(npcs)
     return {
         "title": raw.get("scenarioTitle") or raw.get("title") or raw.get("scenario_title", ""),
         "scenes": raw.get("scenes", []),
-        "npcs": raw.get("npcs", []),
+        "npcs": npcs,
         "clues": raw.get("clues", []),
         "truth": raw.get("truth", {}),
         "endings": raw.get("endings", []),
@@ -370,9 +425,11 @@ def _structure_mock(raw_text: str) -> dict:
         name = name.strip()
         if 1 < len(name) < 20 and name not in seen_names:
             seen_names.add(name)
-            npcs.append({"name": name, "role": "未知", "description": ""})
+            npcs.append({"name": name, "role": "未知", "description": "", "is_hidden": False})
         if len(npcs) >= 10:
             break
+
+    npcs = _ensure_npc_ids(npcs)
 
     clues = []
     clue_patterns = re.findall(r"(?:线索|证据|发现|物品)[：:]\s*(.+?)(?:\n|$)", raw_text)

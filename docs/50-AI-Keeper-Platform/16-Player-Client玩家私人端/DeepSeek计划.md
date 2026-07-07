@@ -1,10 +1,18 @@
-# Player Client 玩家私人端 DeepSeek 计划 V2.0
+# Player Client 玩家私人端 DeepSeek 计划 V2.1
+
+## 当前阶段说明
+
+- 本计划当前阶段为：`P0 主链路 + 玩家私人端可用性与恢复安全风险识别版`。
+- 第一轮目标不是做“更酷的玩家端”，而是先把“受限、可信、可恢复”的玩家私人终端做扎实。
+- 当前仓库已有真实风险点，工程执行必须以代码现状为准：`shared/api.ts` 本地自造 `player_token`、`shared/identity.ts` 长期存 token、`shared/ws.ts` query token 与内存态 `lastSequence`、`PlayerActionPage.tsx` 缺少完整版本屏障、`router_reconnect.py` recent events 收口风险、`PlayerInventory.tsx` 的 `id/clue_id` 混用。
 
 ## 执行目标
 
-把玩家端整理成稳定、可恢复、受限的私人调查终端。第一轮优先保证主链路可跑通：加入房间、绑定角色、ready、进入行动页、提交行动、接收投影、查看本人资源、断线恢复。
+把玩家端整理成稳定、可恢复、受限的私人调查终端。第一轮优先保证主链路跑通：
 
-本计划只处理 Player Client 与其必要后端接口，不重写 AI、Rule、State、Transaction、Projection 的职责边界。涉及核心链路的问题必须回看：
+`加入房间 -> 绑定角色 -> ready -> 进入行动页 -> 提交行动 -> 接收投影 -> 查看授权资源 -> 断线恢复`
+
+本计划只处理 Player Client 及其直接依赖的必要后端接口，不重写 AI、Rule、State、Transaction、Projection 的职责边界。涉及核心链路的问题必须回看：
 
 - `docs/30-DeepSeek任务包/Batch-1-开发态稳定性与实时闭环.md`
 - `docs/30-DeepSeek任务包/Batch-2-状态版本屏障与投影时序.md`
@@ -16,33 +24,33 @@
 ## 全局禁止事项
 
 1. 禁止让前端直接写 HP、SAN、背包、线索、地图位置或房间状态。
-2. 禁止信任请求体里的 `character_id` 作为玩家身份。
-3. 禁止在玩家端展示 owner token、Host-only 事件、KP note、隐藏真相。
-4. 禁止靠前端过滤解决权限问题，权限必须在服务端过滤。
+2. 禁止信任请求体中的 `character_id` 作为玩家身份。
+3. 禁止在玩家端展示 `owner_token`、Host-only 事件、KP note、隐藏真相、raw debug。
+4. 禁止依赖前端过滤解决权限问题，最终过滤必须在服务端完成。
 5. 禁止为了修 UI 绕过 `X-Room-Token`、Authorization 或 WS 鉴权。
-6. 禁止把语音输入、动画、移动端增强放到核心链路之前。
-7. 禁止一次性重做整套前端设计系统。
-8. 禁止改动与玩家端无关的源码、测试产物或运行时数据。
+6. 禁止把语音、动效、移动端增强排到核心链路之前。
+7. 禁止顺手重构 Host/Admin/全局设计系统。
+8. 禁止修改与 Player Client 无关的源码、测试产物或运行时数据。
 
 ## Batch Player-0：现状盘点与构建基线
 
 ### 目标
 
-确认玩家端当前真实可运行状态，锁定乱码、构建错误、主流程断点和测试基线。
+确认当前玩家端真实可运行状态，锁定中文乱码、构建错误、接口口径偏差和主链路断点。
 
 ### 允许改动
 
 - `docs/50-AI-Keeper-Platform/16-Player-Client玩家私人端/`
-- 必要时新增测试记录文档
-- 不改源码，除非盘点过程发现明显阻断且用户批准进入修复 Batch
+- 必要时新增问题记录文档
 
 ### 任务
 
 1. 运行 `git status`，确认工作区已有改动范围。
-2. 检查 `src/client/src/App.tsx`、`navigation.ts`、`pages/Player*.tsx`、`components/Player*.tsx` 的乱码和语法风险。
-3. 检查玩家端导入路径：`../api`、`../ws`、`shared/api`、`shared/ws` 是否一致。
-4. 检查后端接口是否与前端调用一致，重点是 `clue_id/id`、action status、room status、stateVersion。
-5. 记录当前 `npm run build` 是否能通过，以及失败首因。
+2. 检查 `PlayerJoinPage`、`PlayerLobby`、`PlayerActionPage`、`PlayerCharacter`、`PlayerInventory`、`PlayerTerminal`、`VoiceInput` 是否存在乱码或类型阻塞。
+3. 检查 `shared/api.ts` 的 `getPlayerToken()` 是否仍会本地自造 token。
+4. 检查 `shared/ws.ts` 的 query token、`lastSequence` 和连接状态暴露方式。
+5. 检查前后端字段口径，重点是 `clue_id/id`、archive 类型、action status、`stateVersion`。
+6. 记录 `npm run build` 首个失败原因即可，不在本批顺手大修。
 
 ### 验收命令
 
@@ -57,13 +65,17 @@ python -m pytest tests/server/test_character_join_import.py tests/server/test_pl
 
 ### 预期结果
 
-得到一份可执行问题清单：哪些是文案乱码，哪些是类型或语法阻断，哪些是服务端安全或状态链路缺口。
+产出一份可执行问题清单，区分：
 
-## Batch Player-1：中文文案与页面可用性修复
+- 文本/构建问题
+- 接口/类型问题
+- 权限/恢复/状态链路问题
+
+## Batch Player-1：中文文案与玩家触达页面可用性
 
 ### 目标
 
-先让玩家端主要页面可读、可构建、可手动操作，不改变产品结构。
+先把玩家直接触达页面修到可读、可构建、可手动操作，不改变产品结构。
 
 ### 允许改动
 
@@ -75,16 +87,16 @@ python -m pytest tests/server/test_character_join_import.py tests/server/test_pl
 - `src/client/src/pages/PlayerCharacter.tsx`
 - `src/client/src/pages/PlayerInventory.tsx`
 - `src/client/src/components/PlayerTerminal.tsx`
-- `src/client/src/components/TacticalButtons.tsx`
 - `src/client/src/components/VoiceInput.tsx`
+- `src/client/src/components/TacticalButtons.tsx`
 
 ### 任务
 
-1. 修复玩家端触达页面的历史乱码文案。
-2. 修复明显破坏 TSX 解析的字符串和标签问题。
-3. 保留现有 Bauhaus UI 样式，不重做布局。
-4. 为主要错误提示统一可读中文：未登录、房间不存在、token 无效、加入失败、提交失败、网络断开。
-5. 保留语音输入，但确保语音失败时文本输入仍可用。
+1. 修复玩家端触达页面的历史乱码。
+2. 修复明显阻塞 TSX 解析的字符串和标签问题。
+3. 保留现有页面结构，不重做 Host/Admin/全局 UI 体系。
+4. 统一最小错误提示文案：未登录、房间不存在、token 无效、加入失败、提交失败、网络断开。
+5. 确保 VoiceInput 失败时文本输入仍可用。
 
 ### 验收命令
 
@@ -97,7 +109,7 @@ npm run build
 
 - 不改后端业务逻辑。
 - 不新增大规模 UI 框架。
-- 不把文案修复和权限修复混在一个提交里。
+- 不把中文修复和权限修复混成一个大杂烩提交。
 
 ## Batch Player-2：入房、角色绑定与身份恢复
 
@@ -117,12 +129,14 @@ npm run build
 
 ### 任务
 
-1. 前端 join 表单明确四种角色来源只能选一种。
-2. 入房成功后保存服务端返回的 `player_token`，不要使用前端自造 token 覆盖正式 token。
-3. 增加账号角色恢复入口，调用 `/api/player/me/characters` 和 restore-session。
-4. 服务端继续校验 account ownership，不能恢复他人角色。
-5. 加入 active 房间时显示 `pending_approval`，不直接当作已可行动。
-6. 明确 localStorage 身份槽是开发态便利，不作为长期安全方案。
+1. Join 表单明确四种角色来源互斥。
+2. 入房成功后只保存服务端返回的 `player_token`。
+3. 修复 `getPlayerToken()` 本地自造正式 token 的路径。
+4. 增加“恢复本人角色会话”入口，串起 `/api/player/me/characters` 与 `restore-session`。
+5. `restore-session` 返回新 token 后，只覆盖当前房间当前 slot，不覆盖其他 room/slot。
+6. active 房间加入时，前端明确显示 `pending_approval`，不当作已可行动。
+7. 文档和代码都要明确：identity slot 是开发态便利，不是生产安全会话方案。
+8. 若因联调需要保留 mock token，必须限制在显式 dev/mock mode，不得进入真实 join/restore 正式路径。
 
 ### 验收命令
 
@@ -137,15 +151,15 @@ npm run build
 
 ### 禁止事项
 
-- 不允许前端提交 `character_id` 来绑定身份。
-- 不允许复制其他账号角色。
+- 不允许前端提交 `character_id` 决定身份。
+- 不允许恢复他人角色。
 - 不允许无登录绕过账号归属策略。
 
-## Batch Player-3：等待室 ready、队内消息与开局跳转
+## Batch Player-3：Lobby、ready、队内消息与开局跳转
 
 ### 目标
 
-稳定等待室实时闭环：玩家加入、ready、聊天、Host 开局、玩家进入行动页。
+稳定大厅实时闭环：玩家加入、ready、队内消息、Host 开局、玩家进入行动页。
 
 ### 允许改动
 
@@ -160,11 +174,11 @@ npm run build
 ### 任务
 
 1. `ready_toggle` 乐观更新失败时必须回滚并提示。
-2. `s2c_room_lobby_snapshot` 到达后刷新成员和 ready 状态。
-3. `s2c_team_message` 去重逻辑保留，失败时撤销本地消息。
-4. Host start 后 Player 自动跳转行动页，手动按钮作为兜底。
-5. 轮询兜底只作为 WS 异常时刷新，不制造重复跳转。
-6. ready 在 active 后的展示语义与 pending approval 区分清楚。
+2. `s2c_room_lobby_snapshot` 到达后刷新成员与 ready 状态。
+3. `s2c_team_message` 保留去重，失败时撤销本地乐观消息。
+4. Host start 后玩家自动跳行动页，手动按钮只作兜底。
+5. 轮询兜底不能制造重复跳转。
+6. active 后 ready 展示语义要与 `pending_approval` 区分清楚。
 
 ### 验收命令
 
@@ -179,14 +193,14 @@ npm run build
 
 ### 禁止事项
 
-- 不为了 ready 同步直接修改 characters 表绕过 Engine/Room 口径。
+- 不为同步 ready 直接改 `characters` 表绕过 Room/Engine 口径。
 - 不把队内消息发进 AI 裁决链路。
 
-## Batch Player-4：行动终端与事务反馈
+## Batch Player-4：行动终端、错误模型与 pending action 恢复
 
 ### 目标
 
-让玩家提交行动后的等待、排队、结算、完成、失败反馈可理解，并和 Transaction 状态一致。
+让玩家提交行动后的等待、排队、结算、完成、失败反馈可理解，并和事务状态一致。
 
 ### 允许改动
 
@@ -197,16 +211,19 @@ npm run build
 - `src/server/player/router_reconnect.py`
 - `tests/server/test_player_intent.py`
 - `tests/server/test_reconnect.py`
-- 必要时新增前端状态单测
 
 ### 任务
 
-1. 统一 action 状态：idle、submitting、queued、batched、resolving、resolved、rejected、timeout。
-2. 所有行动提交带 `action_id`，重复点击不生成多条有效行动。
-3. 对 202、409、401、403、429、500 做不同 UI 文案。
-4. `s2c_action_queued`、`s2c_action_completed`、`s2c_public_observation` 驱动 UI 状态。
-5. 接入 `/api/player/actions/{action_id}`，用于刷新或 WS 断开后的状态查询。
-6. 道具主张成功后只展示本人 inventory patch，失败显示服务端原因。
+1. 统一 action 状态：`idle/submitting/queued/batched/resolving/resolved/rejected/timeout`。
+2. 所有行动提交都带 `action_id`，重复点击不生成多条有效行动。
+3. 建立统一错误模型：401/403/404/409/429/500。
+4. 409 需要区分：
+   - duplicate action / same turn already submitted
+   - `state_version_conflict`
+5. 接入 `/api/player/actions/{action_id}`，用于刷新、WS 断开和“本地 submitting 但 reconnect 找不到 action”场景。
+6. reconnect 返回 `pending_actions` 后，按 queued/batched/resolving/resolved/rejected/timeout 恢复 UI。
+7. 道具主张成功后只展示本人 inventory patch，失败显示服务端原因。
+8. `PlayerApiErrorDTO.code` 至少固定为：`not_authenticated`、`player_token_invalid`、`room_not_found`、`action_not_found`、`duplicate_action`、`state_version_conflict`、`rate_limited`、`server_error`。
 
 ### 验收命令
 
@@ -225,7 +242,7 @@ npm run build
 - 不在前端伪造 action completed。
 - 不把 rejected 当作 resolved 展示。
 
-## Batch Player-5：WS、重连与 stateVersion barrier
+## Batch Player-5：P0 安全批次：WS、reconnect 与 `stateVersion` 屏障
 
 ### 目标
 
@@ -245,14 +262,32 @@ npm run build
 
 ### 任务
 
-1. PlayerWS 暴露连接状态：connecting、open、closed、reconnecting。
-2. 页面在刷新或 WS 失败后调用 `/api/player/reconnect`。
-3. recent_events 只按服务端已过滤结果恢复 UI。
-4. pending_actions 恢复到 action 状态机。
-5. `s2c_state_patch` 支持 `schemaVersion`、`baseStateVersion`、`stateVersion`、`actionId`。
-6. 当前版本相同则应用 patch，旧版本丢弃，未来版本缓冲并调用 `/api/player/sync`。
-7. `/api/player/sync` 结果覆盖 snapshot 后，再按版本应用仍有效的缓冲 patch。
-8. lastSequence 可以跳号，跳号不代表要显示不可见事件。
+1. PlayerWS 暴露连接状态：`connecting/open/closed/reconnecting`。
+2. 刷新或 WS 长断开后调用 `/api/player/reconnect`。
+3. recent events 必须只用服务端已过滤结果恢复 UI，不允许前端自己再猜测可见性。
+4. `pending_actions` 恢复到 action 状态机。
+5. `s2c_state_patch` 支持 `schemaVersion/baseStateVersion/stateVersion/actionId`。
+6. 建立版本屏障：
+   - 当前版本 patch 才应用
+   - 旧 patch 丢弃
+   - 未来 patch 进 buffer 并触发 `/api/player/sync`
+7. sync 覆盖 snapshot 后，只应用仍然有效的 buffered patch。
+8. sequence 跳号不当作安全错误；安全仍以 Projection 过滤为准。
+9. Player 消费白名单固定为：
+   - `s2c_room_lobby_snapshot`
+   - `s2c_team_message`
+   - `s2c_action_queued`
+   - `s2c_action_completed`
+   - `s2c_state_patch`
+   - `s2c_public_observation`
+   - `s2c_turn_resolved`
+   - `s2c_clue_discovered`
+   - `s2c_clue_shared` 的 `publicVersion`
+   - `s2c_map_updated/s2c_player_moved/s2c_map_revealed`
+10. 未知 `s2c_*` 默认忽略并记录 debug，不作为安全过滤替代。
+11. 回执必须说明：本轮是否只做了 WS query token 风险标注，是否做了日志脱敏，是否引入短期 WS ticket。
+12. 如本轮仍保留 `localStorage` token 或 query token，只能宣称“风险已标注/部分缓解”，不能宣称“token 安全完成”。
+13. 本批次至少补四类最小测试：旧 patch 丢弃、当前 patch 应用、未来 patch buffer+sync、sync 后只重放有效 patch。
 
 ### 验收命令
 
@@ -268,15 +303,15 @@ npm run test
 
 ### 禁止事项
 
-- 不让 Player 忽略版本号直接覆盖状态。
-- 不把 Host-only 或他人 player-only 事件发到前端后再隐藏。
-- 不把 sequence 跳号当成安全错误。
+- 不允许忽略版本号直接覆盖状态。
+- 不允许把 Host-only 或他人私密事件发给前端后再隐藏。
+- 不允许把 sequence 跳号误写成权限错误。
 
 ## Batch Player-6：角色、背包、线索、日志、地图
 
 ### 目标
 
-把玩家私人资源面板和服务端权威读模型对齐，避免展示过期状态或越权内容。
+把玩家私人资源面板和服务端权威读取模型对齐，避免展示过期状态或越权内容。
 
 ### 允许改动
 
@@ -285,7 +320,6 @@ npm run test
 - `src/client/src/pages/PlayerActionPage.tsx`
 - `src/server/player/router_player.py`
 - `src/server/player/router_clues.py`
-- `src/server/player/router_objectives.py`
 - `src/server/player/router_player_archive.py`
 - `src/server/router_map.py`
 - `tests/server/test_player_runtime_state.py`
@@ -295,13 +329,14 @@ npm run test
 
 ### 任务
 
-1. `/api/player/character` 当前数值优先 runtime state，角色技能和背景保留角色卡基线。
-2. PlayerCharacter 展示 Host HUD 一致的 HP/SAN/MP/Luck。
-3. PlayerInventory 统一线索字段，使用 `clue_id` 作为分享接口 id。
-4. 线索分享成功后重新拉取 `/api/player/clues`，不只做本地改值。
-5. Player archive 过滤复用 Projection 可见性口径。
-6. 地图无 token 或 token 不属于房间时不返回敏感地图内容。
-7. 地图移动失败展示非法原因，成功等待投影刷新。
+1. `/api/player/character` 当前值优先 runtime；技能、背景、职业保留角色卡基线。
+2. PlayerCharacter 展示与 Host HUD 一致的当前 HP/SAN/MP/Luck。
+3. 前端内部统一使用 `clueId`，适配层兼容 `clue_id/id`。
+4. 分享线索必须使用服务端权威 `clue_id`；分享后重新拉 `/api/player/clues`，不本地硬改 `shared=true`。
+5. Player archive 查询复用 Projection 可见性口径。
+6. `GET /api/map/{room_id}` 无 token 或 token 不属于房间时，默认 401/403；如未来要公开地图，只能给显式 public summary。
+7. 地图移动失败显示服务端原因；成功后等待授权投影刷新。
+8. archive 类型枚举与前端筛选项对齐，不保留自造 `narrative` 偏差。
 
 ### 验收命令
 
@@ -316,11 +351,11 @@ npm run build
 
 ### 禁止事项
 
-- 不让玩家端修改自己的 runtime 数值。
-- 不把未发现地图节点、未获得线索或他人背包放进响应。
+- 不让玩家端改 runtime 当前值。
+- 不把未发现地图节点、未获得线索、他人背包放进玩家响应。
 - 不用前端字段隐藏替代服务端过滤。
 
-## Batch Player-7：语音、战术、移动端体验
+## Batch Player-7：语音、移动端与可访问性补强
 
 ### 目标
 
@@ -337,12 +372,12 @@ npm run build
 
 ### 任务
 
-1. 语音录制失败、权限拒绝、STT 未配置时提示文本输入。
-2. 语音转写结果可编辑，再选择发队内消息或提交行动。
-3. 战术按钮禁用状态、loading 状态和失败提示清晰。
-4. 玩家端底部 tab 在移动端不遮挡输入框。
-5. 关键按钮支持键盘操作和基础 aria label。
-6. 长文本消息和日志不撑破容器。
+1. 麦克风权限拒绝、录音失败、STT 未配置时，明确提示文本输入。
+2. 语音转写结果可编辑，再决定发队内消息或提交行动。
+3. 战术按钮的禁用、loading、失败提示清晰。
+4. 移动端底部 tab 不遮挡输入框。
+5. 关键按钮支持键盘操作与基础 aria label。
+6. 长文本消息和日志不挤爆容器。
 
 ### 验收命令
 
@@ -354,7 +389,7 @@ npm run test
 
 ### 禁止事项
 
-- 不把语音作为唯一行动输入方式。
+- 不把语音当成唯一输入方式。
 - 不在前端根据按钮类型直接结算战斗或追逐。
 - 不引入大型移动端框架。
 
@@ -367,18 +402,17 @@ npm run test
 ### 手动验收流程
 
 1. Host 登录并创建房间。
-2. Player A 登录，加入房间并选择角色。
-3. Player B 登录，加入房间并选择角色。
-4. 两名玩家在等待室互相可见，并发送队内消息。
+2. Player A 登录、加入房间并选择角色。
+3. Player B 登录、加入房间并选择角色。
+4. 两名玩家在 Lobby 互相可见并能发队内消息。
 5. 两名玩家 ready。
 6. Host 开始游戏。
 7. 两名玩家进入行动终端。
-8. Player A 提交自由行动，Player B 提交另一个行动。
-9. Transaction 进入 resolving，Host 收到公共演出。
-10. Player A 只收到自己可见的私密结果和 party 公共叙事。
-11. Player B 不收到 Player A 的私密 patch。
-12. Player A 刷新页面，通过 reconnect 恢复 pending 或 completed 状态。
-13. Player A 查看角色、背包、线索、地图、日志，内容均为授权视角。
+8. Player A、Player B 分别提交行动。
+9. 事务进入 resolving，Host 收到公共演出。
+10. 每名玩家只收到自己可见的私密结果和队伍公共结果。
+11. Player A 刷新页面，通过 reconnect 恢复 pending 或 completed 状态。
+12. Player A 查看角色、背包、线索、地图、日志，内容均为授权视角。
 
 ### 回归命令
 
@@ -394,28 +428,8 @@ npm run test
 
 ### 预期结果
 
-- 玩家主链路可完整走通。
-- 无 Host-only 或他人 player-only 泄露。
-- 玩家端刷新和断线后状态一致。
+- 玩家主链路完整跑通。
+- 无 Host-only 或他人 `player-only` 泄露。
+- 刷新和断线后状态一致。
 - 前端构建通过。
 - 相关后端测试通过。
-
-## 与其他模块接口
-
-| 模块 | Player Client 依赖 | 对方期望 |
-| --- | --- | --- |
-| Room | 房间状态、等待室、开局跳转 | 玩家端不承载房间生命周期裁决 |
-| User | account token、player token、身份槽 | 玩家端不信任本地身份声明 |
-| Channel | 队内消息、事件流 | 队内消息不进入 AI 裁决 |
-| Rule | 技能检定、战术动作 | 玩家端只提交 intent |
-| Character | 角色卡基线、builder、上传解析 | 当前状态由 State 覆盖 |
-| Clue | 线索归属和分享 | 前端不自行公开线索 |
-| Scene/Map | 地图可见范围和移动 | 地图移动走 intent |
-| Journal | 玩家日志和回放 | 查询必须复用可见性过滤 |
-| AI-Keeper | 行动建议和叙事结果 | 玩家端不接收隐藏真相 |
-| State | runtime state、stateVersion、sync | 玩家端实现版本屏障 |
-| Transaction | action 状态和幂等 | 玩家端展示事务状态，不决定事务 |
-| Projection | WS、reconnect、archive 可见事件 | 玩家端不承担最终安全过滤 |
-| Host Client | 开局和公共舞台 | 玩家端不读取 Host-only 视角 |
-| Voice/Media | STT 能力 | 语音为增强，文本为主路径 |
-| Safety | 防剧透、安全边界 | 玩家端不能展示未授权内容 |

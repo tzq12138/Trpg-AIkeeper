@@ -51,6 +51,9 @@ def _determine_success(roll: int, threshold: int, skill_value: int) -> SuccessLe
         return "critical"
     if roll == 100:
         return "fumble"
+    # CoC 7e: low-skill characters fumble on 96-100
+    if skill_value < 50 and roll >= 96:
+        return "fumble"
     if roll <= threshold // 5:
         return "extreme"
     if roll <= threshold // 2:

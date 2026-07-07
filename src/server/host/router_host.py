@@ -451,7 +451,7 @@ async def get_host_full_map(request: Request, room_id: str):
 
 @router.post("/{room_id}/map/reveal")
 async def host_reveal_node(request: Request, room_id: str):
-    """Host manually reveals or hides a map node."""
+    """Host manually reveals or hides a map node. Only affects nodes belonging to this room's map."""
     _verify_owner(request, room_id)
     body = await request.json()
     node_id = body.get("node_id", body.get("nodeId", ""))
@@ -461,8 +461,28 @@ async def host_reveal_node(request: Request, room_id: str):
         raise HTTPException(400, "node_id is required")
 
     conn = request.app.state.db
-    from ..map_persistence import host_set_node_visible
+    from ..map_persistence import host_set_node_visible, get_room_map_state, get_scenario_map
+
+    # Validate node belongs to this room's map
+    map_state = get_room_map_state(conn, room_id)
+    if not map_state:
+        raise HTTPException(404, "No map initialized for this room")
+    scenario_map = get_scenario_map(conn, map_state["map_id"])
+    if not scenario_map:
+        raise HTTPException(404, "Scenario map not found")
+    node_ids = {n.get("node_id", n.get("nodeId", "")) for n in scenario_map.get("nodes", [])}
+    if node_id not in node_ids:
+        raise HTTPException(400, "节点不属于当前房间地图")
+
     host_set_node_visible(conn, room_id, node_id, visible)
+
+    # Bump map version
+    conn.execute(
+        "UPDATE room_map_state SET state_version = state_version + 1, updated_at = NOW() WHERE room_id = %s",
+        (room_id,),
+    )
+    conn.commit()
+    map_version = (map_state.get("state_version") or 0) + 1
 
     from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
@@ -473,27 +493,58 @@ async def host_reveal_node(request: Request, room_id: str):
             dispatcher.emit(room_id, "s2c_map_revealed", "party", {
                 "nodeId": node_id,
                 "visible": visible,
+                "mapVersion": map_version,
+                "roomId": room_id,
             })
         )
     except RuntimeError:
         pass
 
-    return {"status": "ok", "nodeId": node_id, "visible": visible}
+    return {"status": "ok", "nodeId": node_id, "visible": visible, "mapVersion": map_version}
 
 
 @router.post("/{room_id}/map/move-character")
 async def host_force_move(request: Request, room_id: str):
-    """Host force-moves a character to a node."""
-    _verify_owner(request, room_id)
+    """Host force-moves a character to a node. Requires reason. Validates ownership."""
+    owner_info = _verify_owner(request, room_id)
     body = await request.json()
     character_id = body.get("character_id", body.get("characterId", ""))
     target_node_id = body.get("node_id", body.get("nodeId", ""))
+    reason = body.get("reason", "").strip()
+    from_node_id = body.get("from_node_id", body.get("fromNodeId", ""))
 
     if not character_id or not target_node_id:
         raise HTTPException(400, "character_id and node_id are required")
+    if not reason:
+        raise HTTPException(400, "force move requires reason")
 
     conn = request.app.state.db
-    from ..map_persistence import set_character_position, mark_node_explored
+
+    # Validate character belongs to this room
+    char = conn.execute(
+        "SELECT * FROM characters WHERE character_id = %s AND room_id = %s",
+        (character_id, room_id),
+    ).fetchone()
+    if not char:
+        raise HTTPException(400, "角色不属于当前房间")
+
+    # Validate node belongs to this room's map
+    from ..map_persistence import (
+        set_character_position, mark_node_explored, get_room_map_state, get_scenario_map,
+        get_character_position,
+    )
+    map_state = get_room_map_state(conn, room_id)
+    if not map_state:
+        raise HTTPException(404, "No map initialized for this room")
+    scenario_map = get_scenario_map(conn, map_state["map_id"])
+    if not scenario_map:
+        raise HTTPException(404, "Scenario map not found")
+    node_ids = {n.get("node_id", n.get("nodeId", "")) for n in scenario_map.get("nodes", [])}
+    if target_node_id not in node_ids:
+        raise HTTPException(400, "目标节点不属于当前房间地图")
+
+    actual_from = from_node_id or get_character_position(conn, character_id, room_id) or "?"
+
     set_character_position(conn, character_id, room_id, target_node_id)
     mark_node_explored(conn, room_id, target_node_id)
     conn.execute(
@@ -501,6 +552,8 @@ async def host_force_move(request: Request, room_id: str):
         (room_id,),
     )
     conn.commit()
+
+    map_version = (map_state.get("state_version") or 0) + 1
 
     from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
@@ -510,15 +563,36 @@ async def host_force_move(request: Request, room_id: str):
         asyncio.get_running_loop().create_task(
             dispatcher.emit(room_id, "s2c_player_moved", "party", {
                 "characterId": character_id,
-                "fromNodeId": None,
+                "fromNodeId": actual_from,
                 "toNodeId": target_node_id,
                 "forced": True,
+                "mapVersion": map_version,
+                "reason": reason,
             })
         )
+        # Write audit event for force move
+        from ..events.event_log import EventLog
+        el = EventLog(conn)
+        el.log_event(room_id, "host_force_move", "system", {
+            "operation": "force_move",
+            "roomId": room_id,
+            "actorAccountId": owner_info.get("owner_account_id", "host"),
+            "targetCharacterId": character_id,
+            "fromNodeId": actual_from,
+            "toNodeId": target_node_id,
+            "reason": reason,
+            "mapVersion": map_version,
+        })
     except RuntimeError:
         pass
 
-    return {"status": "ok", "characterId": character_id, "nodeId": target_node_id}
+    return {
+        "status": "ok",
+        "characterId": character_id,
+        "nodeId": target_node_id,
+        "fromNodeId": actual_from,
+        "mapVersion": map_version,
+    }
 
 
 # ── Host Encounter Management ──
@@ -717,6 +791,7 @@ async def host_create_npc(request: Request, room_id: str):
         damage_expression=body.get("damage_expression", body.get("damageExpression", "1d3")),
         main_skill=body.get("main_skill", body.get("mainSkill", "")),
         notes=body.get("notes", ""),
+        display_name=npc_name,
     )
 
     parts = [dict(p) for p in get_participants(conn, encounter_id)]

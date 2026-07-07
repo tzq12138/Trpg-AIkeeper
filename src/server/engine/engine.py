@@ -61,10 +61,8 @@ class Engine:
             "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, 'player', %s)",
             (room_id, "s2c_action_queued", json.dumps({"actionId": intent.action_id})),
         )
-        self.conn.execute(
-            "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s",
-            (room_id,),
-        )
+        # Note: action queuing does NOT bump rooms.state_version.
+        # state_version is reserved for authoritative world state changes (HP/SAN/clue/map/etc).
         self.conn.commit()
         logger.info("submit_intent: queued action_id=%s room=%s char=%s type=%s intent=%s",
                     intent.action_id, room_id, character_id, intent.intent_type,

@@ -175,16 +175,25 @@ class ToolExecutor:
         for npc_name in npcs_in_scene:
             npc_data = None
             for npc in kg.get("npcs", []):
-                if npc.get("name") == npc_name:
+                # Match by name first, also try npc_id
+                if npc.get("name") == npc_name or npc.get("npc_id") == npc_name:
                     npc_data = npc
                     break
             if npc_data:
-                npcs_detail.append({
-                    "name": npc_name, "type": npc_data.get("type", "story"),
+                entry = {
+                    "npc_id": npc_data.get("npc_id", ""),
+                    "name": npc_data.get("public_name", npc_data.get("name", npc_name)),
+                    "type": npc_data.get("type", "story"),
                     "role": npc_data.get("role", ""),
-                    "personality": npc_data.get("personality", ""),
-                    "motivation": npc_data.get("motivation", ""),
-                })
+                    "public_description": npc_data.get("public_description", ""),
+                }
+                # Only include personality/motivation for internal AI context,
+                # not for player-facing narrative generation
+                if npc_data.get("personality"):
+                    entry["personality"] = npc_data["personality"]
+                if npc_data.get("motivation"):
+                    entry["motivation"] = npc_data["motivation"]
+                npcs_detail.append(entry)
             else:
                 npcs_detail.append({"name": npc_name, "type": "story"})
         return {"npcs": npcs_detail, "location": location}
@@ -205,11 +214,37 @@ class ToolExecutor:
         return {"error": f"Location '{location_name}' not found"}
 
     async def _tool_query_clues(self) -> dict:
-        rows = self.conn.execute(
-            "SELECT clue_id, text, source FROM clues WHERE character_id = %s AND room_id = %s ORDER BY clue_id DESC LIMIT 10",
+        # Owned clues (full text visible)
+        owned_rows = self.conn.execute(
+            "SELECT clue_id, text, source, is_private FROM clues "
+            "WHERE character_id = %s AND room_id = %s ORDER BY clue_id DESC LIMIT 10",
             (self.character_id, self.room_id),
         ).fetchall()
-        return {"clues": [dict(r) for r in rows]}
+        clues = []
+        for r in owned_rows:
+            clues.append({
+                "clue_id": r["clue_id"],
+                "text": r["text"],
+                "source": r["source"],
+                "owned": True,
+            })
+        # Shared clues from teammates (public_version only)
+        shared_rows = self.conn.execute(
+            "SELECT cs.clue_id, cs.public_version, cs.shared_by "
+            "FROM clue_shares cs JOIN clues c ON cs.clue_id = c.clue_id "
+            "WHERE c.room_id = %s AND c.character_id != %s "
+            "ORDER BY cs.shared_at DESC LIMIT 10",
+            (self.room_id, self.character_id),
+        ).fetchall()
+        for r in shared_rows:
+            clues.append({
+                "clue_id": r["clue_id"],
+                "text": r["public_version"],
+                "source": "shared",
+                "shared_by": r["shared_by"],
+                "owned": False,
+            })
+        return {"clues": clues}
 
     async def _tool_query_inventory(self) -> dict:
         rows = self.conn.execute(
@@ -295,12 +330,30 @@ class ToolExecutor:
         }
 
     async def _tool_engine_save_clue(self, text: str, source: str = "") -> dict:
+        """Save a clue through the controlled path — writes clue + discovery event.
+
+        The clue is saved as private (is_private=true) for the current character.
+        An s2c_clue_discovered event is written for archival and projection.
+        """
         clue_id = str(uuid.uuid4())[:8]
         try:
             self.conn.execute(
-                "INSERT INTO clues (clue_id, room_id, character_id, text, source, is_private) VALUES (%s, %s, %s, %s, %s, %s)",
+                "INSERT INTO clues (clue_id, room_id, character_id, text, source, is_private) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
                 (clue_id, self.room_id, self.character_id, text, source or "agent", True),
             )
+            # Write discovery event for archival/journal
+            try:
+                from ..events.event_log import EventLog
+                el = EventLog(self.conn)
+                el.log_event(self.room_id, "s2c_clue_discovered", "player", {
+                    "clueId": clue_id,
+                    "characterId": self.character_id,
+                    "source": source or "agent",
+                    "visibility": "self",
+                })
+            except Exception as ev_err:
+                logger.warning("Failed to write clue_discovered event: %s", ev_err)
             self.conn.commit()
             return {"clue_id": clue_id, "saved": True, "text": text}
         except Exception as e:

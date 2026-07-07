@@ -6,6 +6,12 @@ Character v1 的目标是让玩家能在房间中稳定拥有一个可验证、�
 
 成功标准是：玩家入房并绑定角色后，Host 能看到公开摘要，玩家能查看自己的完整角色页，ready 后可开局，提交技能检定时后端读取权威角色数据，状态变化后 Host 与玩家视图最终一致。
 
+当前阶段说明：
+
+- 本 PRD 已可进入工程执行，但当前阶段仍是“P0 主链路 + 角色数据权威风险识别版”。
+- 文档已经识别 `xlsx_data` 与 `character_runtime_state` 数据源漂移、技能值权威来源、角色状态枚举漂移、私密背景/RAG 裁剪、`restore-session` token 风险、运行态初始化失败、DTO 分层不足等问题，但不代表这些风险已在代码里全部关闭。
+- 本文优先锁定 Character 的边界、数据分层、接口方向和验收口径，不把生产硬化写成既成事实。
+
 ## 产品边界
 
 包含：
@@ -26,6 +32,21 @@ Character v1 的目标是让玩家能在房间中稳定拥有一个可验证、�
 - 完整成长、升级、死亡、长期档案玩法。
 - Clue/Inventory 的归属细节；Character 只引用摘要。
 - AI 直接生成并写入角色状态。
+
+## 数据分层
+
+| 层 | 权威来源 | 作用 |
+|---|---|---|
+| 身份绑定 | `characters.character_id / room_id / player_token / account_id` | 确定角色归属、恢复和房间内身份 |
+| 成员状态 | `characters.status / is_ready` | Room Lobby、审批、ready、开局校验 |
+| 静态角色卡 | `characters.xlsx_data` | 初始属性、技能、背景、职业、导入快照 |
+| 运行态 | `character_runtime_state` | 当前 HP/SAN/MP/Luck、状态标签、临时修正、版本 |
+| 长期档案 | `character_profiles` | 跨房长期角色沉淀与成长，P2 以后再做产品闭环 |
+| 公开摘要 | Character DTO 派生 | Lobby、Host HUD、Projection 公共展示 |
+| 规则快照 | Character + Runtime 派生 | Rule 读取技能、属性、当前修正 |
+| AI 上下文 | 裁剪后的 DTO | AI 只能读取授权字段 |
+
+Character 后续实现必须围绕这八层分工，避免把身份、静态卡、运行态、公开摘要和 AI 上下文揉成一团。
 
 ## 角色与权限
 
@@ -50,6 +71,11 @@ Character v1 的目标是让玩家能在房间中稳定拥有一个可验证、�
 角色成员状态使用 `joined/pending_approval/left`。历史兼容值 `active` 仍可能出现在查询和默认值中，DeepSeek 后续需要收敛，不应继续扩大使用。
 
 `is_ready` 是大厅准备状态，不是角色生命周期状态。
+
+后续状态收敛要求：
+
+- 新写入只允许 `joined / pending_approval / left`
+- `active` 仅作为 legacy read compatibility 存在，不应继续扩大使用
 
 ## 主要流程
 
@@ -84,6 +110,14 @@ Character v1 的目标是让玩家能在房间中稳定拥有一个可验证、�
 4. Host HUD 已优先读取运行态。
 5. 玩家 `/api/player/character` 和 `/api/player/sync` 需要合并运行态，避免玩家页显示旧值。
 
+若运行态初始化失败，后续最小处理要求应为：
+
+1. 入房主链路允许继续
+2. 写结构化 warning event 或 error log
+3. 玩家 `/character` 或 `/sync` 读取时可懒初始化
+4. 懒初始化失败时返回明确 degraded 状态
+5. 不得让 Host HUD 与 Player 页长期无提示地读取不同来源
+
 ## 接口方向
 
 | 接口 | 作用 | 权限 |
@@ -103,14 +137,85 @@ Character v1 的目标是让玩家能在房间中稳定拥有一个可验证、�
 | `POST /api/player/skill-check` | 技能检定兜底接口 | `X-Room-Token` |
 | `GET /api/host/{room_id}/hud` | Host 公共战局状态 | Host owner/admin |
 
+其中 `POST /api/player/skill-check` 口径必须与 04-Rule 对齐：
+
+- 只作为 debug/兼容/降级入口
+- 不进入正式 action lifecycle
+- 不写状态
+- 不触发事务
+- 不应被前端静默替代正式 intent
+- `skill_value` 不得作为正式权威值
+
 ## 权限与隐私边界
 
 - `player_token` 只能定位一个玩家角色，不能被列表接口、日志、导出明文暴露。
 - `account_id` 只用于账号恢复、复制和长期档案归属，不能替代房间内 player token。
 - 大厅和 Host 公共状态只展示公开摘要与战局状态。
-- 背景、信念、恐惧、秘密、欲望等字段进入 AI 上下文前必须按本人、Host、AI、公开四类可见范围裁剪。
+- 背景、信念、恐惧、秘密、欲望等字段进入 AI 上下文前必须按 DTO 和 visibility 裁剪，不能原样喂给 RAG。
 - 进行中加入的 `pending_approval` 角色在批准前不能参与行动结算。
 - 前端传入的技能值不是权威值；后端必须能从角色卡或运行态读取技能。
+- `restore-session` 若直接返回原 `player_token`，当前也只能视为兼容路径，不是最终安全方案；正式方向应是短期恢复票据、rotate 或设备绑定。
+
+## DTO 分层方向
+
+后续至少拆出以下 DTO：
+
+- `PublicCharacterSummaryDTO`
+- `LobbyCharacterDTO`
+- `SelfCharacterDTO`
+- `HostCharacterDTO`
+- `RuleCharacterSnapshotDTO`
+- `AICharacterContextDTO`
+- `AdminCharacterDTO`
+
+最小字段边界建议：
+
+| DTO | 可含字段 | 禁止字段 |
+|---|---|---|
+| `PublicCharacterSummaryDTO` | 玩家名、调查员名、职业、公开状态 | `player_token`、完整 `xlsx_data`、私密背景 |
+| `LobbyCharacterDTO` | 公开摘要 + 状态 + ready | 技能全量、秘密、私密笔记 |
+| `SelfCharacterDTO` | 本人完整角色卡 + 本人运行态 | 其他玩家私密字段 |
+| `HostCharacterDTO` | 公共战局状态、HP/SAN/MP/Luck、状态标签 | 未授权秘密、私人背景全文 |
+| `RuleCharacterSnapshotDTO` | 技能、属性、运行态、临时修正 | `player_token`、`account_id` |
+| `AICharacterContextDTO` | 裁剪后的公开/本人/Host 授权字段 | 未授权秘密、未发现线索、其他玩家私密字段 |
+| `AdminCharacterDTO` | 排错、归属、审计字段 | 不进入普通跑团接口 |
+
+## 字段可见性方向
+
+最小 visibility 契约建议先锁为：
+
+- `public`
+- `party`
+- `self`
+- `host`
+- `keeperOnly`
+- `private`
+- `neverExport`
+
+建议默认分级：
+
+| 字段 | 默认可见性 |
+|---|---|
+| 调查员姓名、职业 | `public` |
+| 年龄、性别 | `public` 或 `party` |
+| 当前 HP/SAN/MP/Luck | `party` 或 `host+self`，后续再交 Room/Rule/Projection 配置 |
+| 技能列表 | `self`，Host 仅在授权或规则需要时读取 |
+| 背景故事、重要人物 | `self` |
+| 恐惧、秘密、欲望、私密笔记 | `self` 或 `keeperOnly` |
+| 个人目标 | `self/host` |
+| `player_token` | `neverExport` |
+| `account_id` | 后台可见，不进入普通 DTO |
+
+## RAG / AI 上下文边界
+
+Character 加入、导入或更新时，不得把完整 `xlsx_data` 原样索引进 player-facing RAG。
+
+后续最小要求：
+
+1. 索引前先构建 `AICharacterContextDTO`
+2. 写入索引时附带 `visibility / audience / discovered_state` metadata
+3. player-facing search 必须再经过可见性过滤
+4. 其他玩家不能通过 AI 检索链路读到本角色的私密背景、秘密、恐惧、欲望、私人目标
 
 ## 验收标准
 
@@ -122,6 +227,7 @@ Character v1 的目标是让玩家能在房间中稳定拥有一个可验证、�
 - StateService 修改 HP/SAN/MP/Luck 后，Host HUD 与玩家角色页最终读取同一运行态。
 - 玩家不能通过别人的 `character_id` 恢复 session 或复制角色。
 - 技能检定不能信任前端提交的任意 `skill_value` 作为最终权威。
+- 大厅快照、公开 DTO、普通日志不包含完整 `xlsx_data`、`player_token`、私密背景。
 
 ## 当前风险
 
@@ -129,5 +235,5 @@ Character v1 的目标是让玩家能在房间中稳定拥有一个可验证、�
 - `/api/player/skill-check` 兜底接口信任请求中的 `skill_value`，需要限制为兼容路径或改成服务端取值。
 - `characters.status` 存在 `active` 与 `joined/pending_approval/left` 的口径漂移。
 - 多个前端角色页面存在历史编码乱码，影响真实验收。
-- 角色 RAG 索引需要明确裁剪策略，避免私密背景和未公开信息进入 AI 可见上下文。
+- 角色 RAG 索引若原样吞入完整 `xlsx_data`，会把私密背景和未公开信息暴露给 AI 检索链路。
 - `character_profiles` 已写入但长期角色产品闭环不足，不能被误认为已完成。

@@ -59,7 +59,7 @@ class TurnManager:
         turn = self.ensure_current_turn(room_id)
         chars = self.conn.execute(
             "SELECT character_id, player_name, xlsx_data, status FROM characters "
-            "WHERE room_id = %s AND status IN ('joined', 'ready', 'active')",
+            "WHERE room_id = %s AND status = 'joined'",
             (room_id,)
         ).fetchall()
         submitted = set()
@@ -95,27 +95,31 @@ class TurnManager:
         snap = self.get_turn_snapshot(room_id)
         return snap["all_submitted"] and len(snap["players"]) > 0
 
-    def skip_character(self, room_id: str, turn_id: str, character_id: str):
-        """Generate a placeholder action so a skipped player doesn't block settlement."""
+    def skip_character(self, room_id: str, turn_id: str, character_id: str, reason: str = ""):
+        """Generate a placeholder action so a skipped player doesn't block settlement. Requires reason."""
         turn = self.conn.execute(
             "SELECT * FROM room_turns WHERE turn_id = %s AND room_id = %s", (turn_id, room_id)
         ).fetchone()
         if not turn:
             return {"status": "not_found"}
         action_id = str(uuid.uuid4())[:12]
+        declared = f"本回合跳过: {reason}" if reason else "本回合跳过"
         self.conn.execute(
             "INSERT INTO actions (action_id, room_id, character_id, turn_id, intent_type, declared_intent, status) "
-            "VALUES (%s, %s, %s, %s, 'system_skip', '本回合跳过', 'resolved')",
-            (action_id, room_id, character_id, turn_id),
+            "VALUES (%s, %s, %s, %s, 'system_skip', %s, 'resolved')",
+            (action_id, room_id, character_id, turn_id, declared),
         )
         self.conn.commit()
-        return {"status": "skipped", "action_id": action_id}
+        return {"status": "skipped", "action_id": action_id, "reason": reason}
 
-    def mark_resolving(self, turn_id: str):
-        self.conn.execute(
-            "UPDATE room_turns SET status = 'resolving' WHERE turn_id = %s", (turn_id,)
+    def mark_resolving(self, turn_id: str) -> bool:
+        """Atomically transition collecting → resolving. Returns True if this caller won the race."""
+        cursor = self.conn.execute(
+            "UPDATE room_turns SET status = 'resolving' WHERE turn_id = %s AND status = 'collecting'",
+            (turn_id,)
         )
         self.conn.commit()
+        return cursor.rowcount > 0
 
     def mark_resolved(self, turn_id: str, summary: str = ""):
         self.conn.execute(

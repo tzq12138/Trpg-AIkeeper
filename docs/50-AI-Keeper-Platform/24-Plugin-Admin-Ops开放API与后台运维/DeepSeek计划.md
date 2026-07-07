@@ -1,71 +1,86 @@
-# Plugin / Admin / Ops 开放 API 与后台运维 DeepSeek 计划 V2.0
+# Plugin / Admin / Ops 开放 API 与后台运维 DeepSeek 计划 V2.1
+
+## 当前阶段说明
+
+- 当前阶段为 `P0 控制面基线 + Admin 权限、生产安全、日志脱敏、MCP/Agent 治理与 Open API 设计风险识别版`。
+- 本轮工程不创建真实 API key，不注册 plugin runtime，不开放 webhook，不做多租户，不做生产监控平台。
+- 本轮重点是：把后台权限、配置安全、日志脱敏、MCP/Agent 治理、migration/backup 设计和 future OpenAPI scope 收紧。
 
 ## 执行原则
 
-先稳后台权限、生产安全和运维基线，再谈开放 API 和插件。任何开放能力都不能绕过 Auth、Safety、State、Transaction、Projection、Journal。DeepSeek 开始每个 Batch 前先执行 `git status --short`，读懂已有未提交改动，不覆盖无关文件。
+1. 每个 Batch 开始前先执行 `git status --short`，确认工作区脏改动，不覆盖无关文件。
+2. 先做后端权限与安全基线，再做 AdminDashboard 最小可读性增强，最后才做 Open API / Plugin 设计包。
+3. 所有脱敏必须在后端 DTO / log / export 层完成，不能只靠前端遮罩。
+4. 所有状态写入必须经过业务服务链，禁止 Plugin / MCP / Agent direct write 主库。
+5. `/docs` 只是内部开发文档，不得当作 external OpenAPI 直接开放。
 
-本模块改动风险高，涉及后台、配置、日志、AI、RAG、MCP 和数据库。每个工程 Batch 都必须有测试，不能只靠手动验证或前端隐藏。
+## 当前代码依据
 
-## 现状依据
+- `src/server/main.py`
+- `src/server/config.py`
+- `src/server/router_auth.py`
+- `src/server/router_admin.py`
+- `src/server/ai/gateway.py`
+- `src/server/ai/providers.py`
+- `src/server/ai/kp_mcp_client.py`
+- `src/server/agent/tools.py`
+- `src/server/db_adapter.py`
+- `src/client/src/pages/AdminDashboard.tsx`
+- `kp_mcp_server/config.py`
+- `kp_mcp_server/server.py`
+- `dev.py`
+- `docker-compose.yml`
 
-- 应用入口和 health：`src/server/main.py`
-- 配置：`src/server/config.py`
-- 日志：`src/server/log_config.py`
-- DB 初始化：`src/server/db_adapter.py`
-- Admin API：`src/server/router_admin.py`
-- Admin UI：`src/client/src/pages/AdminDashboard.tsx`
-- Auth：`src/server/router_auth.py`
-- RAG：`src/server/rag_router.py`
-- AI Gateway：`src/server/ai/gateway.py`、`src/server/ai/providers.py`
-- MCP client：`src/server/ai/kp_mcp_client.py`
-- KP MCP Server：`kp_mcp_server/`
-- Agent tools：`src/server/agent/tools.py`
-- 本地运维：`dev.py`、`docker-compose.yml`
-- 当前测试：`tests/server/test_admin_auth.py`、`test_rag_security.py`、`test_db_isolation.py`、`test_db_adapter.py`、`test_ws_auth.py`
+## 全局硬规则
 
-## Batch Ops-0：现状复核和后台权限基线
+- `admin:read` / `admin:write` 仅内部使用，不给第三方 API key。
+- `engine_save_clue` 第一轮默认 `disabled` 或 `suggest_only`。
+- production 下不允许 `CORS=*`。
+- production 下不允许无鉴权 MCP 暴露到 `0.0.0.0`。
+- `owner_token`、`player_token`、JWT、API key、provider key、webhook secret、DSN password、raw prompt、raw response、RAG raw context 不得进入普通日志、admin DTO、public export。
+- restore 必须 `confirm + target DB`；production restore 必须二次确认。
 
-目标：
+## Batch Ops-0：现状复核与权限基线
 
-- 确认当前无 API key、插件注册、Webhook、多租户和备份恢复实现。
-- 回归 Admin API 权限、RAG 权限、测试库隔离和 WS 权限。
-- 输出 Admin/Ops/MCP/Open API 当前能力清单。
+### 目标
 
-允许文件方向：
+- 核对当前仓库真实能力与未实现能力。
+- 回归 Admin、RAG、test DB、WS 基础权限。
+- 明确当前没有 API key、plugin registry、webhook、tenant、backup restore、plugin runtime。
+- 明确 MCP 是内部 AI provider，不是开放插件系统。
+
+### 允许改动
 
 - `docs/50-AI-Keeper-Platform/24-Plugin-Admin-Ops开放API与后台运维/`
 - 只读检查 `src/server/`、`kp_mcp_server/`、`tests/server/`
 
-建议命令：
+### 建议命令
 
 ```bash
-rg -n "api_key|api key|plugin|webhook|tenant|backup|migration_versions|admin_audit" src tests kp_mcp_server --glob "!src/client/node_modules/**" --glob "!src/client/dist/**"
+rg -n "api_key|plugin|webhook|tenant|backup|migration_versions|admin_audit" src tests kp_mcp_server
 python -m pytest tests/server/test_admin_auth.py tests/server/test_rag_security.py tests/server/test_db_isolation.py tests/server/test_ws_auth.py -q
 ```
 
-验收：
+### 验收
 
-- 现状报告明确哪些能力已有、哪些不存在。
-- 权限测试通过或列出真实失败。
+- 形成“已存在 / 未存在”现状结论。
+- 权限测试通过或准确列出失败项。
 - 不产生源码改动。
 
-禁止事项：
+### 禁止事项
 
-- 不新增插件表。
-- 不开放任何第三方 API。
-- 不放宽 admin、RAG 或 WS 鉴权。
+- 不新增第三方 API 能力。
+- 不放宽 admin / RAG / WS 鉴权。
 
-## Batch Ops-1：生产安全配置基线
+## Batch Ops-1：生产配置与 health 分级
 
-目标：
+### 目标
 
-- 增加环境模式，例如 `APP_ENV=development|test|production`。
-- 非开发环境拒绝默认 `JWT_SECRET`。
-- CORS 从硬编码 `*` 改为环境 allowlist，开发仍可方便启动。
-- MCP 生产默认禁止 `0.0.0.0` 无鉴权暴露。
-- health 返回 public/admin 分级，public 不暴露过细内部状态。
+- 固化 `APP_ENV=development|test|production`。
+- 收紧 `JWT_SECRET`、CORS allowlist、MCP 绑定/鉴权、public/admin health。
+- 只修配置基线，不重构整套配置系统。
 
-允许文件方向：
+### 允许改动
 
 - `src/server/config.py`
 - `src/server/main.py`
@@ -73,69 +88,65 @@ python -m pytest tests/server/test_admin_auth.py tests/server/test_rag_security.
 - `kp_mcp_server/config.py`
 - 可新增 `tests/server/test_ops_config.py`
 
-建议命令：
+### 建议命令
 
 ```bash
-python -m pytest tests/server/test_ops_config.py tests/server/test_auth.py tests/server/test_ws_auth.py -q
-python -m pytest tests/server/test_admin_auth.py -q
+python -m pytest tests/server/test_ops_config.py tests/server/test_admin_auth.py tests/server/test_ws_auth.py -q
 ```
 
-验收：
+### 验收
 
-- production + 默认 secret 启动检查失败或 health degraded。
-- production CORS 必须来自 allowlist。
-- public health 不返回密钥、DSN、完整 provider 错误。
-- development 默认仍能本地启动。
+- production + 默认 secret 启动失败或 health degraded。
+- production 禁止 `CORS=*`。
+- public health 不返回 secret、DSN、provider key、完整 provider error。
+- admin health 仅 admin 可见，返回脱敏组件详情。
 
-禁止事项：
+### 禁止事项
 
-- 不破坏 `python dev.py` 的默认开发体验。
+- 不牺牲 `python dev.py` 的本地开发体验。
 - 不把真实 secret 打进日志。
-- 不用前端限制代替后端配置校验。
 
-## Batch Ops-2：Admin 操作审计
+## Batch Ops-2：Admin 审计基线
 
-目标：
+### 目标
 
-- 新增 admin 操作审计模型和 helper。
-- 覆盖账号改角色、房间改状态、素材上传删除、AI 配置修改、RAG reindex、spoiler rebuild。
-- AdminDashboard 后续可查询审计，本批可先做后端和测试。
+- 建立 `AdminAuditLogDTO`、审计 helper 和数据落点。
+- 优先覆盖最高风险操作：角色修改、房间状态修改、AI 配置修改、素材删除、RAG reindex、spoiler rebuild、backup restore。
+- 把审计字段口径写死，避免写成 request dump。
 
-允许文件方向：
+### 允许改动
 
-- `src/server/db_adapter.py` 或项目实际 migration 位置
 - `src/server/router_admin.py`
+- `src/server/db_adapter.py`
 - 可新增 `src/server/admin_audit.py`
 - 可新增 `tests/server/test_admin_audit.py`
 
-建议命令：
+### 建议命令
 
 ```bash
 python -m pytest tests/server/test_admin_auth.py tests/server/test_admin_audit.py -q
 ```
 
-验收：
+### 验收
 
-- 高风险 Admin 操作写入 audit。
-- audit 不包含 password_hash、owner_token、player_token、API key。
-- player 不能读取 audit。
+- 高风险 Admin 操作写入审计。
+- 审计包含 `auditId/actorAccountId/actorRole/action/targetType/targetId/requestId/createdAt` 等最低字段。
+- 审计中不出现 `password_hash`、`owner_token`、`player_token`、JWT、API key、raw prompt、raw response、完整 request body。
 
-禁止事项：
+### 禁止事项
 
-- 不记录完整请求体中的敏感字段。
-- 不改变现有 Admin API 的成功语义。
-- 不把 audit 写入 public export。
+- 不改变现有 Admin API 成功语义。
+- 不把 audit 暴露给 player/public。
 
-## Batch Ops-3：敏感日志和 AI/RAG 脱敏
+## Batch Ops-3：日志脱敏与 AI/RAG 安全摘要
 
-目标：
+### 目标
 
-- 增加通用敏感字段脱敏 helper。
-- AI call logs 的 `response_summary` 和 error message 不含 token、API key、完整 prompt。
-- Admin AI logs 显示脱敏字段。
-- RAG context preview 明确 admin-only，并可选截断内容。
+- 建立后端统一 redaction helper。
+- 收紧普通日志、AI logs、health DTO、export DTO。
+- `AiCallLogSafeDTO` 只保留 provider/status/duration/task/summary hash 或截断摘要。
 
-允许文件方向：
+### 允许改动
 
 - `src/server/log_config.py`
 - `src/server/ai/gateway.py`
@@ -144,34 +155,32 @@ python -m pytest tests/server/test_admin_auth.py tests/server/test_admin_audit.p
 - 可新增 `src/server/security/redaction.py`
 - 可新增 `tests/server/test_redaction.py`
 
-建议命令：
+### 建议命令
 
 ```bash
-python -m pytest tests/server/test_redaction.py tests/server/test_admin_auth.py tests/server/test_archive.py -q
+python -m pytest tests/server/test_redaction.py tests/server/test_archive.py tests/server/test_admin_auth.py -q
 ```
 
-验收：
+### 验收
 
-- token/API key/JWT/owner token/player token 在日志和 admin DTO 中被遮罩。
-- AI logs 不保存完整 prompt。
-- public export 不含敏感字段。
+- token / key / raw prompt / raw response / RAG raw context 不进入普通日志和 public export。
+- AI logs 保留排障所需的安全摘要字段。
+- RAG context preview 保持 admin-only。
 
-禁止事项：
+### 禁止事项
 
-- 不为了脱敏删除排障必需的 status/provider/duration。
-- 不把脱敏只做在前端。
-- 不记录 DeepSeek API key。
+- 不只在前端遮敏。
+- 不为脱敏删除必要的 provider/status/duration/errorClass。
 
-## Batch Ops-4：MCP 和 Agent 工具权限收口
+## Batch Ops-4：MCP 与 Agent tools 治理
 
-目标：
+### 目标
 
-- 盘点 KP MCP 7 个工具和 Agent tools 的读写能力。
-- 给 MCP provider 调用增加服务间鉴权或内网绑定配置。
-- 将 Agent 写入工具分级，`engine_save_clue` 默认禁写或改成 Engine/State 验证路径。
-- MCP/Agent 工具调用写入 AI/tool audit。
+- 为 MCP 增加生产模式服务间鉴权或内网限定。
+- 为 Agent tools 建立 `read_only / suggest_only / controlled_write / disabled` 分级。
+- `engine_save_clue` 第一轮默认 `disabled` 或 `suggest_only`，绝不 direct write。
 
-允许文件方向：
+### 允许改动
 
 - `kp_mcp_server/config.py`
 - `kp_mcp_server/server.py`
@@ -181,69 +190,65 @@ python -m pytest tests/server/test_redaction.py tests/server/test_admin_auth.py 
 - 可新增 `tests/server/test_mcp_security.py`
 - 可新增 `tests/server/test_agent_tool_permissions.py`
 
-建议命令：
+### 建议命令
 
 ```bash
-python -m pytest tests/server/test_mcp_security.py tests/server/test_agent_tool_permissions.py tests/server/test_ai_kp.py -q
-python -m pytest tests/server/test_state_service.py tests/server/test_spoiler_guard.py -q
+python -m pytest tests/server/test_mcp_security.py tests/server/test_agent_tool_permissions.py tests/server/test_spoiler_guard.py -q
 ```
 
-验收：
+### 验收
 
-- MCP 无凭证或错误凭证在生产模式不可调用。
-- MCP 仍可在开发 mock 模式运行。
-- Agent 写入工具不能直接绕过 Engine/State。
-- 工具调用有可审计记录。
+- production 下 MCP 无 token 或错误 token 不能调用。
+- dev/mock 模式 MCP 仍可本地运行。
+- `engine_save_clue` 不能 direct INSERT。
+- MCP / Agent tool call 至少有最小 audit。
 
-禁止事项：
+### 禁止事项
 
 - 不让 MCP 直接连接主库写状态。
-- 不把服务间 token 暴露到前端。
-- 不降低 AI schema 校验和反剧透要求。
+- 不把服务间 token 暴露给前端。
+- 不降低 schema 校验和反剧透要求。
 
-## Batch Ops-5：AdminDashboard 可读性和运维入口
+## Batch Ops-5：AdminDashboard 最小运维增强
 
-目标：
+### 目标
 
-- 后台增加必要的运维信息入口：health、脱敏配置、AI provider 状态、RAG 状态、审计列表。
-- 修复后台中文文案乱码和错误提示。
-- 保持现有页面结构，不重做整套 UI。
+- 只补 health、audit、AI/RAG 状态和中文乱码修复。
+- 不重做后台整体 UI 架构。
 
-允许文件方向：
+### 允许改动
 
 - `src/client/src/pages/AdminDashboard.tsx`
 - `src/client/src/shared/api.ts`
 - 必要时 `src/server/router_admin.py`
-- 可新增前端轻量测试
 
-建议命令：
+### 建议命令
 
 ```bash
 cd src/client && npm run build
 python -m pytest tests/server/test_admin_auth.py -q
 ```
 
-验收：
+### 验收
 
 - Admin 可查看脱敏 health/config。
-- Admin 可查看 audit 列表。
-- 页面 build 通过。
+- Admin 可查看 audit 列表或明确本轮未做查询页的占位说明。
+- 前端 build 通过，中文文案无乱码。
 
-禁止事项：
+### 禁止事项
 
-- 不在前端展示 secret、token、完整 DSN。
-- 不重写 AdminDashboard 为全新架构。
-- 不把 Ops 操作暴露给非 admin。
+- 不展示 secret、token、完整 DSN。
+- 不重做整套 AdminDashboard。
 
-## Batch Ops-6：版本化 migration 和备份恢复设计
+## Batch Ops-6：migration / backup 安全设计与最小实现
 
-目标：
+### 目标
 
-- 设计并实现最小 `migration_versions`。
-- 将后续 schema 改动从纯 `CREATE TABLE IF NOT EXISTS` 迁移到可追踪迁移。
-- 设计备份和恢复脚本，先支持手动运行和测试库保护。
+- 建立 `migration_versions`。
+- 给 backup/restore 建立安全约束与测试保护。
+- 先做“可追踪、可确认、不会误伤”，不做生产级调度平台。
 
-允许文件方向：
+### 允许改动
 
 - `src/server/db_adapter.py`
 - 可新增 `src/server/migrations/`
@@ -251,62 +256,62 @@ python -m pytest tests/server/test_admin_auth.py -q
 - 可新增 `tests/server/test_migrations.py`
 - 可新增 `tests/server/test_backup_safety.py`
 
-建议命令：
+### 建议命令
 
 ```bash
-python -m pytest tests/server/test_db_adapter.py tests/server/test_db_isolation.py tests/server/test_migrations.py -q
+python -m pytest tests/server/test_db_adapter.py tests/server/test_db_isolation.py tests/server/test_migrations.py tests/server/test_backup_safety.py -q
 ```
 
-验收：
+### 验收
 
-- migration 可重复执行且有 checksum/version 记录。
-- 备份脚本不会默认覆盖非 test DB。
-- 恢复流程需要显式确认目标数据库。
+- `migration_versions` 记录 `version/name/checksum/applied_at`。
+- migration 可重复执行，失败不半应用。
+- restore 必须 `confirm + target DB`。
+- 测试拒绝连接非 test DB。
 
-禁止事项：
+### 禁止事项
 
-- 不删除现有数据。
-- 不使用破坏性 reset。
-- 不在测试中连接生产库。
+- 不使用 silent destructive reset。
+- 不默认覆盖现有数据库。
 
-## Batch Ops-7：Open API 和插件设计包
+## Batch Ops-7：external OpenAPI / Plugin 设计包
 
-目标：
+### 目标
 
-- 只写设计，不实现第三方开放。
-- 设计 API client、API key、scope、plugin manifest、plugin install、webhook subscription。
-- 定义 external OpenAPI 生成方式和不开放接口清单。
+- 只做设计，不实现真实开放能力。
+- 定义 `ApiClientDTO`、`PluginManifestDTO`、`PluginScopeDTO`、`WebhookSubscriptionDTO`。
+- 写清 allowlist routes、scope 和禁止清单。
 
-允许文件方向：
+### 允许改动
 
 - `docs/50-AI-Keeper-Platform/24-Plugin-Admin-Ops开放API与后台运维/`
 - 可新增 `docs/30-DeepSeek任务包/Batch-Plugin-OpenAPI设计.md`
 
-建议命令：
+### 建议命令
 
 ```bash
-rg -n "ApiKey|PluginScope|Webhook|external OpenAPI|owner_token|player_token" docs/50-AI-Keeper-Platform/24-Plugin-Admin-Ops开放API与后台运维
+rg -n "ApiClientDTO|PluginManifestDTO|WebhookSubscriptionDTO|external OpenAPI|owner_token|player_token" docs/50-AI-Keeper-Platform/24-Plugin-Admin-Ops开放API与后台运维
 ```
 
-验收：
+### 验收
 
-- 每个 scope 有允许行为和禁止行为。
-- Open API 不包含 Admin、raw_text、truth、private events、token。
-- 插件写入必须走服务层和审计。
+- 每个 scope 有允许项和禁止项。
+- 文档明确 external OpenAPI 不包含 Admin API、truth、private events、token、MCP 内部接口。
+- 文档明确本轮不创建真实 API key，不注册 plugin runtime，不开放 webhook。
 
-禁止事项：
+### 禁止事项
 
-- 不创建真实 API key。
-- 不注册插件运行时。
-- 不开放 Webhook。
+- 不新增真实 API key 表或运行时。
+- 不开放 webhook。
+- 不实现插件执行框架。
 
 ## Batch Ops-8：回归验收
 
-目标：
+### 目标
 
-- 回归后台、RAG、AI、MCP、安全配置和核心跑团链路。
+- 回归 Admin、RAG、AI、MCP、安全配置与跑团主链路。
 
-建议命令：
+### 建议命令
 
 ```bash
 python -m pytest tests/server/test_admin_auth.py tests/server/test_rag_security.py tests/server/test_db_isolation.py tests/server/test_ws_auth.py -q
@@ -315,18 +320,18 @@ python dev.py --check
 cd src/client && npm run build
 ```
 
-手动验收：
+### 手动验收
 
-1. Admin 登录后进入后台。
+1. Admin 登录并进入后台。
 2. Player 访问后台被拒绝。
-3. Admin 修改房间状态并产生审计。
-4. Admin 查看 AI logs、RAG 状态、Spoiler audits。
-5. public health 不暴露敏感配置。
-6. MCP mock 模式可用于开发，生产配置无鉴权不可暴露。
-7. 创建房间、玩家加入、ready、开局、AI/规则裁决、投影、日志仍可完成。
+3. Admin 修改房间状态后产生审计。
+4. Admin 查看 AI logs、RAG 状态、spoiler audits。
+5. public health 不泄露敏感配置。
+6. production 配置下无鉴权 MCP 不可公网暴露。
+7. 创建房间 -> 玩家加入 -> ready -> 开局 -> AI/规则裁决 -> 投影 -> 日志链路仍可完成。
 
-禁止事项：
+### 禁止事项
 
 - 不跳过权限测试。
-- 不把开发默认配置当生产安全。
-- 不在 Open API 或插件设计未验收前开放第三方写接口。
+- 不把开发默认配置当作生产安全。
+- 不在 Open API / Plugin 设计未验收前开放第三方写接口。

@@ -58,6 +58,11 @@ def test_get_public_events_filters_private(event_log, test_db):
     assert len(public) == 2
     assert all(e.audience != "player" for e in public)
 
+    # Verify host events are also excluded
+    event_log.log_event("room-1", "s2c_host_snapshot", "host", {"data": "secret"})
+    public2 = event_log.get_public_events("room-1")
+    assert all(e.audience != "host" for e in public2), "Host events must not leak to public"
+
 
 def test_checkpoint_create_and_list(event_log, test_db):
     _seed_room_and_chars(test_db)

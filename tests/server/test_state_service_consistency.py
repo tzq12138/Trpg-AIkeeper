@@ -47,16 +47,18 @@ class TestStateVersionSingleIncrement:
         ).fetchone()["state_version"]
         assert after == before + 1
 
-    def test_empty_change_also_bumps(self, test_db, state_service):
+    def test_empty_change_no_op(self, test_db, state_service):
+        """Empty StateChangeSet returns no_op=True and does NOT bump version."""
         _setup(state_service, test_db)
         before = test_db.execute(
             "SELECT state_version FROM rooms WHERE room_id = 'r-cons'"
         ).fetchone()["state_version"]
-        state_service.apply_change("r-cons", {}, StateChangeSet(), reason="empty")
+        result = state_service.apply_change("r-cons", {}, StateChangeSet(), reason="empty")
+        assert result.get("no_op") is True
         after = test_db.execute(
             "SELECT state_version FROM rooms WHERE room_id = 'r-cons'"
         ).fetchone()["state_version"]
-        assert after == before + 1
+        assert after == before
 
 
 class TestEventSequence:
@@ -71,10 +73,10 @@ class TestEventSequence:
             ]),
             reason="test",
         )
-        assert len(result["events"]) > 0
+        assert len(result["event_refs"]) > 0
         # event sequence should be > 0
         event = test_db.execute(
-            "SELECT sequence FROM events WHERE sequence = %s", (result["events"][0],)
+            "SELECT sequence FROM events WHERE sequence = %s", (result["event_refs"][0],)
         ).fetchone()
         assert event is not None
 

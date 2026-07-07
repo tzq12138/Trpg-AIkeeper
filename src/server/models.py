@@ -17,6 +17,9 @@ EngineEventType = Literal[
     "s2c_encounter_suggested", "s2c_encounter_started",
     "s2c_encounter_updated", "s2c_encounter_resolved",
     "s2c_team_message",
+    "s2c_turn_resolved",
+    "s2c_clue_discovered", "s2c_clue_shared",
+    "s2c_checkpoint_restored",
 ]
 
 Audience = Literal["host", "player", "party", "system"]
@@ -522,6 +525,7 @@ class SpoilerUnlockState(BaseModel):
     room_id: str = Field(alias="roomId")
     discovered_clue_ids: list[str] = Field(default=[], alias="discoveredClueIds")
     revealed_npc_names: list[str] = Field(default=[], alias="revealedNpcNames")
+    revealed_npc_ids: list[str] = Field(default=[], alias="revealedNpcIds")
     entered_scene_names: list[str] = Field(default=[], alias="enteredSceneNames")
     explored_node_ids: list[str] = Field(default=[], alias="exploredNodeIds")
     active_ending_phase: str = Field(default="", alias="activeEndingPhase")

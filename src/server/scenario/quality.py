@@ -51,6 +51,27 @@ class QualityReportGenerator:
             issues.append(
                 QualityIssue(category="completeness", severity="warning", message="未识别到NPC")
             )
+        else:
+            # Check NPC field quality
+            npcs_missing_id = [n.get("name", f"NPC#{i}") for i, n in enumerate(npcs) if not n.get("npc_id")]
+            if npcs_missing_id:
+                issues.append(
+                    QualityIssue(category="schema", severity="warning",
+                                 message=f"{len(npcs_missing_id)}个NPC缺少npc_id: {', '.join(npcs_missing_id[:3])}")
+                )
+            hidden_npcs = [n for n in npcs if n.get("is_hidden")]
+            hidden_without_public = [n.get("name", "?") for n in hidden_npcs if not n.get("public_description")]
+            if hidden_without_public:
+                issues.append(
+                    QualityIssue(category="spoiler", severity="warning",
+                                 message=f"隐藏NPC缺少public_description: {', '.join(hidden_without_public[:3])}")
+                )
+            npcs_without_personality = [n.get("name", "?") for n in npcs if not n.get("personality")]
+            if len(npcs_without_personality) >= len(npcs) // 2:
+                issues.append(
+                    QualityIssue(category="completeness", severity="info",
+                                 message=f"多数NPC缺少personality字段（影响AI扮演质量）")
+                )
         if not clues:
             issues.append(
                 QualityIssue(category="completeness", severity="warning", message="未识别到线索")

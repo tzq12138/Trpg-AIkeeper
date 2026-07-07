@@ -160,7 +160,7 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
         if (p.text && typeof p.text === 'string') {
           setMessages((prev) => [...prev.slice(-49), {
             id: crypto.randomUUID(),
-            sender: 'player',
+            sender: 'team',
             text: `${p.playerName || p.investigatorName || '队友'}: ${p.text}`,
             timestamp: Date.now(),
           }]);

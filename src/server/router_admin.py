@@ -13,6 +13,36 @@ logger = logging.getLogger(__name__)
 
 ASSETS_ROOT = Path(os.path.dirname(__file__)).parent.parent / "data" / "scenario_assets"
 
+# Allowed MIME types and extensions for asset upload
+ALLOWED_MIME_TYPES = {
+    "image/png", "image/jpeg", "image/webp", "image/gif",
+    "audio/mpeg", "audio/wav", "audio/ogg", "audio/webm",
+    "application/pdf",
+}
+ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp3", ".wav", ".ogg", ".webm", ".pdf"}
+BLOCKED_EXTENSIONS = {".svg", ".html", ".htm", ".js", ".exe", ".sh", ".bat", ".ps1", ".php"}
+MAX_ASSET_SIZE = 50 * 1024 * 1024  # 50 MB
+
+# Magic bytes for file header validation
+MAGIC_BYTES: dict[str, bytes] = {
+    ".png": b'\x89PNG\r\n\x1a\n',
+    ".jpg": b'\xff\xd8\xff',
+    ".jpeg": b'\xff\xd8\xff',
+    ".webp": b'RIFF',
+    ".gif": b'GIF8',
+    ".pdf": b'%PDF',
+    ".mp3": b'\xff\xfb',  # MPEG audio frame sync
+}
+
+
+def _get_account_id(request: Request) -> str:
+    """Extract account_id from request token without raising. Returns 'unknown' if not authenticated."""
+    try:
+        account = get_account_from_token(request)
+        return account.get("account_id", "unknown") if account else "unknown"
+    except Exception:
+        return "unknown"
+
 
 def _require_admin(request: Request) -> dict:
     """Return authenticated admin account dict, or raise."""
@@ -250,40 +280,78 @@ async def list_assets(request: Request, scenario_id: str):
         "SELECT * FROM scenario_assets WHERE scenario_id = %s ORDER BY created_at DESC",
         (scenario_id,)
     ).fetchall()
+    # Admin-only: return full details including relative_path
     return [dict(r) for r in rows]
 
 
 @router.post("/scenarios/{scenario_id}/assets")
-async def upload_asset(request: Request, scenario_id: str, file: UploadFile = File(...)):
+async def upload_asset(request: Request, scenario_id: str,
+                       file: UploadFile = File(...),
+                       visibility: str = Form("host_only")):
     _require_admin(request)
-    # Validate scenario exists
     conn = request.app.state.db
     sc = conn.execute("SELECT * FROM scenarios WHERE scenario_id = %s", (scenario_id,)).fetchone()
     if not sc:
         raise HTTPException(404, "剧本不存在")
 
-    # Secure the filename — no path traversal
-    safe_name = Path(file.filename or "unnamed").name
+    # ── Filename validation ──
+    raw_name = file.filename or "unnamed"
+    safe_name = Path(raw_name).name  # strip path traversal
+    if safe_name != raw_name:
+        raise HTTPException(400, "文件名不能包含路径分隔符")
+    ext = Path(safe_name).suffix.lower() or ".bin"
+
+    # Block dangerous extensions
+    if ext in BLOCKED_EXTENSIONS:
+        raise HTTPException(400, f"不支持的文件类型: {ext}（安全策略禁止）")
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(400, f"不支持的文件类型: {ext}")
+
+    # ── Size validation ──
+    content = await file.read()
+    if len(content) > MAX_ASSET_SIZE:
+        raise HTTPException(400, f"文件过大（最大 50MB，当前 {len(content) // (1024*1024)}MB）")
+
+    # ── MIME validation ──
+    declared_mime = (file.content_type or "application/octet-stream").lower()
+    if declared_mime not in ALLOWED_MIME_TYPES:
+        raise HTTPException(400, f"不支持的 MIME 类型: {declared_mime}")
+
+    # ── File header validation (magic bytes) ──
+    if ext in MAGIC_BYTES:
+        expected = MAGIC_BYTES[ext]
+        if not content[:len(expected)] == expected:
+            raise HTTPException(400, f"文件头与扩展名 {ext} 不匹配，可能是伪装文件")
+
+    # ── Validate visibility ──
+    if visibility not in ("host_only", "party", "private", "admin_only"):
+        visibility = "host_only"
+
+    # ── Persist ──
     asset_id = str(uuid.uuid4())[:8]
-    ext = Path(safe_name).suffix or ".bin"
     stored_name = f"{asset_id}{ext}"
     asset_dir = ASSETS_ROOT / scenario_id
     asset_dir.mkdir(parents=True, exist_ok=True)
 
-    content = await file.read()
     asset_path = asset_dir / stored_name
     with open(asset_path, "wb") as f:
         f.write(content)
 
     relative_path = f"data/scenario_assets/{scenario_id}/{stored_name}"
     conn.execute(
-        "INSERT INTO scenario_assets (asset_id, scenario_id, filename, original_name, mime_type, file_size, relative_path) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        "INSERT INTO scenario_assets (asset_id, scenario_id, filename, original_name, mime_type, file_size, relative_path, visibility) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
         (asset_id, scenario_id, stored_name, safe_name,
-         file.content_type or "application/octet-stream", len(content), relative_path),
+         declared_mime, len(content), relative_path, visibility),
     )
     conn.commit()
-    return {"asset_id": asset_id, "filename": safe_name, "relative_path": relative_path}
+    return {
+        "asset_id": asset_id,
+        "filename": safe_name,
+        "mime_type": declared_mime,
+        "file_size": len(content),
+        "visibility": visibility,
+    }
 
 
 @router.delete("/scenarios/{scenario_id}/assets/{asset_id}")
@@ -296,15 +364,57 @@ async def delete_asset(request: Request, scenario_id: str, asset_id: str):
     ).fetchone()
     if not row:
         raise HTTPException(404, "素材不存在")
-    # Delete file
-    asset_path = Path(os.path.dirname(__file__)).parent.parent / dict(row)["relative_path"]
+
+    body = await _safe_json(request)
+    force = (body or {}).get("force", False)
+    force_confirm = (body or {}).get("confirm", False)
+    force_reason = (body or {}).get("reason", "")
+
+    # Check references before deletion
+    refs = _find_asset_references(conn, asset_id, scenario_id)
+    if refs:
+        if not (force and force_confirm and force_reason):
+            raise HTTPException(
+                409,
+                f"素材被 {len(refs)} 处引用，无法直接删除。使用 force=true + confirm=true + reason 强制删除",
+            )
+        logger.warning("Force-deleting asset %s with %d references by admin: %s",
+                       asset_id, len(refs), force_reason)
+
+    # Delete file (resolve symlinks, confirm within ASSETS_ROOT)
+    row_dict = dict(row)
+    rel_path = row_dict.get("relative_path", "")
+    asset_path = (ASSETS_ROOT.parent / rel_path).resolve()
+    if not str(asset_path).startswith(str(ASSETS_ROOT.resolve())):
+        raise HTTPException(400, "素材路径异常，拒绝删除")
     try:
         os.remove(asset_path)
     except FileNotFoundError:
         pass
+
     conn.execute("DELETE FROM scenario_assets WHERE asset_id = %s", (asset_id,))
     conn.commit()
-    return {"status": "deleted", "asset_id": asset_id}
+    return {"status": "deleted", "asset_id": asset_id, "reference_count": len(refs), "forced": force}
+
+
+def _find_asset_references(conn, asset_id: str, scenario_id: str) -> list[dict]:
+    """Find references to an asset across the database."""
+    refs = []
+    # Check room_scene_state
+    rows = conn.execute(
+        "SELECT room_id FROM room_scene_state WHERE current_asset_url LIKE %s",
+        (f"%{asset_id}%",)
+    ).fetchall()
+    for r in rows:
+        refs.append({"table": "room_scene_state", "room_id": r["room_id"]})
+    # Check scenario_maps
+    rows = conn.execute(
+        "SELECT map_id FROM scenario_maps WHERE nodes::text LIKE %s",
+        (f"%{asset_id}%",)
+    ).fetchall()
+    for r in rows:
+        refs.append({"table": "scenario_maps", "map_id": r["map_id"]})
+    return refs
 
 
 # ── Scenario Import ──
@@ -369,20 +479,29 @@ def _classify_type(synopsis: str, scenes: int, npcs: int, clues: int) -> str:
 
 @router.post("/scenarios/{scenario_id}/map/generate")
 async def admin_generate_map(request: Request, scenario_id: str):
-    """Generate a map draft from scenario_assets.scenes[]."""
+    """Generate a map draft from knowledge_graph.scenes (primary) or scenario_assets.scenes (fallback)."""
     _require_admin(request)
     conn = request.app.state.db
 
     scenario = conn.execute(
-        "SELECT scenario_assets FROM scenarios WHERE scenario_id = %s", (scenario_id,)
+        "SELECT knowledge_graph, scenario_assets FROM scenarios WHERE scenario_id = %s", (scenario_id,)
     ).fetchone()
     if not scenario:
         raise HTTPException(404, "剧本不存在")
 
-    assets = _json_val(scenario.get("scenario_assets")) or {}
-    scenes = assets.get("scenes", [])
+    # Primary source: knowledge_graph.scenes (WorldBook structured output)
+    kg = _json_val(scenario.get("knowledge_graph")) or {}
+    scenes = kg.get("scenes", [])
+
+    # Fallback: scenario_assets.scenes (legacy)
     if not scenes:
-        raise HTTPException(400, "剧本没有场景数据")
+        assets = _json_val(scenario.get("scenario_assets")) or {}
+        scenes = assets.get("scenes", [])
+        if scenes:
+            logger.info("Map generation using legacy scenario_assets.scenes for %s", scenario_id)
+
+    if not scenes:
+        raise HTTPException(400, "剧本没有场景数据（knowledge_graph.scenes 和 scenario_assets.scenes 均为空）")
 
     from .config import Settings
     settings = Settings.from_env()
@@ -560,6 +679,9 @@ async def rag_reindex(request: Request):
     kinds = body.get("kinds", ["scenarios", "characters", "events", "rules"])
 
     counts = {}
+    rebuilt_by = _get_account_id(request)
+    rebuilt_at = None
+    from datetime import datetime, timezone
     # Re-index scenarios
     if "scenarios" in kinds:
         rows = conn.execute("SELECT scenario_id, raw_text, knowledge_graph FROM scenarios WHERE raw_text IS NOT NULL").fetchall()
@@ -574,6 +696,7 @@ async def rag_reindex(request: Request):
             if kg:
                 rag.index_npc_graph(r["scenario_id"], kg)
         counts["scenarios"] = len(rows)
+        rebuilt_at = datetime.now(timezone.utc).isoformat()
 
     # Re-index characters
     if "characters" in kinds:
@@ -601,7 +724,12 @@ async def rag_reindex(request: Request):
             rag.index_event(r["room_id"], r["event_type"], payload, r["sequence"])
         counts["events"] = len(rows)
 
-    return {"status": "reindexed", "counts": counts}
+    return {
+        "status": "reindexed",
+        "counts": counts,
+        "rebuilt_by": rebuilt_by,
+        "rebuilt_at": rebuilt_at,
+    }
 
 
 # ── SpoilerGuard Audit ──
@@ -646,13 +774,21 @@ async def get_spoiler_audits(request: Request, room_id: str, limit: int = 50):
 
 @router.post("/scenarios/{scenario_id}/spoiler-index/rebuild")
 async def rebuild_spoiler_index(request: Request, scenario_id: str):
-    """Rebuild sensitive item index for a scenario. Admin-only."""
+    """Rebuild sensitive item index for a scenario. Admin-only. Idempotent."""
     _require_admin(request)
     conn = request.app.state.db
     from .engine.spoiler_guard import SpoilerGuard
+    from datetime import datetime, timezone
     sg = SpoilerGuard(conn)
     count = sg.rebuild_index(scenario_id)
-    return {"scenario_id": scenario_id, "items_indexed": count}
+    rebuilt_by = _get_account_id(request)
+    rebuilt_at = datetime.now(timezone.utc).isoformat()
+    return {
+        "scenario_id": scenario_id,
+        "items_indexed": count,
+        "rebuilt_by": rebuilt_by,
+        "rebuilt_at": rebuilt_at,
+    }
 
 
 # ── Helpers ──

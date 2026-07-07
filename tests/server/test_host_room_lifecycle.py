@@ -133,12 +133,12 @@ class TestStartRoom:
         assert detail["status"] == "not_ready"
 
     def test_start_room_force_start_empty_succeeds(self, client_with_data):
-        """Owner can force-start an empty room."""
+        """Owner can force-start an empty room with reason + confirm."""
         host_token = _login(client_with_data, "hostlife")
         room = _create_room(client_with_data, host_token)
         res = client_with_data.post(
             f"/api/rooms/{room['room_id']}/start",
-            json={"force_start": True},
+            json={"force_start": True, "reason": "demo test", "confirm": True},
             headers={"X-Owner-Token": room["owner_token"]},
         )
         assert res.status_code == 200
@@ -168,11 +168,43 @@ class TestStartRoom:
         room_id, owner_token = self._setup_room_with_player(client_with_data, test_db, ready=False)
         res = client_with_data.post(
             f"/api/rooms/{room_id}/start",
-            json={"force_start": True},
+            json={"force_start": True, "reason": "跳过未准备", "confirm": True},
             headers={"X-Owner-Token": owner_token},
         )
         assert res.status_code == 200
         assert res.json()["status"] == "active"
+
+    def test_force_start_missing_reason_returns_400(self, client_with_data, test_db):
+        room_id, owner_token = self._setup_room_with_player(client_with_data, test_db, ready=False)
+        res = client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            json={"force_start": True, "confirm": True},
+            headers={"X-Owner-Token": owner_token},
+        )
+        assert res.status_code == 400
+
+    def test_force_start_missing_confirm_returns_400(self, client_with_data, test_db):
+        room_id, owner_token = self._setup_room_with_player(client_with_data, test_db, ready=False)
+        res = client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            json={"force_start": True, "reason": "test"},
+            headers={"X-Owner-Token": owner_token},
+        )
+        assert res.status_code == 400
+
+    def test_force_start_writes_audit_event(self, client_with_data, test_db):
+        room_id, owner_token = self._setup_room_with_player(client_with_data, test_db, ready=False)
+        res = client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            json={"force_start": True, "reason": "audit test", "confirm": True},
+            headers={"X-Owner-Token": owner_token},
+        )
+        assert res.status_code == 200
+        events = test_db.execute(
+            "SELECT * FROM events WHERE room_id = %s AND event_type = 's2c_force_start_audit'",
+            (room_id,),
+        ).fetchall()
+        assert len(events) >= 1
 
 
 class TestApproveReject:

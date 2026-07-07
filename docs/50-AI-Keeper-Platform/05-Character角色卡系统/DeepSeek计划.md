@@ -6,6 +6,12 @@ Character 后续实现优先修“角色进入房间后，数据能被规则、�
 
 DeepSeek 执行前必须先查看当前代码，尤其是 `src/server/player/router_player.py`、`src/server/engine/state_service.py`、`src/server/host/hud_builder.py`、`src/server/scenario/xlsx_parser.py`、`src/client/src/pages/PlayerJoinPage.tsx`、`src/client/src/pages/PlayerCharacter.tsx`。
 
+当前阶段说明：
+
+- 本计划对应的是“P0 主链路 + 角色数据权威风险识别版”的执行包，不是 Character 的最终生产安全完成版。
+- 当前文档已识别 `xlsx_data` 与 `character_runtime_state` 漂移、技能值权威来源、状态枚举漂移、私密背景/RAG 裁剪、`restore-session` token 风险、运行态初始化失败、DTO 分层不足等问题。
+- 文档完成不等于生产安全完成；只有相关工程批次实现并通过测试后，这些风险才算真正关闭。
+
 ## 全局约束
 
 - 先运行 `git status --short`，只改本批明确相关文件。
@@ -14,6 +20,8 @@ DeepSeek 执行前必须先查看当前代码，尤其是 `src/server/player/rou
 - 玩家不能直接写 HP/SAN/MP/Luck、技能值或状态标签。
 - Host 只能审批和查看授权公开状态，不承载规则结算。
 - AI 只读裁剪后的角色上下文，不能直接落库写角色状态。
+- `POST /api/player/skill-check` 只作为 debug/兼容/降级入口，不写状态、不触发事务、不静默替代正式 intent。
+- 任何新增或修改 Character 接口前，先列出 DTO 分层和字段 visibility，禁止把完整 `xlsx_data`、`player_token`、私密背景原样暴露给 Lobby、Host、公用日志或 AI 索引。
 - 修改前端角色页时必须同步处理当前中文乱码文案。
 
 ## Batch Character-0：现状核对与乱码风险收敛
@@ -30,6 +38,7 @@ DeepSeek 执行前必须先查看当前代码，尤其是 `src/server/player/rou
 
 - 列出角色来源：upload、preset、template、builder、copy。
 - 列出静态卡和运行态各自被哪些接口读取。
+- 列出 Character 相关 DTO / payload 里可能出现的敏感字段，例如 `player_token`、`account_id`、`xlsx_data`、`backstory`、`secret`、`fear`、`private_notes`、`personal_objectives`。
 - 标出乱码页面和用户可见错误文案位置。
 
 ## Batch Character-1：XLSX 解析、预览与质量报告
@@ -46,6 +55,7 @@ DeepSeek 执行前必须先查看当前代码，尤其是 `src/server/player/rou
 - 合法 CY20 类 COC 卡仍能解析。
 - 键值表仍能解析。
 - 缺 HP/SAN/MP/Luck 时返回可展示的默认来源说明。
+- 预览结果能区分“来自表格 / 公式推导 / 系统默认值 / 缺失 fallback”。
 - 损坏文件返回 400，且不创建角色。
 
 ## Batch Character-2：入房建卡、多来源选择与所有权校验
@@ -63,6 +73,7 @@ DeepSeek 执行前必须先查看当前代码，尤其是 `src/server/player/rou
 - 复制账号角色必须是同账号，复制无账号角色必须持有原 `player_token`。
 - 活跃房间加入角色状态为 `pending_approval`。
 - 大厅快照不包含 token、完整 `xlsx_data`、私密背景。
+- `join-with-character` 若返回完整 character DTO，也只能回给当前加入者，不能进入 lobby snapshot、party WS 或普通日志。
 
 ## Batch Character-3：运行态权威与玩家角色 DTO
 
@@ -79,6 +90,9 @@ DeepSeek 执行前必须先查看当前代码，尤其是 `src/server/player/rou
 - 运行态缺失时可以懒初始化或安全回退到静态卡。
 - `stateVersion` 与角色运行态版本能支持前端刷新判断。
 - Host HUD 和玩家角色页展示同一组当前值。
+- 运行态初始化失败不能只吞 warning；至少要有结构化日志、懒初始化和 degraded 提示。
+- 同步定义 `PublicCharacterSummaryDTO / LobbyCharacterDTO / SelfCharacterDTO / HostCharacterDTO / RuleCharacterSnapshotDTO / AICharacterContextDTO` 的最小字段边界。
+- 至少把 `public / party / self / host / keeperOnly / private / neverExport` 几类 visibility 写进实现口径或注释，避免后续 Projection/RAG 无法复用。
 
 ## Batch Character-4：技能检定权威来源
 
@@ -93,7 +107,8 @@ DeepSeek 执行前必须先查看当前代码，尤其是 `src/server/player/rou
 
 - 玩家提交技能名后，后端能从自己的角色卡读取技能值。
 - 提交不存在技能时返回明确错误或走默认基础值规则。
-- 兜底 `/skill-check` 若保留，必须标注兼容路径并限制权威语义。
+- 前端提交 `skill_value=999` 也不会覆盖服务端真实技能值。
+- 兜底 `/skill-check` 若保留，必须标注兼容路径并限制权威语义，且口径与 04-Rule 完全一致。
 
 ## Batch Character-5：大厅审批、ready 与公共摘要
 
@@ -110,21 +125,27 @@ DeepSeek 执行前必须先查看当前代码，尤其是 `src/server/player/rou
 - Host approve/reject 后大厅同步。
 - ready 切换广播 `s2c_room_lobby_snapshot`。
 - Room 开局只考虑已加入且未离开的角色。
+- 新写入状态只允许 `joined/pending_approval/left`；`active` 只保留 legacy 兼容读取。
 
-## Batch Character-6：账号恢复、长期档案与增长边界
+## Batch Character-6：账号恢复、RAG 裁剪与 token 风险边界
 
 | 项 | 内容 |
 |---|---|
-| 目标 | 明确账号角色列表、恢复 session、profile 写入与长期成长的边界 |
-| 允许改的文件方向 | `src/server/player/router_player.py`、`src/server/router_auth.py`、`src/server/db_adapter.py`、`tests/server/test_auth.py`、新增角色档案测试 |
-| 验收命令 | `python -m pytest tests/server/test_auth.py tests/server/test_character_join_import.py -q` |
-| 禁止事项 | 不把长期成长系统一次性塞进 MVP；不导出或返回 player token 给非拥有者 |
+| 目标 | 明确账号角色列表、恢复 session、RAG 上下文裁剪与 `player_token` 兼容风险边界 |
+| 允许改的文件方向 | `src/server/player/router_player.py`、`src/server/router_auth.py`、`src/server/db_adapter.py`、Character/RAG 相关服务、`tests/server/test_auth.py`、相关 RAG/Character 安全测试 |
+| 验收命令 | `python -m pytest tests/server/test_auth.py tests/server/test_character_join_import.py tests/server/test_rag_security.py -q` |
+| 禁止事项 | 不把长期成长系统一次性塞进 MVP；不导出或返回 player token 给非拥有者；不把完整 `xlsx_data` 原样写进 player-facing RAG |
 
 验收点：
 
 - 登录账号只能看到自己的角色列表。
 - `restore-session` 只能恢复本账号角色。
+- 若仍返回原 `player_token`，必须在回执里明确这是兼容路径，不是最终安全方案。
+- 角色索引前必须先构建裁剪后的 `AICharacterContextDTO`，不能原样索引完整 `xlsx_data`。
+- player-facing RAG search 必须经过 `visibility / audience / discovered_state` 过滤。
 - profile 初始化失败不影响入房主链路，但要有日志和后续修复入口。
+
+长期档案、成长、永久伤病、经验沉淀继续保留为 P2/P3 文档演进，不进入本轮 Batch。
 
 ## Batch Character-7：端到端回归
 
@@ -146,3 +167,7 @@ DeepSeek 执行前必须先查看当前代码，尤其是 `src/server/player/rou
 6. Engine/Rule/State 完成裁决和状态变化。
 7. Host HUD 与玩家角色页看到一致的当前 HP/SAN/MP/Luck。
 8. 日志可查到角色加入、ready、行动、状态 patch。
+9. StateService 扣 SAN 后，Player 页面和 Host HUD 一致。
+10. 玩家 B 不能通过角色列表、RAG、归档看到玩家 A 的私密背景。
+11. 前端伪造 `skill_value` 不影响正式检定。
+12. `restore-session` 只能恢复本账号角色，并在回执中说明兼容风险是否仍存在。

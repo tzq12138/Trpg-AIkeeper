@@ -2,6 +2,10 @@ import os
 import re
 import pytest
 import psycopg2
+
+# Ensure tests never hit the production JWT_SECRET guard
+os.environ.setdefault("AIKEEPER_DEV_MODE", "1")
+
 from src.server.db_adapter import PgDatabase
 from src.server.engine.engine import Engine
 from src.server.main import app
