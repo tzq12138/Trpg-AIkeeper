@@ -170,6 +170,8 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
         }))
     except Exception:
         logger.exception("Failed to push initial HUD to host room=%s", room_id)
+        ws_manager.disconnect(room_id, "host")
+        return
 
     last_seq = 0
     try:
@@ -190,31 +192,40 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
                     target_cid = ev.get("character_id")
                     if target_cid:
                         conn_id = f"player:{target_cid}"
-                        from ..models import EngineEvent as _EE
-                        player_event = _EE(
-                            roomId=ev["room_id"],
-                            type=ev["event_type"],
-                            audience=ev.get("audience", "player"),
-                            payload=ev["payload"],
-                        )
-                        await ws_manager.send_event(room_id, conn_id, player_event)
-                        logger.info(
-                            "Host %s flushed delayed event %s to player %s at step %d",
-                            room_id, ev["event_type"], target_cid, step_index,
-                        )
+                        try:
+                            from ..models import EngineEvent as _EE
+                            player_event = _EE(
+                                roomId=ev["room_id"],
+                                type=ev["event_type"],
+                                audience=ev.get("audience", "player"),
+                                payload=ev["payload"],
+                            )
+                            await ws_manager.send_event(room_id, conn_id, player_event)
+                        except Exception as _flush_err:
+                            logger.warning("Host %s bad delayed event type=%s: %s",
+                                           room_id, ev.get("event_type"), _flush_err)
+                        else:
+                            logger.info(
+                                "Host %s flushed delayed event %s to player %s at step %d",
+                                room_id, ev["event_type"], target_cid, step_index,
+                            )
                 remaining = store.flush_all_delayed()
                 for ev in remaining:
                     target_cid = ev.get("character_id")
                     if target_cid:
                         conn_id = f"player:{target_cid}"
-                        from ..models import EngineEvent as _EE
-                        player_event = _EE(
-                            roomId=ev["room_id"],
-                            type=ev["event_type"],
-                            audience=ev.get("audience", "player"),
-                            payload=ev["payload"],
-                        )
-                        await ws_manager.send_event(room_id, conn_id, player_event)
+                        try:
+                            from ..models import EngineEvent as _EE
+                            player_event = _EE(
+                                roomId=ev["room_id"],
+                                type=ev["event_type"],
+                                audience=ev.get("audience", "player"),
+                                payload=ev["payload"],
+                            )
+                            await ws_manager.send_event(room_id, conn_id, player_event)
+                        except Exception as _rem_err:
+                            logger.warning("Host %s bad remaining event type=%s: %s",
+                                           room_id, ev.get("event_type"), _rem_err)
                 store.save_state(conn)
                 continue
 

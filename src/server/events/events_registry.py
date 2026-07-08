@@ -129,6 +129,10 @@ ALL_EVENTS: dict[str, EventDef] = {
     ),
 
     # ── Checkpoint ──
+    "s2c_checkpoint_created": EventDef(
+        "s2c_checkpoint_created", EventDomain.SYSTEM, "system",
+        "checkpoint 创建系统事件——白名单内对玩家可见",
+    ),
     "s2c_checkpoint_restored": EventDef(
         "s2c_checkpoint_restored", EventDomain.SYSTEM, "host",
         "checkpoint 恢复审计事件——仅 Host 可见",

@@ -58,13 +58,19 @@ class ProjectionDispatcher:
         logger.debug("emit: seq=%s type=%s audience=%s room=%s char=%s",
                      sequence, event_type, audience, room_id, character_id or "-")
 
-        event = EngineEvent(
-            roomId=room_id,
-            type=event_type,
-            roomSequence=sequence,
-            audience=audience,
-            payload=payload,
-        )
+        try:
+            event = EngineEvent(
+                roomId=room_id,
+                type=event_type,
+                roomSequence=sequence,
+                audience=audience,
+                payload=payload,
+            )
+        except Exception as build_err:
+            logger.error("emit: invalid EngineEvent type=%s audience=%s room=%s: %s",
+                         event_type, audience, room_id, build_err)
+            return
+
         if audience == "player" and character_id:
             await self.ws_manager.send_event(room_id, f"player:{character_id}", event)
             return
