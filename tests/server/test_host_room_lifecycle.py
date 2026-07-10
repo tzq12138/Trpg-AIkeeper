@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from src.server.main import app
 from src.server.router_auth import _hash_password
+from tests.server.conftest import create_scenario
 
 
 @pytest.fixture
@@ -24,10 +25,7 @@ def client_with_data(test_db):
             "SET role = %s, account_id = EXCLUDED.account_id",
             (aid, uname, _hash_password("test123"), uname, role, role),
         )
-    test_db.execute(
-        "INSERT INTO scenarios (scenario_id, title, raw_text, import_status) "
-        "VALUES ('sc-life', 'Lifecycle Scenario', 'content', 'structured')"
-    )
+    create_scenario(test_db, "sc-life", "Lifecycle Scenario")
     test_db.commit()
     return c
 
@@ -109,6 +107,37 @@ class TestStartRoom:
         )
         assert res.status_code == 200
         assert res.json()["status"] == "active"
+
+    def test_start_room_places_players_at_confirmed_map_start(self, client_with_data, test_db):
+        from src.server.map_persistence import (
+            confirm_scenario_map,
+            create_scenario_map,
+            get_character_position,
+            get_room_map_state,
+        )
+
+        room_id, owner_token = self._setup_room_with_player(client_with_data, test_db)
+        create_scenario_map(
+            test_db,
+            "map-start",
+            "sc-life",
+            "test",
+            [
+                {"node_id": "start", "name": "起点", "is_start": True},
+                {"node_id": "next", "name": "下一处", "is_start": False},
+            ],
+            [{"from_node": "start", "to_node": "next", "is_one_way": False}],
+        )
+        confirm_scenario_map(test_db, "map-start")
+
+        res = client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            headers={"X-Owner-Token": owner_token},
+        )
+
+        assert res.status_code == 200
+        assert get_character_position(test_db, "ch-start", room_id) == "start"
+        assert "start" in get_room_map_state(test_db, room_id)["explored_nodes"]
 
     def test_start_room_empty_returns_409(self, client_with_data):
         """Empty room (no players) should not start."""

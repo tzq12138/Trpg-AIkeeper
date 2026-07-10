@@ -24,8 +24,15 @@ def client_with_data(test_db):
             (aid, uname, _hash_password("test123"), uname, role, role),
         )
     test_db.execute(
-        "INSERT INTO scenarios (scenario_id, title, raw_text, import_status) "
-        "VALUES ('sc-test', 'Test Scenario', 'text', 'structured')"
+        "INSERT INTO scenarios (scenario_id, title, raw_text, import_status, publish_status) "
+        "VALUES ('sc-test', 'Test Scenario', 'text', 'structured', 'published')"
+    )
+    test_db.execute(
+        "INSERT INTO scenario_versions (scenario_version_id, scenario_id, version_number, "
+        "status, created_by) VALUES ('sv-test', 'sc-test', 1, 'published', 'acc-admin')"
+    )
+    test_db.execute(
+        "UPDATE scenarios SET published_version_id = 'sv-test' WHERE scenario_id = 'sc-test'"
     )
     test_db.commit()
     return c
@@ -134,6 +141,81 @@ class TestScenarioOptions:
         assert res.status_code == 409
 
 
+class TestPublishedScenarioRequirement:
+    def test_create_room_rejects_unpublished_structured_scenario(
+        self, client_with_data, test_db
+    ):
+        _insert_unpublished_structured_scenario(test_db)
+        token = _login(client_with_data)
+
+        response = client_with_data.post(
+            "/api/rooms",
+            json={"scenario_id": "sc-unpublished"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 409
+
+    def test_scenario_lists_exclude_unpublished_structured_scenario(
+        self, client_with_data, test_db
+    ):
+        _insert_unpublished_structured_scenario(test_db)
+        room = _create_room(client_with_data)
+        options = client_with_data.get(
+            f"/api/rooms/{room['room_id']}/scenario-options",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+        token = _login(client_with_data)
+        available = client_with_data.get(
+            "/api/scenarios/available",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert options.status_code == 200, options.text
+        assert available.status_code == 200, available.text
+        assert "sc-unpublished" not in {
+            item["scenario_id"] for item in options.json()["scenarios"]
+        }
+        assert "sc-unpublished" not in {
+            item["scenario_id"] for item in available.json()
+        }
+
+    def test_room_scenario_updates_reject_unpublished_structured_scenario(
+        self, client_with_data, test_db
+    ):
+        _insert_unpublished_structured_scenario(test_db)
+        room = _create_room(client_with_data)
+        headers = {"X-Owner-Token": room["owner_token"]}
+
+        dedicated = client_with_data.patch(
+            f"/api/rooms/{room['room_id']}/scenario",
+            json={"scenario_id": "sc-unpublished"},
+            headers=headers,
+        )
+        generic = client_with_data.patch(
+            f"/api/rooms/{room['room_id']}",
+            json={"scenario_id": "sc-unpublished"},
+            headers=headers,
+        )
+
+        assert dedicated.status_code == 409
+        assert generic.status_code == 409
+
+    def test_scenario_create_room_rejects_unpublished_structured_scenario(
+        self, client_with_data, test_db
+    ):
+        _insert_unpublished_structured_scenario(test_db)
+        token = _login(client_with_data)
+
+        response = client_with_data.post(
+            "/api/scenarios/sc-unpublished/create-room",
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 409
+
+
 class TestStartRoom:
     def test_start_room_with_owner_token(self, client_with_data):
         data = _create_room(client_with_data)
@@ -217,6 +299,14 @@ class TestStartRoom:
             (room_id,),
         ).fetchone()
         assert events is not None, "Expected lobby snapshot event after start"
+
+
+def _insert_unpublished_structured_scenario(test_db):
+    test_db.execute(
+        "INSERT INTO scenarios (scenario_id, title, raw_text, import_status, publish_status) "
+        "VALUES ('sc-unpublished', 'Unpublished', 'legacy text', 'structured', 'draft')"
+    )
+    test_db.commit()
 
 
 class TestTurnEndpoints:

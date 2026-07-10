@@ -387,7 +387,7 @@ async def speech_to_text(
 
     # Validate MIME
     mime = (audio.content_type or "audio/webm").lower()
-    from ...stt import ALLOWED_MIME_TYPES, MAX_AUDIO_BYTES, MAX_DURATION_SECONDS, get_stt_provider
+    from ..stt import ALLOWED_MIME_TYPES, MAX_AUDIO_BYTES, MAX_DURATION_SECONDS, get_stt_provider
     if mime not in ALLOWED_MIME_TYPES and not any(mime.startswith(a.split(";")[0]) for a in ALLOWED_MIME_TYPES):
         raise HTTPException(400, f"Unsupported audio format: {mime}")
 

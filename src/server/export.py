@@ -35,12 +35,28 @@ def export_markdown(conn, room_id: str, scope: str = "public") -> dict:
     ).fetchall()
 
     if events:
+        public_projection_action_ids = {
+            payload.get("actionId")
+            for event in events
+            if "public_observation" in event["event_type"]
+            for payload in [
+                json.loads(event["payload"])
+                if isinstance(event["payload"], str)
+                else (event["payload"] or {})
+            ]
+            if payload.get("actionId")
+        }
         lines.append("## 关键事件")
         for ev in events:
             payload = json.loads(ev["payload"]) if isinstance(ev["payload"], str) else (ev["payload"] or {})
             ev_type = ev["event_type"]
             timestamp = str(ev.get("issued_at", ""))[:19]
             if "reveal_transaction" in ev_type or "public_observation" in ev_type:
+                if (
+                    "reveal_transaction" in ev_type
+                    and payload.get("actionId") in public_projection_action_ids
+                ):
+                    continue
                 text = payload.get("text", payload.get("summaryText", ""))
                 if text:
                     lines.append(f"### {timestamp} — KP叙事")

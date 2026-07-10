@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getSlotValue } from '../shared/identity';
+import { buildHostHeaders } from '../shared/host-auth';
 
 interface TimelineEntry {
   sequence: number;
@@ -25,14 +26,18 @@ export default function HostLogsPanel({ roomId }: { roomId: string }) {
   const [cpNote, setCpNote] = useState('');
   const [restoringId, setRestoringId] = useState('');
 
-  const token = getSlotValue('owner_token') || '';
+  const hostHeaders = (json = false) => buildHostHeaders(
+    getSlotValue('owner_token') || '',
+    getSlotValue('account_token') || '',
+    json,
+  );
 
   const fetchEvents = () => {
     const params = new URLSearchParams({ limit: '200' });
     if (filter) params.set('event_type', filter);
     if (keyword) params.set('keyword', keyword);
     fetch(`/api/rooms/${encodeURIComponent(roomId)}/timeline?${params}`, {
-      headers: { 'X-Owner-Token': token },
+      headers: hostHeaders(),
     })
       .then((r) => r.json())
       .then((d) => setEvents(d.events || []))
@@ -42,7 +47,7 @@ export default function HostLogsPanel({ roomId }: { roomId: string }) {
 
   const fetchCheckpoints = () => {
     fetch(`/api/rooms/${encodeURIComponent(roomId)}/checkpoints`, {
-      headers: { 'X-Owner-Token': token },
+      headers: hostHeaders(),
     })
       .then((r) => r.json())
       .then((d) => setCheckpoints(d.checkpoints || []))
@@ -54,7 +59,7 @@ export default function HostLogsPanel({ roomId }: { roomId: string }) {
   const handleCreateCheckpoint = async () => {
     const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/checkpoint`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
+      headers: hostHeaders(true),
       body: JSON.stringify({ auto: false, reason: cpNote }),
     });
     if (res.ok) { setCpNote(''); fetchCheckpoints(); }
@@ -65,7 +70,7 @@ export default function HostLogsPanel({ roomId }: { roomId: string }) {
     setRestoringId(checkpointId);
     await fetch(`/api/rooms/${encodeURIComponent(roomId)}/restore/${checkpointId}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
+      headers: hostHeaders(true),
       body: JSON.stringify({ confirm: true }),
     });
     setRestoringId('');
@@ -75,7 +80,7 @@ export default function HostLogsPanel({ roomId }: { roomId: string }) {
   const handleExport = async (format: string, scope: string) => {
     const params = new URLSearchParams({ format, scope });
     const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/export?${params}`, {
-      headers: { 'X-Owner-Token': token },
+      headers: hostHeaders(),
     });
     const data = await res.json();
     const blob = new Blob(

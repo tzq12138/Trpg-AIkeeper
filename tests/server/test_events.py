@@ -30,3 +30,14 @@ def test_engine_event_type_enum():
     assert len(registry_types) >= 29, f"Expected 29+ events, got {len(registry_types)}"
     for t in registry_types:
         assert t in EngineEventType.__args__, f"Missing EngineEventType: {t}"
+
+
+def test_checkpoint_created_is_valid_engine_event():
+    event = EngineEvent(
+        room_id="room-1",
+        type="s2c_checkpoint_created",
+        audience="system",
+        payload={"checkpointId": "cp-1"},
+    )
+
+    assert event.type == "s2c_checkpoint_created"

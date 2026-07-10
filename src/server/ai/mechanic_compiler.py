@@ -132,7 +132,7 @@ class MechanicCompiler:
         data = response.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         raw = json.loads(content)
-        normalized = self._normalize_raw_result(raw)
+        normalized = self._normalize_raw_result(raw, character, intent.declared_intent)
         try:
             return MechanicCompileResult(**normalized)
         except Exception as e:
@@ -142,7 +142,12 @@ class MechanicCompiler:
             )
             raise
 
-    def _normalize_raw_result(self, raw: dict) -> dict:
+    def _normalize_raw_result(
+        self,
+        raw: dict,
+        character: dict[str, Any] | None = None,
+        declared_intent: str = "",
+    ) -> dict:
         """Normalize DeepSeek JSON output to match MechanicCompileResult schema.
 
         DeepSeek may return camelCase, snake_case, or Chinese enum values.
@@ -158,6 +163,7 @@ class MechanicCompiler:
         tm_key = str(tm).lower().replace(" ", "_").replace("-", "_")
         TM_MAP = {
             "skill_check": "skill_check", "skillcheck": "skill_check",
+            "observation": "skill_check", "check": "skill_check", "技能检定": "skill_check",
             "dialogue": "dialogue", "identity_check": "dialogue",
             "identitycheck": "dialogue", "identity_check": "dialogue",
             "auto_success": "auto_success", "autosuccess": "auto_success",
@@ -201,8 +207,59 @@ class MechanicCompiler:
         # ── 5. skillName alias ───────────────────────────────────
         if not n.get("skillName") and n.get("skill_name"):
             n["skillName"] = n["skill_name"]
+        if n["triggeredMechanic"] == "skill_check":
+            if n.get("skillName"):
+                skill_name = self._normalize_skill_name(
+                    n["skillName"], character, declared_intent,
+                )
+                if skill_name:
+                    n["skillName"] = skill_name
+                elif character is not None:
+                    n["triggeredMechanic"] = "dialogue"
+                    n.pop("skillName", None)
+            elif character is not None:
+                n["triggeredMechanic"] = "dialogue"
 
         return n
+
+    def _normalize_skill_name(
+        self,
+        skill_name: str | None,
+        character: dict[str, Any] | None,
+        declared_intent: str,
+    ) -> str | None:
+        if not skill_name:
+            return None
+        normalized_name = str(skill_name).strip().rstrip("：:")
+        aliases = {
+            "侦察": ("侦查",),
+            "观察": ("侦查",),
+            "调查": ("侦查",),
+            "交涉": ("话术", "说服"),
+            "交谈": ("话术", "说服"),
+            "谈判": ("说服", "话术"),
+            "spot hidden": ("侦查",),
+            "spot_hidden": ("侦查",),
+            "打听": ("话术", "说服"),
+            "心理分析": ("心理学", "精神分析"),
+            "psychology": ("心理学",),
+            "psychoanalysis": ("精神分析",),
+        }
+        candidates = aliases.get(normalized_name.casefold(), (normalized_name,))
+        character_data = (character or {}).get("xlsx_data", character or {})
+        if isinstance(character_data, str):
+            try:
+                character_data = json.loads(character_data)
+            except json.JSONDecodeError:
+                character_data = {}
+        skills = character_data.get("skills", {}) if isinstance(character_data, dict) else {}
+        for candidate in candidates:
+            if candidate in skills:
+                return candidate
+        fallback_skill = self._skill_from_text(declared_intent)
+        if fallback_skill and fallback_skill in skills:
+            return fallback_skill
+        return candidates[0] if not skills else None
 
     def _skill_from_text(self, text: str) -> str | None:
         patterns = [

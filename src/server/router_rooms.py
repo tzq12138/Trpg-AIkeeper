@@ -25,9 +25,16 @@ async def create_room(request: Request):
     scenario_id = body.get("scenario_id", "")
     if not scenario_id:
         raise HTTPException(400, "请选择剧本")
-    sc = conn.execute("SELECT scenario_id, title FROM scenarios WHERE scenario_id = %s", (scenario_id,)).fetchone()
+    sc = conn.execute(
+        "SELECT scenario_id, title, publish_status, published_version_id "
+        "FROM scenarios WHERE scenario_id = %s",
+        (scenario_id,),
+    ).fetchone()
     if not sc:
         raise HTTPException(404, "剧本不存在")
+    scenario_version_id = sc.get("published_version_id")
+    if sc.get("publish_status") != "published" or not scenario_version_id:
+        raise HTTPException(409, "剧本尚未确认发布，不能开房")
 
     # Admin may specify owner; host always creates for self
     if role == "host":
@@ -38,14 +45,19 @@ async def create_room(request: Request):
     room_id = str(uuid.uuid4())[:8]
     owner_token = str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO rooms (room_id, scenario_id, owner_token, owner_account_id, spoiler_level) VALUES (%s, %s, %s, %s, %s)",
-        (room_id, scenario_id, owner_token, owner_account_id, body.get("spoiler_level", "standard")),
+        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, owner_token, "
+        "owner_account_id, spoiler_level) VALUES (%s, %s, %s, %s, %s, %s)",
+        (
+            room_id, scenario_id, scenario_version_id, owner_token,
+            owner_account_id, body.get("spoiler_level", "standard"),
+        ),
     )
     conn.commit()
     return {
         "room_id": room_id, "owner_token": owner_token,
         "status": "lobby", "scenario_title": sc["title"],
-        "scenario_id": scenario_id, "owner_account_id": owner_account_id,
+        "scenario_id": scenario_id, "scenario_version_id": scenario_version_id,
+        "owner_account_id": owner_account_id,
     }
 
 
@@ -135,8 +147,9 @@ async def get_scenario_options(request: Request, room_id: str):
     _verify_owner_or_admin(request, room_id, request.app.state.db)
     conn = request.app.state.db
     rows = conn.execute(
-        "SELECT scenario_id, title, import_status, quality_report FROM scenarios "
-        "WHERE import_status IN ('structured', 'pending') OR title IS NOT NULL "
+        "SELECT scenario_id, title, import_status, quality_report, published_version_id "
+        "FROM scenarios WHERE publish_status = 'published' "
+        "AND published_version_id IS NOT NULL "
         "ORDER BY created_at DESC"
     ).fetchall()
     scenarios = []
@@ -158,6 +171,7 @@ async def get_scenario_options(request: Request, room_id: str):
             "scenario_id": r["scenario_id"],
             "title": r["title"] or "未命名剧本",
             "import_status": r["import_status"],
+            "scenario_version_id": r.get("published_version_id"),
             "quality_level": quality_level,
         })
     return {"scenarios": scenarios}
@@ -173,16 +187,26 @@ async def set_room_scenario(request: Request, room_id: str):
         raise HTTPException(400, "scenario_id is required")
     conn = request.app.state.db
     # Verify scenario exists
-    sc = conn.execute("SELECT scenario_id FROM scenarios WHERE scenario_id = %s", (scenario_id,)).fetchone()
+    sc = conn.execute(
+        "SELECT scenario_id, publish_status, published_version_id "
+        "FROM scenarios WHERE scenario_id = %s",
+        (scenario_id,),
+    ).fetchone()
     if not sc:
         raise HTTPException(404, "Scenario not found")
+    scenario_version_id = sc.get("published_version_id")
+    if sc.get("publish_status") != "published" or not scenario_version_id:
+        raise HTTPException(409, "剧本尚未确认发布")
     # Check room status
     room = conn.execute("SELECT status FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
     if room["status"] in ("active", "completed", "archived"):
         raise HTTPException(409, "Cannot change scenario in active/completed/archived room")
-    conn.execute("UPDATE rooms SET scenario_id = %s WHERE room_id = %s", (scenario_id, room_id))
+    conn.execute(
+        "UPDATE rooms SET scenario_id = %s, scenario_version_id = %s WHERE room_id = %s",
+        (scenario_id, scenario_version_id, room_id),
+    )
     conn.commit()
     # Return updated room with title
     return await get_room(request, room_id)
@@ -202,10 +226,20 @@ async def update_room(request: Request, room_id: str):
     if "scenario_id" in body:
         if room["status"] in ("active",):
             raise HTTPException(409, "进行中的房间不能切换剧本，请先暂停")
-        sc = conn.execute("SELECT scenario_id FROM scenarios WHERE scenario_id = %s", (body["scenario_id"],)).fetchone()
+        sc = conn.execute(
+            "SELECT scenario_id, publish_status, published_version_id "
+            "FROM scenarios WHERE scenario_id = %s",
+            (body["scenario_id"],),
+        ).fetchone()
         if not sc:
             raise HTTPException(404, "剧本不存在")
-        conn.execute("UPDATE rooms SET scenario_id = %s WHERE room_id = %s", (body["scenario_id"], room_id))
+        if sc.get("publish_status") != "published" or not sc.get("published_version_id"):
+            raise HTTPException(409, "剧本尚未确认发布")
+        conn.execute(
+            "UPDATE rooms SET scenario_id = %s, scenario_version_id = %s "
+            "WHERE room_id = %s",
+            (body["scenario_id"], sc["published_version_id"], room_id),
+        )
 
     # Update owner
     if "owner_account_id" in body:
@@ -328,10 +362,32 @@ async def start_room(request: Request, room_id: str):
     scenario_id = room.get("scenario_id")
     if scenario_id:
         try:
-            from .map_persistence import get_scenario_map_by_scenario, init_room_map_state
+            from .map_persistence import (
+                get_character_position,
+                get_scenario_map_by_scenario,
+                init_room_map_state,
+                mark_node_explored,
+                set_character_position,
+            )
             scenario_map = get_scenario_map_by_scenario(conn, scenario_id)
             if scenario_map and scenario_map.get("status") == "confirmed":
                 init_room_map_state(conn, room_id, scenario_map["map_id"])
+                start_node = next(
+                    (
+                        node.get("node_id", node.get("nodeId", ""))
+                        for node in scenario_map.get("nodes", [])
+                        if node.get("is_start", node.get("isStart", False))
+                    ),
+                    "",
+                )
+                if not start_node and scenario_map.get("nodes"):
+                    first_node = scenario_map["nodes"][0]
+                    start_node = first_node.get("node_id", first_node.get("nodeId", ""))
+                if start_node:
+                    for char in chars:
+                        if not get_character_position(conn, char["character_id"], room_id):
+                            set_character_position(conn, char["character_id"], room_id, start_node)
+                    mark_node_explored(conn, room_id, start_node)
                 logger.info("Map initialized for room %s from scenario %s", room_id, scenario_id)
         except Exception as e:
             logger.warning("Failed to init map for room %s: %s", room_id, e)

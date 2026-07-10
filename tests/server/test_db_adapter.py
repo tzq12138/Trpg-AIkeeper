@@ -153,3 +153,35 @@ class TestPgConnectionIntegration:
         ).fetchone()
         assert row is not None
         assert row['character_id'] == 'char-1'
+
+    def test_transaction_commits_all_statements_together(self, pg_conn):
+        with pg_conn.transaction() as tx:
+            tx.execute(
+                "INSERT INTO rooms (room_id, owner_token) VALUES (?, ?)",
+                ("transaction-commit", "token-1"),
+            )
+            tx.execute(
+                "UPDATE rooms SET status = ? WHERE room_id = ?",
+                ("active", "transaction-commit"),
+            )
+
+        row = pg_conn.execute(
+            "SELECT status FROM rooms WHERE room_id = ?",
+            ("transaction-commit",),
+        ).fetchone()
+        assert row["status"] == "active"
+
+    def test_transaction_rolls_back_every_statement_on_failure(self, pg_conn):
+        with pytest.raises(RuntimeError, match="force rollback"):
+            with pg_conn.transaction() as tx:
+                tx.execute(
+                    "INSERT INTO rooms (room_id, owner_token) VALUES (?, ?)",
+                    ("transaction-rollback", "token-2"),
+                )
+                raise RuntimeError("force rollback")
+
+        row = pg_conn.execute(
+            "SELECT room_id FROM rooms WHERE room_id = ?",
+            ("transaction-rollback",),
+        ).fetchone()
+        assert row is None

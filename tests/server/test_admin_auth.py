@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from src.server.main import app
 from src.server.router_auth import _hash_password
+from tests.server.conftest import create_scenario
 
 
 @pytest.fixture
@@ -102,10 +103,7 @@ class TestAdminCharacterDetail:
         """Admin character detail must not leak player_token."""
         token = _login(client_with_data, "admin")
         # Create a room and character for testing
-        test_db.execute(
-            "INSERT INTO scenarios (scenario_id, title, raw_text, import_status) "
-            "VALUES ('sc-adm', 'Admin Test', 'text', 'structured')"
-        )
+        create_scenario(test_db, "sc-adm", "Admin Test")
         host_token = _login(client_with_data, "hostuser")
         res = client_with_data.post(
             "/api/rooms",
@@ -129,3 +127,61 @@ class TestAdminCharacterDetail:
         body = json.dumps(res.json())
         assert "secret-pt-adm" not in body
         assert "player_token" not in body
+
+
+class TestAdminRoomScenarioVersion:
+    def test_switch_scenario_binds_published_version(self, client_with_data, test_db):
+        token = _login(client_with_data, "admin")
+        test_db.execute(
+            "INSERT INTO scenarios (scenario_id, title, import_status, publish_status) "
+            "VALUES ('sc-versioned', 'Versioned', 'draft_review', 'published')"
+        )
+        test_db.execute(
+            "INSERT INTO scenario_versions ("
+            "scenario_version_id, scenario_id, version_number, status, knowledge_graph, "
+            "quality_report, prep_package, created_by"
+            ") VALUES ('sv-published', 'sc-versioned', 1, 'published', '{}', '{}', '{}', 'acc-admin')"
+        )
+        test_db.execute(
+            "UPDATE scenarios SET published_version_id = 'sv-published' "
+            "WHERE scenario_id = 'sc-versioned'"
+        )
+        test_db.execute(
+            "INSERT INTO rooms (room_id, owner_token, owner_account_id) "
+            "VALUES ('room-admin-switch', 'owner-admin-switch', 'acc-admin')"
+        )
+        test_db.commit()
+
+        response = client_with_data.patch(
+            "/api/admin/rooms/room-admin-switch",
+            json={"scenario_id": "sc-versioned"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200, response.text
+        room = test_db.execute(
+            "SELECT scenario_id, scenario_version_id FROM rooms "
+            "WHERE room_id = 'room-admin-switch'"
+        ).fetchone()
+        assert room["scenario_id"] == "sc-versioned"
+        assert room["scenario_version_id"] == "sv-published"
+
+    def test_switch_scenario_rejects_unpublished_draft(self, client_with_data, test_db):
+        token = _login(client_with_data, "admin")
+        test_db.execute(
+            "INSERT INTO scenarios (scenario_id, title, import_status, publish_status) "
+            "VALUES ('sc-draft-only', 'Draft', 'structured', 'draft')"
+        )
+        test_db.execute(
+            "INSERT INTO rooms (room_id, owner_token, owner_account_id) "
+            "VALUES ('room-admin-draft', 'owner-admin-draft', 'acc-admin')"
+        )
+        test_db.commit()
+
+        response = client_with_data.patch(
+            "/api/admin/rooms/room-admin-draft",
+            json={"scenario_id": "sc-draft-only"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 409

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getSlotValue } from '../shared/identity';
+import { buildRoomWsUrl } from '../shared/ws-url';
 
 // ── types ──────────────────────────────────────────────────────────
 
@@ -107,9 +108,11 @@ export default function HostLobby({ roomId }: { roomId: string }) {
 
     function connect() {
       if (!mounted) return;
-      wsRef = new WebSocket(
-        `ws://${window.location.hostname}:3001/ws?room=${roomId}&role=host&ownerToken=${encodeURIComponent(ownerToken)}`,
-      );
+      wsRef = new WebSocket(buildRoomWsUrl(window.location, {
+        roomId,
+        role: 'host',
+        ownerToken,
+      }));
 
       wsRef.onmessage = (msg) => {
         try {

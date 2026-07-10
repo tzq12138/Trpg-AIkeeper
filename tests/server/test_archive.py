@@ -1,5 +1,6 @@
 import json
 import pytest
+from src.server.export import export_markdown
 from tests.server.conftest import setup_auth_test_data, create_room
 
 
@@ -110,6 +111,68 @@ def test_replay_invalid_owner(client, test_db):
     assert resp.status_code == 403
 
 
+def test_host_timeline_route_is_mounted(client, test_db):
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
+    _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "timeline event"})
+
+    resp = client.get(
+        f"/api/rooms/{room_id}/timeline",
+        headers={"X-Owner-Token": owner_token},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["events"][0]["event_type"] == "s2c_public_observation"
+    assert data["events"][0]["payload"]["text"] == "timeline event"
+
+
+def test_campaign_summary_full_scope_for_host(client, test_db):
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
+    _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "timeline event"})
+
+    resp = client.get(
+        f"/api/rooms/{room_id}/campaign?scope=full",
+        headers={"X-Owner-Token": owner_token},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["room_id"] == room_id
+    assert "total_actions" in data
+
+
+def test_end_campaign_emits_campaign_ended_event(client, test_db):
+    room_id, owner_token, char_id, token = _setup_player(client, test_db)
+
+    resp = client.post(
+        f"/api/rooms/{room_id}/end",
+        headers={"X-Owner-Token": owner_token},
+        json={
+            "ending_type": "victory",
+            "ending_name": "成功逃脱",
+            "text": "调查员们成功逃离烬头村。",
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ending_type"] == "victory"
+
+    room = test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = %s", (room_id,)
+    ).fetchone()
+    assert room["status"] == "completed"
+
+    event = test_db.execute(
+        "SELECT payload FROM events WHERE room_id = %s AND event_type = 's2c_campaign_ended' ORDER BY sequence DESC LIMIT 1",
+        (room_id,),
+    ).fetchone()
+    assert event is not None
+    payload = json.loads(event["payload"]) if isinstance(event["payload"], str) else event["payload"]
+    assert payload["ending_type"] == "victory"
+    assert payload["endingName"] == "成功逃脱"
+
+
 def test_archive_filter_by_type(client, test_db):
     room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
@@ -159,6 +222,35 @@ def test_archive_pagination(client, test_db):
     resp = client.get("/api/player/archive?offset=8&limit=5", headers={"X-Room-Token": token})
     data = resp.json()
     assert len(data["entries"]) == 2
+
+
+def test_export_omits_reveal_summary_when_public_projection_exists(client, test_db):
+    setup_auth_test_data(test_db)
+    room = create_room(client)
+    room_id = room["room_id"]
+    action_id = "action-1"
+    narrative = "调查员在书桌夹层里找到一张燃烧过的车票。"
+
+    _insert_event(
+        test_db,
+        room_id,
+        1,
+        "s2c_reveal_transaction",
+        "host",
+        {"actionId": action_id, "summaryText": narrative},
+    )
+    _insert_event(
+        test_db,
+        room_id,
+        2,
+        "s2c_public_observation",
+        "party",
+        {"actionId": action_id, "text": narrative},
+    )
+
+    result = export_markdown(test_db, room_id)
+
+    assert result["content"].count(narrative) == 1
 
 
 def test_replay_pagination(client, test_db):

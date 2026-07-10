@@ -136,6 +136,19 @@ async def update_room(request: Request, room_id: str):
         if k in body:
             sets.append(f"{k} = %s")
             vals.append(body[k])
+            if k == "scenario_id":
+                scenario = conn.execute(
+                    "SELECT publish_status, published_version_id FROM scenarios "
+                    "WHERE scenario_id = %s",
+                    (body[k],),
+                ).fetchone()
+                if not scenario:
+                    raise HTTPException(404, "剧本不存在")
+                scenario_version_id = scenario.get("published_version_id")
+                if scenario.get("publish_status") != "published" or not scenario_version_id:
+                    raise HTTPException(409, "剧本尚未确认发布，不能绑定房间")
+                sets.append("scenario_version_id = %s")
+                vals.append(scenario_version_id)
     if not sets:
         raise HTTPException(400, "没有有效字段")
     vals.append(room_id)
@@ -267,7 +280,20 @@ async def admin_list_scenarios(request: Request):
     _require_admin(request)
     conn = request.app.state.db
     rows = conn.execute(
-        "SELECT * FROM scenarios ORDER BY created_at DESC"
+        """
+        SELECT s.*, latest_job.job_id AS latest_import_job_id,
+               latest_job.status AS latest_import_job_status,
+               latest_job.updated_at AS latest_import_job_updated_at
+        FROM scenarios s
+        LEFT JOIN LATERAL (
+            SELECT job_id, status, updated_at
+            FROM import_jobs
+            WHERE scenario_id = s.scenario_id
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 1
+        ) latest_job ON TRUE
+        ORDER BY s.created_at DESC
+        """
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -610,6 +636,94 @@ async def trigger_ai_health_check(request: Request):
     return result
 
 
+@router.get("/ai/providers")
+async def list_ai_providers(request: Request):
+    _require_admin(request)
+    from .ai.provider_config import AiProviderConfigStore
+
+    return AiProviderConfigStore(request.app.state.db).list_public()
+
+
+@router.post("/ai/providers")
+async def create_ai_provider(request: Request):
+    account = _require_admin(request)
+    body = await request.json()
+    from .ai.provider_config import AiProviderConfigStore, ProviderConfigError
+
+    try:
+        return AiProviderConfigStore(request.app.state.db).create(
+            body,
+            actor_id=account["account_id"],
+        )
+    except ProviderConfigError as exc:
+        raise _provider_config_http_error(exc) from exc
+
+
+@router.patch("/ai/providers/{provider_config_id}")
+async def update_ai_provider(request: Request, provider_config_id: str):
+    account = _require_admin(request)
+    body = await request.json()
+    from .ai.provider_config import AiProviderConfigStore, ProviderConfigError
+
+    try:
+        return AiProviderConfigStore(request.app.state.db).update(
+            provider_config_id,
+            body,
+            actor_id=account["account_id"],
+        )
+    except ProviderConfigError as exc:
+        raise _provider_config_http_error(exc) from exc
+
+
+@router.delete("/ai/providers/{provider_config_id}")
+async def delete_ai_provider(request: Request, provider_config_id: str):
+    account = _require_admin(request)
+    from .ai.provider_config import AiProviderConfigStore, ProviderConfigError
+
+    store = AiProviderConfigStore(request.app.state.db)
+    try:
+        was_active = store.get_public(provider_config_id)["is_active"]
+        store.delete(provider_config_id, actor_id=account["account_id"])
+        return {"status": "deleted", "was_active": was_active}
+    except ProviderConfigError as exc:
+        raise _provider_config_http_error(exc) from exc
+
+
+@router.post("/ai/providers/{provider_config_id}/test")
+async def test_ai_provider(request: Request, provider_config_id: str):
+    account = _require_admin(request)
+    from .ai.provider_config import AiProviderConfigStore, ProviderConfigError
+    from .ai.providers import ConfiguredOpenAIProvider
+
+    store = AiProviderConfigStore(request.app.state.db)
+    try:
+        config = store.get_internal(provider_config_id)
+        result = await ConfiguredOpenAIProvider(config).test_connection()
+        store.record_test(
+            provider_config_id,
+            passed=bool(result["ok"]),
+            latency_ms=int(result.get("latency_ms") or 0),
+            actor_id=account["account_id"],
+        )
+        return result
+    except ProviderConfigError as exc:
+        raise _provider_config_http_error(exc) from exc
+
+
+@router.post("/ai/providers/{provider_config_id}/activate")
+async def activate_ai_provider(request: Request, provider_config_id: str):
+    account = _require_admin(request)
+    from .ai.provider_config import AiProviderConfigStore, ProviderConfigError
+
+    try:
+        return AiProviderConfigStore(request.app.state.db).activate(
+            provider_config_id,
+            actor_id=account["account_id"],
+        )
+    except ProviderConfigError as exc:
+        raise _provider_config_http_error(exc) from exc
+
+
 @router.get("/ai/logs")
 async def get_ai_logs(request: Request, room_id: str = "", task_type: str = "",
                        provider: str = "", status: str = "", limit: int = 50):
@@ -732,6 +846,133 @@ async def rag_reindex(request: Request):
     }
 
 
+@router.post("/rag/reindex-version")
+async def rag_reindex_version(request: Request):
+    account = _require_admin(request)
+    conn = request.app.state.db
+    rag = getattr(request.app.state, "rag", None)
+    if not rag:
+        raise HTTPException(503, "RAG not available")
+
+    body = await request.json()
+    scenario_version_id = str(body.get("scenario_version_id") or "").strip()
+    if not scenario_version_id:
+        raise HTTPException(400, "scenario_version_id required")
+
+    version = conn.execute(
+        "SELECT scenario_id FROM scenario_versions WHERE scenario_version_id = %s",
+        (scenario_version_id,),
+    ).fetchone()
+    if not version:
+        raise HTTPException(404, "剧本版本不存在")
+
+    rows = conn.execute(
+        """
+        SELECT sp.source_part_id, sp.part_kind, sp.page_number, sp.text_content,
+               sp.mime_type, sp.anchor, sd.source_filename
+        FROM scenario_version_sources svs
+        JOIN source_documents sd
+          ON sd.source_document_id = svs.source_document_id
+        JOIN source_parts sp
+          ON sp.source_document_id = sd.source_document_id
+        WHERE svs.scenario_version_id = %s
+        ORDER BY svs.ordinal, sp.ordinal
+        """,
+        (scenario_version_id,),
+    ).fetchall()
+    if not rows:
+        raise HTTPException(409, "剧本版本尚未绑定可索引来源")
+
+    parts = []
+    for row in rows:
+        source_filename = os.path.basename(
+            str(row.get("source_filename") or "source").replace("\\", "/")
+        )
+        page_number = row.get("page_number")
+        source_ref = source_filename
+        if page_number is not None:
+            source_ref = f"{source_ref}#page={page_number}"
+        parts.append({
+            "source_part_id": row["source_part_id"],
+            "text": row.get("text_content") or "",
+            "part_kind": row.get("part_kind") or "text",
+            "mime_type": row.get("mime_type") or "",
+            "page_number": page_number,
+            "source_ref": source_ref,
+            "anchor": _json_val(row.get("anchor")) or {},
+        })
+
+    rebuild_id = str(uuid.uuid4())
+    embedding_model, embedding_dimensions = _rag_embedding_metadata(rag)
+    conn.execute(
+        """
+        INSERT INTO rag_rebuild_records (
+            rebuild_id, scenario_version_id, status, embedding_model,
+            embedding_dimensions, requested_by
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (
+            rebuild_id,
+            scenario_version_id,
+            "running",
+            embedding_model,
+            embedding_dimensions,
+            account.get("account_id", "unknown"),
+        ),
+    )
+
+    try:
+        chunk_count = rag.index_scenario_version(
+            version["scenario_id"],
+            scenario_version_id,
+            parts,
+            visibility="internal",
+        )
+        embedding_model, embedding_dimensions = _rag_embedding_metadata(rag)
+        with conn.transaction() as tx:
+            tx.execute(
+                """
+                UPDATE scenario_versions
+                SET rag_index_version = %s
+                WHERE scenario_version_id = %s
+                """,
+                (rebuild_id, scenario_version_id),
+            )
+            tx.execute(
+                """
+                UPDATE rag_rebuild_records
+                SET status = %s, chunk_count = %s, embedding_model = %s,
+                    embedding_dimensions = %s, completed_at = NOW()
+                WHERE rebuild_id = %s
+                """,
+                (
+                    "complete",
+                    chunk_count,
+                    embedding_model,
+                    embedding_dimensions,
+                    rebuild_id,
+                ),
+            )
+    except Exception as exc:
+        conn.execute(
+            """
+            UPDATE rag_rebuild_records
+            SET status = %s, error_message = %s, completed_at = NOW()
+            WHERE rebuild_id = %s
+            """,
+            ("failed", str(exc)[:1000], rebuild_id),
+        )
+        logger.exception("RAG version rebuild failed: %s", scenario_version_id)
+        raise HTTPException(500, "RAG 版本重建失败") from exc
+    return {
+        "status": "complete",
+        "scenario_id": version["scenario_id"],
+        "scenario_version_id": scenario_version_id,
+        "rebuild_id": rebuild_id,
+        "chunks_indexed": chunk_count,
+    }
+
+
 # ── SpoilerGuard Audit ──
 
 @router.get("/rooms/{room_id}/spoiler-audits")
@@ -833,3 +1074,27 @@ def _json_val(value):
         try: return json.loads(value)
         except json.JSONDecodeError: return None
     return value
+
+
+def _rag_embedding_metadata(rag) -> tuple[str | None, int | None]:
+    embedding = getattr(rag, "embedding", None)
+    if embedding is None:
+        return None, None
+    model_name = str(
+        getattr(embedding, "model_name", "") or type(embedding).__name__
+    )
+    raw_dimensions = getattr(embedding, "dimension", None)
+    try:
+        dimensions = int(raw_dimensions) if raw_dimensions is not None else None
+    except (TypeError, ValueError):
+        dimensions = None
+    return model_name, dimensions
+
+
+def _provider_config_http_error(exc: Exception) -> HTTPException:
+    code = str(exc)
+    if code == "provider_config_not_found":
+        return HTTPException(404, code)
+    if code in {"provider_test_required", "key_unavailable"}:
+        return HTTPException(409, code)
+    return HTTPException(400, code)

@@ -51,17 +51,24 @@ class RAGContextBuilder:
             (query, ["event"], SOURCE_QUOTAS["event"]),
             (query, ["clue"], SOURCE_QUOTAS["clue"]),
             (query, ["npc"], SOURCE_QUOTAS["npc"]),
+            (query, ["asset"], SOURCE_QUOTAS["asset"]),
         ]
 
         for q, stypes, limit in queries:
             try:
-                results = self.rag.search(q, room_id=room_id, source_types=stypes, top_k=limit)
+                results = self.rag.search(
+                    q,
+                    room_id=room_id,
+                    source_types=stypes,
+                    top_k=limit,
+                    audience="ai",
+                )
                 for r in results:
-                    citation = {
-                        "source_type": r["source_type"],
-                        "source_id": r["source_id"],
-                        "similarity": round(float(r.get("similarity", 0)), 3),
-                    }
+                    citation = dict(r.get("citation") or {})
+                    citation.setdefault("source_type", r["source_type"])
+                    citation.setdefault("source_id", r["source_id"])
+                    citation["similarity"] = round(float(r.get("similarity", 0)), 3)
+                    citation["score"] = round(float(r.get("score", 0)), 3)
                     citations.append(citation)
                     chunk = {"content": r.get("content", "")[:500], "citation": citation}
                     if r["source_type"] == "rule":

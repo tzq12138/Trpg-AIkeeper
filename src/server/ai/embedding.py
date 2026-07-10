@@ -34,6 +34,10 @@ class LocalEmbedding:
             logger.warning('sentence_transformers is not installed, using deterministic fallback embeddings')
             return _fallback_embed(texts)
 
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
 
 class RemoteEmbedding:
     def __init__(self, api_key: str, model: str = 'deepseek-embedding', api_base: str = 'https://api.deepseek.com'):
@@ -53,24 +57,52 @@ class RemoteEmbedding:
         data = resp.json()
         return [item['embedding'] for item in data['data']]
 
+    @property
+    def model_name(self) -> str:
+        return self.model
+
 
 class HybridEmbedding:
     def __init__(self, local: LocalEmbedding | None = None, remote: RemoteEmbedding | None = None):
         self.local = local or LocalEmbedding()
         self.remote = remote
+        self._last_model_name = _provider_model_name(self.local)
+        self._last_dimension: int | None = None
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         try:
-            return self.local.embed(texts)
+            vectors = self.local.embed(texts)
+            self._record_embedding_metadata(self.local, vectors)
+            return vectors
         except Exception as e:
             if self.remote:
                 logger.warning('Local embedding failed (%s), using remote', e)
-                return self.remote.embed(texts)
+                vectors = self.remote.embed(texts)
+                self._record_embedding_metadata(self.remote, vectors)
+                return vectors
             raise
 
     @property
+    def model_name(self) -> str:
+        return self._last_model_name
+
+    @property
     def dimension(self) -> int:
-        return 768
+        return self._last_dimension or 768
+
+    def _record_embedding_metadata(self, provider, vectors: list[list[float]]) -> None:
+        self._last_model_name = _provider_model_name(provider)
+        if vectors:
+            self._last_dimension = len(vectors[0])
+
+
+def _provider_model_name(provider) -> str:
+    return str(
+        getattr(provider, 'model_name', '')
+        or getattr(provider, '_model_name', '')
+        or getattr(provider, 'model', '')
+        or type(provider).__name__
+    )
 
 
 def _fallback_embed(texts: list[str], dimension: int = 768) -> list[list[float]]:

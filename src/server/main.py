@@ -45,6 +45,7 @@ from .rag_router import router as rag_router
 from .router_auth import router as auth_router
 from .router_map import router as map_router
 from .router_admin import router as admin_router
+from .router_archive import router as archive_router
 from .agent.game_agent import GameAgent
 from .game_loop import GameLoop
 from .redis_cache import RedisCache
@@ -356,3 +357,4 @@ app.include_router(rag_router)
 app.include_router(auth_router)
 app.include_router(map_router)
 app.include_router(admin_router)
+app.include_router(archive_router)

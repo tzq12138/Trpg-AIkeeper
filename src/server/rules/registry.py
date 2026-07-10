@@ -2,9 +2,12 @@ from .base import BaseRuleHandler
 from .coc_handlers import (
     CocCombatHandler,
     CocLuckCheckHandler,
+    CocHealingHandler,
     CocMoveHandler,
+    CocOpposedCheckHandler,
     CocSanityCheckHandler,
     CocSkillCheckHandler,
+    CocStatusHandler,
 )
 from .encounter_handlers import (
     CombatAttackHandler, CombatDodgeHandler, CombatDefendHandler,
@@ -19,6 +22,9 @@ rule_registry: dict[str, BaseRuleHandler] = {
     "sanity_check": CocSanityCheckHandler(),
     "combat_damage": CocCombatHandler(),
     "luck_check": CocLuckCheckHandler(),
+    "opposed_check": CocOpposedCheckHandler(),
+    "healing": CocHealingHandler(),
+    "status_change": CocStatusHandler(),
     "move": CocMoveHandler(),
     "combat_attack": CombatAttackHandler(),
     "combat_dodge": CombatDodgeHandler(),

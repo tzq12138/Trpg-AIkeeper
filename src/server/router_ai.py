@@ -24,20 +24,21 @@ def _get_ai_kp(request: Request) -> AIKP:
 def _verify_room_owner_or_admin(request: Request, room_id: str) -> dict:
     """Verify the requester is room owner or admin. Returns account dict."""
     account = get_account_from_token(request)
-    if not account:
-        raise HTTPException(401, "请先登录")
     conn = request.app.state.db
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "房间不存在")
     room = dict(room)
-    if account.get("role") == "admin":
-        return account
-    if account.get("account_id") == room.get("owner_account_id"):
-        return account
     # Legacy X-Owner-Token fallback
     owner_token = request.headers.get("X-Owner-Token", "")
     if owner_token and room.get("owner_token") == owner_token:
+        return account or {"role": "owner", "account_id": room.get("owner_account_id")}
+
+    if not account:
+        raise HTTPException(401, "请先登录")
+    if account.get("role") == "admin":
+        return account
+    if account.get("account_id") == room.get("owner_account_id"):
         return account
     raise HTTPException(403, "仅房主或管理员可执行此操作")
 

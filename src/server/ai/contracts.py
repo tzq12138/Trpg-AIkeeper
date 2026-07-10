@@ -52,6 +52,19 @@ class KpCitation(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     source: str = ""
     text: str = ""
+    chunk_id: str = Field(default="", alias="chunkId")
+    source_type: str = Field(default="", alias="sourceType")
+    source_id: str = Field(default="", alias="sourceId")
+    source_part_id: str = Field(default="", alias="sourcePartId")
+    scenario_version_id: str = Field(default="", alias="scenarioVersionId")
+    rule_set_version_id: str = Field(default="", alias="ruleSetVersionId")
+    source_ref: str = Field(default="", alias="sourceRef")
+    page_number: int | None = Field(default=None, alias="pageNumber")
+    anchor: dict[str, Any] = Field(default_factory=dict)
+    start_offset: int | None = Field(default=None, alias="startOffset")
+    end_offset: int | None = Field(default=None, alias="endOffset")
+    excerpt: str = ""
+    score: float = 0.0
 
 
 class KpResponse(BaseModel):

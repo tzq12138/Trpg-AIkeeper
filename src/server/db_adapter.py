@@ -85,6 +85,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS rooms (
     room_id TEXT PRIMARY KEY,
     scenario_id TEXT,
+    scenario_version_id TEXT,
     owner_token TEXT NOT NULL,
     owner_account_id TEXT,
     status TEXT NOT NULL DEFAULT 'lobby',
@@ -123,8 +124,157 @@ CREATE TABLE IF NOT EXISTS scenarios (
     scenario_assets JSONB,
     quality_report JSONB,
     import_status TEXT NOT NULL DEFAULT 'pending',
+    publish_status TEXT NOT NULL DEFAULT 'draft',
+    published_version_id TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS source_documents (
+    source_document_id TEXT PRIMARY KEY,
+    scenario_id TEXT REFERENCES scenarios(scenario_id),
+    source_kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    source_filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL,
+    storage_path TEXT NOT NULL,
+    license_type TEXT NOT NULL,
+    license_ref TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (source_sha256, source_kind)
+);
+
+CREATE TABLE IF NOT EXISTS source_parts (
+    source_part_id TEXT PRIMARY KEY,
+    source_document_id TEXT NOT NULL REFERENCES source_documents(source_document_id),
+    ordinal INTEGER NOT NULL,
+    part_kind TEXT NOT NULL,
+    page_number INTEGER,
+    text_content TEXT NOT NULL,
+    mime_type TEXT,
+    storage_path TEXT,
+    anchor JSONB NOT NULL DEFAULT '{}',
+    checksum TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (source_document_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS import_jobs (
+    job_id TEXT PRIMARY KEY,
+    source_document_id TEXT NOT NULL REFERENCES source_documents(source_document_id),
+    scenario_id TEXT REFERENCES scenarios(scenario_id),
+    status TEXT NOT NULL DEFAULT 'pending',
+    progress INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    diagnostics JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS scenario_versions (
+    scenario_version_id TEXT PRIMARY KEY,
+    scenario_id TEXT NOT NULL REFERENCES scenarios(scenario_id),
+    version_number INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    knowledge_graph JSONB NOT NULL DEFAULT '{}',
+    quality_report JSONB NOT NULL DEFAULT '{}',
+    prep_package JSONB NOT NULL DEFAULT '{}',
+    rag_index_version TEXT,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    reviewed_by TEXT,
+    reviewed_at TIMESTAMP,
+    review_notes JSONB NOT NULL DEFAULT '{}',
+    published_at TIMESTAMP,
+    UNIQUE (scenario_id, version_number)
+);
+
+CREATE TABLE IF NOT EXISTS scenario_version_sources (
+    scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id),
+    source_document_id TEXT NOT NULL REFERENCES source_documents(source_document_id),
+    ordinal INTEGER NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (scenario_version_id, source_document_id),
+    UNIQUE (scenario_version_id, ordinal)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenario_version_sources_document
+    ON scenario_version_sources(source_document_id);
+
+CREATE TABLE IF NOT EXISTS rag_rebuild_records (
+    rebuild_id TEXT PRIMARY KEY,
+    scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id),
+    status TEXT NOT NULL DEFAULT 'running',
+    embedding_model TEXT,
+    embedding_dimensions INTEGER,
+    chunk_count INTEGER NOT NULL DEFAULT 0,
+    requested_by TEXT NOT NULL,
+    error_message TEXT,
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_rag_rebuild_records_version_started
+    ON rag_rebuild_records(scenario_version_id, started_at);
+
+CREATE TABLE IF NOT EXISTS rule_sets (
+    rule_set_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    system TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    is_base BOOLEAN NOT NULL DEFAULT FALSE,
+    license_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rule_sets_system_base_status
+    ON rule_sets(system, is_base, status);
+
+CREATE TABLE IF NOT EXISTS rule_set_versions (
+    rule_set_version_id TEXT PRIMARY KEY,
+    rule_set_id TEXT NOT NULL REFERENCES rule_sets(rule_set_id),
+    version_number INTEGER NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft',
+    source_sha256 TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    published_at TIMESTAMP,
+    UNIQUE (rule_set_id, version_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rule_set_versions_set_status
+    ON rule_set_versions(rule_set_id, status);
+
+CREATE TABLE IF NOT EXISTS scenario_rule_bindings (
+    scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id),
+    rule_set_version_id TEXT NOT NULL REFERENCES rule_set_versions(rule_set_version_id),
+    priority INTEGER NOT NULL DEFAULT 100,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (scenario_version_id, rule_set_version_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenario_rule_bindings_priority
+    ON scenario_rule_bindings(scenario_version_id, priority);
+
+CREATE TABLE IF NOT EXISTS room_rule_bindings (
+    room_id TEXT NOT NULL REFERENCES rooms(room_id),
+    rule_set_version_id TEXT NOT NULL REFERENCES rule_set_versions(rule_set_version_id),
+    priority INTEGER NOT NULL DEFAULT 200,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (room_id, rule_set_version_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_rule_bindings_priority
+    ON room_rule_bindings(room_id, priority);
 
 CREATE TABLE IF NOT EXISTS character_templates (
     template_id TEXT PRIMARY KEY,
@@ -249,12 +399,20 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     room_id TEXT,
     content TEXT NOT NULL,
     metadata JSONB DEFAULT '{}',
-    embedding vector(768),
+    source_part_id TEXT,
+    scenario_version_id TEXT,
+    rule_set_version_id TEXT,
+    visibility TEXT NOT NULL DEFAULT 'internal',
+    citation JSONB DEFAULT '{}',
+    embedding_model TEXT,
+    embedding_dimensions INTEGER,
+    embedding vector,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON document_chunks(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_room ON document_chunks(room_id);
+CREATE INDEX IF NOT EXISTS idx_scenario_versions_scenario_status ON scenario_versions(scenario_id, status);
 
 CREATE TABLE IF NOT EXISTS host_states (
     room_id TEXT PRIMARY KEY REFERENCES rooms(room_id),
@@ -276,11 +434,25 @@ ALTER TABLE actions ADD COLUMN IF NOT EXISTS turn_id TEXT;
 
 CREATE TABLE IF NOT EXISTS rule_documents (
     doc_id TEXT PRIMARY KEY,
+    rule_set_version_id TEXT REFERENCES rule_set_versions(rule_set_version_id),
+    source_document_id TEXT REFERENCES source_documents(source_document_id),
     title TEXT NOT NULL,
     category TEXT NOT NULL,
     content TEXT NOT NULL,
+    visibility TEXT NOT NULL DEFAULT 'host_only',
+    license_type TEXT NOT NULL DEFAULT 'authorized',
+    source_ref TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE rule_documents ADD COLUMN IF NOT EXISTS rule_set_version_id TEXT REFERENCES rule_set_versions(rule_set_version_id);
+ALTER TABLE rule_documents ADD COLUMN IF NOT EXISTS source_document_id TEXT REFERENCES source_documents(source_document_id);
+ALTER TABLE rule_documents ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'host_only';
+ALTER TABLE rule_documents ADD COLUMN IF NOT EXISTS license_type TEXT NOT NULL DEFAULT 'authorized';
+ALTER TABLE rule_documents ADD COLUMN IF NOT EXISTS source_ref TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_rule_documents_version_category
+    ON rule_documents(rule_set_version_id, category);
 
 CREATE TABLE IF NOT EXISTS scenario_assets (
     asset_id TEXT PRIMARY KEY,
@@ -306,6 +478,75 @@ ALTER TABLE characters ALTER COLUMN status SET DEFAULT 'joined';
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS source_filename TEXT;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS source_sha256 TEXT;
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS original_file_path TEXT;
+ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS publish_status TEXT NOT NULL DEFAULT 'draft';
+UPDATE scenarios SET publish_status = 'draft' WHERE publish_status IS NULL;
+ALTER TABLE scenarios ALTER COLUMN publish_status SET DEFAULT 'draft';
+ALTER TABLE scenarios ALTER COLUMN publish_status SET NOT NULL;
+ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS published_version_id TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS scenario_version_id TEXT;
+ALTER TABLE scenario_versions ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
+ALTER TABLE scenario_versions ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP;
+ALTER TABLE scenario_versions ADD COLUMN IF NOT EXISTS review_notes JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS source_part_id TEXT;
+ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS scenario_version_id TEXT;
+ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS rule_set_version_id TEXT;
+ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'internal';
+UPDATE document_chunks SET visibility = 'internal' WHERE visibility IS NULL;
+ALTER TABLE document_chunks ALTER COLUMN visibility SET DEFAULT 'internal';
+ALTER TABLE document_chunks ALTER COLUMN visibility SET NOT NULL;
+ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS citation JSONB DEFAULT '{}';
+ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding_model TEXT;
+ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding_dimensions INTEGER;
+ALTER TABLE document_chunks ALTER COLUMN embedding TYPE vector USING embedding::vector;
+CREATE INDEX IF NOT EXISTS idx_chunks_version_visibility ON document_chunks(scenario_version_id, visibility);
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding_space
+    ON document_chunks(embedding_model, embedding_dimensions);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu
+          ON tc.constraint_name = ccu.constraint_name
+         AND tc.table_schema = ccu.table_schema
+        WHERE tc.table_schema = 'public'
+          AND tc.table_name = 'source_documents'
+          AND tc.constraint_type = 'FOREIGN KEY'
+          AND kcu.column_name = 'scenario_id'
+          AND ccu.table_name = 'scenarios'
+          AND ccu.column_name = 'scenario_id'
+    ) THEN
+        ALTER TABLE source_documents
+            ADD CONSTRAINT fk_source_documents_scenario_id
+            FOREIGN KEY (scenario_id) REFERENCES scenarios(scenario_id);
+    END IF;
+END $$;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu
+          ON tc.constraint_name = ccu.constraint_name
+         AND tc.table_schema = ccu.table_schema
+        WHERE tc.table_schema = 'public'
+          AND tc.table_name = 'import_jobs'
+          AND tc.constraint_type = 'FOREIGN KEY'
+          AND kcu.column_name = 'scenario_id'
+          AND ccu.table_name = 'scenarios'
+          AND ccu.column_name = 'scenario_id'
+    ) THEN
+        ALTER TABLE import_jobs
+            ADD CONSTRAINT fk_import_jobs_scenario_id
+            FOREIGN KEY (scenario_id) REFERENCES scenarios(scenario_id);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS scenario_maps (
     map_id TEXT PRIMARY KEY,
@@ -383,6 +624,42 @@ CREATE TABLE IF NOT EXISTS ai_call_logs (
     error_message TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS ai_provider_configs (
+    provider_config_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    api_base_url TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    model TEXT NOT NULL,
+    supports_image BOOLEAN NOT NULL DEFAULT FALSE,
+    api_key_ciphertext TEXT NOT NULL,
+    key_mask TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    test_status TEXT NOT NULL DEFAULT 'untested',
+    last_tested_at TIMESTAMP,
+    last_test_latency_ms INTEGER,
+    created_by TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CHECK (protocol IN ('responses', 'chat_completions')),
+    CHECK (test_status IN ('untested', 'passed', 'failed', 'key_unavailable'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_provider_configs_single_active
+    ON ai_provider_configs(is_active) WHERE is_active = TRUE;
+
+CREATE TABLE IF NOT EXISTS ai_provider_config_audits (
+    audit_id TEXT PRIMARY KEY,
+    provider_config_id TEXT,
+    action TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    details JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_provider_config_audits_created
+    ON ai_provider_config_audits(created_at);
 
 CREATE TABLE IF NOT EXISTS spoiler_sensitive_items (
     item_id TEXT PRIMARY KEY,
@@ -624,6 +901,20 @@ class PgConnection:
         wrapper = PgCursorWrapper(cursor, auto_commit=True)
         wrapper.execute(sql, params)
         return wrapper
+
+    @contextmanager
+    def transaction(self):
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        wrapper = PgCursorWrapper(cursor, auto_commit=False)
+        try:
+            yield wrapper
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
 
     def executescript(self, sql):
         conn = self._get_conn()

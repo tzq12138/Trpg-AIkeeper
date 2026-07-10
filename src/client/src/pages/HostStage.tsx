@@ -3,6 +3,8 @@ import { BrutalProgress } from '../components/BauhausShell';
 import HostSkeletonPanels from '../components/HostSkeletonPanels';
 import { hostTabs, type HostTabKey } from '../navigation';
 import { getSlotValue } from '../shared/identity';
+import { buildRoomWsUrl } from '../shared/ws-url';
+import { normalizeHud as normalizeHostStageHud } from './hostStageModel';
 
 interface PlayerStatus {
   character_id: string;
@@ -41,9 +43,13 @@ function useHostWS(roomId: string, onEvent: (event: Record<string, unknown>) => 
     let delay = 1000;
 
     function connect() {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ownerToken = getSlotValue('owner_token') || '';
-      const url = `${protocol}//${window.location.hostname}:3001/ws?room=${roomId}&role=host&ownerToken=${encodeURIComponent(ownerToken)}&lastSequence=${lastSeqRef.current}`;
+      const url = buildRoomWsUrl(window.location, {
+        roomId,
+        role: 'host',
+        ownerToken,
+        lastSequence: lastSeqRef.current,
+      });
       const ws = new WebSocket(url);
       wsRef.current = ws;
 
@@ -149,33 +155,6 @@ function DiceRollDisplay({ rollEvent, onSettled }: { rollEvent: Record<string, u
   );
 }
 
-function normalizeHud(raw: Record<string, unknown>): HUDData {
-  const queue = (raw.queue_status || raw.queueStatus || {}) as { normal?: number; urgent?: number };
-  const players = (raw.players as Array<Record<string, unknown>> | undefined || []).map((player) => ({
-    character_id: String(player.character_id || player.characterId || ''),
-    player_name: String(player.player_name || player.playerName || '未命名玩家'),
-    investigator_name: String(player.investigator_name || player.investigatorName || ''),
-    hp: Number(player.hp || 0),
-    hp_max: Number(player.hp_max ?? player.hpMax ?? 0),
-    san: Number(player.san || 0),
-    san_max: Number(player.san_max ?? player.sanMax ?? 0),
-    mp: Number(player.mp || 0),
-    mp_max: Number(player.mp_max ?? player.mpMax ?? 0),
-    luck: Number(player.luck || 0),
-    status_tags: (player.status_tags || player.statusTags || []) as string[],
-  }));
-  return {
-    room_id: String(raw.room_id || raw.roomId || ''),
-    players,
-    scene_image_url: (raw.scene_image_url ?? raw.sceneImageUrl ?? null) as string | null,
-    engine_state: String(raw.engine_state || raw.engineState || 'idle'),
-    queue_status: {
-      normal: Number(queue.normal || 0),
-      urgent: Number(queue.urgent || 0),
-    },
-  };
-}
-
 function NarrativeProjection({ imageUrl, messages, rollEvent, onDiceSettled }: {
   imageUrl: string | null;
   messages: ChatMessage[];
@@ -208,7 +187,7 @@ export default function HostStage({ roomId }: { roomId: string }) {
 
   const handleEvent = useCallback((data: Record<string, unknown>) => {
     if (data.type === 'host_state_update' && data.hud) {
-      setHud(normalizeHud(data.hud as Record<string, unknown>));
+      setHud(normalizeHostStageHud(data.hud as Record<string, unknown>));
     } else if (data.type === 'scene_update') {
       setHud((prev) => prev ? { ...prev, scene_image_url: data.image_url as string | null } : prev);
     } else if (data.type === 'chat_message') {
@@ -267,7 +246,7 @@ export default function HostStage({ roomId }: { roomId: string }) {
         const res = await fetch(`/api/host/${roomId}/hud`, { headers });
         if (res.ok) {
           const data = await res.json();
-          if (data.players) { setHud(data); setHudError(''); }
+          if (data.players) { setHud(normalizeHostStageHud(data)); setHudError(''); }
         } else {
           setHudError('无法加载玩家状态——请检查房主身份或刷新页面');
         }
@@ -367,7 +346,7 @@ export default function HostStage({ roomId }: { roomId: string }) {
           </div>
           <div className="bh-rail-footer">
             <span className="bh-eyebrow">QUEUE</span>
-            <strong>普通 {hud?.queue_status.normal ?? 0} / 紧急 {hud?.queue_status.urgent ?? 0}</strong>
+            <strong>普通 {hud?.queue_status?.normal ?? 0} / 紧急 {hud?.queue_status?.urgent ?? 0}</strong>
             <span>{hud?.engine_state === 'thinking' ? 'KP 思考中' : hud?.engine_state === 'busy' ? 'KP 忙碌中' : '系统待命'}</span>
           </div>
         </aside>

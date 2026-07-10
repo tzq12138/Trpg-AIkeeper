@@ -19,6 +19,19 @@ def rag_store():
 
 
 def test_index_and_search(rag_store):
+    with rag_store.pg_db.get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO scenarios (scenario_id, title, import_status) "
+                "VALUES (%s, %s, %s) ON CONFLICT (scenario_id) DO NOTHING",
+                ("test-sc-1", "RAG scope test", "structured"),
+            )
+            cur.execute(
+                "INSERT INTO rooms (room_id, scenario_id, owner_token) "
+                "VALUES (%s, %s, %s) ON CONFLICT (room_id) DO UPDATE "
+                "SET scenario_id = EXCLUDED.scenario_id, scenario_version_id = NULL",
+                ("room-test", "test-sc-1", "rag-owner-token"),
+            )
     rag_store.index_scenario('test-sc-1', '这是一个测试剧本。玩家需要找到隐藏的钥匙。钥匙在地下室。', 'room-test')
     results = rag_store.search('钥匙在哪里', room_id='room-test', top_k=3)
     assert len(results) > 0

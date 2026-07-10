@@ -1,4 +1,5 @@
 import { EngineEvent } from './types';
+import { buildRoomWsUrl } from './ws-url';
 
 type EventHandler = (event: EngineEvent) => void;
 
@@ -18,7 +19,12 @@ export class PlayerWS {
 
   connect(token: string) {
     if (this.stopped) return;
-    const url = `ws://${window.location.hostname}:3001/ws?room=${this.roomId}&role=player&token=${token}&lastSequence=${this.lastSequence}`;
+    const url = buildRoomWsUrl(window.location, {
+      roomId: this.roomId,
+      role: 'player',
+      token,
+      lastSequence: this.lastSequence,
+    });
     this.ws = new WebSocket(url);
     this.ws.onmessage = (msg) => {
       try {

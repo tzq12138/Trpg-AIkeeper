@@ -1,0 +1,1591 @@
+{
+  "room_id": "b2736bf4",
+  "players": [
+    {
+      "label": "P1",
+      "investigator": "查尔斯·钱伯斯",
+      "token": "304ff043-6edb-4b88-ad25-db30729a55f1",
+      "character": "85654152",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "01f3ba92-3223-4672-a94d-7a1892731aac",
+            "intent_type": "dialogue",
+            "declared_intent": "我先观察旅店外的村民和道路，确认离开村子的路线。",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "b2736bf4",
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac",
+              "mechanic": "skill_check",
+              "metadata": {
+                "roll": 15,
+                "detail": "roll=15, threshold=65, level=hard",
+                "target": 65,
+                "bonus_dice": 0,
+                "difficulty": "regular",
+                "is_success": true,
+                "skill_name": "侦查",
+                "skill_value": 65,
+                "success_level": "hard"
+              },
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+              "characterId": "85654152",
+              "revealSteps": [
+                {
+                  "dice": "d100",
+                  "kind": "roll",
+                  "result": 15,
+                  "target": 65,
+                  "bonusDice": 0,
+                  "skillName": "侦查",
+                  "successLevel": "hard"
+                }
+              ],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-09T23:38:38.590921",
+            "completed_at": "2026-07-09T23:38:47.311618"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 425,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:47.334668",
+            "data": {
+              "text": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            }
+          },
+          {
+            "sequence": 428,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:53.607661",
+            "data": {
+              "text": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            }
+          },
+          {
+            "sequence": 431,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:02.236027",
+            "data": {
+              "text": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            }
+          },
+          {
+            "sequence": 434,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:14.799453",
+            "data": {
+              "text": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 420,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.592603",
+            "data": {
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 421,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.630569",
+            "data": {
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 422,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.649867",
+            "data": {
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 423,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.668220",
+            "data": {
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 425,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:47.334668",
+            "data": {
+              "text": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 426,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-09T23:38:47.345501",
+            "data": {
+              "roll": 15,
+              "level": "hard",
+              "roomId": "b2736bf4",
+              "status": "resolved",
+              "target": 65,
+              "turnId": "8274b71a",
+              "success": true,
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac",
+              "skillName": "侦查",
+              "difficulty": "regular",
+              "skillValue": 65,
+              "skill_name": "侦查",
+              "characterId": "85654152",
+              "skill_value": 65,
+              "successLevel": "hard",
+              "success_level": "hard"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 428,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:53.607661",
+            "data": {
+              "text": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 431,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:02.236027",
+            "data": {
+              "text": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 434,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:14.799453",
+            "data": {
+              "text": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 9
+      }
+    },
+    {
+      "label": "P2",
+      "investigator": "塞缪尔·哈珀",
+      "token": "3b41060b-4458-4eed-9c7a-150b4b988ac2",
+      "character": "7d82b0a8",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "909fb906-ee93-4d1b-a14e-d832f9210c89",
+            "intent_type": "dialogue",
+            "declared_intent": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "b2736bf4",
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89",
+              "mechanic": "skill_check",
+              "metadata": {
+                "roll": 38,
+                "detail": "roll=38, threshold=52, level=regular",
+                "target": 52,
+                "bonus_dice": 0,
+                "difficulty": "regular",
+                "is_success": true,
+                "skill_name": "话术",
+                "skill_value": 52,
+                "success_level": "regular"
+              },
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+              "characterId": "7d82b0a8",
+              "revealSteps": [
+                {
+                  "dice": "d100",
+                  "kind": "roll",
+                  "result": 38,
+                  "target": 52,
+                  "bonusDice": 0,
+                  "skillName": "话术",
+                  "successLevel": "regular"
+                }
+              ],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-09T23:38:38.628910",
+            "completed_at": "2026-07-09T23:38:53.562560"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 425,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:47.334668",
+            "data": {
+              "text": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            }
+          },
+          {
+            "sequence": 428,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:53.607661",
+            "data": {
+              "text": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            }
+          },
+          {
+            "sequence": 431,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:02.236027",
+            "data": {
+              "text": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            }
+          },
+          {
+            "sequence": 434,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:14.799453",
+            "data": {
+              "text": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 420,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.592603",
+            "data": {
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 421,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.630569",
+            "data": {
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 422,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.649867",
+            "data": {
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 423,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.668220",
+            "data": {
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 425,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:47.334668",
+            "data": {
+              "text": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 428,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:53.607661",
+            "data": {
+              "text": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 429,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-09T23:38:53.616117",
+            "data": {
+              "roll": 38,
+              "level": "regular",
+              "roomId": "b2736bf4",
+              "status": "resolved",
+              "target": 52,
+              "turnId": "8274b71a",
+              "success": true,
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89",
+              "skillName": "话术",
+              "difficulty": "regular",
+              "skillValue": 52,
+              "skill_name": "话术",
+              "characterId": "7d82b0a8",
+              "skill_value": 52,
+              "successLevel": "regular",
+              "success_level": "regular"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 431,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:02.236027",
+            "data": {
+              "text": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 434,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:14.799453",
+            "data": {
+              "text": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 9
+      }
+    },
+    {
+      "label": "P3",
+      "investigator": "菲利普·格雷",
+      "token": "6a2dafc7-58a9-4aec-8441-1fc0c28c6927",
+      "character": "c1b58238",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "6ac735d4-8d67-47fb-9169-affb240c911f",
+            "intent_type": "dialogue",
+            "declared_intent": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "b2736bf4",
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f",
+              "mechanic": "skill_check",
+              "metadata": {
+                "roll": 18,
+                "detail": "roll=18, threshold=25, level=regular",
+                "target": 25,
+                "bonus_dice": 0,
+                "difficulty": "regular",
+                "is_success": true,
+                "skill_name": "侦查",
+                "skill_value": 25,
+                "success_level": "regular"
+              },
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+              "characterId": "c1b58238",
+              "revealSteps": [
+                {
+                  "dice": "d100",
+                  "kind": "roll",
+                  "result": 18,
+                  "target": 25,
+                  "bonusDice": 0,
+                  "skillName": "侦查",
+                  "successLevel": "regular"
+                }
+              ],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-09T23:38:38.648207",
+            "completed_at": "2026-07-09T23:39:02.198246"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 425,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:47.334668",
+            "data": {
+              "text": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            }
+          },
+          {
+            "sequence": 428,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:53.607661",
+            "data": {
+              "text": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            }
+          },
+          {
+            "sequence": 431,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:02.236027",
+            "data": {
+              "text": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            }
+          },
+          {
+            "sequence": 434,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:14.799453",
+            "data": {
+              "text": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 420,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.592603",
+            "data": {
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 421,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.630569",
+            "data": {
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 422,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.649867",
+            "data": {
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 423,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.668220",
+            "data": {
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 425,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:47.334668",
+            "data": {
+              "text": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 428,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:53.607661",
+            "data": {
+              "text": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 431,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:02.236027",
+            "data": {
+              "text": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 432,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-09T23:39:02.246263",
+            "data": {
+              "roll": 18,
+              "level": "regular",
+              "roomId": "b2736bf4",
+              "status": "resolved",
+              "target": 25,
+              "turnId": "8274b71a",
+              "success": true,
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f",
+              "skillName": "侦查",
+              "difficulty": "regular",
+              "skillValue": 25,
+              "skill_name": "侦查",
+              "characterId": "c1b58238",
+              "skill_value": 25,
+              "successLevel": "regular",
+              "success_level": "regular"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 434,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:14.799453",
+            "data": {
+              "text": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 9
+      }
+    },
+    {
+      "label": "P4",
+      "investigator": "乔治·莫里森",
+      "token": "1f0c265c-7bae-426f-bc64-36a1689027f3",
+      "character": "63fcd0ce",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "128738c4-cc63-4778-be50-0bbcedc99390",
+            "intent_type": "dialogue",
+            "declared_intent": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "b2736bf4",
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390",
+              "mechanic": "skill_check",
+              "metadata": {
+                "roll": 5,
+                "detail": "roll=5, threshold=32, level=extreme",
+                "target": 32,
+                "bonus_dice": 0,
+                "difficulty": "regular",
+                "is_success": true,
+                "skill_name": "心理学",
+                "skill_value": 32,
+                "success_level": "extreme"
+              },
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+              "characterId": "63fcd0ce",
+              "revealSteps": [
+                {
+                  "dice": "d100",
+                  "kind": "roll",
+                  "result": 5,
+                  "target": 32,
+                  "bonusDice": 0,
+                  "skillName": "心理学",
+                  "successLevel": "extreme"
+                }
+              ],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-09T23:38:38.666688",
+            "completed_at": "2026-07-09T23:39:14.767458"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 425,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:47.334668",
+            "data": {
+              "text": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            }
+          },
+          {
+            "sequence": 428,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:53.607661",
+            "data": {
+              "text": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            }
+          },
+          {
+            "sequence": 431,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:02.236027",
+            "data": {
+              "text": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            }
+          },
+          {
+            "sequence": 434,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:14.799453",
+            "data": {
+              "text": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 420,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.592603",
+            "data": {
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 421,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.630569",
+            "data": {
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 422,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.649867",
+            "data": {
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 423,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T23:38:38.668220",
+            "data": {
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 425,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:47.334668",
+            "data": {
+              "text": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+              "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 428,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:38:53.607661",
+            "data": {
+              "text": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+              "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 431,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:02.236027",
+            "data": {
+              "text": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+              "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 434,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T23:39:14.799453",
+            "data": {
+              "text": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 435,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-09T23:39:14.810561",
+            "data": {
+              "roll": 5,
+              "level": "extreme",
+              "roomId": "b2736bf4",
+              "status": "resolved",
+              "target": 32,
+              "turnId": "8274b71a",
+              "success": true,
+              "actionId": "128738c4-cc63-4778-be50-0bbcedc99390",
+              "skillName": "心理学",
+              "difficulty": "regular",
+              "skillValue": 32,
+              "skill_name": "心理学",
+              "characterId": "63fcd0ce",
+              "skill_value": 32,
+              "successLevel": "extreme",
+              "success_level": "extreme"
+            },
+            "is_public": false
+          }
+        ],
+        "total": 9
+      }
+    }
+  ],
+  "campaign": {
+    "room_id": "b2736bf4",
+    "duration_seconds": 36,
+    "total_actions": 4,
+    "clues_found": 0,
+    "key_events": [
+      {
+        "sequence": 424,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-09T23:38:47.314568"
+      },
+      {
+        "sequence": 427,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-09T23:38:53.568911"
+      },
+      {
+        "sequence": 430,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-09T23:39:02.205225"
+      },
+      {
+        "sequence": 433,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-09T23:39:14.770713"
+      },
+      {
+        "sequence": 436,
+        "type": "s2c_campaign_ended",
+        "timestamp": "2026-07-09T23:39:15.277056"
+      }
+    ],
+    "ending": {
+      "ending_type": "victory",
+      "summary": "战役结束。角色 P1、P2、P3、P4 参与，共经历 31 个事件。",
+      "highlights": [],
+      "character_arcs": [
+        {
+          "player_name": "P1",
+          "character_id": "85654152",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P2",
+          "character_id": "7d82b0a8",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P3",
+          "character_id": "c1b58238",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P4",
+          "character_id": "63fcd0ce",
+          "total_actions": 1
+        }
+      ]
+    }
+  },
+  "timeline": {
+    "events": [
+      {
+        "sequence": 406,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "85654152",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "b2736bf4",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T23:38:21.684843"
+      },
+      {
+        "sequence": 407,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "85654152",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "7d82b0a8",
+              "investigator_name": "塞缪尔·哈珀"
+            }
+          ],
+          "room_id": "b2736bf4",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T23:38:26.789092"
+      },
+      {
+        "sequence": 408,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "85654152",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "7d82b0a8",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "c1b58238",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "b2736bf4",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T23:38:33.275560"
+      },
+      {
+        "sequence": 409,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "85654152",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "7d82b0a8",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "c1b58238",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "63fcd0ce",
+              "investigator_name": "乔治·莫里森"
+            }
+          ],
+          "room_id": "b2736bf4",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T23:38:38.398805"
+      },
+      {
+        "sequence": 410,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "85654152"
+        },
+        "issued_at": "2026-07-09T23:38:38.448172"
+      },
+      {
+        "sequence": 411,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "85654152",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "7d82b0a8",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "c1b58238",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "63fcd0ce",
+              "investigator_name": "乔治·莫里森"
+            }
+          ],
+          "room_id": "b2736bf4",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T23:38:38.459099"
+      },
+      {
+        "sequence": 412,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "7d82b0a8"
+        },
+        "issued_at": "2026-07-09T23:38:38.490088"
+      },
+      {
+        "sequence": 413,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "85654152",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "c1b58238",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "7d82b0a8",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "63fcd0ce",
+              "investigator_name": "乔治·莫里森"
+            }
+          ],
+          "room_id": "b2736bf4",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T23:38:38.495476"
+      },
+      {
+        "sequence": 414,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "c1b58238"
+        },
+        "issued_at": "2026-07-09T23:38:38.507102"
+      },
+      {
+        "sequence": 415,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "85654152",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "7d82b0a8",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "c1b58238",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "63fcd0ce",
+              "investigator_name": "乔治·莫里森"
+            }
+          ],
+          "room_id": "b2736bf4",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T23:38:38.512831"
+      },
+      {
+        "sequence": 416,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "63fcd0ce"
+        },
+        "issued_at": "2026-07-09T23:38:38.523351"
+      },
+      {
+        "sequence": 417,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "85654152",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "7d82b0a8",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "c1b58238",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P4",
+              "character_id": "63fcd0ce",
+              "investigator_name": "乔治·莫里森"
+            }
+          ],
+          "room_id": "b2736bf4",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T23:38:38.528913"
+      },
+      {
+        "sequence": 418,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_checkpoint_created",
+        "audience": "system",
+        "payload": {
+          "reason": "Room started",
+          "checkpointId": "6779983c",
+          "checkpointType": "auto"
+        },
+        "issued_at": "2026-07-09T23:38:38.573498"
+      },
+      {
+        "sequence": 419,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "85654152",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "7d82b0a8",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "c1b58238",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P4",
+              "character_id": "63fcd0ce",
+              "investigator_name": "乔治·莫里森"
+            }
+          ],
+          "room_id": "b2736bf4",
+          "room_status": "active",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T23:38:38.580148"
+      },
+      {
+        "sequence": 420,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+        },
+        "issued_at": "2026-07-09T23:38:38.592603"
+      },
+      {
+        "sequence": 421,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+        },
+        "issued_at": "2026-07-09T23:38:38.630569"
+      },
+      {
+        "sequence": 422,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+        },
+        "issued_at": "2026-07-09T23:38:38.649867"
+      },
+      {
+        "sequence": 423,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+        },
+        "issued_at": "2026-07-09T23:38:38.668220"
+      },
+      {
+        "sequence": 424,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "roll",
+              "payload": {
+                "dice": "d100",
+                "kind": "roll",
+                "result": 15,
+                "target": 65,
+                "bonusDice": 0,
+                "skillName": "侦查",
+                "successLevel": "hard"
+              }
+            },
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。"
+              }
+            }
+          ],
+          "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac",
+          "priority": "normal",
+          "summaryText": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+          "transactionId": "98cedec6-3419-4412-9087-73e951dc3406"
+        },
+        "issued_at": "2026-07-09T23:38:47.314568"
+      },
+      {
+        "sequence": 425,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。",
+          "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac"
+        },
+        "issued_at": "2026-07-09T23:38:47.334668"
+      },
+      {
+        "sequence": 426,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roll": 15,
+          "level": "hard",
+          "roomId": "b2736bf4",
+          "status": "resolved",
+          "target": 65,
+          "turnId": "8274b71a",
+          "success": true,
+          "actionId": "01f3ba92-3223-4672-a94d-7a1892731aac",
+          "skillName": "侦查",
+          "difficulty": "regular",
+          "skillValue": 65,
+          "skill_name": "侦查",
+          "characterId": "85654152",
+          "skill_value": 65,
+          "successLevel": "hard",
+          "success_level": "hard"
+        },
+        "issued_at": "2026-07-09T23:38:47.345501"
+      },
+      {
+        "sequence": 427,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "roll",
+              "payload": {
+                "dice": "d100",
+                "kind": "roll",
+                "result": 38,
+                "target": 52,
+                "bonusDice": 0,
+                "skillName": "话术",
+                "successLevel": "regular"
+              }
+            },
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。"
+              }
+            }
+          ],
+          "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89",
+          "priority": "normal",
+          "summaryText": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+          "transactionId": "72cbd760-1213-424e-80ab-a7f68c79381c"
+        },
+        "issued_at": "2026-07-09T23:38:53.568911"
+      },
+      {
+        "sequence": 428,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。",
+          "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89"
+        },
+        "issued_at": "2026-07-09T23:38:53.607661"
+      },
+      {
+        "sequence": 429,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roll": 38,
+          "level": "regular",
+          "roomId": "b2736bf4",
+          "status": "resolved",
+          "target": 52,
+          "turnId": "8274b71a",
+          "success": true,
+          "actionId": "909fb906-ee93-4d1b-a14e-d832f9210c89",
+          "skillName": "话术",
+          "difficulty": "regular",
+          "skillValue": 52,
+          "skill_name": "话术",
+          "characterId": "7d82b0a8",
+          "skill_value": 52,
+          "successLevel": "regular",
+          "success_level": "regular"
+        },
+        "issued_at": "2026-07-09T23:38:53.616117"
+      },
+      {
+        "sequence": 430,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "roll",
+              "payload": {
+                "dice": "d100",
+                "kind": "roll",
+                "result": 18,
+                "target": 25,
+                "bonusDice": 0,
+                "skillName": "侦查",
+                "successLevel": "regular"
+              }
+            },
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。"
+              }
+            }
+          ],
+          "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f",
+          "priority": "normal",
+          "summaryText": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+          "transactionId": "68e9ef98-1f59-4516-9fbb-6bc1161219c1"
+        },
+        "issued_at": "2026-07-09T23:39:02.205225"
+      },
+      {
+        "sequence": 431,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。",
+          "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f"
+        },
+        "issued_at": "2026-07-09T23:39:02.236027"
+      },
+      {
+        "sequence": 432,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roll": 18,
+          "level": "regular",
+          "roomId": "b2736bf4",
+          "status": "resolved",
+          "target": 25,
+          "turnId": "8274b71a",
+          "success": true,
+          "actionId": "6ac735d4-8d67-47fb-9169-affb240c911f",
+          "skillName": "侦查",
+          "difficulty": "regular",
+          "skillValue": 25,
+          "skill_name": "侦查",
+          "characterId": "c1b58238",
+          "skill_value": 25,
+          "successLevel": "regular",
+          "success_level": "regular"
+        },
+        "issued_at": "2026-07-09T23:39:02.246263"
+      },
+      {
+        "sequence": 433,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "roll",
+              "payload": {
+                "dice": "d100",
+                "kind": "roll",
+                "result": 5,
+                "target": 32,
+                "bonusDice": 0,
+                "skillName": "心理学",
+                "successLevel": "extreme"
+              }
+            },
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。"
+              }
+            }
+          ],
+          "actionId": "128738c4-cc63-4778-be50-0bbcedc99390",
+          "priority": "normal",
+          "summaryText": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+          "transactionId": "cfd2e908-10a8-42f2-92b2-ff07f3c5bf18"
+        },
+        "issued_at": "2026-07-09T23:39:14.770713"
+      },
+      {
+        "sequence": 434,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。",
+          "actionId": "128738c4-cc63-4778-be50-0bbcedc99390"
+        },
+        "issued_at": "2026-07-09T23:39:14.799453"
+      },
+      {
+        "sequence": 435,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roll": 5,
+          "level": "extreme",
+          "roomId": "b2736bf4",
+          "status": "resolved",
+          "target": 32,
+          "turnId": "8274b71a",
+          "success": true,
+          "actionId": "128738c4-cc63-4778-be50-0bbcedc99390",
+          "skillName": "心理学",
+          "difficulty": "regular",
+          "skillValue": 32,
+          "skill_name": "心理学",
+          "characterId": "63fcd0ce",
+          "skill_value": 32,
+          "successLevel": "extreme",
+          "success_level": "extreme"
+        },
+        "issued_at": "2026-07-09T23:39:14.810561"
+      },
+      {
+        "sequence": 436,
+        "room_id": "b2736bf4",
+        "event_type": "s2c_campaign_ended",
+        "audience": "party",
+        "payload": {
+          "text": "调查员们趁仪式尚未完成前逃出烬头村，成功避开灯塔焚祭，带着伤痕与真相幸存离开。",
+          "endingName": "成功逃脱",
+          "endingPhase": "成功逃脱",
+          "ending_type": "victory"
+        },
+        "issued_at": "2026-07-09T23:39:15.277056"
+      }
+    ]
+  },
+  "export_markdown": {
+    "format": "markdown",
+    "scope": "full",
+    "content": "# AI-Keeper 战报 — Room b2736bf4\n\n**状态:** completed\n**剧透级别:** standard\n\n## 调查员\n- **查尔斯·钱伯斯** HP:11/11 SAN:50/50\n- **塞缪尔·哈珀** HP:11/11 SAN:25/25\n- **菲利普·格雷** HP:12/12 SAN:60/60\n- **乔治·莫里森** HP:10/10 SAN:65/65\n\n## 关键事件\n### 2026-07-09 23:38:47 — KP叙事\n> 我先观察旅店外的村民和道路，确认离开村子的路线。。检定结果 15/65，hard。\n\n- 🎲 **侦查** 检定: 15/65 (hard)\n### 2026-07-09 23:38:53 — KP叙事\n> 我低声询问老板和路人，打听今晚灯塔附近会发生什么。。检定结果 38/52，regular。\n\n- 🎲 **话术** 检定: 38/52 (regular)\n### 2026-07-09 23:39:02 — KP叙事\n> 我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。。检定结果 18/25，regular。\n\n- 🎲 **侦查** 检定: 18/25 (regular)\n### 2026-07-09 23:39:14 — KP叙事\n> 我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。。检定结果 5/32，extreme。\n\n- 🎲 **心理学** 检定: 5/32 (extreme)\n## 结局\n**类型:** victory\n**摘要:** 战役结束。角色 P1、P2、P3、P4 参与，共经历 31 个事件。"
+  }
+}

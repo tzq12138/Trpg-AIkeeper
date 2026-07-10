@@ -41,3 +41,46 @@ async def test_compiler_falls_back_to_python_when_deepseek_fails(monkeypatch):
 
     assert result.triggered_mechanic == "skill_check"
     assert result.skill_name == "侦查"
+
+
+@pytest.mark.parametrize("raw_mechanic", ["observation", "技能检定", "check"])
+def test_compiler_normalizes_common_skill_check_aliases(raw_mechanic):
+    compiler = MechanicCompiler()
+
+    result = compiler._normalize_raw_result({"triggeredMechanic": raw_mechanic})
+
+    assert result["triggeredMechanic"] == "skill_check"
+
+
+@pytest.mark.parametrize(
+    ("raw_skill", "skills", "expected"),
+    [
+        ("侦察", {"侦查": 65}, "侦查"),
+        ("交涉", {"话术": 26, "说服": 10}, "话术"),
+        ("Spot Hidden", {"侦查": 65}, "侦查"),
+        ("打听", {"话术": 26, "说服": 10}, "话术"),
+        ("心理分析", {"心理学": 10}, "心理学"),
+    ],
+)
+def test_compiler_normalizes_ai_skill_aliases_to_character_skills(raw_skill, skills, expected):
+    compiler = MechanicCompiler()
+
+    result = compiler._normalize_raw_result(
+        {"triggeredMechanic": "skill_check", "skillName": raw_skill},
+        {"xlsx_data": {"skills": skills}},
+    )
+
+    assert result["skillName"] == expected
+
+
+def test_compiler_downgrades_unknown_ai_skill_to_dialogue_for_known_character():
+    compiler = MechanicCompiler()
+
+    result = compiler._normalize_raw_result(
+        {"triggeredMechanic": "skill_check", "skillName": "未知异能"},
+        {"xlsx_data": {"skills": {"侦查": 65}}},
+        "我随口问候老板。",
+    )
+
+    assert result["triggeredMechanic"] == "dialogue"
+    assert "skillName" not in result

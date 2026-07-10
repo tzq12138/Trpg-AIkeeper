@@ -3,8 +3,10 @@ import random
 
 import pytest
 
+from src.server.ai.contracts import KpResponse, NarrativePayload
 from src.server.ai.mechanic_compiler import MechanicCompiler
 from src.server.engine.resolution_pipeline import ResolutionPipeline
+from src.server.models import MechanicCompileResult, PlayerIntent, ResolutionResult
 
 
 class Rows:
@@ -62,6 +64,13 @@ class FakeConn:
                 a for a in self.actions.values()
                 if a["room_id"] == room_id and a["status"] == status
             ])
+        if normalized.startswith("UPDATE actions SET status = %s WHERE action_id = %s AND status = %s RETURNING"):
+            status, action_id, expected_status = params
+            action = self.actions.get(action_id)
+            if not action or action["status"] != expected_status:
+                return Rows()
+            action["status"] = status
+            return Rows([action])
         if normalized.startswith("UPDATE actions SET status = %s WHERE action_id"):
             status, action_id = params
             self.actions[action_id]["status"] = status
@@ -123,6 +132,18 @@ class FakeStateService:
         # Simulate what real StateService does: bump room version
         self.changes.append({"room_id": room_id, "changes": changes, "reason": reason})
         return {"room_id": room_id, "state_version": 1, "applied": {}, "events": []}
+
+
+class GatewayReturningNarrativePayload:
+    async def generate_narrative(self, context, room_id=None):
+        return NarrativePayload(public="窗外的风掠过木板缝隙，带来一阵短促的呜咽。")
+
+
+class GatewayReturningKpResponse:
+    async def generate_narrative(self, context, room_id=None):
+        return KpResponse(
+            narrative=NarrativePayload(public="你的话音刚落，屋里忽然安静得能听见墙后细碎的摩擦声。")
+        )
 
 
 class FailingRuleExecutor:
@@ -205,3 +226,85 @@ async def test_pipeline_rejects_when_rule_handler_fails_without_partial_projecti
     assert conn.actions["act-1"]["result"]["reason"] == "resolution failed: handler failed"
     event_types = [event[1] for event in dispatcher.events]
     assert event_types == ["s2c_action_completed"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_skips_action_already_being_resolved():
+    conn = FakeConn()
+    conn.actions["act-1"]["status"] = "resolving"
+    dispatcher = FakeDispatcher()
+    pipeline = ResolutionPipeline(
+        conn=conn,
+        compiler=MechanicCompiler(api_key=""),
+        dispatcher=dispatcher,
+    )
+
+    result = await pipeline.resolve_action("act-1")
+
+    assert result == {"status": "resolving", "action_id": "act-1"}
+    assert dispatcher.events == []
+
+
+def test_render_fallback_narrative_handles_identity_question():
+    pipeline = ResolutionPipeline(conn=FakeConn(), compiler=MechanicCompiler(api_key=""))
+
+    text = pipeline._render_fallback_narrative(
+        PlayerIntent(action_id="act-id", intent_type="dialogue", declared_intent="我是谁？"),
+        MechanicCompileResult(triggeredMechanic="dialogue"),
+        ResolutionResult(
+            actionId="act-id",
+            roomId="room-1",
+            characterId="char-1",
+            mechanic="dialogue",
+            isSuccess=True,
+        ),
+        {
+            "player_name": "Alice",
+            "xlsx_data": {"name": "菲利普·格雷", "occupation": "教授"},
+        },
+    )
+
+    assert "菲利普·格雷" in text
+    assert "教授" in text
+
+
+@pytest.mark.asyncio
+async def test_enrich_dialogue_narrative_accepts_narrative_payload():
+    pipeline = ResolutionPipeline(
+        conn=FakeConn(),
+        compiler=MechanicCompiler(api_key=""),
+        gateway=GatewayReturningNarrativePayload(),
+    )
+
+    text = await pipeline._enrich_dialogue_narrative(
+        {"room_id": "room-1", "character_id": "char-1", "declared_intent": "我轻声询问屋里是否有人"},
+        {
+            "player_name": "Alice",
+            "xlsx_data": {"name": "菲利普·格雷", "occupation": "教授"},
+        },
+        {"room_id": "room-1"},
+        None,
+    )
+
+    assert text == "窗外的风掠过木板缝隙，带来一阵短促的呜咽。"
+
+
+@pytest.mark.asyncio
+async def test_enrich_dialogue_narrative_accepts_kp_response():
+    pipeline = ResolutionPipeline(
+        conn=FakeConn(),
+        compiler=MechanicCompiler(api_key=""),
+        gateway=GatewayReturningKpResponse(),
+    )
+
+    text = await pipeline._enrich_dialogue_narrative(
+        {"room_id": "room-1", "character_id": "char-1", "declared_intent": "我试着和同伴确认刚才的脚步声"},
+        {
+            "player_name": "Alice",
+            "xlsx_data": {"name": "菲利普·格雷", "occupation": "教授"},
+        },
+        {"room_id": "room-1"},
+        None,
+    )
+
+    assert text == "你的话音刚落，屋里忽然安静得能听见墙后细碎的摩擦声。"

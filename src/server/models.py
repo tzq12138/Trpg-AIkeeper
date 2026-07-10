@@ -19,7 +19,7 @@ EngineEventType = Literal[
     "s2c_team_message",
     "s2c_turn_resolved",
     "s2c_clue_discovered", "s2c_clue_shared",
-    "s2c_checkpoint_restored",
+    "s2c_checkpoint_created", "s2c_checkpoint_restored",
 ]
 
 Audience = Literal["host", "player", "party", "system"]
@@ -340,6 +340,7 @@ class MechanicCompileResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     triggered_mechanic: Literal[
         "skill_check", "sanity_check", "combat_damage", "luck_check",
+        "opposed_check", "healing", "status_change",
         "auto_success", "auto_failure", "dialogue", "move",
         "combat_attack", "combat_dodge", "combat_defend",
         "combat_assist", "combat_flee", "combat_wait",

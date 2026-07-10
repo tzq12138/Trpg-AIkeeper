@@ -4,11 +4,13 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import Any
 
 import httpx
 
 from .contracts import KpResponse, KnowledgeAnswer
+from .provider_config import assert_api_target_safe
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +18,18 @@ logger = logging.getLogger(__name__)
 class BaseAiProvider(ABC):
     """Abstract provider — all AI providers implement this."""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, capabilities: set[str] | None = None):
         self.name = name
+        self.capabilities = set(capabilities or {"text"})
 
     @abstractmethod
     async def call(self, task_type: str, context: dict) -> dict | None:
         """Call the provider with a task. Returns KpResponse dict or None on failure."""
         ...
+
+    def supports(self, required: str | Iterable[str] | None = None) -> bool:
+        required_set = _normalize_capabilities(required)
+        return required_set.issubset(self.capabilities)
 
     async def health_check(self) -> bool:
         """Quick health check. Default: returns True."""
@@ -38,7 +45,7 @@ class DeepSeekProvider(BaseAiProvider):
 
     def __init__(self, api_key: str = "", model: str = "deepseek-v4-pro",
                  api_base: str = "https://api.deepseek.com"):
-        super().__init__("deepseek")
+        super().__init__("deepseek", {"text"})
         self.api_key = api_key
         self.model = model
         self.api_base = api_base
@@ -112,7 +119,7 @@ class KpMcpProvider(BaseAiProvider):
     }
 
     def __init__(self, server_url: str = "http://127.0.0.1:9100/mcp", timeout: int = 30):
-        super().__init__("mcp")
+        super().__init__("mcp", {"text", "image"})
         self.server_url = server_url
         self.timeout = timeout
         self._initialized = False
@@ -136,6 +143,12 @@ class KpMcpProvider(BaseAiProvider):
                 except json.JSONDecodeError:
                     continue
         return None
+
+    async def _reconnect(self) -> bool:
+        self._initialized = False
+        self._session_id = None
+        self._req_headers = None
+        return await self._ensure_initialized()
 
     @property
     def _headers(self) -> dict:
@@ -183,18 +196,26 @@ class KpMcpProvider(BaseAiProvider):
         if not tool_name:
             return None
 
-        arguments = context.get("arguments", context)
+        if task_type == "structure_scenario" and "contentPackage" in context:
+            arguments = {"contentPackage": context["contentPackage"]}
+        else:
+            arguments = context.get("arguments", context)
+        if task_type == "generate_narrative":
+            arguments = {"context": arguments}
         try:
-            async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers) as client:
-                resp = await client.post(
-                    self.server_url,
-                    json={
-                        "jsonrpc": "2.0",
-                        "method": "tools/call",
-                        "params": {"name": tool_name, "arguments": arguments},
-                        "id": 2,
-                    },
-                )
+            for attempt in range(2):
+                async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers) as client:
+                    resp = await client.post(
+                        self.server_url,
+                        json={
+                            "jsonrpc": "2.0",
+                            "method": "tools/call",
+                            "params": {"name": tool_name, "arguments": arguments},
+                            "id": 2,
+                        },
+                    )
+                if resp.status_code == 404 and attempt == 0 and await self._reconnect():
+                    continue
                 if resp.status_code != 200:
                     logger.warning("MCP call returned %d for %s", resp.status_code, task_type)
                     return None
@@ -206,6 +227,9 @@ class KpMcpProvider(BaseAiProvider):
                     logger.warning("MCP error for %s: %s", task_type, data["error"])
                     return None
                 result = data.get("result", {})
+                if result.get("isError") is True:
+                    logger.warning("MCP tool error for %s: %s", task_type, result)
+                    return None
                 content = result.get("content", [])
                 if content and isinstance(content, list):
                     text = content[0].get("text", "{}") if content else "{}"
@@ -227,12 +251,15 @@ class KpMcpProvider(BaseAiProvider):
         if not await self._ensure_initialized():
             return False
         try:
-            async with httpx.AsyncClient(timeout=5, headers=self._headers) as client:
-                resp = await client.post(
-                    self.server_url,
-                    json={"jsonrpc": "2.0", "method": "tools/call",
-                          "params": {"name": "kp_health_check", "arguments": {}}, "id": 0},
-                )
+            for attempt in range(2):
+                async with httpx.AsyncClient(timeout=5, headers=self._headers) as client:
+                    resp = await client.post(
+                        self.server_url,
+                        json={"jsonrpc": "2.0", "method": "tools/call",
+                              "params": {"name": "kp_health_check", "arguments": {}}, "id": 0},
+                    )
+                if resp.status_code == 404 and attempt == 0 and await self._reconnect():
+                    continue
                 return resp.status_code == 200
         except Exception:
             return False
@@ -241,6 +268,7 @@ class KpMcpProvider(BaseAiProvider):
 def _task_to_tool(task_type: str) -> str | None:
     mapping = {
         "resolve_turn": "kp_resolve_turn",
+        "generate_narrative": "kp_generate_narrative",
         "resolve_sanity": "kp_resolve_sanity",
         "resolve_combat_round": "kp_resolve_combat_round",
         "structure_scenario": "kp_structure_scenario",
@@ -259,7 +287,7 @@ class LocalFallbackProvider(BaseAiProvider):
     """Template-based fallback — always succeeds with simple narrative."""
 
     def __init__(self):
-        super().__init__("local")
+        super().__init__("local", {"text"})
 
     async def call(self, task_type: str, context: dict) -> dict | None:
         actions = context.get("actions", [])
@@ -291,3 +319,246 @@ class LocalFallbackProvider(BaseAiProvider):
 
     async def health_check(self) -> bool:
         return True
+
+
+class ConfiguredOpenAIProvider(BaseAiProvider):
+    """Administrator-configured OpenAI-compatible text and image provider."""
+
+    def __init__(self, config: dict, timeout: int = 30):
+        capabilities = {"text"}
+        if config.get("supports_image"):
+            capabilities.add("image")
+        provider_id = str(config.get("provider_config_id") or "")
+        super().__init__(f"configured:{provider_id[:8]}", capabilities)
+        self.provider_config_id = provider_id
+        self.api_base_url = str(config.get("api_base_url") or "").rstrip("/")
+        self.protocol = str(config.get("protocol") or "responses")
+        self.model = str(config.get("model") or "gpt-5.4")
+        self.api_key = str(config.get("api_key") or "")
+        self.timeout = timeout
+
+    async def call(self, task_type: str, context: dict) -> dict | None:
+        if not self.api_key:
+            return None
+        try:
+            assert_api_target_safe(self.api_base_url)
+            system_prompt = str(context.get("system_prompt") or "")
+            user_content = _configured_user_content(context, self.protocol)
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            endpoint, payload = self._request_payload(system_prompt, user_content)
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=False,
+            ) as client:
+                response = await client.post(endpoint, headers=headers, json=payload)
+            if response.status_code >= 400:
+                logger.warning(
+                    "Configured provider returned status=%s task=%s provider=%s",
+                    response.status_code,
+                    task_type,
+                    self.provider_config_id,
+                )
+            response.raise_for_status()
+            parsed = _parse_configured_response(response.json(), self.protocol)
+            return parsed or None
+        except Exception as exc:
+            logger.warning(
+                "Configured provider failed task=%s provider=%s error=%s",
+                task_type,
+                self.provider_config_id,
+                type(exc).__name__,
+            )
+            return None
+
+    async def test_connection(self) -> dict:
+        started = time.monotonic()
+        text_result = await self._probe(
+            [{"type": "input_text", "text": '返回 JSON：{"ok": true}'}],
+            probe_kind="text",
+        )
+        image_result = {"required": bool("image" in self.capabilities), "ok": True}
+        if text_result["ok"] and image_result["required"]:
+            image_result = await self._probe(
+                [
+                    {"type": "input_text", "text": '识别这张测试图片并返回 JSON：{"ok": true}'},
+                    {
+                        "type": "input_image",
+                        "image_url": (
+                            "data:image/png;base64,"
+                            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+                            "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                        ),
+                    },
+                ],
+                probe_kind="image",
+            )
+            image_result["required"] = True
+        total_latency = int((time.monotonic() - started) * 1000)
+        return {
+            "ok": bool(text_result["ok"] and image_result["ok"]),
+            "protocol": self.protocol,
+            "model": self.model,
+            "latency_ms": total_latency,
+            "text": text_result,
+            "image": image_result,
+        }
+
+    async def _probe(self, user_content: list[dict], probe_kind: str) -> dict:
+        started = time.monotonic()
+        try:
+            assert_api_target_safe(self.api_base_url)
+            endpoint, payload = self._request_payload(
+                "你是 API 连接测试器，只返回要求的 JSON。",
+                user_content,
+            )
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=False,
+            ) as client:
+                response = await client.post(
+                    endpoint,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+            if response.status_code >= 400:
+                return {
+                    "ok": False,
+                    "latency_ms": int((time.monotonic() - started) * 1000),
+                    "error_code": _provider_test_error_code(
+                        response.status_code,
+                        probe_kind,
+                    ),
+                }
+            parsed = _parse_configured_response(response.json(), self.protocol)
+            if not parsed:
+                raise ValueError("empty provider response")
+            return {
+                "ok": True,
+                "latency_ms": int((time.monotonic() - started) * 1000),
+            }
+        except httpx.TimeoutException:
+            error_code = "timeout"
+        except Exception:
+            error_code = "invalid_response"
+        return {
+            "ok": False,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "error_code": error_code,
+        }
+
+    def _request_payload(self, system_prompt: str, user_content: list[dict]) -> tuple[str, dict]:
+        if self.protocol == "responses":
+            return (
+                f"{self.api_base_url}/responses",
+                {
+                    "model": self.model,
+                    "input": [
+                        {
+                            "role": "system",
+                            "content": [{"type": "input_text", "text": system_prompt}],
+                        },
+                        {"role": "user", "content": user_content},
+                    ],
+                    "text": {"format": {"type": "json_object"}},
+                },
+            )
+        chat_content = []
+        for item in user_content:
+            if item["type"] == "input_image":
+                chat_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": item["image_url"]},
+                })
+            else:
+                chat_content.append({"type": "text", "text": item.get("text", "")})
+        return (
+            f"{self.api_base_url}/chat/completions",
+            {
+                "model": self.model,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": chat_content},
+                ],
+            },
+        )
+
+
+def _normalize_capabilities(required: str | Iterable[str] | None) -> set[str]:
+    if required is None:
+        return set()
+    if isinstance(required, str):
+        return {required}
+    return {item for item in required if item}
+
+
+def _configured_user_content(context: dict, protocol: str) -> list[dict]:
+    package = context.get("contentPackage")
+    content: list[dict] = []
+    if isinstance(package, dict):
+        canonical_text = str(package.get("canonical_text") or "").strip()
+        if canonical_text:
+            content.append({"type": "input_text", "text": canonical_text})
+        for part in package.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            source_ref = str(part.get("source_ref") or f"part:{part.get('ordinal', '')}")
+            text = str(part.get("text") or "").strip()
+            if text:
+                content.append({"type": "input_text", "text": f"[{source_ref}]\n{text}"})
+            data_url = str(part.get("data_url") or "")
+            if data_url:
+                content.append({"type": "input_text", "text": f"图像来源：{source_ref}"})
+                content.append({"type": "input_image", "image_url": data_url})
+    else:
+        message = context.get("user_message")
+        if not message:
+            message = json.dumps(context, ensure_ascii=False, default=str)
+        content.append({"type": "input_text", "text": str(message)})
+    if not content:
+        content.append({"type": "input_text", "text": "请返回 JSON 结果。"})
+    return content
+
+
+def _parse_configured_response(data: dict, protocol: str) -> dict:
+    if protocol == "responses":
+        text = str(data.get("output_text") or "")
+        if not text:
+            for output in data.get("output") or []:
+                for item in output.get("content") or []:
+                    if item.get("type") in {"output_text", "text"} and item.get("text"):
+                        text = str(item["text"])
+                        break
+                if text:
+                    break
+    else:
+        text = str(
+            (data.get("choices") or [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+    if not text.strip():
+        return {}
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {"result": parsed}
+    except json.JSONDecodeError:
+        return {"narrative": {"public": text}, "keeperNotes": ""}
+
+
+def _provider_test_error_code(status_code: int, probe_kind: str) -> str:
+    if status_code in {401, 403}:
+        return "auth_failed"
+    if status_code == 404:
+        return "model_not_found"
+    if status_code == 429:
+        return "rate_limited"
+    if status_code == 400:
+        return "image_unsupported" if probe_kind == "image" else "text_unsupported"
+    return "invalid_response"

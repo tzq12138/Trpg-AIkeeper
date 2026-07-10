@@ -1,4 +1,5 @@
 import openpyxl
+from pathlib import Path
 
 
 def _make_xlsx(path: str, data: dict[str, str | int]):
@@ -115,3 +116,17 @@ def test_parse_cy20_like_xlsx_returns_character_profile_and_skills(tmp_path):
     assert result["skills"]["技艺：表演"] == 80
     assert result["skills"]["话术"] == 25
     assert result["skills"]["急救"] == 55
+
+
+def test_parse_real_cy20_card_recalculates_skills_without_formula_cache():
+    from src.server.scenario.xlsx_parser import parse_xlsx_character
+
+    data_dir = Path(__file__).resolve().parents[2] / "data"
+    card_path = next(data_dir.rglob("tzq12138_01_*.xlsx"))
+
+    result = parse_xlsx_character(str(card_path))
+
+    assert result["skills"]["侦查"] == 65
+    assert result["skills"]["图书馆使用"] == 70
+    assert result["skills"]["聆听"] == 47
+    assert result["skills"]["技艺：摄影"] == 38

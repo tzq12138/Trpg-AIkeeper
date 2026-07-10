@@ -1,15 +1,45 @@
 import json
 import uuid
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
+from ..ai.contracts import KpResponse, NarrativePayload
 from ..ai.mechanic_compiler import MechanicCompiler
 from ..models import MechanicCompileResult, PlayerIntent, ResolutionResult
 from .projection import ProjectionDispatcher
 from .rule_executor import RuleExecutor
 
 logger = logging.getLogger(__name__)
+
+
+def _rule_policy_from_metadata(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    raw = value.get("deterministic_policy")
+    if not isinstance(raw, dict):
+        return {}
+    policy: dict[str, Any] = {}
+    if "max_bonus_dice" in raw:
+        try:
+            policy["max_bonus_dice"] = max(0, min(2, int(raw["max_bonus_dice"])))
+        except (TypeError, ValueError):
+            pass
+    for key in ("allow_luck_spend", "allow_pushed_roll"):
+        if key in raw and isinstance(raw[key], bool):
+            policy[key] = raw[key]
+    if "low_skill_fumble_min" in raw:
+        try:
+            policy["low_skill_fumble_min"] = max(96, min(100, int(raw["low_skill_fumble_min"])))
+        except (TypeError, ValueError):
+            pass
+    return policy
 
 
 class ResolutionPipeline:
@@ -60,8 +90,23 @@ class ResolutionPipeline:
             return {"status": "resolved", "action_id": action_id}
         if action["status"] == "rejected":
             return {"status": "rejected", "action_id": action_id}
+        if action["status"] != "queued":
+            return {"status": action["status"], "action_id": action_id}
 
-        self.conn.execute("UPDATE actions SET status = %s WHERE action_id = %s", ("resolving", action_id))
+        claimed = self.conn.execute(
+            "UPDATE actions SET status = %s WHERE action_id = %s AND status = %s RETURNING *",
+            ("resolving", action_id, "queued"),
+        ).fetchone()
+        if not claimed:
+            current = self.conn.execute(
+                "SELECT * FROM actions WHERE action_id = %s", (action_id,)
+            ).fetchone()
+            return {
+                "status": current["status"] if current else "missing",
+                "action_id": action_id,
+            }
+
+        action = claimed
         self.conn.commit()
 
         character = self.conn.execute(
@@ -76,6 +121,7 @@ class ResolutionPipeline:
 
         scenario = self._load_scenario(room)
         scenario_assets = self._json_value(scenario.get("scenario_assets") if scenario else None) or {}
+        scenario_assets["rule_policy"] = self._load_rule_policy(dict(room))
         inventory = self.conn.execute(
             "SELECT * FROM inventory WHERE character_id = %s", (action["character_id"],)
         ).fetchall()
@@ -182,6 +228,83 @@ class ResolutionPipeline:
         ).fetchone()
         return dict(row) if row else None
 
+    def _load_rule_policy(self, room: dict[str, Any]) -> dict[str, Any]:
+        merged: dict[str, Any] = {}
+        sources: list[dict[str, Any]] = []
+        scenario_version_id = room.get("scenario_version_id")
+        try:
+            if scenario_version_id:
+                rows = self.conn.execute(
+                    """
+                    SELECT rsv.rule_set_version_id, rsv.metadata, rs.is_base,
+                           srb.priority
+                    FROM scenario_rule_bindings srb
+                    JOIN rule_set_versions rsv
+                      ON rsv.rule_set_version_id = srb.rule_set_version_id
+                    JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id
+                    WHERE srb.scenario_version_id = %s
+                    ORDER BY CASE WHEN rs.is_base THEN 0 ELSE 1 END,
+                             srb.priority, rsv.rule_set_version_id
+                    """,
+                    (scenario_version_id,),
+                ).fetchall()
+                for row in rows:
+                    scope = "base" if row.get("is_base") else "scenario"
+                    policy = _rule_policy_from_metadata(row.get("metadata"))
+                    if policy:
+                        merged.update(policy)
+                        sources.append({
+                            "scope": scope,
+                            "rule_set_version_id": row["rule_set_version_id"],
+                        })
+            else:
+                rows = self.conn.execute(
+                    """
+                    SELECT rsv.rule_set_version_id, rsv.metadata
+                    FROM rule_set_versions rsv
+                    JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id
+                    WHERE rs.system = 'coc7' AND rs.is_base = TRUE
+                      AND rs.status = 'published' AND rsv.status = 'published'
+                    ORDER BY rsv.version_number, rsv.rule_set_version_id
+                    """
+                ).fetchall()
+                for row in rows:
+                    policy = _rule_policy_from_metadata(row.get("metadata"))
+                    if policy:
+                        merged.update(policy)
+                        sources.append({
+                            "scope": "base",
+                            "rule_set_version_id": row["rule_set_version_id"],
+                        })
+
+            room_id = room.get("room_id")
+            if room_id:
+                rows = self.conn.execute(
+                    """
+                    SELECT rsv.rule_set_version_id, rsv.metadata, rrb.priority
+                    FROM room_rule_bindings rrb
+                    JOIN rule_set_versions rsv
+                      ON rsv.rule_set_version_id = rrb.rule_set_version_id
+                    WHERE rrb.room_id = %s
+                    ORDER BY rrb.priority, rsv.rule_set_version_id
+                    """,
+                    (room_id,),
+                ).fetchall()
+                for row in rows:
+                    policy = _rule_policy_from_metadata(row.get("metadata"))
+                    if policy:
+                        merged.update(policy)
+                        sources.append({
+                            "scope": "room",
+                            "rule_set_version_id": row["rule_set_version_id"],
+                        })
+        except Exception as exc:
+            logger.warning("Failed to resolve rule policy for room=%s: %s", room.get("room_id"), exc)
+            return {}
+        if sources:
+            merged["_sources"] = sources
+        return merged
+
     async def _reject(self, action: dict[str, Any], reason: str):
         payload = {"reason": reason}
         self.conn.execute(
@@ -219,6 +342,7 @@ class ResolutionPipeline:
             "host",
             {
                 "transactionId": str(uuid.uuid4()),
+                "actionId": action["action_id"],
                 "priority": "normal",
                 "steps": host_steps,
                 "summaryText": resolution.narrative,
@@ -356,12 +480,7 @@ class ResolutionPipeline:
                 "spoiler_constraint": retry_prompt,
             }
             result = await self.gateway.generate_narrative(context, action["room_id"])
-            if isinstance(result, dict):
-                narrative = result.get("narrative", {})
-                if isinstance(narrative, dict):
-                    return narrative.get("public", "")
-                return result.get("text", "") or result.get("public", "")
-            return None
+            return self._extract_public_narrative(result)
         except Exception as e:
             logger.warning("Spoiler retry failed for action %s: %s", action["action_id"], e)
             return None
@@ -423,17 +542,28 @@ class ResolutionPipeline:
                 ),
             }
             result = await self.gateway.generate_narrative(context, action["room_id"])
-            if isinstance(result, dict):
-                narrative = result.get("narrative", {})
-                if isinstance(narrative, dict) and narrative.get("public"):
-                    return narrative["public"]
-                if result.get("public"):
-                    return result["public"]
-                if result.get("text"):
-                    return result["text"]
-            return None
+            return self._extract_public_narrative(result)
         except Exception:
             return None
+
+    def _extract_public_narrative(self, result: Any) -> str | None:
+        if isinstance(result, NarrativePayload):
+            return result.public or None
+        if isinstance(result, KpResponse):
+            return result.narrative.public or None
+        if isinstance(result, dict):
+            narrative = result.get("narrative")
+            if isinstance(narrative, NarrativePayload):
+                return narrative.public or None
+            if isinstance(narrative, dict) and narrative.get("public"):
+                return narrative["public"]
+            if result.get("public"):
+                return result["public"]
+            if result.get("text"):
+                return result["text"]
+        if isinstance(result, str):
+            return result or None
+        return None
 
     async def _validate_move(self, action: dict[str, Any], intent: PlayerIntent) -> str | None:
         """Validate move pre-conditions. Returns error string or None if valid."""
@@ -547,9 +677,20 @@ class ResolutionPipeline:
         # Inject encounter context into intent params for handler access
         from ..encounter_persistence import get_participants
         all_participants = get_participants(self.conn, encounter_id)
+        authoritative_participants = []
+        for item in all_participants:
+            participant_data = dict(item)
+            character_row = self.conn.execute(
+                "SELECT xlsx_data FROM characters WHERE character_id = %s",
+                (participant_data.get("character_id"),),
+            ).fetchone()
+            if character_row:
+                character_sheet = self._json_value(character_row.get("xlsx_data")) or {}
+                participant_data["skills"] = dict(character_sheet.get("skills") or {})
+            authoritative_participants.append(participant_data)
         intent.params["encounter_context"] = {
             "participant": dict(participant),
-            "allParticipants": [dict(p) for p in all_participants],
+            "allParticipants": authoritative_participants,
             "encounter": dict(enc),
         }
         intent.params["characterId"] = character_id

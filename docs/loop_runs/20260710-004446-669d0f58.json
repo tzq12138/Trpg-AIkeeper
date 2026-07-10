@@ -1,0 +1,767 @@
+{
+  "room_id": "669d0f58",
+  "players": [
+    {
+      "label": "P1",
+      "investigator": "查尔斯·钱伯斯",
+      "token": "8f96b534-6313-477d-8aa7-aa4190dca4c5",
+      "character": "7d4c3f30",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "ac2920ed-b5c4-41e3-8fd7-1d79fff72d22",
+            "intent_type": "dialogue",
+            "declared_intent": "我先观察旅店外的村民和道路，确认离开村子的路线。",
+            "status": "resolving",
+            "batch_id": null,
+            "result": null,
+            "created_at": "2026-07-09T16:44:46.177027",
+            "completed_at": null
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": []
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 130,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.179031",
+            "data": {
+              "actionId": "ac2920ed-b5c4-41e3-8fd7-1d79fff72d22"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 131,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.198343",
+            "data": {
+              "actionId": "8c6d7166-bb6f-47cc-8611-3941133e3651"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 132,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.225455",
+            "data": {
+              "actionId": "814ebac5-c1b5-46b2-a1b9-cb5fe08cc831"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 133,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.248605",
+            "data": {
+              "actionId": "041a8fa6-b2bc-421d-9e83-adcaffd1b2d5"
+            },
+            "is_public": false
+          }
+        ],
+        "total": 4
+      }
+    },
+    {
+      "label": "P2",
+      "investigator": "塞缪尔·哈珀",
+      "token": "02391220-7955-4af7-ae9b-19d9c92cac1c",
+      "character": "98c10fb7",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "8c6d7166-bb6f-47cc-8611-3941133e3651",
+            "intent_type": "dialogue",
+            "declared_intent": "我低声询问老板和路人，打听今晚灯塔附近会发生什么。",
+            "status": "queued",
+            "batch_id": null,
+            "result": null,
+            "created_at": "2026-07-09T16:44:46.196605",
+            "completed_at": null
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": []
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 130,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.179031",
+            "data": {
+              "actionId": "ac2920ed-b5c4-41e3-8fd7-1d79fff72d22"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 131,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.198343",
+            "data": {
+              "actionId": "8c6d7166-bb6f-47cc-8611-3941133e3651"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 132,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.225455",
+            "data": {
+              "actionId": "814ebac5-c1b5-46b2-a1b9-cb5fe08cc831"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 133,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.248605",
+            "data": {
+              "actionId": "041a8fa6-b2bc-421d-9e83-adcaffd1b2d5"
+            },
+            "is_public": false
+          }
+        ],
+        "total": 4
+      }
+    },
+    {
+      "label": "P3",
+      "investigator": "菲利普·格雷",
+      "token": "e442c939-60ea-4d33-9348-505f21f5e6d1",
+      "character": "61227353",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "814ebac5-c1b5-46b2-a1b9-cb5fe08cc831",
+            "intent_type": "dialogue",
+            "declared_intent": "我检查桌上的旧报纸与笔记，寻找村庄与火祭相关的记录。",
+            "status": "queued",
+            "batch_id": null,
+            "result": null,
+            "created_at": "2026-07-09T16:44:46.223957",
+            "completed_at": null
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": []
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 130,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.179031",
+            "data": {
+              "actionId": "ac2920ed-b5c4-41e3-8fd7-1d79fff72d22"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 131,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.198343",
+            "data": {
+              "actionId": "8c6d7166-bb6f-47cc-8611-3941133e3651"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 132,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.225455",
+            "data": {
+              "actionId": "814ebac5-c1b5-46b2-a1b9-cb5fe08cc831"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 133,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.248605",
+            "data": {
+              "actionId": "041a8fa6-b2bc-421d-9e83-adcaffd1b2d5"
+            },
+            "is_public": false
+          }
+        ],
+        "total": 4
+      }
+    },
+    {
+      "label": "P4",
+      "investigator": "乔治·莫里森",
+      "token": "695af9bd-9521-4741-9807-4e9655ac4d70",
+      "character": "6c8546b9",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "041a8fa6-b2bc-421d-9e83-adcaffd1b2d5",
+            "intent_type": "dialogue",
+            "declared_intent": "我留意同伴的精神状态，并检查是否有人受伤或异常惊慌。",
+            "status": "queued",
+            "batch_id": null,
+            "result": null,
+            "created_at": "2026-07-09T16:44:46.246423",
+            "completed_at": null
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": []
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 130,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.179031",
+            "data": {
+              "actionId": "ac2920ed-b5c4-41e3-8fd7-1d79fff72d22"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 131,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.198343",
+            "data": {
+              "actionId": "8c6d7166-bb6f-47cc-8611-3941133e3651"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 132,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.225455",
+            "data": {
+              "actionId": "814ebac5-c1b5-46b2-a1b9-cb5fe08cc831"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 133,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:44:46.248605",
+            "data": {
+              "actionId": "041a8fa6-b2bc-421d-9e83-adcaffd1b2d5"
+            },
+            "is_public": false
+          }
+        ],
+        "total": 4
+      }
+    }
+  ],
+  "campaign": {
+    "room_id": "669d0f58",
+    "duration_seconds": 0,
+    "total_actions": 4,
+    "clues_found": 0,
+    "key_events": [
+      {
+        "sequence": 134,
+        "type": "s2c_campaign_ended",
+        "timestamp": "2026-07-09T16:44:46.318554"
+      }
+    ],
+    "ending": {
+      "ending_type": "victory",
+      "summary": "战役结束。角色 P3、P4、P1、P2 参与，共经历 19 个事件。",
+      "highlights": [],
+      "character_arcs": [
+        {
+          "player_name": "P3",
+          "character_id": "61227353",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P4",
+          "character_id": "6c8546b9",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P1",
+          "character_id": "7d4c3f30",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P2",
+          "character_id": "98c10fb7",
+          "total_actions": 1
+        }
+      ]
+    }
+  },
+  "timeline": {
+    "events": [
+      {
+        "sequence": 116,
+        "room_id": "669d0f58",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "7d4c3f30",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "669d0f58",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:44:36.701658"
+      },
+      {
+        "sequence": 117,
+        "room_id": "669d0f58",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "7d4c3f30",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "98c10fb7",
+              "investigator_name": "塞缪尔·哈珀"
+            }
+          ],
+          "room_id": "669d0f58",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:44:39.986272"
+      },
+      {
+        "sequence": 118,
+        "room_id": "669d0f58",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "7d4c3f30",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "98c10fb7",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "61227353",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "669d0f58",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:44:42.729510"
+      },
+      {
+        "sequence": 119,
+        "room_id": "669d0f58",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "7d4c3f30",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "98c10fb7",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "61227353",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "6c8546b9",
+              "investigator_name": "乔治·莫里森"
+            }
+          ],
+          "room_id": "669d0f58",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:44:46.048643"
+      },
+      {
+        "sequence": 120,
+        "room_id": "669d0f58",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "7d4c3f30"
+        },
+        "issued_at": "2026-07-09T16:44:46.061024"
+      },
+      {
+        "sequence": 121,
+        "room_id": "669d0f58",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "98c10fb7",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "61227353",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "6c8546b9",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "7d4c3f30",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "669d0f58",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:44:46.067197"
+      },
+      {
+        "sequence": 122,
+        "room_id": "669d0f58",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "98c10fb7"
+        },
+        "issued_at": "2026-07-09T16:44:46.079907"
+      },
+      {
+        "sequence": 123,
+        "room_id": "669d0f58",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "61227353",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "6c8546b9",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "7d4c3f30",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "98c10fb7",
+              "investigator_name": "塞缪尔·哈珀"
+            }
+          ],
+          "room_id": "669d0f58",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:44:46.086683"
+      },
+      {
+        "sequence": 124,
+        "room_id": "669d0f58",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "61227353"
+        },
+        "issued_at": "2026-07-09T16:44:46.099999"
+      },
+      {
+        "sequence": 125,
+        "room_id": "669d0f58",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "61227353",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "6c8546b9",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "7d4c3f30",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "98c10fb7",
+              "investigator_name": "塞缪尔·哈珀"
+            }
+          ],
+          "room_id": "669d0f58",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:44:46.106373"
+      },
+      {
+        "sequence": 126,
+        "room_id": "669d0f58",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "6c8546b9"
+        },
+        "issued_at": "2026-07-09T16:44:46.117963"
+      },
+      {
+        "sequence": 127,
+        "room_id": "669d0f58",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "61227353",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P4",
+              "character_id": "6c8546b9",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "7d4c3f30",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "98c10fb7",
+              "investigator_name": "塞缪尔·哈珀"
+            }
+          ],
+          "room_id": "669d0f58",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:44:46.123433"
+      },
+      {
+        "sequence": 128,
+        "room_id": "669d0f58",
+        "event_type": "s2c_checkpoint_created",
+        "audience": "system",
+        "payload": {
+          "reason": "Room started",
+          "checkpointId": "fc3a0570",
+          "checkpointType": "auto"
+        },
+        "issued_at": "2026-07-09T16:44:46.155378"
+      },
+      {
+        "sequence": 129,
+        "room_id": "669d0f58",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "61227353",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P4",
+              "character_id": "6c8546b9",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "7d4c3f30",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "98c10fb7",
+              "investigator_name": "塞缪尔·哈珀"
+            }
+          ],
+          "room_id": "669d0f58",
+          "room_status": "active",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:44:46.165875"
+      },
+      {
+        "sequence": 130,
+        "room_id": "669d0f58",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "ac2920ed-b5c4-41e3-8fd7-1d79fff72d22"
+        },
+        "issued_at": "2026-07-09T16:44:46.179031"
+      },
+      {
+        "sequence": 131,
+        "room_id": "669d0f58",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "8c6d7166-bb6f-47cc-8611-3941133e3651"
+        },
+        "issued_at": "2026-07-09T16:44:46.198343"
+      },
+      {
+        "sequence": 132,
+        "room_id": "669d0f58",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "814ebac5-c1b5-46b2-a1b9-cb5fe08cc831"
+        },
+        "issued_at": "2026-07-09T16:44:46.225455"
+      },
+      {
+        "sequence": 133,
+        "room_id": "669d0f58",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "041a8fa6-b2bc-421d-9e83-adcaffd1b2d5"
+        },
+        "issued_at": "2026-07-09T16:44:46.248605"
+      },
+      {
+        "sequence": 134,
+        "room_id": "669d0f58",
+        "event_type": "s2c_campaign_ended",
+        "audience": "party",
+        "payload": {
+          "text": "调查员们趁仪式尚未完成前逃出烬头村，成功避开灯塔焚祭，带着伤痕与真相幸存离开。",
+          "endingName": "成功逃脱",
+          "endingPhase": "成功逃脱",
+          "ending_type": "victory"
+        },
+        "issued_at": "2026-07-09T16:44:46.318554"
+      }
+    ]
+  },
+  "export_markdown": {
+    "format": "markdown",
+    "scope": "full",
+    "content": "# AI-Keeper 战报 — Room 669d0f58\n\n**状态:** completed\n**剧透级别:** standard\n\n## 调查员\n- **菲利普·格雷** HP:12/12 SAN:60/60\n- **乔治·莫里森** HP:10/10 SAN:65/65\n- **查尔斯·钱伯斯** HP:11/11 SAN:50/50\n- **塞缪尔·哈珀** HP:11/11 SAN:25/25\n\n## 关键事件\n## 结局\n**类型:** victory\n**摘要:** 战役结束。角色 P3、P4、P1、P2 参与，共经历 19 个事件。"
+  }
+}

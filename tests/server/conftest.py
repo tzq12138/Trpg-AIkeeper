@@ -67,9 +67,12 @@ def test_db():
     pg.initialize()
     conn = pg.get_connection()
     conn.execute(
-        "TRUNCATE TABLE clarifications, clue_shares, clues, objectives, inventory, "
+        "TRUNCATE TABLE ai_provider_config_audits, ai_provider_configs, "
+        "document_chunks, import_jobs, source_parts, source_documents, "
+        "scenario_versions, clarifications, clue_shares, clues, objectives, inventory, "
         "actions, events, player_sequences, checkpoints, campaign_archives, "
-        "document_chunks, host_states, characters, rooms, scenarios, rule_documents, "
+        "host_states, characters, room_rule_bindings, scenario_rule_bindings, "
+        "rooms, scenarios, rule_documents, rule_set_versions, rule_sets, "
         "spoiler_sensitive_items, spoiler_audits, "
         "character_profiles, character_runtime_state, room_scene_state, "
         "accounts, ai_call_logs "
@@ -107,12 +110,24 @@ def create_account(conn, account_id: str, username: str, role: str, password: st
 
 
 def create_scenario(conn, scenario_id: str = "sc-test", title: str = "Test Scenario"):
-    """Insert a structured scenario for test rooms."""
+    """Insert a published scenario snapshot for test rooms."""
+    scenario_version_id = f"sv-{scenario_id}"
     conn.execute(
-        "INSERT INTO scenarios (scenario_id, title, raw_text, import_status) "
-        "VALUES (%s, %s, %s, %s) "
+        "INSERT INTO scenarios (scenario_id, title, raw_text, import_status, publish_status) "
+        "VALUES (%s, %s, %s, %s, %s) "
         "ON CONFLICT (scenario_id) DO NOTHING",
-        (scenario_id, title, "Test content", "structured"),
+        (scenario_id, title, "Test content", "structured", "published"),
+    )
+    conn.execute(
+        "INSERT INTO scenario_versions (scenario_version_id, scenario_id, version_number, "
+        "status, created_by) VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (scenario_version_id) DO NOTHING",
+        (scenario_version_id, scenario_id, 1, "published", "test-fixture"),
+    )
+    conn.execute(
+        "UPDATE scenarios SET publish_status = 'published', published_version_id = %s "
+        "WHERE scenario_id = %s",
+        (scenario_version_id, scenario_id),
     )
 
 

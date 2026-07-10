@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Any
 
 from ..models import MechanicCompileResult, PlayerIntent, ResolutionResult
@@ -8,6 +9,17 @@ from ..rules.registry import get_handler
 from ..rules.triggers import evaluate_triggers
 
 logger = logging.getLogger(__name__)
+
+_SAFE_PATCH_OPERATIONS = {
+    "/character/hp": {"replace"},
+    "/character/san": {"replace"},
+    "/character/mp": {"replace"},
+    "/character/luck": {"replace"},
+    "/character/status_tag": {"add", "remove"},
+}
+_ENCOUNTER_MUTATION_PATTERN = re.compile(
+    r"^/encounter/[^/]+/(?:participants/[^/]+/(hp_delta|distance_band_delta|status_tag)|metadata/(blocked_band))$"
+)
 
 
 class RuleExecutor:
@@ -20,7 +32,11 @@ class RuleExecutor:
         scenario_assets: dict[str, Any] | None,
     ) -> ResolutionResult:
         xlsx_data = self._xlsx_data(character)
-        state = GameState(character=xlsx_data, inventory=inventory)
+        state = GameState(
+            character=xlsx_data,
+            scene=scenario_assets or {},
+            inventory=inventory,
+        )
         mechanics = self._matching_trigger_mechanics(intent, scenario_assets or {})
 
         if compiled.triggered_mechanic not in {"dialogue", "auto_success", "auto_failure"}:
@@ -66,14 +82,26 @@ class RuleExecutor:
         for mechanic in mechanics:
             mechanic_type = mechanic.get("type", "")
             params = self._normalize_params(mechanic.get("params", mechanic))
+            params["_rule_policy"] = dict(
+                (scenario_assets or {}).get("rule_policy") or {}
+            )
             if mechanic_type == "apply_patch":
                 mutation = {
                     "op": params.get("op", "replace"),
                     "path": params.get("path", ""),
                     "value": params.get("value"),
                 }
-                if mutation["path"]:
+                if self._is_safe_patch(mutation):
                     mutations.append(mutation)
+                    self._apply_mutations_to_state(state.character, [mutation])
+                else:
+                    overall_success = False
+                    self._add_pending_rule_suggestion(
+                        merged_metadata,
+                        mechanic_type,
+                        params,
+                        "unsafe_patch_rejected",
+                    )
                 continue
 
             handler = get_handler(mechanic_type)
@@ -83,22 +111,45 @@ class RuleExecutor:
                 merged_metadata.setdefault("warnings", []).append(
                     {"type": "rule_handler_not_found", "mechanic": mechanic_type}
                 )
+                overall_success = False
+                self._add_pending_rule_suggestion(
+                    merged_metadata,
+                    mechanic_type,
+                    params,
+                    "rule_handler_not_found",
+                )
                 continue
             logger.debug("execute: handler=%s mechanic=%s action=%s",
                          type(handler).__name__, mechanic_type, intent.action_id)
 
             if mechanic_type == "skill_check":
                 skill_name = params.get("skillName") or params.get("skill_name") or ""
-                params.setdefault("skillName", skill_name)
-                params.setdefault("skillValue", self._skill_value(xlsx_data, skill_name))
+                params["skillName"] = skill_name
+                params["skillValue"] = self._skill_value(xlsx_data, skill_name)
 
             result = await handler.execute(state, params)
-            overall_success = overall_success and result.is_success
             merged_metadata.update(result.metadata)
-            mutations.extend(result.mutations)
+            safe_mutations = []
+            rejected_mutations = []
+            for mutation in result.mutations:
+                if self._is_safe_handler_mutation(mutation):
+                    safe_mutations.append(mutation)
+                else:
+                    rejected_mutations.append(mutation)
+            if rejected_mutations:
+                self._add_pending_rule_suggestion(
+                    merged_metadata,
+                    mechanic_type,
+                    params,
+                    "unsafe_mutation_rejected",
+                )
+            overall_success = (
+                overall_success and result.is_success and not rejected_mutations
+            )
+            mutations.extend(safe_mutations)
             reveal_steps.extend(result.reveal_steps)
             cascading.extend(result.cascading_state_changes)
-            self._apply_mutations_to_state(state.character, result.mutations)
+            self._apply_mutations_to_state(state.character, safe_mutations)
 
         return ResolutionResult(
             actionId=intent.action_id,
@@ -168,9 +219,63 @@ class RuleExecutor:
     def _apply_mutations_to_state(self, state: dict[str, Any], mutations: list[dict[str, Any]]):
         for mutation in mutations:
             path = mutation.get("path", "")
-            if mutation.get("op") != "replace":
-                continue
-            if path == "/character/san":
+            operation = mutation.get("op")
+            if path == "/character/san" and operation == "replace":
                 state["san"] = mutation.get("value", state.get("san", 0))
-            elif path == "/character/hp":
+            elif path == "/character/hp" and operation == "replace":
                 state["hp"] = mutation.get("value", state.get("hp", 0))
+            elif path == "/character/mp" and operation == "replace":
+                state["mp"] = mutation.get("value", state.get("mp", 0))
+            elif path == "/character/luck" and operation == "replace":
+                state["luck"] = mutation.get("value", state.get("luck", 0))
+            elif path == "/character/status_tag":
+                tags = list(state.get("status_tags", []) or [])
+                value = mutation.get("value")
+                if operation == "add" and value and value not in tags:
+                    tags.append(value)
+                elif operation == "remove" and value in tags:
+                    tags.remove(value)
+                state["status_tags"] = tags
+
+    def _is_safe_patch(self, mutation: dict[str, Any]) -> bool:
+        path = str(mutation.get("path") or "")
+        operation = str(mutation.get("op") or "")
+        return operation in _SAFE_PATCH_OPERATIONS.get(path, set())
+
+    def _is_safe_handler_mutation(self, mutation: dict[str, Any]) -> bool:
+        if self._is_safe_patch(mutation):
+            return True
+        path = str(mutation.get("path") or "")
+        operation = str(mutation.get("op") or "")
+        match = _ENCOUNTER_MUTATION_PATTERN.fullmatch(path)
+        if not match:
+            return False
+        participant_field, metadata_field = match.groups()
+        if participant_field in {"hp_delta", "distance_band_delta"}:
+            return operation == "replace" and isinstance(mutation.get("value"), int)
+        if participant_field == "status_tag":
+            return operation in {"add", "remove"} and bool(mutation.get("value"))
+        return metadata_field == "blocked_band" and operation == "add"
+
+    def _add_pending_rule_suggestion(
+        self,
+        metadata: dict[str, Any],
+        mechanic_type: str,
+        params: dict[str, Any],
+        reason_code: str,
+    ) -> None:
+        citation = params.get("ruleCitation") or params.get("rule_citation") or {}
+        if not isinstance(citation, dict):
+            citation = {}
+        citation = {
+            key: value
+            for key, value in citation.items()
+            if not key.lower().endswith("_path")
+            and key.lower() not in {"absolute_path", "storage_path"}
+        }
+        metadata.setdefault("pending_rule_suggestions", []).append({
+            "mechanic": mechanic_type,
+            "status": "pending_host_confirmation",
+            "reason_code": reason_code,
+            "citation": citation,
+        })

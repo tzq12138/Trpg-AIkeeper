@@ -1,0 +1,1409 @@
+{
+  "room_id": "695ba1a2",
+  "players": [
+    {
+      "label": "????",
+      "investigator": "???????",
+      "token": "353e7af4-1092-46f7-ad6a-2e1c6f23f8b4",
+      "character": {
+        "character_id": "c925ca77",
+        "player_name": "????",
+        "playerName": "????",
+        "investigator_name": "查尔斯·钱伯斯",
+        "investigatorName": "查尔斯·钱伯斯",
+        "name": "查尔斯·钱伯斯",
+        "hp": 11,
+        "max_hp": 11,
+        "san": 50,
+        "max_san": 50,
+        "mp": 10,
+        "max_mp": 10,
+        "luck": 50,
+        "skills": {
+          "0": 0
+        },
+        "background": "",
+        "is_ready": true,
+        "status": "joined",
+        "room_status": "completed"
+      },
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23",
+            "intent_type": "dialogue",
+            "declared_intent": "??????????????????????????????????",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "695ba1a2",
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "characterId": "c925ca77",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-09T16:29:27.978090",
+            "completed_at": "2026-07-09T16:30:01.735519"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 104,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:01.767183",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            }
+          },
+          {
+            "sequence": 107,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:46.276780",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            }
+          },
+          {
+            "sequence": 110,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:13.997109",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            }
+          },
+          {
+            "sequence": 113,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:50.566365",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 99,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:27.981661",
+            "data": {
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 100,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.001809",
+            "data": {
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 101,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.023289",
+            "data": {
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 102,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.042984",
+            "data": {
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 104,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:01.767183",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 105,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-09T16:30:01.778822",
+            "data": {
+              "roomId": "695ba1a2",
+              "status": "resolved",
+              "turnId": "3d09427b",
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23",
+              "characterId": "c925ca77"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 107,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:46.276780",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 110,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:13.997109",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 113,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:50.566365",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 9
+      }
+    },
+    {
+      "label": "????",
+      "investigator": "??????",
+      "token": "b7227c0c-343d-403c-bf90-da36bf579621",
+      "character": {
+        "character_id": "3d90b608",
+        "player_name": "????",
+        "playerName": "????",
+        "investigator_name": "塞缪尔·哈珀",
+        "investigatorName": "塞缪尔·哈珀",
+        "name": "塞缪尔·哈珀",
+        "hp": 11,
+        "max_hp": 11,
+        "san": 25,
+        "max_san": 25,
+        "mp": 10,
+        "max_mp": 10,
+        "luck": 50,
+        "skills": {
+          "0": 0
+        },
+        "background": "",
+        "is_ready": true,
+        "status": "joined",
+        "room_status": "completed"
+      },
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "3440844f-16df-4806-bb23-da343dd0171d",
+            "intent_type": "dialogue",
+            "declared_intent": "??????????????????????????????????",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "695ba1a2",
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "characterId": "3d90b608",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-09T16:29:28.000415",
+            "completed_at": "2026-07-09T16:30:45.721591"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 104,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:01.767183",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            }
+          },
+          {
+            "sequence": 107,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:46.276780",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            }
+          },
+          {
+            "sequence": 110,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:13.997109",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            }
+          },
+          {
+            "sequence": 113,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:50.566365",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 99,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:27.981661",
+            "data": {
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 100,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.001809",
+            "data": {
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 101,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.023289",
+            "data": {
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 102,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.042984",
+            "data": {
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 104,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:01.767183",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 107,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:46.276780",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 108,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-09T16:30:46.288654",
+            "data": {
+              "roomId": "695ba1a2",
+              "status": "resolved",
+              "turnId": "3d09427b",
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d",
+              "characterId": "3d90b608"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 110,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:13.997109",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 113,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:50.566365",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 9
+      }
+    },
+    {
+      "label": "????",
+      "investigator": "??????",
+      "token": "7928088b-3054-47e6-89a8-9156bc0517a6",
+      "character": {
+        "character_id": "2787a925",
+        "player_name": "????",
+        "playerName": "????",
+        "investigator_name": "菲利普·格雷",
+        "investigatorName": "菲利普·格雷",
+        "name": "菲利普·格雷",
+        "hp": 12,
+        "max_hp": 12,
+        "san": 60,
+        "max_san": 60,
+        "mp": 10,
+        "max_mp": 10,
+        "luck": 50,
+        "skills": {
+          "0": 0
+        },
+        "background": "",
+        "is_ready": true,
+        "status": "joined",
+        "room_status": "completed"
+      },
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5",
+            "intent_type": "dialogue",
+            "declared_intent": "????????????????????????????",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "695ba1a2",
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "characterId": "2787a925",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-09T16:29:28.021538",
+            "completed_at": "2026-07-09T16:31:14.216991"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 104,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:01.767183",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            }
+          },
+          {
+            "sequence": 107,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:46.276780",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            }
+          },
+          {
+            "sequence": 110,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:13.997109",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            }
+          },
+          {
+            "sequence": 113,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:50.566365",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 99,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:27.981661",
+            "data": {
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 100,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.001809",
+            "data": {
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 101,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.023289",
+            "data": {
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 102,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.042984",
+            "data": {
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 104,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:01.767183",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 107,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:46.276780",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 110,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:13.997109",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 111,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-09T16:31:14.011129",
+            "data": {
+              "roomId": "695ba1a2",
+              "status": "resolved",
+              "turnId": "3d09427b",
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5",
+              "characterId": "2787a925"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 113,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:50.566365",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 9
+      }
+    },
+    {
+      "label": "????",
+      "investigator": "??????",
+      "token": "61894afb-db76-4496-8a41-1e5b40a59966",
+      "character": {
+        "character_id": "ed42ac40",
+        "player_name": "????",
+        "playerName": "????",
+        "investigator_name": "乔治·莫里森",
+        "investigatorName": "乔治·莫里森",
+        "name": "乔治·莫里森",
+        "hp": 10,
+        "max_hp": 10,
+        "san": 65,
+        "max_san": 65,
+        "mp": 10,
+        "max_mp": 10,
+        "luck": 50,
+        "skills": {
+          "0": 0
+        },
+        "background": "",
+        "is_ready": true,
+        "status": "joined",
+        "room_status": "completed"
+      },
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "717a9169-e4f6-4014-8e24-73f6c57a7166",
+            "intent_type": "dialogue",
+            "declared_intent": "????????????????????????????",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "695ba1a2",
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "characterId": "ed42ac40",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-09T16:29:28.041585",
+            "completed_at": "2026-07-09T16:31:50.528842"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 104,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:01.767183",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            }
+          },
+          {
+            "sequence": 107,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:46.276780",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            }
+          },
+          {
+            "sequence": 110,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:13.997109",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            }
+          },
+          {
+            "sequence": 113,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:50.566365",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 99,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:27.981661",
+            "data": {
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 100,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.001809",
+            "data": {
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 101,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.023289",
+            "data": {
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 102,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-09T16:29:28.042984",
+            "data": {
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 104,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:01.767183",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 107,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:30:46.276780",
+            "data": {
+              "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 110,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:13.997109",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 113,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-09T16:31:50.566365",
+            "data": {
+              "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 114,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-09T16:31:50.576475",
+            "data": {
+              "roomId": "695ba1a2",
+              "status": "resolved",
+              "turnId": "3d09427b",
+              "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166",
+              "characterId": "ed42ac40"
+            },
+            "is_public": false
+          }
+        ],
+        "total": 9
+      }
+    }
+  ],
+  "campaign": {
+    "room_id": "695ba1a2",
+    "duration_seconds": 338,
+    "total_actions": 4,
+    "clues_found": 0,
+    "key_events": [
+      {
+        "sequence": 103,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-09T16:30:01.735003"
+      },
+      {
+        "sequence": 106,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-09T16:30:46.250054"
+      },
+      {
+        "sequence": 109,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-09T16:31:13.963623"
+      },
+      {
+        "sequence": 112,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-09T16:31:50.544548"
+      },
+      {
+        "sequence": 115,
+        "type": "s2c_campaign_ended",
+        "timestamp": "2026-07-09T16:34:23.315243"
+      }
+    ],
+    "ending": {
+      "ending_type": "victory",
+      "summary": "战役结束。角色 ????、????、????、???? 参与，共经历 31 个事件。",
+      "highlights": [],
+      "character_arcs": [
+        {
+          "player_name": "????",
+          "character_id": "c925ca77",
+          "total_actions": 1
+        },
+        {
+          "player_name": "????",
+          "character_id": "3d90b608",
+          "total_actions": 1
+        },
+        {
+          "player_name": "????",
+          "character_id": "ed42ac40",
+          "total_actions": 1
+        },
+        {
+          "player_name": "????",
+          "character_id": "2787a925",
+          "total_actions": 1
+        }
+      ]
+    }
+  },
+  "timeline": {
+    "events": [
+      {
+        "sequence": 85,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "????",
+              "character_id": "c925ca77",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "695ba1a2",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:28:39.033755"
+      },
+      {
+        "sequence": 86,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "c925ca77"
+        },
+        "issued_at": "2026-07-09T16:28:39.048702"
+      },
+      {
+        "sequence": 87,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "c925ca77",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "695ba1a2",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:28:39.055968"
+      },
+      {
+        "sequence": 88,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "c925ca77",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "????",
+              "character_id": "3d90b608",
+              "investigator_name": "塞缪尔·哈珀"
+            }
+          ],
+          "room_id": "695ba1a2",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:28:41.911418"
+      },
+      {
+        "sequence": 89,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "3d90b608"
+        },
+        "issued_at": "2026-07-09T16:28:41.930618"
+      },
+      {
+        "sequence": 90,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "c925ca77",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "3d90b608",
+              "investigator_name": "塞缪尔·哈珀"
+            }
+          ],
+          "room_id": "695ba1a2",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:28:41.939990"
+      },
+      {
+        "sequence": 91,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "c925ca77",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "3d90b608",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "????",
+              "character_id": "2787a925",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "695ba1a2",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:28:44.803891"
+      },
+      {
+        "sequence": 92,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "2787a925"
+        },
+        "issued_at": "2026-07-09T16:28:44.822078"
+      },
+      {
+        "sequence": 93,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "c925ca77",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "3d90b608",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "2787a925",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "695ba1a2",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:28:44.828315"
+      },
+      {
+        "sequence": 94,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "c925ca77",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "????",
+              "character_id": "ed42ac40",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "3d90b608",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "2787a925",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "695ba1a2",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:28:47.623974"
+      },
+      {
+        "sequence": 95,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "ed42ac40"
+        },
+        "issued_at": "2026-07-09T16:28:47.634733"
+      },
+      {
+        "sequence": 96,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "c925ca77",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "3d90b608",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "ed42ac40",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "2787a925",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "695ba1a2",
+          "room_status": "lobby",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:28:47.640887"
+      },
+      {
+        "sequence": 97,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_checkpoint_created",
+        "audience": "system",
+        "payload": {
+          "reason": "Room started",
+          "checkpointId": "695ca1f5",
+          "checkpointType": "auto"
+        },
+        "issued_at": "2026-07-09T16:29:07.231876"
+      },
+      {
+        "sequence": 98,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "c925ca77",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "3d90b608",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "ed42ac40",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "????",
+              "character_id": "2787a925",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "695ba1a2",
+          "room_status": "active",
+          "scenario_title": "向火独行.pdf"
+        },
+        "issued_at": "2026-07-09T16:29:07.240933"
+      },
+      {
+        "sequence": 99,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+        },
+        "issued_at": "2026-07-09T16:29:27.981661"
+      },
+      {
+        "sequence": 100,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+        },
+        "issued_at": "2026-07-09T16:29:28.001809"
+      },
+      {
+        "sequence": 101,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+        },
+        "issued_at": "2026-07-09T16:29:28.023289"
+      },
+      {
+        "sequence": 102,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+        },
+        "issued_at": "2026-07-09T16:29:28.042984"
+      },
+      {
+        "sequence": 103,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。"
+              }
+            }
+          ],
+          "priority": "normal",
+          "summaryText": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+          "transactionId": "28056bb7-c03d-4bc6-a836-51f49126af92"
+        },
+        "issued_at": "2026-07-09T16:30:01.735003"
+      },
+      {
+        "sequence": 104,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+          "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23"
+        },
+        "issued_at": "2026-07-09T16:30:01.767183"
+      },
+      {
+        "sequence": 105,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "695ba1a2",
+          "status": "resolved",
+          "turnId": "3d09427b",
+          "actionId": "971d1d80-7a85-41aa-a51e-d6ba7f71ed23",
+          "characterId": "c925ca77"
+        },
+        "issued_at": "2026-07-09T16:30:01.778822"
+      },
+      {
+        "sequence": 106,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。"
+              }
+            }
+          ],
+          "priority": "normal",
+          "summaryText": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+          "transactionId": "560f9e46-5fd8-4423-b0f7-d9c6b6a8bce2"
+        },
+        "issued_at": "2026-07-09T16:30:46.250054"
+      },
+      {
+        "sequence": 107,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "你说：「??????????????????????????????????」。周围暂时没有新的变化。",
+          "actionId": "3440844f-16df-4806-bb23-da343dd0171d"
+        },
+        "issued_at": "2026-07-09T16:30:46.276780"
+      },
+      {
+        "sequence": 108,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "695ba1a2",
+          "status": "resolved",
+          "turnId": "3d09427b",
+          "actionId": "3440844f-16df-4806-bb23-da343dd0171d",
+          "characterId": "3d90b608"
+        },
+        "issued_at": "2026-07-09T16:30:46.288654"
+      },
+      {
+        "sequence": 109,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "你说：「????????????????????????????」。周围暂时没有新的变化。"
+              }
+            }
+          ],
+          "priority": "normal",
+          "summaryText": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+          "transactionId": "58b6b39c-d231-4301-9ebc-c9e563500d9e"
+        },
+        "issued_at": "2026-07-09T16:31:13.963623"
+      },
+      {
+        "sequence": 110,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+          "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5"
+        },
+        "issued_at": "2026-07-09T16:31:13.997109"
+      },
+      {
+        "sequence": 111,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "695ba1a2",
+          "status": "resolved",
+          "turnId": "3d09427b",
+          "actionId": "6420a48a-e33e-4e3d-9dbd-8183d3b5cef5",
+          "characterId": "2787a925"
+        },
+        "issued_at": "2026-07-09T16:31:14.011129"
+      },
+      {
+        "sequence": 112,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "你说：「????????????????????????????」。周围暂时没有新的变化。"
+              }
+            }
+          ],
+          "priority": "normal",
+          "summaryText": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+          "transactionId": "c65a13b4-caf2-4f5d-a5d6-a3074c0d2adb"
+        },
+        "issued_at": "2026-07-09T16:31:50.544548"
+      },
+      {
+        "sequence": 113,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "你说：「????????????????????????????」。周围暂时没有新的变化。",
+          "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166"
+        },
+        "issued_at": "2026-07-09T16:31:50.566365"
+      },
+      {
+        "sequence": 114,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "695ba1a2",
+          "status": "resolved",
+          "turnId": "3d09427b",
+          "actionId": "717a9169-e4f6-4014-8e24-73f6c57a7166",
+          "characterId": "ed42ac40"
+        },
+        "issued_at": "2026-07-09T16:31:50.576475"
+      },
+      {
+        "sequence": 115,
+        "room_id": "695ba1a2",
+        "event_type": "s2c_campaign_ended",
+        "audience": "party",
+        "payload": {
+          "text": "????????????????????????????????????",
+          "endingName": "????",
+          "endingPhase": "????",
+          "ending_type": "victory"
+        },
+        "issued_at": "2026-07-09T16:34:23.315243"
+      }
+    ]
+  },
+  "export_markdown": "{\"format\":\"markdown\",\"scope\":\"full\",\"content\":\"# AI-Keeper 战报 — Room 695ba1a2\\n\\n**状态:** completed\\n**剧透级别:** standard\\n\\n## 调查员\\n- **查尔斯·钱伯斯** HP:11/11 SAN:50/50\\n- **塞缪尔·哈珀** HP:11/11 SAN:25/25\\n- **乔治·莫里森** HP:10/10 SAN:65/65\\n- **菲利普·格雷** HP:12/12 SAN:60/60\\n\\n## 关键事件\\n### 2026-07-09 16:30:01 — KP叙事\\n> 你说：「??????????????????????????????????」。周围暂时没有新的变化。\\n\\n### 2026-07-09 16:30:01 — KP叙事\\n> 你说：「??????????????????????????????????」。周围暂时没有新的变化。\\n\\n### 2026-07-09 16:30:46 — KP叙事\\n> 你说：「??????????????????????????????????」。周围暂时没有新的变化。\\n\\n### 2026-07-09 16:30:46 — KP叙事\\n> 你说：「??????????????????????????????????」。周围暂时没有新的变化。\\n\\n### 2026-07-09 16:31:13 — KP叙事\\n> 你说：「????????????????????????????」。周围暂时没有新的变化。\\n\\n### 2026-07-09 16:31:13 — KP叙事\\n> 你说：「????????????????????????????」。周围暂时没有新的变化。\\n\\n### 2026-07-09 16:31:50 — KP叙事\\n> 你说：「????????????????????????????」。周围暂时没有新的变化。\\n\\n### 2026-07-09 16:31:50 — KP叙事\\n> 你说：「????????????????????????????」。周围暂时没有新的变化。\\n\\n## 结局\\n**类型:** victory\\n**摘要:** 战役结束。角色 ????、????、????、???? 参与，共经历 31 个事件。\"}"
+}

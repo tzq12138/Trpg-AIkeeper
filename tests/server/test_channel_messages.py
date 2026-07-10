@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from src.server.main import app
 from src.server.router_auth import _hash_password
+from tests.server.conftest import create_scenario
 
 
 @pytest.fixture
@@ -22,10 +23,7 @@ def client_with_data(test_db):
             "SET role = %s, account_id = EXCLUDED.account_id",
             (aid, uname, _hash_password("test123"), uname, role, role),
         )
-    test_db.execute(
-        "INSERT INTO scenarios (scenario_id, title, raw_text, import_status) "
-        "VALUES ('sc-chmsg', 'Chat Test', 'text', 'structured')"
-    )
+    create_scenario(test_db, "sc-chmsg", "Chat Test")
     test_db.commit()
     return c
 

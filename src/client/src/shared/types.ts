@@ -11,8 +11,10 @@ export type EngineEventType =
   | 's2c_engine_state' | 's2c_private_notice'
   // ── Room management ──
   | 's2c_room_lobby_snapshot' | 's2c_ready_toggled' | 's2c_campaign_ended'
+  | 's2c_turn_resolved'
+  | 's2c_clue_discovered' | 's2c_clue_shared'
   // ── System ──
-  | 's2c_atmosphere'
+  | 's2c_atmosphere' | 's2c_checkpoint_created' | 's2c_checkpoint_restored'
   // ── Map ──
   | 's2c_map_updated' | 's2c_player_moved' | 's2c_map_revealed'
   // ── Encounter ──

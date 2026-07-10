@@ -1,16 +1,71 @@
 import uuid
 import json
-import tempfile
-import os
 import logging
-from fastapi import APIRouter, Request, HTTPException, UploadFile, File
-from .pdf_parser import extract_text_from_pdf, is_scanned_pdf, chunk_text
-from ..ai.ai_kp import structure_scenario
+from pathlib import Path
+from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
 from .quality import QualityReportGenerator
+from .import_service import (
+    ScenarioImportFailure,
+    ScenarioImportService,
+    UploadedSource,
+    _host_prep_projection,
+    _json_value,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scenarios")
+
+
+def _require_host_or_admin(request: Request) -> dict:
+    from ..router_auth import get_account_from_token
+
+    account = get_account_from_token(request)
+    if not account:
+        raise HTTPException(401, "请先登录")
+    if account.get("role") not in {"admin", "host"}:
+        raise HTTPException(403, "仅房主或管理员可访问")
+    return dict(account)
+
+
+def _require_admin_account(request: Request) -> dict:
+    account = _require_host_or_admin(request)
+    if account.get("role") != "admin":
+        raise HTTPException(403, "仅管理员可导入剧本")
+    return account
+
+
+def _import_service(request: Request) -> ScenarioImportService:
+    storage_root = getattr(request.app.state, "scenario_storage_root", None)
+    return ScenarioImportService(
+        request.app.state.db,
+        gateway=getattr(request.app.state, "gateway", None),
+        rag=getattr(request.app.state, "rag", None),
+        storage_root=Path(storage_root) if storage_root else None,
+    )
+
+
+async def _run_import(
+    request: Request,
+    uploads: list[UploadedSource],
+    *,
+    title: str,
+    license_type: str,
+    license_ref: str | None,
+    created_by: str,
+    scenario_id: str | None = None,
+) -> dict:
+    try:
+        return await _import_service(request).import_sources(
+            uploads,
+            title=title,
+            license_type=license_type,
+            license_ref=license_ref,
+            created_by=created_by,
+            scenario_id=scenario_id,
+        )
+    except ScenarioImportFailure as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
 
 
 @router.get("/available")
@@ -25,8 +80,10 @@ async def list_available_scenarios(request: Request):
         raise HTTPException(403, "仅房主或管理员可访问")
     conn = request.app.state.db
     rows = conn.execute(
-        "SELECT scenario_id, title, import_status, quality_report, created_at "
-        "FROM scenarios WHERE import_status = 'structured' ORDER BY created_at DESC"
+        "SELECT scenario_id, title, import_status, quality_report, publish_status, "
+        "published_version_id, created_at FROM scenarios "
+        "WHERE publish_status = 'published' AND published_version_id IS NOT NULL "
+        "ORDER BY created_at DESC"
     ).fetchall()
     result = []
     for r in rows:
@@ -61,6 +118,35 @@ async def list_available_scenarios(request: Request):
     return result
 
 
+@router.post("/import")
+async def import_scenario_sources(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    title: str = Form(""),
+    license_type: str = Form("authorized"),
+    license_ref: str | None = Form(None),
+    scenario_id: str | None = Form(None),
+):
+    account = _require_admin_account(request)
+    uploads = [
+        UploadedSource(
+            filename=file.filename or "source",
+            content=await file.read(),
+            mime_type=file.content_type or "",
+        )
+        for file in files
+    ]
+    return await _run_import(
+        request,
+        uploads,
+        title=title,
+        license_type=license_type,
+        license_ref=license_ref,
+        created_by=account.get("account_id", "unknown"),
+        scenario_id=scenario_id,
+    )
+
+
 @router.post("/import-pdf")
 async def import_pdf(request: Request, file: UploadFile = File(...)):
     """Upload and structure a scenario PDF. Admin-only."""
@@ -74,171 +160,170 @@ async def import_pdf(request: Request, file: UploadFile = File(...)):
     if not file.filename or not file.filename.endswith(".pdf"):
         raise HTTPException(400, "Only PDF files supported")
 
-    conn = request.app.state.db
     content = await file.read()
-
-    # SHA256 dedup — skip re-import of identical PDF
-    import hashlib
-    sha256_hash = hashlib.sha256(content).hexdigest()
-    existing = conn.execute(
-        "SELECT scenario_id, title, import_status FROM scenarios WHERE source_sha256 = %s",
-        (sha256_hash,)
-    ).fetchone()
-    if existing:
-        return {
-            "scenario_id": existing["scenario_id"],
-            "status": "already_imported",
-            "title": existing["title"],
-            "import_status": existing["import_status"],
-        }
-
-    scenario_id = str(uuid.uuid4())[:8]
-
-    tmp_path = os.path.join(tempfile.gettempdir(), f"{scenario_id}.pdf")
-    with open(tmp_path, "wb") as f:
-        f.write(content)
-
-    pages = extract_text_from_pdf(tmp_path)
-    if is_scanned_pdf(pages):
-        conn.execute(
-            "INSERT INTO scenarios (scenario_id, title, import_status) VALUES (%s, %s, %s)",
-            (scenario_id, file.filename, "requires_ocr"),
-        )
-        conn.commit()
-        return {"scenario_id": scenario_id, "status": "requires_ocr"}
-
-    full_text = "\n\n".join(p.text for p in pages)
-    chunks = chunk_text(pages)
-
-    from ..config import Settings
-    settings = Settings.from_env()
-    knowledge_graph = None
-    gateway = getattr(request.app.state, "gateway", None)
-    if gateway:
-        try:
-            knowledge_graph = await gateway.structure_scenario(full_text)
-        except Exception as e:
-            logger.warning("Gateway structure_scenario failed: %s", e)
-    if not knowledge_graph:
-        try:
-            knowledge_graph = await structure_scenario(full_text,
-                api_key=settings.deepseek_api_key, api_base="https://api.deepseek.com",
-                model=settings.deepseek_model)
-        except Exception as e:
-            logger.warning("AI structuring failed, using mock: %s", e)
-            knowledge_graph = await structure_scenario(full_text)
-
-    # Persist original PDF
-    import shutil
-    scenarios_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "scenarios", scenario_id)
-    os.makedirs(scenarios_dir, exist_ok=True)
-    dest_path = os.path.join(scenarios_dir, "original.pdf")
-    shutil.copy2(tmp_path, dest_path)
-
-    conn.execute(
-        "INSERT INTO scenarios (scenario_id, title, raw_text, knowledge_graph, import_status, "
-        "source_filename, source_sha256, original_file_path) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-        (scenario_id, file.filename, full_text,
-         json.dumps(knowledge_graph, ensure_ascii=False), "structured",
-         file.filename, sha256_hash, dest_path),
+    return await _run_import(
+        request,
+        [UploadedSource(
+            filename=file.filename,
+            content=content,
+            mime_type=file.content_type or "application/pdf",
+        )],
+        title=file.filename,
+        license_type="authorized",
+        license_ref=None,
+        created_by=account.get("account_id", "unknown"),
+        scenario_id=None,
     )
-    conn.commit()
-
-    # Persist quality report
-    if knowledge_graph:
-        try:
-            from ..scenario.quality import QualityReportGenerator
-            report = QualityReportGenerator.evaluate(knowledge_graph)
-            conn.execute(
-                "UPDATE scenarios SET quality_report = %s WHERE scenario_id = %s",
-                (json.dumps(report.model_dump(), ensure_ascii=False), scenario_id),
-            )
-            conn.commit()
-        except Exception as e:
-            logger.warning("Failed to save quality report for %s: %s", scenario_id, e)
-
-    # Track indexing diagnostics
-    index_diagnostics = {"rag_scenario": False, "rag_npc": False, "spoiler": False}
-
-    if hasattr(request.app.state, 'rag') and request.app.state.rag and knowledge_graph:
-        # Index scenario chunks (raw_text for RAG retrieval)
-        try:
-            request.app.state.rag.index_scenario(scenario_id, full_text)
-            index_diagnostics["rag_scenario"] = True
-            logger.info("Scenario RAG index built for %s (%d pages)", scenario_id, len(pages))
-        except Exception as e:
-            logger.warning('Scenario RAG indexing failed: %s', e)
-        # Index NPC chunks
-        try:
-            request.app.state.rag.index_npc_graph(scenario_id, knowledge_graph)
-            index_diagnostics["rag_npc"] = True
-        except Exception as e:
-            logger.warning('NPC RAG indexing failed: %s', e)
-
-    # Build spoiler sensitive index
-    try:
-        from ..engine.spoiler_guard import SpoilerGuard
-        sg = SpoilerGuard(conn)
-        sg.build_sensitive_index(scenario_id, knowledge_graph, {})
-        index_diagnostics["spoiler"] = True
-        logger.info("Spoiler index built for scenario %s", scenario_id)
-    except Exception as e:
-        logger.warning("Spoiler index build failed for %s: %s", scenario_id, e)
-
-    # Compute derived readiness and index status
-    quality_level = "unknown"
-    if knowledge_graph:
-        try:
-            qr_raw = conn.execute(
-                "SELECT quality_report FROM scenarios WHERE scenario_id = %s", (scenario_id,)
-            ).fetchone()
-            if qr_raw and qr_raw.get("quality_report"):
-                qr = json.loads(qr_raw["quality_report"]) if isinstance(qr_raw["quality_report"], str) else qr_raw["quality_report"]
-                quality_level = qr.get("level", "unknown")
-        except Exception:
-            pass
-
-    rag_ok = index_diagnostics["rag_scenario"]
-    spoiler_ok = index_diagnostics["spoiler"]
-    if quality_level == "blocked":
-        readiness_status = "blocked"
-    elif not rag_ok or not spoiler_ok:
-        readiness_status = "partial"
-    else:
-        readiness_status = "ready"
-
-    if rag_ok and spoiler_ok:
-        index_status = "ready"
-    elif not rag_ok and not spoiler_ok:
-        index_status = "failed"
-    else:
-        index_status = "partial"
-
-    return {
-        "scenario_id": scenario_id,
-        "status": "structured",
-        "pages": len(pages),
-        "chunks": len(chunks),
-        "readiness_status": readiness_status,
-        "index_status": index_status,
-        "index_diagnostics": index_diagnostics,
-        "quality_level": quality_level,
-    }
-
 
 @router.get("/import-jobs/{job_id}")
 async def get_import_status(request: Request, job_id: str):
+    account = _require_host_or_admin(request)
     conn = request.app.state.db
+    job = conn.execute(
+        "SELECT job_id, source_document_id, scenario_id, status, progress, "
+        "error_message, diagnostics, created_at, updated_at "
+        "FROM import_jobs WHERE job_id = %s",
+        (job_id,),
+    ).fetchone()
+    if job:
+        result = dict(job)
+        result["diagnostics"] = _json_value(result.get("diagnostics"))
+        result["created_at"] = str(result.get("created_at", ""))
+        result["updated_at"] = str(result.get("updated_at", ""))
+        if account.get("role") != "admin":
+            result.pop("error_message", None)
+        return result
     scenario = conn.execute(
-        "SELECT * FROM scenarios WHERE scenario_id = %s", (job_id,)
+        "SELECT scenario_id, import_status FROM scenarios WHERE scenario_id = %s",
+        (job_id,),
+    ).fetchone()
+    if scenario:
+        return {"scenario_id": scenario["scenario_id"], "status": scenario["import_status"]}
+    raise HTTPException(404, "Import job not found")
+
+
+@router.post("/import-jobs/{job_id}/retry")
+async def retry_import_job(request: Request, job_id: str):
+    account = _require_admin_account(request)
+    try:
+        return await _import_service(request).retry_import(
+            job_id,
+            requested_by=account.get("account_id", "unknown"),
+        )
+    except ScenarioImportFailure as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+
+
+@router.get("/{scenario_id}/versions")
+async def list_scenario_versions(request: Request, scenario_id: str):
+    account = _require_host_or_admin(request)
+    scenario = request.app.state.db.execute(
+        "SELECT published_version_id FROM scenarios WHERE scenario_id = %s",
+        (scenario_id,),
     ).fetchone()
     if not scenario:
-        raise HTTPException(404, "Import job not found")
+        raise HTTPException(404, "剧本不存在")
+    rows = request.app.state.db.execute(
+        """
+        SELECT scenario_version_id, version_number, status, quality_report,
+               rag_index_version, created_by, created_at, reviewed_by,
+               reviewed_at, review_notes, published_at
+        FROM scenario_versions
+        WHERE scenario_id = %s
+        ORDER BY version_number DESC
+        """,
+        (scenario_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = {
+            "scenario_version_id": row["scenario_version_id"],
+            "version_number": row["version_number"],
+            "status": row["status"],
+            "created_at": str(row.get("created_at") or ""),
+            "reviewed_at": str(row.get("reviewed_at") or ""),
+            "published_at": str(row.get("published_at") or ""),
+            "is_active": row["scenario_version_id"] == scenario.get("published_version_id"),
+        }
+        if account.get("role") == "admin":
+            item.update({
+                "quality_report": _json_value(row.get("quality_report")),
+                "rag_index_version": row.get("rag_index_version"),
+                "created_by": row.get("created_by"),
+                "reviewed_by": row.get("reviewed_by"),
+                "review_notes": _json_value(row.get("review_notes")),
+            })
+        result.append(item)
+    return result
+
+
+@router.get("/{scenario_id}/versions/{scenario_version_id}/prep")
+async def get_prep_package(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    account = _require_host_or_admin(request)
+    row = request.app.state.db.execute(
+        """
+        SELECT sv.status, sv.quality_report, sv.prep_package, s.title
+        FROM scenario_versions sv
+        JOIN scenarios s ON s.scenario_id = sv.scenario_id
+        WHERE sv.scenario_id = %s AND sv.scenario_version_id = %s
+        """,
+        (scenario_id, scenario_version_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "剧本版本不存在")
+    quality_report = _json_value(row.get("quality_report"))
+    prep_package = _json_value(row.get("prep_package"))
+    if account.get("role") == "admin":
+        return {
+            "scenario_id": scenario_id,
+            "scenario_version_id": scenario_version_id,
+            "status": row["status"],
+            "quality_report": quality_report,
+            "prep_package": prep_package,
+        }
     return {
-        "scenario_id": scenario["scenario_id"],
-        "status": scenario["import_status"],
+        "scenario_id": scenario_id,
+        "scenario_version_id": scenario_version_id,
+        "status": row["status"],
+        **_host_prep_projection(prep_package, quality_report),
     }
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/publish")
+async def publish_scenario_version(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    account = _require_host_or_admin(request)
+    body = await request.json()
+    service = _import_service(request)
+    try:
+        return service.publish_version(
+            scenario_id,
+            scenario_version_id,
+            reviewer=account,
+            confirm=body.get("confirm") is True,
+            review_notes=str(body.get("review_notes") or ""),
+        )
+    except ScenarioImportFailure as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/activate")
+async def activate_scenario_version(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    _require_host_or_admin(request)
+    body = await request.json()
+    try:
+        return _import_service(request).activate_published_version(
+            scenario_id,
+            scenario_version_id,
+            confirm=body.get("confirm") is True,
+        )
+    except ScenarioImportFailure as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
 
 
 @router.get("/{scenario_id}/quality-report")
@@ -249,6 +334,7 @@ async def get_quality_report(request: Request, scenario_id: str):
     ).fetchone()
     if not scenario:
         raise HTTPException(404, "Scenario not found")
+
     knowledge_graph = {}
     if scenario["knowledge_graph"]:
         try:
@@ -284,6 +370,10 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
     if not scenario:
         raise HTTPException(404, "Scenario not found")
 
+    scenario_version_id = scenario.get("published_version_id")
+    if scenario.get("publish_status") != "published" or not scenario_version_id:
+        raise HTTPException(409, "剧本尚未确认发布，不能开房")
+
     # Quality gate check
     body = None
     try:
@@ -310,8 +400,9 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
     owner_token = str(uuid.uuid4())
     owner_account_id = account["account_id"]
     conn.execute(
-        "INSERT INTO rooms (room_id, scenario_id, owner_token, owner_account_id) VALUES (%s, %s, %s, %s)",
-        (room_id, scenario_id, owner_token, owner_account_id),
+        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, owner_token, owner_account_id) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        (room_id, scenario_id, scenario_version_id, owner_token, owner_account_id),
     )
     conn.commit()
 
@@ -334,4 +425,5 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
         "owner_token": owner_token,
         "status": "lobby",
         "quality_level": quality_level,
+        "scenario_version_id": scenario_version_id,
     }

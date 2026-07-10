@@ -2,6 +2,10 @@ import { useState } from 'react';
 import { SKILLS, OCCUPATIONS, CATEGORY_META } from '../../data/coc7e-skills';
 import type { SkillCategory } from '../../data/coc7e-skills';
 
+export function getSkillAllocationIncrement(remaining: number): number {
+  return Math.min(5, Math.max(0, remaining));
+}
+
 interface Props {
   attributes: { str: number; con: number; siz: number; dex: number; app: number; int: number; pow: number; edu: number; luck: number };
   occupationId: string;
@@ -173,6 +177,8 @@ export default function SkillAllocator({ attributes, occupationId, onComplete }:
 function SkillRow({ name, base, alloc, remaining, onChange }: {
   name: string; base: number; alloc: number; remaining: number; onChange: (v: number) => void;
 }) {
+  const increment = getSkillAllocationIncrement(remaining);
+
   return (
     <div className="bh-alloc-row">
       <span className="bh-alloc-name">{name}</span>
@@ -180,7 +186,7 @@ function SkillRow({ name, base, alloc, remaining, onChange }: {
       <span style={{ color: 'var(--bh-muted)' }}>+</span>
       <button className="bh-alloc-btn" onClick={() => onChange(alloc - 5)} disabled={alloc <= 0}>−5</button>
       <span className="bh-alloc-curr">{alloc}</span>
-      <button className="bh-alloc-btn" onClick={() => onChange(alloc + 5)} disabled={remaining < 5}>+5</button>
+      <button className="bh-alloc-btn" onClick={() => onChange(alloc + increment)} disabled={remaining <= 0}>+5</button>
       <span className="bh-alloc-total">{base + alloc}%</span>
     </div>
   );

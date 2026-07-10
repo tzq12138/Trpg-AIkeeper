@@ -1,10 +1,15 @@
 import logging
+import json
+import re
+import uuid
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/api/rag')
+_ALLOWED_RULE_LICENSES = {"authorized", "open"}
+_RULE_SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 
 
 def _require_auth_for_room(request: Request, room_id: str, write: bool = False):
@@ -36,6 +41,17 @@ def _require_auth_for_room(request: Request, room_id: str, write: bool = False):
     return account
 
 
+def _require_admin(request: Request) -> dict:
+    from .router_auth import get_account_from_token
+
+    account = get_account_from_token(request)
+    if not account:
+        raise HTTPException(401, "请先登录")
+    if account.get("role") != "admin":
+        raise HTTPException(403, "仅管理员可操作规则资料")
+    return account
+
+
 class IndexRequest(BaseModel):
     scenario_id: str
     room_id: str | None = None
@@ -46,6 +62,8 @@ class SearchRequest(BaseModel):
     room_id: str | None = None
     source_types: list[str] | None = None
     top_k: int = 5
+    scenario_version_id: str | None = None
+    rule_set_version_id: str | None = None
 
 
 @router.post('/index')
@@ -53,6 +71,14 @@ async def index_scenario(request: Request, body: IndexRequest):
     """Index scenario text — admin or room owner only."""
     if body.room_id:
         _require_auth_for_room(request, body.room_id, write=True)
+        room = request.app.state.db.execute(
+            "SELECT scenario_id, scenario_version_id FROM rooms WHERE room_id = %s",
+            (body.room_id,),
+        ).fetchone()
+        if not room or room.get("scenario_id") != body.scenario_id:
+            raise HTTPException(409, "剧本与房间不匹配")
+        if room.get("scenario_version_id"):
+            raise HTTPException(409, "版本房间必须使用指定版本重建接口")
     else:
         from .router_auth import get_account_from_token
         account = get_account_from_token(request)
@@ -111,21 +137,234 @@ async def index_npc(request: Request, body: dict):
 
 @router.post('/index-rules')
 async def index_rules(request: Request, body: dict):
-    """Index rules — admin or room owner."""
-    room_id = body.get('doc_id')
-    from .router_auth import get_account_from_token
-    account = get_account_from_token(request)
-    if not account or account.get("role") != "admin":
-        raise HTTPException(403, "仅管理员可索引规则书")
+    """Index an authorized document into a versioned rule set."""
+    _require_admin(request)
     rag = request.app.state.rag
     if not rag:
         raise HTTPException(503, 'RAG not available')
-    doc_id = body.get('doc_id')
-    title = body.get('title', '')
-    category = body.get('category', 'general')
-    content = body.get('content', '')
-    count = rag.index_rules(doc_id, title, category, content)
+    rule_set_version_id = str(body.get("rule_set_version_id") or "").strip()
+    if not rule_set_version_id:
+        raise HTTPException(400, "rule_set_version_id required")
+    version = request.app.state.db.execute(
+        """
+        SELECT rsv.status, rs.license_type
+        FROM rule_set_versions rsv
+        JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id
+        WHERE rsv.rule_set_version_id = %s
+        """,
+        (rule_set_version_id,),
+    ).fetchone()
+    if not version:
+        raise HTTPException(404, "规则版本不存在")
+    if version.get("status") != "draft":
+        raise HTTPException(409, "已发布规则版本不可原地修改，请创建新版本")
+    if version.get("license_type") not in _ALLOWED_RULE_LICENSES:
+        raise HTTPException(409, "规则资料缺少可验证授权")
+
+    doc_id = str(body.get('doc_id') or uuid.uuid4())
+    title = str(body.get('title') or '').strip()
+    category = str(body.get('category') or 'general').strip()
+    content = str(body.get('content') or '')
+    if not title or not content.strip():
+        raise HTTPException(400, "title and content required")
+    if len(content) > 5_000_000:
+        raise HTTPException(413, "规则文档过大")
+    count = rag.index_rules(
+        doc_id,
+        title,
+        category,
+        content,
+        rule_set_version_id=rule_set_version_id,
+        source_document_id=body.get("source_document_id"),
+        source_part_id=body.get("source_part_id"),
+        visibility="host_only",
+        license_type=version["license_type"],
+        source_ref=str(body.get("source_ref") or ""),
+        citation_base=body.get("citation") if isinstance(body.get("citation"), dict) else {},
+    )
     return {'chunks': count}
+
+
+@router.post('/rule-sets')
+async def create_rule_set(request: Request, body: dict):
+    account = _require_admin(request)
+    name = str(body.get("name") or "").strip()
+    slug = str(body.get("slug") or "").strip().lower()
+    system = str(body.get("system") or "coc7").strip().lower()
+    license_type = str(body.get("license_type") or "").strip().lower()
+    if not name or not _RULE_SLUG_PATTERN.fullmatch(slug):
+        raise HTTPException(400, "name or slug invalid")
+    if license_type not in _ALLOWED_RULE_LICENSES:
+        raise HTTPException(400, "仅允许 authorized 或 open 授权资料")
+    existing = request.app.state.db.execute(
+        "SELECT rule_set_id FROM rule_sets WHERE slug = %s",
+        (slug,),
+    ).fetchone()
+    if existing:
+        raise HTTPException(409, "规则集 slug 已存在")
+    rule_set_id = str(uuid.uuid4())
+    request.app.state.db.execute(
+        """
+        INSERT INTO rule_sets (
+            rule_set_id, name, slug, system, description, is_base,
+            license_type, status, created_by
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            rule_set_id,
+            name,
+            slug,
+            system,
+            str(body.get("description") or ""),
+            bool(body.get("is_base", False)),
+            license_type,
+            "draft",
+            account.get("account_id", "unknown"),
+        ),
+    )
+    return {"rule_set_id": rule_set_id, "status": "draft"}
+
+
+@router.post('/rule-sets/{rule_set_id}/versions')
+async def create_rule_set_version(request: Request, rule_set_id: str, body: dict):
+    account = _require_admin(request)
+    conn = request.app.state.db
+    rule_set = conn.execute(
+        "SELECT rule_set_id FROM rule_sets WHERE rule_set_id = %s",
+        (rule_set_id,),
+    ).fetchone()
+    if not rule_set:
+        raise HTTPException(404, "规则集不存在")
+    row = conn.execute(
+        "SELECT COALESCE(MAX(version_number), 0) + 1 AS next_version "
+        "FROM rule_set_versions WHERE rule_set_id = %s",
+        (rule_set_id,),
+    ).fetchone()
+    version_number = int(row["next_version"])
+    rule_set_version_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO rule_set_versions (
+            rule_set_version_id, rule_set_id, version_number, label, status,
+            source_sha256, metadata, created_by
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            rule_set_version_id,
+            rule_set_id,
+            version_number,
+            str(body.get("label") or f"v{version_number}"),
+            "draft",
+            body.get("source_sha256"),
+            json.dumps(
+                body.get("metadata") if isinstance(body.get("metadata"), dict) else {},
+                ensure_ascii=False,
+            ),
+            account.get("account_id", "unknown"),
+        ),
+    )
+    return {
+        "rule_set_version_id": rule_set_version_id,
+        "version_number": version_number,
+        "status": "draft",
+    }
+
+
+@router.post('/rule-set-versions/{rule_set_version_id}/publish')
+async def publish_rule_set_version(request: Request, rule_set_version_id: str):
+    _require_admin(request)
+    conn = request.app.state.db
+    version = conn.execute(
+        "SELECT rule_set_id FROM rule_set_versions WHERE rule_set_version_id = %s",
+        (rule_set_version_id,),
+    ).fetchone()
+    if not version:
+        raise HTTPException(404, "规则版本不存在")
+    with conn.transaction() as tx:
+        tx.execute(
+            "UPDATE rule_set_versions SET status = 'superseded' "
+            "WHERE rule_set_id = %s AND status = 'published' "
+            "AND rule_set_version_id <> %s",
+            (version["rule_set_id"], rule_set_version_id),
+        )
+        tx.execute(
+            "UPDATE rule_set_versions SET status = 'published', published_at = NOW() "
+            "WHERE rule_set_version_id = %s",
+            (rule_set_version_id,),
+        )
+        tx.execute(
+            "UPDATE rule_sets SET status = 'published' WHERE rule_set_id = %s",
+            (version["rule_set_id"],),
+        )
+    return {"rule_set_version_id": rule_set_version_id, "status": "published"}
+
+
+@router.post('/rule-bindings/rooms/{room_id}')
+async def bind_room_rule_version(request: Request, room_id: str, body: dict):
+    _require_auth_for_room(request, room_id, write=True)
+    rule_set_version_id = str(body.get("rule_set_version_id") or "").strip()
+    version = request.app.state.db.execute(
+        "SELECT status FROM rule_set_versions WHERE rule_set_version_id = %s",
+        (rule_set_version_id,),
+    ).fetchone()
+    if not version:
+        raise HTTPException(404, "规则版本不存在")
+    if version.get("status") != "published":
+        raise HTTPException(409, "只能绑定已发布规则版本")
+    priority = max(0, min(int(body.get("priority", 200)), 1000))
+    request.app.state.db.execute(
+        """
+        INSERT INTO room_rule_bindings (room_id, rule_set_version_id, priority)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (room_id, rule_set_version_id)
+        DO UPDATE SET priority = EXCLUDED.priority
+        """,
+        (room_id, rule_set_version_id, priority),
+    )
+    return {
+        "room_id": room_id,
+        "rule_set_version_id": rule_set_version_id,
+        "priority": priority,
+    }
+
+
+@router.post('/rule-bindings/scenarios/{scenario_version_id}')
+async def bind_scenario_rule_version(
+    request: Request, scenario_version_id: str, body: dict
+):
+    _require_admin(request)
+    conn = request.app.state.db
+    scenario_version = conn.execute(
+        "SELECT scenario_version_id FROM scenario_versions WHERE scenario_version_id = %s",
+        (scenario_version_id,),
+    ).fetchone()
+    if not scenario_version:
+        raise HTTPException(404, "剧本版本不存在")
+    rule_set_version_id = str(body.get("rule_set_version_id") or "").strip()
+    rule_version = conn.execute(
+        "SELECT status FROM rule_set_versions WHERE rule_set_version_id = %s",
+        (rule_set_version_id,),
+    ).fetchone()
+    if not rule_version:
+        raise HTTPException(404, "规则版本不存在")
+    if rule_version.get("status") != "published":
+        raise HTTPException(409, "只能绑定已发布规则版本")
+    priority = max(0, min(int(body.get("priority", 100)), 1000))
+    conn.execute(
+        """
+        INSERT INTO scenario_rule_bindings (
+            scenario_version_id, rule_set_version_id, priority
+        ) VALUES (%s, %s, %s)
+        ON CONFLICT (scenario_version_id, rule_set_version_id)
+        DO UPDATE SET priority = EXCLUDED.priority
+        """,
+        (scenario_version_id, rule_set_version_id, priority),
+    )
+    return {
+        "scenario_version_id": scenario_version_id,
+        "rule_set_version_id": rule_set_version_id,
+        "priority": priority,
+    }
 
 
 @router.post('/search')
@@ -136,16 +375,37 @@ async def search(request: Request, body: SearchRequest):
     if not account:
         raise HTTPException(401, "请先登录")
     if account.get("role") == "admin":
-        pass  # admin can search any room
+        audience = "admin"
     elif body.room_id:
         _require_auth_for_room(request, body.room_id, write=False)
+        if body.scenario_version_id or body.rule_set_version_id:
+            raise HTTPException(403, "仅管理员可指定检索版本")
+        room = request.app.state.db.execute(
+            "SELECT owner_account_id FROM rooms WHERE room_id = %s",
+            (body.room_id,),
+        ).fetchone()
+        audience = (
+            "host"
+            if room and room.get("owner_account_id") == account.get("account_id")
+            else "player"
+        )
     else:
         raise HTTPException(403, "请提供 room_id 或使用管理员账号")
     rag = request.app.state.rag
     if not rag:
         raise HTTPException(503, 'RAG not available')
-    results = rag.search(body.query, body.room_id, body.source_types, body.top_k)
-    return results
+    results = rag.search(
+        body.query,
+        body.room_id,
+        body.source_types,
+        body.top_k,
+        audience=audience,
+        scenario_version_id=body.scenario_version_id,
+        rule_set_version_id=body.rule_set_version_id,
+    )
+    if audience == "admin":
+        return results
+    return [_project_search_result(result) for result in results]
 
 
 @router.get('/rule-docs')
@@ -190,3 +450,42 @@ async def stats(request: Request):
     if not rag:
         raise HTTPException(503, 'RAG not available')
     return rag.get_stats()
+
+
+def _project_search_result(result: dict) -> dict:
+    raw_citation = result.get("citation") if isinstance(result.get("citation"), dict) else {}
+    allowed_fields = {
+        "chunk_id", "source_type", "source_id", "source_part_id",
+        "scenario_version_id", "rule_set_version_id", "source_ref",
+        "page_number", "anchor", "start_offset", "end_offset", "excerpt",
+    }
+    citation = {
+        key: _safe_citation_value(value)
+        for key, value in raw_citation.items()
+        if key in allowed_fields
+    }
+    citation["excerpt"] = str(citation.get("excerpt") or "")[:240]
+    citation["source_ref"] = str(citation.get("source_ref") or "")[:240]
+    return {
+        "chunk_id": result.get("chunk_id", ""),
+        "source_type": result.get("source_type", ""),
+        "content": str(citation.get("excerpt") or "")[:240],
+        "score": float(result.get("score") or 0),
+        "citation": citation,
+    }
+
+
+def _safe_citation_value(value):
+    if isinstance(value, dict):
+        return {
+            str(key)[:64]: _safe_citation_value(item)
+            for key, item in list(value.items())[:32]
+            if not str(key).lower().endswith("_path")
+        }
+    if isinstance(value, list):
+        return [_safe_citation_value(item) for item in value[:32]]
+    if isinstance(value, str):
+        return value[:240]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:240]

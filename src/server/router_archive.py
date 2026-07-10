@@ -209,7 +209,7 @@ async def get_campaign_summary(request: Request, room_id: str,
         _verify_player(request, room_id)
     archive = CampaignArchive(conn)
     try:
-        summary = archive.get_campaign_summary(room_id, scope=scope)
+        summary = archive.get_campaign_summary(room_id)
     except ValueError as e:
         raise HTTPException(404, str(e))
     return summary.model_dump() if hasattr(summary, 'model_dump') else summary
@@ -219,6 +219,25 @@ async def get_campaign_summary(request: Request, room_id: str,
 async def end_campaign(request: Request, room_id: str):
     _verify_owner_or_admin(request, room_id)
     conn = request.app.state.db
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    ending_type = body.get("ending_type") or "mixed"
+    ending_name = body.get("ending_name") or ""
+    text = body.get("text") or body.get("summary") or ""
+    payload = {"ending_type": ending_type}
+    if ending_name:
+        payload["endingName"] = ending_name
+        payload["endingPhase"] = ending_name
+    if text:
+        payload["text"] = text
+
+    event_log = EventLog(conn)
+    event_log.log_event(room_id, "s2c_campaign_ended", "party", payload)
+
     archive = CampaignArchive(conn)
     ending = archive.generate_ending(room_id)
     return ending.model_dump()
