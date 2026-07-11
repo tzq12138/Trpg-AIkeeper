@@ -265,6 +265,7 @@ export function ScenarioVersionInspector({
   const qualityLevel = typeof versionDetail.quality_report?.level === 'string'
     ? versionDetail.quality_report.level
     : 'unknown';
+  const soloAdventure = prepPackage.solo_adventure || {};
 
   return (
     <div style={{ display: 'grid', gap: 12 }}>
@@ -288,6 +289,23 @@ export function ScenarioVersionInspector({
           <span>{qualityLevel}</span>
         </div>
       </div>
+
+      {soloAdventure.node_count ? (
+        <div className="bh-panel" style={{ padding: 12 }}>
+          <span className="bh-eyebrow">SOLO ORIGINAL</span>
+          <strong>编号单人冒险完整性</strong>
+          <div className="bh-skill-row" style={{ padding: '6px 0', marginTop: 8 }}>
+            <span>根节点 / 节点 / 跳转</span>
+            <span>{soloAdventure.root_node_id || '—'} / {soloAdventure.node_count} / {soloAdventure.edge_count}</span>
+          </div>
+          <div className="bh-skill-row" style={{ padding: '6px 0' }}>
+            <span>发布门禁</span>
+            <span style={{ color: soloAdventure.is_valid ? 'var(--bh-green)' : 'var(--bh-red)' }}>
+              {soloAdventure.is_valid ? '结构有效' : '阻止发布'}
+            </span>
+          </div>
+        </div>
+      ) : null}
 
       <div className="bh-panel" style={{ padding: 12 }}>
         <span className="bh-eyebrow">QUALITY</span>
@@ -936,6 +954,133 @@ export function AiProviderPanel({
 
 // ── Scenarios ──
 
+type ScenarioMapDraft = {
+  mapId: string;
+  generatedBy: string;
+  status: 'draft' | 'confirmed';
+  mapType: 'graph' | 'image' | 'hybrid';
+  baseAsset: Record<string, unknown>;
+  nodes: Array<Record<string, unknown>>;
+  edges: Array<Record<string, unknown>>;
+  regions: Array<Record<string, unknown>>;
+  paths: Array<Record<string, unknown>>;
+};
+
+export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
+  const [mapDraft, setMapDraft] = useState<ScenarioMapDraft | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const loadDraft = async () => {
+    if (!scenarioId) return;
+    setLoading(true);
+    setError('');
+    try {
+      setMapDraft(await api(`/api/admin/scenarios/${encodeURIComponent(scenarioId)}/map`));
+    } catch {
+      setMapDraft(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDraft();
+  }, [scenarioId]);
+
+  const generate = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      setMapDraft(await api(`/api/admin/scenarios/${encodeURIComponent(scenarioId)}/map/generate`, { method: 'POST' }));
+    } catch (generationError) {
+      setError(sanitizeAdminScenarioError(generationError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveMapType = async (mapType: ScenarioMapDraft['mapType']) => {
+    if (!mapDraft || mapDraft.status !== 'draft') return;
+    setSaving(true);
+    setError('');
+    try {
+      await api(`/api/admin/scenarios/${encodeURIComponent(scenarioId)}/map`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          mapType,
+          baseAsset: mapDraft.baseAsset,
+          nodes: mapDraft.nodes,
+          edges: mapDraft.edges,
+          regions: mapDraft.regions,
+          paths: mapDraft.paths,
+        }),
+      });
+      setMapDraft({ ...mapDraft, mapType });
+    } catch (saveError) {
+      setError(sanitizeAdminScenarioError(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirm = async () => {
+    if (!mapDraft || mapDraft.status !== 'draft') return;
+    setSaving(true);
+    setError('');
+    try {
+      const confirmed = await api(`/api/admin/scenarios/${encodeURIComponent(scenarioId)}/map/confirm`, { method: 'POST' });
+      setMapDraft({ ...mapDraft, status: confirmed.status });
+    } catch (confirmError) {
+      setError(sanitizeAdminScenarioError(confirmError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bh-panel" style={{ padding: 12, marginTop: 12 }}>
+      <span className="bh-eyebrow">MAP PREP</span>
+      <strong>地图草稿</strong>
+      <p style={{ fontSize: 12, color: 'var(--bh-dim)', marginTop: 6 }}>
+        区域与路径仅在备团阶段由管理员审核。
+      </p>
+      {loading ? <div className="bh-muted-box">加载地图草稿...</div> : mapDraft ? (
+        <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+          <div className="bh-muted-box">
+            {mapDraft.status === 'confirmed' ? '已确认' : '待审核'} · {mapDraft.generatedBy} · 节点 {mapDraft.nodes.length} · 区域 {mapDraft.regions.length} · 路径 {mapDraft.paths.length}
+          </div>
+          <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+            地图类型
+            <select
+              className="bh-input"
+              value={mapDraft.mapType}
+              disabled={saving || mapDraft.status !== 'draft'}
+              onChange={(event) => saveMapType(event.target.value as ScenarioMapDraft['mapType'])}
+            >
+              <option value="graph">节点图</option>
+              <option value="image">图片地图</option>
+              <option value="hybrid">混合地图</option>
+            </select>
+          </label>
+        </div>
+      ) : (
+        <div className="bh-muted-box" style={{ marginTop: 8 }}>尚未生成地图草稿；可先发布文字场景模式。</div>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+        <button className="bh-button" type="button" disabled={saving} onClick={generate}>
+          {saving ? '处理中...' : '生成地图草稿'}
+        </button>
+        <button className="bh-button bh-button--yellow" type="button" disabled={saving || mapDraft?.status !== 'draft'} onClick={confirm}>
+          确认地图
+        </button>
+      </div>
+      {error && <div className="bh-muted-box" style={{ color: 'var(--bh-red)', marginTop: 8 }}>{error}</div>}
+    </div>
+  );
+}
+
 export function ScenariosPanel() {
   const [scenarios, setScenarios] = useState<ScenarioSummary[]>([]);
   const [selectedId, setSelectedId] = useState('');
@@ -1284,6 +1429,8 @@ export function ScenariosPanel() {
                 />
               )}
             </div>
+
+            <MapDraftReviewPanel scenarioId={selectedId} />
 
             <label className="bh-upload-box" style={{ marginTop: 12 }}>
               <span>{uploading ? '上传中...' : '上传素材文件'}</span>

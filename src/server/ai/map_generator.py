@@ -43,16 +43,32 @@ class MapGenerator:
         api_key: str = "",
         model: str = "deepseek-v4-pro",
         api_base: str = "https://api.deepseek.com",
+        gateway: Any | None = None,
     ):
         self.api_key = api_key
         self.model = model
         self.api_base = api_base
+        self.gateway = gateway
         self.last_generated_by = "python"
 
     async def generate(self, scenes: list[dict]) -> tuple[list[dict], list[dict]]:
         """Generate nodes and edges from scenes. Returns (nodes, edges)."""
         if not scenes:
             return [], []
+
+        if self.gateway:
+            try:
+                generated = await self.gateway.generate_map(scenes)
+                if _is_complete_gateway_map(generated, len(scenes)):
+                    nodes = generated.get("nodes", [])
+                    edges = generated.get("edges", [])
+                    self.last_generated_by = "gateway"
+                    return (
+                        [_normalize_node(node, index) for index, node in enumerate(nodes)],
+                        [_normalize_edge(edge) for edge in edges],
+                    )
+            except Exception as exc:
+                logger.warning("Configured AI map generation failed: %s", exc)
 
         if self.api_key:
             for attempt in range(2):
@@ -65,6 +81,19 @@ class MapGenerator:
 
         self.last_generated_by = "python"
         return _python_generate_map(scenes)
+
+    async def generate_draft(self, scenes: list[dict], base_asset: dict | None = None) -> dict:
+        """Generate a reviewable graph or hybrid map draft with normalized regions and paths."""
+        nodes, edges = await self.generate(scenes)
+        safe_base_asset = _safe_base_asset(base_asset)
+        return {
+            "map_type": "hybrid" if safe_base_asset else "graph",
+            "base_asset": safe_base_asset,
+            "nodes": nodes,
+            "edges": edges,
+            "regions": _regions_from_nodes(nodes),
+            "paths": _paths_from_edges(edges),
+        }
 
     async def _call_deepseek(self, scenes: list[dict]) -> tuple[list[dict], list[dict]]:
         """Call DeepSeek API to generate map nodes and edges."""
@@ -223,3 +252,60 @@ def _default_position(index: int, total: int) -> dict[str, float]:
     x = 50.0 + radius * math.cos(angle)
     y = 50.0 + radius * math.sin(angle)
     return {"x": round(x, 1), "y": round(y, 1)}
+
+
+def _safe_base_asset(base_asset: dict | None) -> dict:
+    if not isinstance(base_asset, dict):
+        return {}
+    asset_id = base_asset.get("assetId", base_asset.get("asset_id", ""))
+    return {"assetId": asset_id} if isinstance(asset_id, str) and asset_id else {}
+
+
+def _regions_from_nodes(nodes: list[dict]) -> list[dict]:
+    regions = []
+    for index, node in enumerate(nodes):
+        node_id = node.get("node_id", node.get("nodeId", f"node_{index}"))
+        position = node.get("position", {}) if isinstance(node.get("position", {}), dict) else {}
+        raw_x = position.get("x", 50)
+        raw_y = position.get("y", 50)
+        x = float(raw_x) / 100 if float(raw_x) > 1 else float(raw_x)
+        y = float(raw_y) / 100 if float(raw_y) > 1 else float(raw_y)
+        left = round(max(0.0, x - 0.05), 4)
+        right = round(min(1.0, x + 0.05), 4)
+        top = round(max(0.0, y - 0.05), 4)
+        bottom = round(min(1.0, y + 0.05), 4)
+        regions.append({
+            "regionId": f"region-{node_id}",
+            "nodeId": node_id,
+            "polygon": [[left, top], [right, top], [right, bottom], [left, bottom]],
+        })
+    return regions
+
+
+def _paths_from_edges(edges: list[dict]) -> list[dict]:
+    return [
+        {
+            "pathId": f"path-{index}",
+            "fromNodeId": edge.get("from_node", edge.get("fromNode", "")),
+            "toNodeId": edge.get("to_node", edge.get("toNode", "")),
+            "isOneWay": bool(edge.get("is_one_way", edge.get("isOneWay", False))),
+            "label": edge.get("label", ""),
+        }
+        for index, edge in enumerate(edges)
+        if edge.get("from_node", edge.get("fromNode", ""))
+        and edge.get("to_node", edge.get("toNode", ""))
+    ]
+
+
+def _is_complete_gateway_map(value: Any, scene_count: int) -> bool:
+    if not isinstance(value, dict):
+        return False
+    nodes = value.get("nodes")
+    edges = value.get("edges")
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        return False
+    if len(nodes) < scene_count or any(not isinstance(node, dict) for node in nodes):
+        return False
+    if scene_count > 1 and not edges:
+        return False
+    return all(isinstance(edge, dict) for edge in edges)

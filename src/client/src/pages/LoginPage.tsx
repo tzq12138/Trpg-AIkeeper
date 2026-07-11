@@ -122,7 +122,7 @@ export default function LoginPage() {
       </button>
 
       <p style={{ marginTop: 16, fontSize: 12, color: 'var(--bh-muted)', fontWeight: 700, textAlign: 'center' }}>
-        账号为可选功能，不影响快速加入房间。
+        邀请房间需要账号；登录或注册后会自动返回原房间，并可恢复历史角色。
       </p>
     </section>
   );

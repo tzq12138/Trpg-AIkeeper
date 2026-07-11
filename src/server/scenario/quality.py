@@ -90,6 +90,33 @@ class QualityReportGenerator:
                 QualityIssue(category="spoiler", severity="warning", message="未定义防剧透边界")
             )
 
+        solo_adventure = knowledge_graph.get("solo_adventure")
+        if isinstance(solo_adventure, dict):
+            integrity = solo_adventure.get("integrity")
+            if isinstance(integrity, dict) and not integrity.get("is_valid", True):
+                duplicates = integrity.get("duplicate_node_ids") or []
+                missing = integrity.get("missing_target_node_ids") or []
+                details = []
+                if duplicates:
+                    details.append(f"重复条目: {', '.join(map(str, duplicates[:5]))}")
+                if missing:
+                    details.append(f"无效跳转目标: {', '.join(map(str, missing[:5]))}")
+                issues.append(
+                    QualityIssue(
+                        category="solo_adventure",
+                        severity="critical",
+                        message="编号单人冒险分支图无效" + (f"（{'；'.join(details)}）" if details else ""),
+                    )
+                )
+            elif isinstance(integrity, dict) and integrity.get("unreachable_node_ids"):
+                issues.append(
+                    QualityIssue(
+                        category="solo_adventure",
+                        severity="info",
+                        message=f"存在 {len(integrity['unreachable_node_ids'])} 个当前不可达条目，保留供条件分支使用",
+                    )
+                )
+
         recommended = knowledge_graph.get("recommended_tags", [])
         if recommended and not knowledge_graph.get("key_skills"):
             issues.append(

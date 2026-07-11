@@ -296,8 +296,15 @@ class LocalFallbackProvider(BaseAiProvider):
                      actions[0].get("character_id", "调查员") if actions else "调查员")
 
         if task_type == "resolve_turn":
+            from ..engine.fallback_narrative import render_action_aware_fallback
+
             return {
-                "narrative": {"public": f"{char_name}{action_text}。空气中弥漫着不安的气息，但暂时没有新的发现。"},
+                "narrative": {
+                    "public": render_action_aware_fallback(
+                        action_text,
+                        character_name=char_name,
+                    )
+                },
                 "rollRequests": [],
                 "stateMutations": [],
                 "tacticalPrompts": [],

@@ -1,6 +1,15 @@
+import uuid
+
 from fastapi import APIRouter, Request, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 
 router = APIRouter(prefix="/api/player")
+
+
+class PersonalObjectiveCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=1000)
 
 
 def _get_character(request: Request):
@@ -14,6 +23,24 @@ def _get_character(request: Request):
     if not char:
         raise HTTPException(403, "Invalid token")
     return char
+
+
+@router.post("/objectives", status_code=201)
+async def create_personal_objective(request: Request, body: PersonalObjectiveCreate):
+    char = _get_character(request)
+    conn = request.app.state.db
+    objective_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO objectives (objective_id, room_id, character_id, text, type) "
+        "VALUES (%s, %s, %s, %s, 'personal')",
+        (objective_id, char["room_id"], char["character_id"], body.text.strip()),
+    )
+    conn.commit()
+    objective = conn.execute(
+        "SELECT objective_id, text, type, status, assigned_at FROM objectives WHERE objective_id = %s",
+        (objective_id,),
+    ).fetchone()
+    return dict(objective)
 
 
 @router.get("/objectives")

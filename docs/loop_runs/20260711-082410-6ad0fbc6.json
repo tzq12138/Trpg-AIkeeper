@@ -1,0 +1,3909 @@
+{
+  "room_id": "6ad0fbc6",
+  "players": [
+    {
+      "label": "P1",
+      "investigator": "查尔斯·钱伯斯",
+      "token": "e9bf6edc-24cc-406d-8570-4226fcb8d2cb",
+      "character": "0cc04580",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "324e377b-25a3-45bf-b3e5-ad9983acd271",
+            "intent_type": "dialogue",
+            "declared_intent": "I observe public clues.",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "6ad0fbc6",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "characterId": "0cc04580",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-11T00:22:36.793434",
+            "completed_at": "2026-07-11T00:22:54.925659"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            }
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            }
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            }
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            }
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            }
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            }
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            }
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 588,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.795382",
+            "data": {
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 589,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.819789",
+            "data": {
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 590,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.840749",
+            "data": {
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 591,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.862236",
+            "data": {
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 592,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.883239",
+            "data": {
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 593,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.903625",
+            "data": {
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 594,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.923928",
+            "data": {
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 595,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.971518",
+            "data": {
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 598,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-11T00:22:55.241781",
+            "data": {
+              "roomId": "6ad0fbc6",
+              "status": "resolved",
+              "turnId": "6627e636",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271",
+              "characterId": "0cc04580"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 17
+      }
+    },
+    {
+      "label": "P2",
+      "investigator": "塞缪尔·哈珀",
+      "token": "525dfaa7-2093-48c5-b981-1c7e2354ac24",
+      "character": "a5ee745d",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "ecd0a0dc-05ca-412d-899d-700397259a8a",
+            "intent_type": "dialogue",
+            "declared_intent": "I ask a witness.",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "6ad0fbc6",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "characterId": "a5ee745d",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-11T00:22:36.818045",
+            "completed_at": "2026-07-11T00:23:02.366800"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            }
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            }
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            }
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            }
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            }
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            }
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            }
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 588,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.795382",
+            "data": {
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 589,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.819789",
+            "data": {
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 590,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.840749",
+            "data": {
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 591,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.862236",
+            "data": {
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 592,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.883239",
+            "data": {
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 593,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.903625",
+            "data": {
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 594,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.923928",
+            "data": {
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 595,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.971518",
+            "data": {
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 601,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-11T00:23:02.296345",
+            "data": {
+              "roomId": "6ad0fbc6",
+              "status": "resolved",
+              "turnId": "6627e636",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a",
+              "characterId": "a5ee745d"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 17
+      }
+    },
+    {
+      "label": "P3",
+      "investigator": "菲利普·格雷",
+      "token": "ecd4f4d2-6719-4740-8728-0497a51eb476",
+      "character": "f8df2003",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed",
+            "intent_type": "dialogue",
+            "declared_intent": "I inspect records.",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "6ad0fbc6",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "characterId": "f8df2003",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-11T00:22:36.839113",
+            "completed_at": "2026-07-11T00:23:07.935292"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            }
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            }
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            }
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            }
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            }
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            }
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            }
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 588,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.795382",
+            "data": {
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 589,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.819789",
+            "data": {
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 590,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.840749",
+            "data": {
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 591,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.862236",
+            "data": {
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 592,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.883239",
+            "data": {
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 593,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.903625",
+            "data": {
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 594,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.923928",
+            "data": {
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 595,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.971518",
+            "data": {
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 604,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-11T00:23:07.727053",
+            "data": {
+              "roomId": "6ad0fbc6",
+              "status": "resolved",
+              "turnId": "6627e636",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed",
+              "characterId": "f8df2003"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 17
+      }
+    },
+    {
+      "label": "P4",
+      "investigator": "乔治·莫里森",
+      "token": "4b46ef0f-e109-4730-80e0-fc7b3110d3f2",
+      "character": "3eecc5c2",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "59eb689e-2c3a-4792-867d-691b24ee1850",
+            "intent_type": "dialogue",
+            "declared_intent": "I check resources.",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "6ad0fbc6",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "characterId": "3eecc5c2",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-11T00:22:36.860626",
+            "completed_at": "2026-07-11T00:23:20.791692"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            }
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            }
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            }
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            }
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            }
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            }
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            }
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 588,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.795382",
+            "data": {
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 589,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.819789",
+            "data": {
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 590,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.840749",
+            "data": {
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 591,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.862236",
+            "data": {
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 592,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.883239",
+            "data": {
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 593,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.903625",
+            "data": {
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 594,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.923928",
+            "data": {
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 595,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.971518",
+            "data": {
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 607,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-11T00:23:20.318349",
+            "data": {
+              "roomId": "6ad0fbc6",
+              "status": "resolved",
+              "turnId": "6627e636",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850",
+              "characterId": "3eecc5c2"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 17
+      }
+    },
+    {
+      "label": "P5",
+      "investigator": "查尔斯·钱伯斯",
+      "token": "8f0b7984-76a1-4028-ad7f-a3874c3e832e",
+      "character": "acfb9f93",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0",
+            "intent_type": "dialogue",
+            "declared_intent": "I compare clues.",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "6ad0fbc6",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "characterId": "acfb9f93",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-11T00:22:36.881687",
+            "completed_at": "2026-07-11T00:23:31.747585"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            }
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            }
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            }
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            }
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            }
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            }
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            }
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 588,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.795382",
+            "data": {
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 589,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.819789",
+            "data": {
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 590,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.840749",
+            "data": {
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 591,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.862236",
+            "data": {
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 592,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.883239",
+            "data": {
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 593,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.903625",
+            "data": {
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 594,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.923928",
+            "data": {
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 595,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.971518",
+            "data": {
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 610,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-11T00:23:31.778760",
+            "data": {
+              "roomId": "6ad0fbc6",
+              "status": "resolved",
+              "turnId": "6627e636",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0",
+              "characterId": "acfb9f93"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 17
+      }
+    },
+    {
+      "label": "P6",
+      "investigator": "塞缪尔·哈珀",
+      "token": "c615d657-5f17-489c-8cd0-73052b8370ce",
+      "character": "a20b1805",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "8e29e2ac-c963-4f57-bec6-ba178ff10d37",
+            "intent_type": "dialogue",
+            "declared_intent": "I explore a visible exit.",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "6ad0fbc6",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "characterId": "a20b1805",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-11T00:22:36.902017",
+            "completed_at": "2026-07-11T00:23:41.062131"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            }
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            }
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            }
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            }
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            }
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            }
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            }
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 588,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.795382",
+            "data": {
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 589,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.819789",
+            "data": {
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 590,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.840749",
+            "data": {
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 591,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.862236",
+            "data": {
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 592,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.883239",
+            "data": {
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 593,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.903625",
+            "data": {
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 594,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.923928",
+            "data": {
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 595,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.971518",
+            "data": {
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 613,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-11T00:23:41.220184",
+            "data": {
+              "roomId": "6ad0fbc6",
+              "status": "resolved",
+              "turnId": "6627e636",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37",
+              "characterId": "a20b1805"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 17
+      }
+    },
+    {
+      "label": "P7",
+      "investigator": "菲利普·格雷",
+      "token": "bc793ec6-3fe2-460e-91c2-65b3a3eb2fa5",
+      "character": "382493e1",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab",
+            "intent_type": "dialogue",
+            "declared_intent": "I restate the goal.",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "6ad0fbc6",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "characterId": "382493e1",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-11T00:22:36.922391",
+            "completed_at": "2026-07-11T00:23:57.650339"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            }
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            }
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            }
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            }
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            }
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            }
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            }
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 588,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.795382",
+            "data": {
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 589,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.819789",
+            "data": {
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 590,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.840749",
+            "data": {
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 591,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.862236",
+            "data": {
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 592,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.883239",
+            "data": {
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 593,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.903625",
+            "data": {
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 594,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.923928",
+            "data": {
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 595,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.971518",
+            "data": {
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 616,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-11T00:23:57.665677",
+            "data": {
+              "roomId": "6ad0fbc6",
+              "status": "resolved",
+              "turnId": "6627e636",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab",
+              "characterId": "382493e1"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": true
+          }
+        ],
+        "total": 17
+      }
+    },
+    {
+      "label": "P8",
+      "investigator": "乔治·莫里森",
+      "token": "f04b571d-3e38-4be7-a0c3-452e3cfcf727",
+      "character": "02c99359",
+      "archive_actions": {
+        "actions": [
+          {
+            "action_id": "837bc008-9903-4cfa-a6ba-9a41e696c9ea",
+            "intent_type": "dialogue",
+            "declared_intent": "I keep watch.",
+            "status": "resolved",
+            "batch_id": null,
+            "result": {
+              "roomId": "6ad0fbc6",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea",
+              "mechanic": "dialogue",
+              "metadata": {},
+              "isSuccess": true,
+              "mutations": [],
+              "narrative": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "characterId": "02c99359",
+              "revealSteps": [],
+              "cascadingStateChanges": []
+            },
+            "created_at": "2026-07-11T00:22:36.970116",
+            "completed_at": "2026-07-11T00:24:09.242218"
+          }
+        ]
+      },
+      "archive_clues": {
+        "clues": [
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            }
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            }
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            }
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            }
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            }
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            }
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            }
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            }
+          }
+        ]
+      },
+      "archive_skill_checks": {
+        "skill_checks": []
+      },
+      "archive_all": {
+        "entries": [
+          {
+            "sequence": 588,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.795382",
+            "data": {
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 589,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.819789",
+            "data": {
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 590,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.840749",
+            "data": {
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 591,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.862236",
+            "data": {
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 592,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.883239",
+            "data": {
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 593,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.903625",
+            "data": {
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 594,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.923928",
+            "data": {
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 595,
+            "type": "s2c_action_queued",
+            "timestamp": "2026-07-11T00:22:36.971518",
+            "data": {
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": false
+          },
+          {
+            "sequence": 597,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:22:55.236875",
+            "data": {
+              "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+              "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 600,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:02.292641",
+            "data": {
+              "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+              "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 603,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:07.723303",
+            "data": {
+              "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+              "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 606,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:20.313620",
+            "data": {
+              "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+              "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 609,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:31.773419",
+            "data": {
+              "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+              "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 612,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:41.215551",
+            "data": {
+              "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+              "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 615,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:23:57.661440",
+            "data": {
+              "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+              "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 618,
+            "type": "s2c_public_observation",
+            "timestamp": "2026-07-11T00:24:09.232481",
+            "data": {
+              "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+            },
+            "is_public": true
+          },
+          {
+            "sequence": 619,
+            "type": "s2c_action_completed",
+            "timestamp": "2026-07-11T00:24:09.236305",
+            "data": {
+              "roomId": "6ad0fbc6",
+              "status": "resolved",
+              "turnId": "6627e636",
+              "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea",
+              "characterId": "02c99359"
+            },
+            "is_public": false
+          }
+        ],
+        "total": 17
+      }
+    }
+  ],
+  "campaign": {
+    "room_id": "6ad0fbc6",
+    "duration_seconds": 93,
+    "total_actions": 8,
+    "clues_found": 0,
+    "key_events": [
+      {
+        "sequence": 596,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-11T00:22:55.226671"
+      },
+      {
+        "sequence": 599,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-11T00:23:02.285712"
+      },
+      {
+        "sequence": 602,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-11T00:23:07.715860"
+      },
+      {
+        "sequence": 605,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-11T00:23:20.302270"
+      },
+      {
+        "sequence": 608,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-11T00:23:31.764320"
+      },
+      {
+        "sequence": 611,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-11T00:23:41.206065"
+      },
+      {
+        "sequence": 614,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-11T00:23:57.653313"
+      },
+      {
+        "sequence": 617,
+        "type": "s2c_reveal_transaction",
+        "timestamp": "2026-07-11T00:24:09.221837"
+      },
+      {
+        "sequence": 620,
+        "type": "s2c_campaign_ended",
+        "timestamp": "2026-07-11T00:24:10.203111"
+      }
+    ],
+    "ending": {
+      "ending_type": "victory",
+      "summary": "战役结束。角色 P4、P8、P3、P1、P2、P6、P7、P5 参与，共经历 59 个事件。",
+      "highlights": [],
+      "character_arcs": [
+        {
+          "player_name": "P4",
+          "character_id": "3eecc5c2",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P8",
+          "character_id": "02c99359",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P3",
+          "character_id": "f8df2003",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P1",
+          "character_id": "0cc04580",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P2",
+          "character_id": "a5ee745d",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P6",
+          "character_id": "a20b1805",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P7",
+          "character_id": "382493e1",
+          "total_actions": 1
+        },
+        {
+          "player_name": "P5",
+          "character_id": "acfb9f93",
+          "total_actions": 1
+        }
+      ]
+    }
+  },
+  "timeline": {
+    "events": [
+      {
+        "sequence": 562,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:21:58.859175"
+      },
+      {
+        "sequence": 563,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:04.164571"
+      },
+      {
+        "sequence": 564,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:09.575411"
+      },
+      {
+        "sequence": 565,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:14.890600"
+      },
+      {
+        "sequence": 566,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:20.182305"
+      },
+      {
+        "sequence": 567,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:25.527351"
+      },
+      {
+        "sequence": 568,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:30.899212"
+      },
+      {
+        "sequence": 569,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P8",
+              "character_id": "02c99359",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:36.428456"
+      },
+      {
+        "sequence": 570,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "0cc04580"
+        },
+        "issued_at": "2026-07-11T00:22:36.567071"
+      },
+      {
+        "sequence": 571,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P8",
+              "character_id": "02c99359",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:36.575309"
+      },
+      {
+        "sequence": 572,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "a5ee745d"
+        },
+        "issued_at": "2026-07-11T00:22:36.588560"
+      },
+      {
+        "sequence": 573,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P8",
+              "character_id": "02c99359",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:36.596008"
+      },
+      {
+        "sequence": 574,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "f8df2003"
+        },
+        "issued_at": "2026-07-11T00:22:36.611392"
+      },
+      {
+        "sequence": 575,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P8",
+              "character_id": "02c99359",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:36.617695"
+      },
+      {
+        "sequence": 576,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "3eecc5c2"
+        },
+        "issued_at": "2026-07-11T00:22:36.631653"
+      },
+      {
+        "sequence": 577,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P8",
+              "character_id": "02c99359",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:36.637517"
+      },
+      {
+        "sequence": 578,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "acfb9f93"
+        },
+        "issued_at": "2026-07-11T00:22:36.650882"
+      },
+      {
+        "sequence": 579,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P8",
+              "character_id": "02c99359",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:36.657246"
+      },
+      {
+        "sequence": 580,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "a20b1805"
+        },
+        "issued_at": "2026-07-11T00:22:36.669091"
+      },
+      {
+        "sequence": 581,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P8",
+              "character_id": "02c99359",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:36.676449"
+      },
+      {
+        "sequence": 582,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "382493e1"
+        },
+        "issued_at": "2026-07-11T00:22:36.689110"
+      },
+      {
+        "sequence": 583,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": false,
+              "player_name": "P8",
+              "character_id": "02c99359",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:36.695406"
+      },
+      {
+        "sequence": 584,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_ready_toggled",
+        "audience": "player",
+        "payload": {
+          "is_ready": true,
+          "character_id": "02c99359"
+        },
+        "issued_at": "2026-07-11T00:22:36.708590"
+      },
+      {
+        "sequence": 585,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P8",
+              "character_id": "02c99359",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "lobby",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:36.714102"
+      },
+      {
+        "sequence": 586,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_checkpoint_created",
+        "audience": "system",
+        "payload": {
+          "reason": "Room started",
+          "checkpointId": "32d77d0b",
+          "checkpointType": "auto"
+        },
+        "issued_at": "2026-07-11T00:22:36.761617"
+      },
+      {
+        "sequence": 587,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_room_lobby_snapshot",
+        "audience": "party",
+        "payload": {
+          "players": [
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P4",
+              "character_id": "3eecc5c2",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P8",
+              "character_id": "02c99359",
+              "investigator_name": "乔治·莫里森"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P3",
+              "character_id": "f8df2003",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P1",
+              "character_id": "0cc04580",
+              "investigator_name": "查尔斯·钱伯斯"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P2",
+              "character_id": "a5ee745d",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P6",
+              "character_id": "a20b1805",
+              "investigator_name": "塞缪尔·哈珀"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P7",
+              "character_id": "382493e1",
+              "investigator_name": "菲利普·格雷"
+            },
+            {
+              "status": "joined",
+              "is_ready": true,
+              "player_name": "P5",
+              "character_id": "acfb9f93",
+              "investigator_name": "查尔斯·钱伯斯"
+            }
+          ],
+          "room_id": "6ad0fbc6",
+          "room_status": "active",
+          "scenario_title": "Codex E2E ????"
+        },
+        "issued_at": "2026-07-11T00:22:36.769205"
+      },
+      {
+        "sequence": 588,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+        },
+        "issued_at": "2026-07-11T00:22:36.795382"
+      },
+      {
+        "sequence": 589,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+        },
+        "issued_at": "2026-07-11T00:22:36.819789"
+      },
+      {
+        "sequence": 590,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+        },
+        "issued_at": "2026-07-11T00:22:36.840749"
+      },
+      {
+        "sequence": 591,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+        },
+        "issued_at": "2026-07-11T00:22:36.862236"
+      },
+      {
+        "sequence": 592,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+        },
+        "issued_at": "2026-07-11T00:22:36.883239"
+      },
+      {
+        "sequence": 593,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+        },
+        "issued_at": "2026-07-11T00:22:36.903625"
+      },
+      {
+        "sequence": 594,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+        },
+        "issued_at": "2026-07-11T00:22:36.923928"
+      },
+      {
+        "sequence": 595,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_queued",
+        "audience": "player",
+        "payload": {
+          "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+        },
+        "issued_at": "2026-07-11T00:22:36.971518"
+      },
+      {
+        "sequence": 596,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。"
+              }
+            }
+          ],
+          "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271",
+          "priority": "normal",
+          "summaryText": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+          "transactionId": "6f70e9e7-f0bf-459a-816b-01b8048f6987"
+        },
+        "issued_at": "2026-07-11T00:22:55.226671"
+      },
+      {
+        "sequence": 597,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。",
+          "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271"
+        },
+        "issued_at": "2026-07-11T00:22:55.236875"
+      },
+      {
+        "sequence": 598,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "6ad0fbc6",
+          "status": "resolved",
+          "turnId": "6627e636",
+          "actionId": "324e377b-25a3-45bf-b3e5-ad9983acd271",
+          "characterId": "0cc04580"
+        },
+        "issued_at": "2026-07-11T00:22:55.241781"
+      },
+      {
+        "sequence": 599,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”"
+              }
+            }
+          ],
+          "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a",
+          "priority": "normal",
+          "summaryText": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+          "transactionId": "03ef290f-e3c3-46f5-ab79-e9939bcee3ff"
+        },
+        "issued_at": "2026-07-11T00:23:02.285712"
+      },
+      {
+        "sequence": 600,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”",
+          "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a"
+        },
+        "issued_at": "2026-07-11T00:23:02.292641"
+      },
+      {
+        "sequence": 601,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "6ad0fbc6",
+          "status": "resolved",
+          "turnId": "6627e636",
+          "actionId": "ecd0a0dc-05ca-412d-899d-700397259a8a",
+          "characterId": "a5ee745d"
+        },
+        "issued_at": "2026-07-11T00:23:02.296345"
+      },
+      {
+        "sequence": 602,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。"
+              }
+            }
+          ],
+          "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed",
+          "priority": "normal",
+          "summaryText": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+          "transactionId": "ba6faeee-4eb7-47cc-a243-6403639d96cd"
+        },
+        "issued_at": "2026-07-11T00:23:07.715860"
+      },
+      {
+        "sequence": 603,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。",
+          "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed"
+        },
+        "issued_at": "2026-07-11T00:23:07.723303"
+      },
+      {
+        "sequence": 604,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "6ad0fbc6",
+          "status": "resolved",
+          "turnId": "6627e636",
+          "actionId": "d02ce0f8-2295-46fa-8c3a-973d0c4ddeed",
+          "characterId": "f8df2003"
+        },
+        "issued_at": "2026-07-11T00:23:07.727053"
+      },
+      {
+        "sequence": 605,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。"
+              }
+            }
+          ],
+          "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850",
+          "priority": "normal",
+          "summaryText": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+          "transactionId": "fea7e7fb-6caa-43a0-a01d-8d7a09c96381"
+        },
+        "issued_at": "2026-07-11T00:23:20.302270"
+      },
+      {
+        "sequence": 606,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。",
+          "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850"
+        },
+        "issued_at": "2026-07-11T00:23:20.313620"
+      },
+      {
+        "sequence": 607,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "6ad0fbc6",
+          "status": "resolved",
+          "turnId": "6627e636",
+          "actionId": "59eb689e-2c3a-4792-867d-691b24ee1850",
+          "characterId": "3eecc5c2"
+        },
+        "issued_at": "2026-07-11T00:23:20.318349"
+      },
+      {
+        "sequence": 608,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。"
+              }
+            }
+          ],
+          "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0",
+          "priority": "normal",
+          "summaryText": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+          "transactionId": "2b719ca0-d051-4c83-8157-f6b3dfc00f20"
+        },
+        "issued_at": "2026-07-11T00:23:31.764320"
+      },
+      {
+        "sequence": 609,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。",
+          "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0"
+        },
+        "issued_at": "2026-07-11T00:23:31.773419"
+      },
+      {
+        "sequence": 610,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "6ad0fbc6",
+          "status": "resolved",
+          "turnId": "6627e636",
+          "actionId": "ad086054-cb37-4de2-ac40-8b2ab8f24ef0",
+          "characterId": "acfb9f93"
+        },
+        "issued_at": "2026-07-11T00:23:31.778760"
+      },
+      {
+        "sequence": 611,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat."
+              }
+            }
+          ],
+          "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37",
+          "priority": "normal",
+          "summaryText": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+          "transactionId": "614163fa-61e7-45e3-8498-524421beef17"
+        },
+        "issued_at": "2026-07-11T00:23:41.206065"
+      },
+      {
+        "sequence": 612,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying a faint, metallic scent. You pause at the threshold, straining to hear anything beyond the sound of your own heartbeat.",
+          "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37"
+        },
+        "issued_at": "2026-07-11T00:23:41.215551"
+      },
+      {
+        "sequence": 613,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "6ad0fbc6",
+          "status": "resolved",
+          "turnId": "6627e636",
+          "actionId": "8e29e2ac-c963-4f57-bec6-ba178ff10d37",
+          "characterId": "a20b1805"
+        },
+        "issued_at": "2026-07-11T00:23:41.220184"
+      },
+      {
+        "sequence": 614,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”"
+              }
+            }
+          ],
+          "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab",
+          "priority": "normal",
+          "summaryText": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+          "transactionId": "b3fba088-4f98-476c-85db-92b1f28c9d99"
+        },
+        "issued_at": "2026-07-11T00:23:57.653313"
+      },
+      {
+        "sequence": 615,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”",
+          "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab"
+        },
+        "issued_at": "2026-07-11T00:23:57.661440"
+      },
+      {
+        "sequence": 616,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "6ad0fbc6",
+          "status": "resolved",
+          "turnId": "6627e636",
+          "actionId": "5a99cb75-6b47-456a-a6b6-26de1e56f3ab",
+          "characterId": "382493e1"
+        },
+        "issued_at": "2026-07-11T00:23:57.665677"
+      },
+      {
+        "sequence": 617,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_reveal_transaction",
+        "audience": "host",
+        "payload": {
+          "steps": [
+            {
+              "kind": "narrative_text",
+              "payload": {
+                "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。"
+              }
+            }
+          ],
+          "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea",
+          "priority": "normal",
+          "summaryText": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+          "transactionId": "b26b616d-31dd-457f-85ba-31fefb82ef13"
+        },
+        "issued_at": "2026-07-11T00:24:09.221837"
+      },
+      {
+        "sequence": 618,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_public_observation",
+        "audience": "party",
+        "payload": {
+          "text": "乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。",
+          "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea"
+        },
+        "issued_at": "2026-07-11T00:24:09.232481"
+      },
+      {
+        "sequence": 619,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_action_completed",
+        "audience": "player",
+        "payload": {
+          "roomId": "6ad0fbc6",
+          "status": "resolved",
+          "turnId": "6627e636",
+          "actionId": "837bc008-9903-4cfa-a6ba-9a41e696c9ea",
+          "characterId": "02c99359"
+        },
+        "issued_at": "2026-07-11T00:24:09.236305"
+      },
+      {
+        "sequence": 620,
+        "room_id": "6ad0fbc6",
+        "event_type": "s2c_campaign_ended",
+        "audience": "party",
+        "payload": {
+          "text": "调查员们趁仪式尚未完成前逃出烬头村，成功避开灯塔焚祭，带着伤痕与真相幸存离开。",
+          "endingName": "成功逃脱",
+          "endingPhase": "成功逃脱",
+          "ending_type": "victory"
+        },
+        "issued_at": "2026-07-11T00:24:10.203111"
+      }
+    ]
+  },
+  "export_markdown": {
+    "format": "markdown",
+    "scope": "full",
+    "content": "# AI-Keeper 战报 — Room 6ad0fbc6\n\n**状态:** completed\n**剧透级别:** standard\n\n## 调查员\n- **乔治·莫里森** HP:10/10 SAN:65/65\n- **乔治·莫里森** HP:10/10 SAN:65/65\n- **菲利普·格雷** HP:12/12 SAN:60/60\n- **查尔斯·钱伯斯** HP:11/11 SAN:50/50\n- **塞缪尔·哈珀** HP:11/11 SAN:25/25\n- **塞缪尔·哈珀** HP:11/11 SAN:25/25\n- **菲利普·格雷** HP:12/12 SAN:60/60\n- **查尔斯·钱伯斯** HP:11/11 SAN:50/50\n\n## 关键事件\n### 2026-07-11 00:22:55 — KP叙事\n> 查尔斯·钱伯斯环顾现场，目光扫过凌乱的房间。桌子上散落着几份文件，纸张泛黄，边缘卷曲，上面用红墨水潦草地写着一些无法辨认的文字。墙角的地板上有一串泥泞的脚印，似乎通向房间深处。壁炉上方的镜框歪斜着，玻璃碎裂，碎片洒落一地。空气中弥漫着一股淡淡的霉味，混合着某种刺鼻的化学品气味。他注意到墙纸上有一处不规则的暗色污渍，形状古怪，像是什么液体喷溅后留下的痕迹。\n\n### 2026-07-11 00:23:02 — KP叙事\n> 你靠近那位目击者，对方是一个年迈的店主，正紧张地在围裙上擦拭双手。他目光躲闪，压低声音说道：“侦探先生，那天晚上我确实看到了些东西……但我不敢说太多，那些人很危险。”\n\n### 2026-07-11 00:23:07 — KP叙事\n> 菲利普·格雷教授俯身凑近那摞布满灰尘的记录，指尖轻轻翻动发黄的纸页，纸屑随动作簌簌落下。他眯起眼睛，在昏暗的光线下仔细辨认那些褪色的字迹，试图从零星的条目里拼凑出有用的线索。\n\n### 2026-07-11 00:23:20 — KP叙事\n> 你翻开磨损的医疗包，里面的吗啡安瓿还剩三支，绷带和消毒剂勉强够用。手电筒电池微弱地闪烁，而你的笔记本上潦草记着昨天从档案室抄来的数字——也许是库房编号。\n\n### 2026-07-11 00:23:31 — KP叙事\n> 查尔斯将收集到的线索摊开在桌上——一份褪色的报纸剪报、几张潦草的笔记，还有那张从现场偷偷带走的模糊照片。他的目光在它们之间来回游移，试图拼凑出隐藏在表面之下的联系。铅笔在指尖转动，然后停在某个日期上，他的呼吸微微一滞。\n\n### 2026-07-11 00:23:41 — KP叙事\n> The floorboards groan under your weight as you approach the darkened doorway, the frame warped and splintered as if something forced its way through long ago. Cold air seeps from the opening, carrying\n\n### 2026-07-11 00:23:57 — KP叙事\n> 菲利普教授轻轻推了推眼镜，目光扫过昏暗房间中围坐的同伴，用平静而坚定的语调说道：“容我再次明确我们当下的首要目标——根据克莱蒙德手稿的线索，我们必须尽快锁定那卷传说中的《死灵之书》抄本的下落，在其落入‘黑法老’兄弟会之手前将其转移至安全地点，绝不能让他们利用书中的仪式搅乱现实与幻梦境的边界。”\n\n### 2026-07-11 00:24:09 — KP叙事\n> 乔治·莫里森医生站在阴影中，目光扫过昏暗的走廊。他的耳朵捕捉着每一丝细微的声响，从远处隐约的滴水声到夜风穿过破窗的呜咽。手电筒的光束偶尔划过墙壁，映出斑驳的旧漆和剥落的招贴画。他屏住呼吸，等待任何异常的动静。\n\n## 结局\n**类型:** victory\n**摘要:** 战役结束。角色 P4、P8、P3、P1、P2、P6、P7、P5 参与，共经历 59 个事件。"
+  }
+}

@@ -290,6 +290,102 @@ class RAGStore:
         logger.info('Indexed %d NPC chunks for scenario %s', len(chunks), scenario_id)
         return len(chunks)
 
+    def index_content_projection(
+        self,
+        scenario_id: str,
+        scenario_version_id: str,
+        content_items: list[dict],
+    ) -> int:
+        rows: list[dict] = []
+        for item in content_items:
+            if not isinstance(item, dict):
+                continue
+            content = _content_projection_text(item)
+            if not content:
+                continue
+            citation_base = _sanitize_mapping(_parse_json_dict(item.get("citation")))
+            source_part_id = str(citation_base.get("source_part_id") or "")
+            for index, (chunk, start_offset, end_offset) in enumerate(
+                chunk_text_with_offsets(content)
+            ):
+                rows.append({
+                    "content_item_id": str(item.get("content_item_id") or ""),
+                    "item_type": str(item.get("item_type") or "content"),
+                    "logical_key": str(item.get("logical_key") or ""),
+                    "title": str(item.get("title") or ""),
+                    "visibility": _content_visibility(item.get("visibility")),
+                    "citation": citation_base,
+                    "source_part_id": source_part_id or None,
+                    "content": chunk,
+                    "index": index,
+                    "start_offset": start_offset,
+                    "end_offset": end_offset,
+                })
+
+        vectors = self.embedding.embed([row["content"] for row in rows]) if rows else []
+        _validate_embedding_batch(rows, vectors)
+        model_name = _embedding_model_name(self.embedding)
+        with self.pg_db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM document_chunks WHERE source_type = %s "
+                    "AND scenario_version_id = %s",
+                    ("content", scenario_version_id),
+                )
+                for row, vector in zip(rows, vectors):
+                    chunk_id = str(uuid.uuid4())
+                    citation = dict(row["citation"])
+                    citation.update({
+                        "chunk_id": chunk_id,
+                        "source_type": "content",
+                        "source_id": row["content_item_id"],
+                        "scenario_version_id": scenario_version_id,
+                        "source_part_id": row["source_part_id"] or "",
+                        "source_ref": _safe_source_ref(
+                            str(citation.get("source_ref") or "")
+                            or f"content:{row['item_type']}:{row['logical_key']}"
+                        ),
+                        "start_offset": row["start_offset"],
+                        "end_offset": row["end_offset"],
+                        "excerpt": _sanitize_excerpt(row["content"][:240]),
+                    })
+                    metadata = {
+                        "scenario_id": scenario_id,
+                        "scenario_version_id": scenario_version_id,
+                        "content_item_id": row["content_item_id"],
+                        "item_type": row["item_type"],
+                        "logical_key": row["logical_key"],
+                        "title": row["title"],
+                        "index": row["index"],
+                    }
+                    cur.execute(
+                        "INSERT INTO document_chunks "
+                        "(chunk_id, source_type, source_id, room_id, content, metadata, embedding, "
+                        "source_part_id, scenario_version_id, visibility, citation, embedding_model, "
+                        "embedding_dimensions) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (
+                            chunk_id,
+                            "content",
+                            row["content_item_id"],
+                            None,
+                            row["content"],
+                            json.dumps(metadata, ensure_ascii=False),
+                            vector,
+                            row["source_part_id"],
+                            scenario_version_id,
+                            row["visibility"],
+                            json.dumps(citation, ensure_ascii=False),
+                            model_name,
+                            len(vector),
+                        ),
+                    )
+        logger.info(
+            "Indexed %d canonical content chunks for scenario %s version %s",
+            len(rows), scenario_id, scenario_version_id,
+        )
+        return len(rows)
+
     def index_rules(
         self,
         doc_id: str,
@@ -456,8 +552,8 @@ class RAGStore:
                         + ", ".join(priority_candidates)
                         + ") END AS rule_priority"
                     )
-                    scope = ["(room_id = %s AND source_type NOT IN (%s, %s))"]
-                    filter_params.extend([room_id, "scenario", "npc"])
+                    scope = ["(room_id = %s AND source_type NOT IN (%s, %s, %s))"]
+                    filter_params.extend([room_id, "scenario", "npc", "content"])
                     rule_scope = (
                         "(source_type = %s AND room_id IS NULL AND "
                         + ("rule_set_version_id IN (" if bound_version else "(rule_set_version_id IS NULL OR rule_set_version_id IN (")
@@ -482,15 +578,15 @@ class RAGStore:
                     scope.append(rule_scope)
                     if scenario_id:
                         scenario_scope = (
-                            "(source_type IN (%s, %s) AND source_id = %s"
+                            "((source_type IN (%s, %s) AND source_id = %s) "
+                            "OR source_type = %s"
                         )
-                        filter_params.extend(["scenario", "npc", scenario_id])
+                        filter_params.extend(["scenario", "npc", scenario_id, "content"])
                         if bound_version:
-                            scenario_scope += " AND scenario_version_id = %s"
+                            scenario_scope += " AND scenario_version_id = %s)"
                             filter_params.append(bound_version)
                         else:
-                            scenario_scope += " AND scenario_version_id IS NULL"
-                        scenario_scope += ")"
+                            scenario_scope += " AND scenario_version_id IS NULL)"
                         scope.append(scenario_scope)
                     conditions.append("(" + " OR ".join(scope) + ")")
                 elif audience in {"ai", "admin"} and scenario_version_id:
@@ -623,6 +719,29 @@ def _allowed_visibilities(audience: str) -> list[str] | None:
     if audience == "host":
         return ["public", "party", "host_only"]
     return ["public", "party"]
+
+
+def _content_projection_text(item: dict) -> str:
+    payload = _parse_json_dict(item.get("payload"))
+    item_type = str(item.get("item_type") or "content").strip()
+    title = str(item.get("title") or item.get("logical_key") or "").strip()
+    if not item_type or not title:
+        return ""
+    fields = [f"{item_type}: {title}"]
+    for key in ("description", "summary", "text", "public_description", "role", "location", "type"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            fields.append(f"{key}: {value}")
+    if len(fields) == 1:
+        fields.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return "\n".join(fields).strip()
+
+
+def _content_visibility(value) -> str:
+    visibility = str(value or "").strip()
+    if visibility in {"public", "party", "host_only", "internal"}:
+        return visibility
+    return "host_only"
 
 
 def _parse_json_dict(value) -> dict:

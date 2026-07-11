@@ -5,6 +5,9 @@ export type EngineEventType =
   | 's2c_chat_stream' | 's2c_public_observation' | 's2c_scene_sync'
   // ── Action lifecycle ──
   | 's2c_action_queued' | 's2c_action_batched' | 's2c_action_completed'
+  | 's2c_action_review_requested' | 's2c_action_review_resolved'
+  | 's2c_action_exception_requested'
+  | 's2c_action_choice_requested'
   | 's2c_tactical_prompt' | 's2c_clarification_prompt' | 's2c_clarification_result'
   // ── State sync ──
   | 's2c_state_patch' | 's2c_full_snapshot' | 's2c_host_snapshot'
@@ -34,7 +37,142 @@ export interface EngineEvent {
   payload: Record<string, unknown>;
 }
 
-export type ActionStatus = 'idle' | 'submitting' | 'queued' | 'batched' | 'resolving' | 'resolved' | 'rejected' | 'timeout';
+export type ActionStatus =
+  | 'idle' | 'typing' | 'analyzing' | 'awaiting_confirmation'
+  | 'queued' | 'batched' | 'resolving'
+  | 'awaiting_player_choice' | 'awaiting_host_exception'
+  | 'completed' | 'resolved' | 'rejected' | 'canceled' | 'timeout' | 'sync_required';
+
+export interface ActionDraftDTO {
+  draft_id: string | null;
+  revision: number;
+  base_state_version: number;
+  status: 'analyzing' | 'awaiting_confirmation';
+  intent_type: string;
+  declared_intent: string;
+  params: Record<string, unknown>;
+  understanding_summary: string;
+  risk: 'low' | 'medium' | 'high';
+  suggested_skill: string | null;
+  difficulty: string | null;
+  resource_impacts: Array<Record<string, unknown>>;
+  visibility: 'public' | 'party' | 'private';
+  movement_target: string | null;
+  confirmation_requirements: string[];
+  requires_confirmation: boolean;
+  confidence: number;
+  citations: Array<Record<string, unknown>>;
+  analysis_source: 'configured_provider' | 'fallback_provider' | 'local_fallback';
+  resolution_route: 'ai' | 'local' | 'host_exception';
+  ephemeral: boolean;
+}
+
+export interface ActionTimelineEventDTO {
+  status: ActionStatus;
+  created_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface RuleExplanationDTO {
+  authoritative_inputs: Record<string, unknown>;
+  modifiers: Record<string, unknown>;
+  hidden_sources: Array<{ source: 'hidden'; effect?: unknown }>;
+  formula: string;
+  state_before: Record<string, unknown>;
+  state_after: Record<string, unknown>;
+  rule_set_version: string;
+  citations: Array<Record<string, unknown>>;
+  verification_receipt: Record<string, unknown> | null;
+}
+
+export interface ActionReceiptDTO {
+  action_id: string;
+  draft_id: string | null;
+  status: ActionStatus;
+  declared_intent: string;
+  revision: number;
+  result: unknown;
+  timeline: ActionTimelineEventDTO[];
+  can_cancel: boolean;
+  can_review: boolean;
+  rule_explanation: RuleExplanationDTO | null;
+}
+
+export interface PlayerReconnectDTO {
+  character: CharacterSheet;
+  recent_events: Array<Record<string, unknown>>;
+  pending_actions: ActionReceiptDTO[];
+  last_sequence: number;
+  stateVersion: number;
+  sceneState?: {
+    currentScene: string;
+    visitedScenes: string[];
+    version: number;
+  };
+}
+
+export interface PlayerDeviceSessionDTO {
+  device_session_id?: string;
+  device_id: string;
+  status: 'active' | 'revoked' | 'expired';
+  controller: boolean;
+  last_seen_at?: string;
+  expires_at?: string;
+}
+
+export interface CampaignSessionDTO {
+  campaign_session_id: string;
+  status: 'active' | 'ended' | 'scheduled';
+  started_by_character_id: string | null;
+  started_at: string;
+  last_activity_at: string;
+  scheduled_for: string | null;
+  ended_at: string | null;
+  attendance_status?: 'attending' | 'tentative' | 'absent';
+}
+
+export interface EvidenceCardDTO {
+  evidence_card_id: string;
+  title: string;
+  body: string;
+  card_type: 'clue' | 'person' | 'location' | 'item' | 'question';
+  fact_status: 'hypothesis' | 'confirmed' | 'excluded';
+  visibility: 'party' | 'private';
+  source: 'player' | 'host' | 'system';
+  confirmed_by: string | null;
+  created_by_character_id: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CampaignHomeDTO {
+  room_id: string;
+  session: CampaignSessionDTO | null;
+  team_objectives: Array<{ objective_id: string; text: string; status: string; assigned_at: string }>;
+  personal_objectives: Array<{ objective_id: string; text: string; status: string; assigned_at: string }>;
+  last_summary: {
+    summary_text: string;
+    source: string;
+    confidence: number;
+    published_at: string;
+    citations: Array<{ event_sequence: number; citation_label: string }>;
+  } | null;
+  next_session: CampaignSessionDTO | null;
+  recent_clues: Array<Record<string, unknown>>;
+  unresolved_questions: Array<Pick<EvidenceCardDTO, 'evidence_card_id' | 'title' | 'fact_status'>>;
+}
+
+export interface PlayerNoteDTO {
+  note_id: string;
+  parent_note_id: string | null;
+  title: string;
+  body: string;
+  visibility: 'private' | 'party';
+  is_redacted_copy: boolean;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface CharacterSheet {
   character_id: string;

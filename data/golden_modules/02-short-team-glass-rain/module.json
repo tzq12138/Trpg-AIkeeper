@@ -1,0 +1,335 @@
+{
+  "manifest": {
+    "format": "aikeeper-golden-module",
+    "schema_version": "1.0",
+    "module_id": "golden-team-glass-rain",
+    "title": "玻璃雨夜",
+    "module_type": "short_team_investigation",
+    "player_count": {"min": 2, "max": 4},
+    "estimated_duration": "2-3 小时",
+    "originality": {
+      "is_original": true,
+      "statement": "本模组的故事、人物、地点、线索与文字地图均为 AI-Keeper 原创；未复用外部剧本、小说、插画或地图。"
+    },
+    "license": {
+      "license_id": "AI-Keeper-Original-Private-Use-1.0",
+      "private_use_allowed": true,
+      "commercial_use_allowed": false,
+      "public_redistribution_allowed": false,
+      "attribution": "AI-Keeper 原创黄金模组：玻璃雨夜"
+    },
+    "rules_binding": {
+      "system": "coc7",
+      "rule_set_slug": "coc7",
+      "rule_set_version": "configured-published-version",
+      "binding_mode": "required",
+      "notice": "仅绑定部署中已获授权的 CoC7 规则集；本样本不包含规则书原文。"
+    },
+    "source": {
+      "source_type": "original_digital_text",
+      "source_filename": "module.json",
+      "source_ref": "module.json#/",
+      "license_citation_id": "cit-glass-license"
+    },
+    "readiness": {
+      "expected_status": "ready",
+      "required_components": ["scenes", "npcs", "clues", "truth", "endings", "preset_characters", "text_map", "coc7_binding", "citations"],
+      "known_risk": "含温室坍塌和伤者场景；Session Zero 应确认对灾害描写的接受度。"
+    }
+  },
+  "raw_text": "一场像碎玻璃般落下的冰雨砸穿了市立温室的穹顶。四名临时被困的调查员发现，所有受伤者都在反复说起同一串从未种植过的植物编号。暴雨结束前，他们必须找出编号的来源、救出地下蓄水池里的工作人员，并阻止自动灌溉系统再次启动。",
+  "knowledge_graph": {
+    "title": "玻璃雨夜",
+    "synopsis": "2–4 人合作短团：在封闭温室中平衡救援、调查和设备处置，验证多人行动批次、资源消耗和分歧后的共同结局。",
+    "recommended_tags": ["2-4人", "短团", "调查", "救援", "天气灾害"],
+    "key_skills": ["侦查", "急救", "机械维修", "电气维修", "说服", "潜水"],
+    "rule_citations": [
+      {
+        "citation_id": "rule-coc7-team-checks",
+        "source_type": "rule_set_version",
+        "source_ref": "configured:coc7:configured-published-version",
+        "purpose": "协作检定、伤害/治疗、追逐式移动和幸运消耗的已授权规则依据。"
+      }
+    ],
+    "spoiler_boundaries": {
+      "player_visible_before_play": ["冰雨击穿温室", "数名伤者", "自动灌溉系统异常"],
+      "host_ai_only": ["编号来自旧测试程序", "蓄水池内的幸存者", "系统重启条件"],
+      "release_conditions": ["调查员检查温室标签", "队伍进入控制室", "队伍抵达蓄水池"]
+    },
+    "scenes": [
+      {
+        "scene_id": "glass-gate",
+        "name": "温室入口与急救台",
+        "description": "入口的玻璃顶裂成白色网纹。保安把受伤游客集中到急救台，所有人的衣袖上都粘着同样的银色花粉。",
+        "order": 1,
+        "npcs_present": ["yuan-guard", "qiao-volunteer"],
+        "clues_available": ["silver-pollen", "repeating-number"],
+        "exits": ["orchid-hall", "control-room"],
+        "visibility": "public",
+        "citation_ids": ["cit-glass-scene-gate"]
+      },
+      {
+        "scene_id": "orchid-hall",
+        "name": "兰花展厅",
+        "description": "展厅的标签柜被冰雨砸开，编号 G-17 的空标签夹在一张废弃测试表里。地面积水正朝地下排水口流去。",
+        "order": 2,
+        "npcs_present": [],
+        "clues_available": ["g17-test-sheet", "drain-flow"],
+        "exits": ["glass-gate", "control-room", "cistern"],
+        "visibility": "public",
+        "citation_ids": ["cit-glass-scene-orchid"]
+      },
+      {
+        "scene_id": "control-room",
+        "name": "灌溉控制室",
+        "description": "控制屏不断要求确认“G-17 试验模式”。备用电源已开始倒计时，手动阀门被锁在一只沾有花粉的工具箱后。",
+        "order": 3,
+        "npcs_present": ["han-engineer"],
+        "clues_available": ["restart-log", "manual-valve-key"],
+        "exits": ["glass-gate", "orchid-hall", "cistern"],
+        "visibility": "public",
+        "citation_ids": ["cit-glass-scene-control"]
+      },
+      {
+        "scene_id": "cistern",
+        "name": "地下蓄水池",
+        "description": "水位上涨的蓄水池回荡着金属敲击声。一名维护员被困在阀门平台上，旁边的旧试验管线正向上方温室回灌。",
+        "order": 4,
+        "npcs_present": ["mei-maintainer"],
+        "clues_available": ["maintenance-radio", "g17-pipe"],
+        "exits": ["orchid-hall", "control-room"],
+        "visibility": "public",
+        "citation_ids": ["cit-glass-scene-cistern"]
+      }
+    ],
+    "npcs": [
+      {
+        "npc_id": "yuan-guard",
+        "name": "袁航",
+        "public_name": "袁保安",
+        "role": "入口秩序维护者",
+        "type": "ally",
+        "public_description": "浑身湿透但仍在给游客分发毛毯的夜班保安。",
+        "description": "袁航听见地下有敲击声，却因担心引发恐慌没有说明。他可提供钥匙串和入口监控时间。",
+        "personality": "务实、紧张、愿意服从明确指令",
+        "motivation": "让所有游客安全离开",
+        "is_hidden": false,
+        "citation_ids": ["cit-glass-npc-yuan"]
+      },
+      {
+        "npc_id": "qiao-volunteer",
+        "name": "乔荞",
+        "public_name": "乔志愿者",
+        "role": "急救协助者与目击者",
+        "type": "ally",
+        "public_description": "熟悉植物展区的志愿者，正在协助包扎伤者。",
+        "description": "乔荞看见有人在冰雨前把一箱旧标签推进兰花展厅，却没有看清对方身份。",
+        "personality": "细心、内疚、害怕被责怪",
+        "motivation": "证明自己没有忽略危险",
+        "is_hidden": false,
+        "citation_ids": ["cit-glass-npc-qiao"]
+      },
+      {
+        "npc_id": "han-engineer",
+        "name": "韩岑",
+        "public_name": "维护工程师",
+        "role": "控制室技术人员",
+        "type": "neutral",
+        "public_description": "带着工具箱的工程师，声称系统只是老旧导致误报。",
+        "description": "韩岑曾参与 G-17 的非公开节水测试。他试图掩盖测试绕过了安全联锁的事实，但他并未故意制造冰雨。",
+        "personality": "防御性强、技术自信、在证据面前会合作",
+        "motivation": "避免因旧测试承担全部责任",
+        "is_hidden": true,
+        "citation_ids": ["cit-glass-npc-han"]
+      },
+      {
+        "npc_id": "mei-maintainer",
+        "name": "梅冬",
+        "public_name": "被困维护员",
+        "role": "蓄水池幸存者",
+        "type": "ally",
+        "public_description": "无线电里传来短促求救声，位置尚未确认。",
+        "description": "梅冬发现旧管线在错误回灌，尝试手动关闭阀门时被上涨的水困住。他知道系统安全停机的正确顺序。",
+        "personality": "冷静、直接、体力透支",
+        "motivation": "在水位淹没平台前关闭管线",
+        "is_hidden": true,
+        "citation_ids": ["cit-glass-npc-mei"]
+      }
+    ],
+    "clues": [
+      {
+        "clue_id": "silver-pollen",
+        "name": "银色花粉",
+        "description": "伤者衣物上的银色粉末不是植物花粉，而是旧测试标签的反光涂层。",
+        "location": "温室入口与急救台",
+        "is_hidden": false,
+        "citation_ids": ["cit-glass-clue-pollen"]
+      },
+      {
+        "clue_id": "repeating-number",
+        "name": "反复出现的编号",
+        "description": "伤者都无意识地念着 G-17，说明他们在冰雨前接触过同一批标签。",
+        "location": "温室入口与急救台",
+        "is_hidden": false,
+        "citation_ids": ["cit-glass-clue-number"]
+      },
+      {
+        "clue_id": "g17-test-sheet",
+        "name": "G-17 测试表",
+        "description": "测试表记录了一条可绕过安全联锁的自动灌溉流程，责任人签名被水渍模糊。",
+        "location": "兰花展厅",
+        "is_hidden": false,
+        "citation_ids": ["cit-glass-clue-sheet"]
+      },
+      {
+        "clue_id": "restart-log",
+        "name": "重启日志",
+        "description": "控制室日志显示备用电源将在十分钟后重新启用 G-17 流程，并打开通向蓄水池的回灌阀。",
+        "location": "灌溉控制室",
+        "is_hidden": false,
+        "citation_ids": ["cit-glass-clue-log"]
+      },
+      {
+        "clue_id": "maintenance-radio",
+        "name": "维护无线电",
+        "description": "梅冬说明必须先关闭回灌阀，再断开控制室电源，否则水压会冲开温室下层管线。",
+        "location": "地下蓄水池",
+        "is_hidden": true,
+        "citation_ids": ["cit-glass-clue-radio"]
+      }
+    ],
+    "truth": {
+      "summary": "G-17 是一次被废弃的节水测试，它错误地把反光标签识别为生长信号。冰雨砸破传感器后，系统将所有银色标签判定为启动条件，并准备向蓄水池回灌。韩岑隐瞒旧测试，梅冬被困于修正管线的过程中。",
+      "citation_ids": ["cit-glass-truth"]
+    },
+    "endings": [
+      {
+        "name": "协作停机与救援",
+        "description": "队伍按正确顺序关闭阀门并断电，救出梅冬，保留测试表作为后续调查证据。",
+        "type": "victory",
+        "citation_ids": ["cit-glass-ending-rescue"]
+      },
+      {
+        "name": "先断电的代价",
+        "description": "系统停下但回灌压力造成局部水管破裂；梅冬获救，温室需长期修复。",
+        "type": "mixed",
+        "citation_ids": ["cit-glass-ending-power"]
+      },
+      {
+        "name": "错过倒计时",
+        "description": "G-17 重启，蓄水池被淹并毁坏部分证据；队伍仍可疏散人员并留下失败后的调查线索。",
+        "type": "defeat",
+        "citation_ids": ["cit-glass-ending-timeout"]
+      }
+    ]
+  },
+  "scenario_assets": {
+    "map_mode": "text",
+    "text_map": {
+      "map_type": "graph",
+      "title": "市立温室雨夜路线",
+      "player_description": "没有图片底图。入口可通往兰花展厅与控制室；展厅、控制室均可抵达地下蓄水池。",
+      "nodes": [
+        {"node_id": "glass-gate", "name": "入口与急救台", "description": "起点；伤者与公共线索。", "is_start": true},
+        {"node_id": "orchid-hall", "name": "兰花展厅", "description": "标签柜、排水口与测试表。"},
+        {"node_id": "control-room", "name": "灌溉控制室", "description": "倒计时、工程师与手动阀线索。"},
+        {"node_id": "cistern", "name": "地下蓄水池", "description": "危险移动节点；被困维护员和回灌阀。"}
+      ],
+      "edges": [
+        {"from": "glass-gate", "to": "orchid-hall", "label": "湿滑展廊"},
+        {"from": "glass-gate", "to": "control-room", "label": "员工通道"},
+        {"from": "orchid-hall", "to": "control-room", "label": "维护走廊"},
+        {"from": "orchid-hall", "to": "cistern", "label": "排水梯"},
+        {"from": "control-room", "to": "cistern", "label": "检修楼梯"}
+      ]
+    }
+  },
+  "character_templates": [
+    {
+      "template_id": "glass-reporter",
+      "name": "程雁",
+      "occupation": "本地记者",
+      "background": "你本来来采访温室夜展，第一时间记录了冰雨前后的异常。",
+      "age": 31,
+      "gender": "不指定",
+      "attributes": {"STR": 45, "CON": 50, "SIZ": 55, "DEX": 60, "APP": 60, "INT": 75, "POW": 55, "EDU": 75},
+      "skills": {"侦查": 65, "说服": 60, "心理学": 50, "摄影": 70, "图书馆使用": 55, "急救": 35},
+      "backstory": {"personal_goal": "找出事故原因并记录真相", "private_hook": "你拍到一段冰雨前有人搬运标签箱的模糊录像"}
+    },
+    {
+      "template_id": "glass-nurse",
+      "name": "许遥",
+      "occupation": "急诊护士",
+      "background": "你正结束夜班路过温室，灾害发生后立刻投入临时急救。",
+      "age": 29,
+      "gender": "不指定",
+      "attributes": {"STR": 50, "CON": 60, "SIZ": 50, "DEX": 55, "APP": 50, "INT": 65, "POW": 65, "EDU": 70},
+      "skills": {"急救": 75, "医学": 55, "心理学": 45, "聆听": 50, "说服": 45, "潜水": 30},
+      "backstory": {"personal_goal": "让所有伤者在雨停前得到稳定处理", "private_hook": "其中一名伤者的症状不像普通低温或割伤"}
+    },
+    {
+      "template_id": "glass-mechanic",
+      "name": "贺北",
+      "occupation": "楼宇设备技师",
+      "background": "你受邀检查温室的新风系统，却被迫面对一套你从未见过的旧灌溉控制器。",
+      "age": 38,
+      "gender": "不指定",
+      "attributes": {"STR": 60, "CON": 60, "SIZ": 65, "DEX": 50, "APP": 45, "INT": 65, "POW": 55, "EDU": 60},
+      "skills": {"机械维修": 70, "电气维修": 65, "锁匠": 40, "侦查": 45, "攀爬": 45, "急救": 30},
+      "backstory": {"personal_goal": "让系统在不伤害任何人的情况下停下来", "private_hook": "你认出控制器属于早已淘汰的试验批次"}
+    },
+    {
+      "template_id": "glass-student",
+      "name": "苏眠",
+      "occupation": "植物学研究生",
+      "background": "你在温室做志愿研究，熟悉展区路线和许多植物标签。",
+      "age": 24,
+      "gender": "不指定",
+      "attributes": {"STR": 40, "CON": 50, "SIZ": 45, "DEX": 65, "APP": 55, "INT": 75, "POW": 60, "EDU": 70},
+      "skills": {"博物学": 70, "侦查": 55, "图书馆使用": 55, "潜水": 45, "聆听": 50, "急救": 35},
+      "backstory": {"personal_goal": "保护温室与其中仍存活的研究样本", "private_hook": "你曾在储藏室见过写着 G-17 的标签箱"}
+    }
+  ],
+  "citations": [
+    {"citation_id": "cit-glass-license", "source_type": "authoring_note", "source_ref": "module.json#/manifest/license", "visibility": "admin_host", "label": "原创与私用授权声明"},
+    {"citation_id": "cit-glass-scene-gate", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/scenes/0", "visibility": "host_ai", "label": "温室入口"},
+    {"citation_id": "cit-glass-scene-orchid", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/scenes/1", "visibility": "host_ai", "label": "兰花展厅"},
+    {"citation_id": "cit-glass-scene-control", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/scenes/2", "visibility": "host_ai", "label": "灌溉控制室"},
+    {"citation_id": "cit-glass-scene-cistern", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/scenes/3", "visibility": "host_ai", "label": "地下蓄水池"},
+    {"citation_id": "cit-glass-npc-yuan", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/npcs/0", "visibility": "host_ai", "label": "袁航"},
+    {"citation_id": "cit-glass-npc-qiao", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/npcs/1", "visibility": "host_ai", "label": "乔荞"},
+    {"citation_id": "cit-glass-npc-han", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/npcs/2", "visibility": "host_ai", "label": "韩岑真相"},
+    {"citation_id": "cit-glass-npc-mei", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/npcs/3", "visibility": "host_ai", "label": "梅冬位置"},
+    {"citation_id": "cit-glass-clue-pollen", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/clues/0", "visibility": "player_after_discovery", "label": "银色花粉"},
+    {"citation_id": "cit-glass-clue-number", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/clues/1", "visibility": "player_after_discovery", "label": "G-17 编号"},
+    {"citation_id": "cit-glass-clue-sheet", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/clues/2", "visibility": "player_after_discovery", "label": "G-17 测试表"},
+    {"citation_id": "cit-glass-clue-log", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/clues/3", "visibility": "player_after_discovery", "label": "重启日志"},
+    {"citation_id": "cit-glass-clue-radio", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/clues/4", "visibility": "host_ai", "label": "维护无线电"},
+    {"citation_id": "cit-glass-truth", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/truth", "visibility": "host_ai", "label": "G-17 真相"},
+    {"citation_id": "cit-glass-ending-rescue", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/0", "visibility": "host_ai", "label": "协作停机与救援"},
+    {"citation_id": "cit-glass-ending-power", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/1", "visibility": "host_ai", "label": "先断电的代价"},
+    {"citation_id": "cit-glass-ending-timeout", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/2", "visibility": "host_ai", "label": "错过倒计时"}
+  ],
+  "rag_expectations": [
+    {"query": "G-17 是什么？", "expected_citation_ids": ["cit-glass-clue-number", "cit-glass-clue-sheet"], "forbidden_citation_ids": ["cit-glass-truth"]},
+    {"query": "停机顺序是什么？", "expected_citation_ids": ["cit-glass-clue-radio", "cit-glass-truth"], "audience": "host_ai"},
+    {"query": "哪些角色擅长处理设备和伤者？", "expected_citation_ids": ["rule-coc7-team-checks"], "audience": "host_ai"}
+  ],
+  "quality_report": {
+    "level": "ready",
+    "completeness": 1.0,
+    "issues": [
+      {"category": "assets", "severity": "info", "message": "场景缺少配图"}
+    ],
+    "checklist": {
+      "scenes": "pass: 4",
+      "npcs": "pass: 4 stable ids, all hidden NPCs have public descriptions",
+      "clues": "pass: 5 with source anchors",
+      "truth_and_endings": "pass: host-only truth and 3 endings",
+      "characters": "pass: 4 presets for 2-4 players",
+      "map": "pass: explicit text graph",
+      "rules": "pass: CoC7 binding without rule text",
+      "citations_and_license": "pass: self-anchored citations and private-use license"
+    }
+  }
+}

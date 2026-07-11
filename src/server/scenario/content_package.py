@@ -186,7 +186,52 @@ def _build_docx_package(source_filename: str, source_sha256: str, content: bytes
 
 def _extract_pdf_pages(content: bytes) -> list[PDFPage]:
     with pdfplumber.open(io.BytesIO(content)) as pdf:
-        return [PDFPage(page_num=index + 1, text=(page.extract_text() or "")) for index, page in enumerate(pdf.pages)]
+        return [
+            PDFPage(page_num=index + 1, text=_extract_pdf_page_text(page))
+            for index, page in enumerate(pdf.pages)
+        ]
+
+
+def _extract_pdf_page_text(page) -> str:
+    words = page.extract_words()
+    if not _has_overlapping_columns(page, words):
+        return _strip_pdf_page_chrome(page.extract_text() or "")
+
+    midpoint = float(page.width) / 2
+    left_text = page.crop((0, 0, midpoint, page.height)).extract_text() or ""
+    right_text = page.crop((midpoint, 0, page.width, page.height)).extract_text() or ""
+    return _strip_pdf_page_chrome(
+        "\n".join(part for part in (left_text, right_text) if part)
+    )
+
+
+def _strip_pdf_page_chrome(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        normalized = line.strip().upper()
+        if re.fullmatch(r"[IVXLCDM]+", normalized):
+            continue
+        if re.fullmatch(r"[A-Z ]+", normalized) and (
+            "ALONE" in normalized or "FLAMES" in normalized
+        ):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _has_overlapping_columns(page, words: list[dict[str, Any]]) -> bool:
+    if len(words) < 24:
+        return False
+
+    midpoint = float(page.width) / 2
+    gutter = max(6.0, float(page.width) * 0.015)
+    left_tops = [float(word["top"]) for word in words if float(word["x0"]) < midpoint - gutter]
+    right_tops = [float(word["top"]) for word in words if float(word["x0"]) > midpoint + gutter]
+    if len(left_tops) < 12 or len(right_tops) < 12:
+        return False
+
+    overlap = min(max(left_tops), max(right_tops)) - max(min(left_tops), min(right_tops))
+    return overlap >= float(page.height) * 0.25
 
 
 def _render_pdf_page_as_data_url(content: bytes, page_number: int) -> str:

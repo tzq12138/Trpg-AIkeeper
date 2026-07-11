@@ -74,6 +74,7 @@ class StateService:
         actor: dict[str, Any],
         changes: StateChangeSet,
         reason: str = "",
+        transaction=None,
     ) -> dict[str, Any]:
         """Apply a set of state changes in one logical unit.
 
@@ -81,6 +82,24 @@ class StateService:
             {"room_id": str, "state_version": int, "base_state_version": int,
              "applied": {...}, "event_refs": [...], "no_op": bool}
         """
+        if transaction is not None:
+            worker = StateService(
+                transaction,
+                dispatcher=self.dispatcher,
+                event_log=EventLog(transaction),
+            )
+            return worker._apply_change(room_id, actor, changes, reason, commit=False)
+        return self._apply_change(room_id, actor, changes, reason, commit=True)
+
+    def _apply_change(
+        self,
+        room_id: str,
+        actor: dict[str, Any],
+        changes: StateChangeSet,
+        reason: str,
+        *,
+        commit: bool,
+    ) -> dict[str, Any]:
         self._validate_room(room_id)
 
         base_version = self._read_room_version(room_id)
@@ -145,7 +164,8 @@ class StateService:
 
         # Only bump version if there were actual changes
         if not has_changes:
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
             return {
                 "room_id": room_id,
                 "base_state_version": base_version,
@@ -156,7 +176,8 @@ class StateService:
             }
 
         new_version = self._bump_room_version(room_id)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
         return {
             "room_id": room_id,
@@ -168,7 +189,7 @@ class StateService:
         }
 
     def initialize_character_state(
-        self, character_id: str, room_id: str,
+        self, character_id: str, room_id: str, *, commit: bool = True,
     ) -> dict[str, Any] | None:
         """Create runtime state + profile from characters.xlsx_data. Idempotent."""
         existing = self.conn.execute(
@@ -229,7 +250,8 @@ class StateService:
                 runtime["visibility"], runtime["version"],
             ),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         logger.info("StateService: initialized runtime state for %s in %s (hp=%s san=%s)",
                      character_id, room_id, runtime["hp"], runtime["san"])
         return runtime
@@ -302,7 +324,11 @@ class StateService:
         if row:
             return dict(row)
         # Lazy-init from xlsx_data
-        return self.initialize_character_state(character_id, room_id)
+        return self.initialize_character_state(
+            character_id,
+            room_id,
+            commit=hasattr(self.conn, "commit"),
+        )
 
     def _apply_one_mutation(self, runtime: dict, mutation: dict) -> bool:
         path = mutation.get("path", "")

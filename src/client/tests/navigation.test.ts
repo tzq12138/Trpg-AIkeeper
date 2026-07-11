@@ -16,6 +16,6 @@ describe('navigation configuration', () => {
 
   test('exposes the current host and player tabs', () => {
     expect(hostTabs.map((tab) => tab.key)).toEqual(['narrative', 'combat', 'database', 'logs', 'map']);
-    expect(playerTabs.map((tab) => tab.key)).toEqual(['action', 'character', 'inventory', 'logs', 'map']);
+    expect(playerTabs.map((tab) => tab.key)).toEqual(['home', 'action', 'character', 'inventory', 'logs', 'map']);
   });
 });

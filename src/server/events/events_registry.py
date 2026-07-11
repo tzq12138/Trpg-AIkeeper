@@ -65,6 +65,22 @@ ALL_EVENTS: dict[str, EventDef] = {
         "s2c_action_completed", EventDomain.ACTION, "player",
         "行动已结算，含结果 payload",
     ),
+    "s2c_action_review_requested": EventDef(
+        "s2c_action_review_requested", EventDomain.ACTION, "host",
+        "玩家提交行动申诉，进入 Host 异常队列",
+    ),
+    "s2c_action_review_resolved": EventDef(
+        "s2c_action_review_resolved", EventDomain.ACTION, "player",
+        "Host 已裁决玩家行动申诉",
+    ),
+    "s2c_action_exception_requested": EventDef(
+        "s2c_action_exception_requested", EventDomain.ACTION, "host",
+        "AI 与本地链路无法安全裁决，进入 Host 异常队列",
+    ),
+    "s2c_action_choice_requested": EventDef(
+        "s2c_action_choice_requested", EventDomain.ACTION, "player",
+        "Host 异常裁决要求玩家补充选择",
+    ),
     "s2c_tactical_prompt": EventDef(
         "s2c_tactical_prompt", EventDomain.ACTION, "player",
         "战术行动提示（AI 生成的快捷按钮）",
@@ -98,6 +114,10 @@ ALL_EVENTS: dict[str, EventDef] = {
     "s2c_private_notice": EventDef(
         "s2c_private_notice", EventDomain.STATE, "player",
         "仅对单个玩家可见的系统通知",
+    ),
+    "s2c_private_note_emergency_access": EventDef(
+        "s2c_private_note_emergency_access", EventDomain.STATE, "player",
+        "Host 通过二次认证紧急访问玩家私人笔记后的通知",
     ),
 
     # ── Room management ──

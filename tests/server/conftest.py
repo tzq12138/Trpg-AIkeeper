@@ -68,7 +68,8 @@ def test_db():
     conn = pg.get_connection()
     conn.execute(
         "TRUNCATE TABLE ai_provider_config_audits, ai_provider_configs, "
-        "document_chunks, import_jobs, source_parts, source_documents, "
+        "document_chunks, content_item_edges, content_items, content_projection_runs, "
+        "import_jobs, source_parts, source_documents, "
         "scenario_versions, clarifications, clue_shares, clues, objectives, inventory, "
         "actions, events, player_sequences, checkpoints, campaign_archives, "
         "host_states, characters, room_rule_bindings, scenario_rule_bindings, "

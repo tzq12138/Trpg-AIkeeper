@@ -43,6 +43,21 @@ class RecordingProvider(BaseAiProvider):
 
 
 @pytest.mark.asyncio
+async def test_generate_map_requires_json_structured_provider_output_without_local_fallback():
+    gateway = AiGateway()
+    remote = RecordingProvider("remote", None)
+    local = RecordingProvider("local", {"narrative": {"public": "不是地图"}})
+    gateway._providers = {"remote": remote, "local": local}
+    gateway._provider_order = ["remote", "local"]
+
+    result = await gateway.generate_map([{"name": "大厅"}])
+
+    assert result is None
+    assert local.calls == []
+    assert "JSON" in remote.calls[0][1]["system_prompt"]
+
+
+@pytest.mark.asyncio
 async def test_generate_narrative_unwraps_kp_response_shape():
     gateway = AiGateway()
     gateway._providers = {
@@ -57,6 +72,37 @@ async def test_generate_narrative_unwraps_kp_response_shape():
 
     assert isinstance(result, NarrativePayload)
     assert result.public == "烛火忽然晃动，墙上的影子拉长了一瞬。"
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_action_analysis_does_not_create_ai_call_log(test_db):
+    gateway = AiGateway(db_conn=test_db)
+    gateway._providers = {
+        "fake": FakeProvider(
+            {
+                "understanding_summary": "临时分析",
+                "risk": "low",
+                "intent_type": "dialogue",
+                "confirmation_requirements": [],
+                "confidence": 0.9,
+            }
+        )
+    }
+    gateway._provider_order = ["fake"]
+    before = test_db.execute("SELECT COUNT(*) AS count FROM ai_call_logs").fetchone()["count"]
+
+    await gateway.analyze_action_draft(
+        {
+            "declared_intent": "我看看桌面",
+            "intent_type": "dialogue",
+            "base_state_version": 0,
+            "suppress_response_log": True,
+        },
+        room_id="room-ephemeral",
+    )
+
+    after = test_db.execute("SELECT COUNT(*) AS count FROM ai_call_logs").fetchone()["count"]
+    assert after == before
 
 
 @pytest.mark.asyncio

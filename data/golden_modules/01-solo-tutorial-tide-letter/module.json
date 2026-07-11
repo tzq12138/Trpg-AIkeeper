@@ -1,0 +1,249 @@
+{
+  "manifest": {
+    "format": "aikeeper-golden-module",
+    "schema_version": "1.0",
+    "module_id": "golden-solo-tide-letter",
+    "title": "潮痕来信",
+    "module_type": "solo_tutorial",
+    "player_count": {"min": 1, "max": 1},
+    "estimated_duration": "45-60 分钟",
+    "originality": {
+      "is_original": true,
+      "statement": "本模组的故事、人物、地点、线索与文字地图均为 AI-Keeper 原创；未复用外部剧本、小说、插画或地图。"
+    },
+    "license": {
+      "license_id": "AI-Keeper-Original-Private-Use-1.0",
+      "private_use_allowed": true,
+      "commercial_use_allowed": false,
+      "public_redistribution_allowed": false,
+      "attribution": "AI-Keeper 原创黄金模组：潮痕来信"
+    },
+    "rules_binding": {
+      "system": "coc7",
+      "rule_set_slug": "coc7",
+      "rule_set_version": "configured-published-version",
+      "binding_mode": "required",
+      "notice": "仅绑定部署中已获授权的 CoC7 规则集；本样本不包含规则书原文。"
+    },
+    "source": {
+      "source_type": "original_digital_text",
+      "source_filename": "module.json",
+      "source_ref": "module.json#/",
+      "license_citation_id": "cit-tide-license"
+    },
+    "readiness": {
+      "expected_status": "ready",
+      "required_components": ["scenes", "npcs", "clues", "truth", "endings", "preset_characters", "text_map", "coc7_binding", "citations"],
+      "known_risk": "无图片底图；这是明确设计的文字地图模式，不阻断开团。"
+    }
+  },
+  "raw_text": "雾港的潮位档案室收到一封写给自己的信。信上的盐渍会在每一次潮汐后移动一行，指向一座废弃信号塔。调查员必须在下一次涨潮前确认寄信人、处理失真的求救讯号，并决定是否让港口继续听见那段循环的声音。",
+  "knowledge_graph": {
+    "title": "潮痕来信",
+    "synopsis": "单人调查教学：以一封自行改变内容的来信，练习观察、检索、交涉、风险确认与带依据的结局选择。",
+    "recommended_tags": ["单人", "调查", "教学", "低暴力", "海港"],
+    "key_skills": ["侦查", "图书馆使用", "聆听", "心理学", "急救"],
+    "rule_citations": [
+      {
+        "citation_id": "rule-coc7-solo-checks",
+        "source_type": "rule_set_version",
+        "source_ref": "configured:coc7:configured-published-version",
+        "purpose": "常规技能检定、奖励/惩罚骰、幸运与孤注一掷的已授权规则依据。"
+      }
+    ],
+    "spoiler_boundaries": {
+      "player_visible_before_play": ["一封盐渍来信", "雾港潮位档案室", "废弃信号塔"],
+      "host_ai_only": ["讯号回环的成因", "真正寄信人", "结局条件"],
+      "release_conditions": ["调查员在档案室发现潮表矛盾", "调查员抵达信号塔", "结局选择后"]
+    },
+    "scenes": [
+      {
+        "scene_id": "tide-archive",
+        "name": "潮位档案室",
+        "description": "狭窄的档案室里堆着二十年潮表。一封没有邮戳的信躺在登记簿上，盐粒正慢慢聚成新的句子。",
+        "order": 1,
+        "npcs_present": ["wen-keeper"],
+        "clues_available": ["tide-letter", "altered-tide-table"],
+        "exits": ["old-pier"],
+        "visibility": "public",
+        "citation_ids": ["cit-tide-scene-archive"]
+      },
+      {
+        "scene_id": "old-pier",
+        "name": "旧栈桥",
+        "description": "木桩间挂着废弃的缆绳。退潮露出的刻痕与信上盐渍的间隔完全一致，远处信号塔的灯每隔十七秒闪一次。",
+        "order": 2,
+        "npcs_present": [],
+        "clues_available": ["pier-marks", "tower-frequency"],
+        "exits": ["tide-archive", "signal-tower"],
+        "visibility": "public",
+        "citation_ids": ["cit-tide-scene-pier"]
+      },
+      {
+        "scene_id": "signal-tower",
+        "name": "废弃信号塔",
+        "description": "塔内的手摇发报机仍接着电。每摇动一次，耳机里都会传来调查员刚才说过的一句话，但结尾多了陌生人的求救。",
+        "order": 3,
+        "npcs_present": ["luo-echo"],
+        "clues_available": ["operator-log", "return-frequency"],
+        "exits": ["old-pier"],
+        "visibility": "public",
+        "citation_ids": ["cit-tide-scene-tower"]
+      }
+    ],
+    "npcs": [
+      {
+        "npc_id": "wen-keeper",
+        "name": "温海舟",
+        "public_name": "温管理员",
+        "role": "档案室管理员与初始线索提供者",
+        "type": "ally",
+        "public_description": "说话轻声、指尖常有墨迹的档案管理员，担心档案室被关闭。",
+        "description": "温海舟曾与信号塔操作员罗青共同记录潮位。他隐瞒了罗青失踪当夜自己提前离岗的事实，但并非回环的制造者。",
+        "personality": "谨慎、羞愧、愿意在被尊重时合作",
+        "motivation": "弥补当年没有留下来帮忙的遗憾",
+        "is_hidden": false,
+        "citation_ids": ["cit-tide-npc-wen"]
+      },
+      {
+        "npc_id": "luo-echo",
+        "name": "罗青",
+        "public_name": "讯号里的陌生人",
+        "role": "失踪操作员留下的回声",
+        "type": "neutral",
+        "public_description": "耳机中的陌生人只会重复短句，并请求有人完成最后一次报时。",
+        "description": "罗青在暴潮夜为使船只避开暗礁而持续发报，意外把自己的最后一次讯号困在旧设备和潮汐节律之间。回声不会主动伤害调查员。",
+        "personality": "克制、执着、在被理解后平静",
+        "motivation": "让未完成的避险报时真正结束",
+        "is_hidden": true,
+        "citation_ids": ["cit-tide-npc-luo"]
+      }
+    ],
+    "clues": [
+      {
+        "clue_id": "tide-letter",
+        "name": "会移动的盐渍来信",
+        "description": "盐渍每十七分钟向下移动一行，拼出“查旧潮表”的提示。",
+        "location": "潮位档案室",
+        "is_hidden": false,
+        "citation_ids": ["cit-tide-clue-letter"]
+      },
+      {
+        "clue_id": "altered-tide-table",
+        "name": "被改过的潮表",
+        "description": "二十年前的潮表缺少一页；温海舟承认那一页被罗青借走后没有归还。",
+        "location": "潮位档案室",
+        "is_hidden": false,
+        "citation_ids": ["cit-tide-clue-table"]
+      },
+      {
+        "clue_id": "pier-marks",
+        "name": "栈桥刻痕",
+        "description": "木桩上的十七道刻痕对应一次异常潮位，刻痕末端指向信号塔。",
+        "location": "旧栈桥",
+        "is_hidden": false,
+        "citation_ids": ["cit-tide-clue-marks"]
+      },
+      {
+        "clue_id": "operator-log",
+        "name": "操作日志末页",
+        "description": "日志证明罗青是在为避险报时，而非制造灾害；最后一行留下了应发送的坐标。",
+        "location": "废弃信号塔",
+        "is_hidden": true,
+        "citation_ids": ["cit-tide-clue-log"]
+      }
+    ],
+    "truth": {
+      "summary": "信号塔把罗青最后一次为避险而发的报时与异常潮位绑定，形成可被潮汐触发的讯号回环。调查员可补完报时、关闭设备，或保留回声作为港口预警。",
+      "citation_ids": ["cit-tide-truth"]
+    },
+    "endings": [
+      {
+        "name": "补完报时",
+        "description": "调查员依日志完成最后一次报时；回环消失，罗青的声音平静道别。",
+        "type": "victory",
+        "citation_ids": ["cit-tide-ending-report"]
+      },
+      {
+        "name": "关闭发报机",
+        "description": "调查员切断旧设备；异常停止，但港口失去那道意外有效的潮位预警。",
+        "type": "mixed",
+        "citation_ids": ["cit-tide-ending-shutoff"]
+      },
+      {
+        "name": "保留讯号",
+        "description": "调查员与温海舟约定保留设备并记录规律；回环留下，成为需要长期管理的未知风险。",
+        "type": "mixed",
+        "citation_ids": ["cit-tide-ending-keep"]
+      }
+    ]
+  },
+  "scenario_assets": {
+    "map_mode": "text",
+    "text_map": {
+      "map_type": "graph",
+      "title": "雾港潮汐路线",
+      "player_description": "没有图片底图。玩家通过地点卡和相邻路线移动：档案室—旧栈桥—信号塔。",
+      "nodes": [
+        {"node_id": "tide-archive", "name": "潮位档案室", "description": "起点；可调查来信和潮表。", "is_start": true},
+        {"node_id": "old-pier", "name": "旧栈桥", "description": "连接档案室与信号塔；潮汐可能造成短暂阻碍。"},
+        {"node_id": "signal-tower", "name": "废弃信号塔", "description": "终局地点；可交涉、修复或关闭设备。"}
+      ],
+      "edges": [
+        {"from": "tide-archive", "to": "old-pier", "label": "石阶小路"},
+        {"from": "old-pier", "to": "signal-tower", "label": "潮湿栈道"}
+      ]
+    }
+  },
+  "character_templates": [
+    {
+      "template_id": "tide-archive-investigator",
+      "name": "林澈",
+      "occupation": "港务档案助理",
+      "background": "你负责整理雾港旧记录，温管理员请你看看一封无法登记的来信。",
+      "age": 27,
+      "gender": "不指定",
+      "attributes": {"STR": 45, "CON": 50, "SIZ": 55, "DEX": 60, "APP": 55, "INT": 70, "POW": 60, "EDU": 70},
+      "skills": {"侦查": 60, "图书馆使用": 70, "聆听": 55, "心理学": 45, "急救": 40, "电气维修": 30},
+      "backstory": {"personal_goal": "确认来信为何会写着你的名字", "private_hook": "你曾在童年听过信号塔的同一段旋律"}
+    }
+  ],
+  "citations": [
+    {"citation_id": "cit-tide-license", "source_type": "authoring_note", "source_ref": "module.json#/manifest/license", "visibility": "admin_host", "label": "原创与私用授权声明"},
+    {"citation_id": "cit-tide-scene-archive", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/scenes/0", "visibility": "host_ai", "label": "潮位档案室"},
+    {"citation_id": "cit-tide-scene-pier", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/scenes/1", "visibility": "host_ai", "label": "旧栈桥"},
+    {"citation_id": "cit-tide-scene-tower", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/scenes/2", "visibility": "host_ai", "label": "废弃信号塔"},
+    {"citation_id": "cit-tide-npc-wen", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/npcs/0", "visibility": "host_ai", "label": "温海舟"},
+    {"citation_id": "cit-tide-npc-luo", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/npcs/1", "visibility": "host_ai", "label": "罗青真相"},
+    {"citation_id": "cit-tide-clue-letter", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/clues/0", "visibility": "player_after_discovery", "label": "盐渍来信"},
+    {"citation_id": "cit-tide-clue-table", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/clues/1", "visibility": "player_after_discovery", "label": "被改过的潮表"},
+    {"citation_id": "cit-tide-clue-marks", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/clues/2", "visibility": "player_after_discovery", "label": "栈桥刻痕"},
+    {"citation_id": "cit-tide-clue-log", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/clues/3", "visibility": "host_ai", "label": "操作日志末页"},
+    {"citation_id": "cit-tide-truth", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/truth", "visibility": "host_ai", "label": "讯号回环真相"},
+    {"citation_id": "cit-tide-ending-report", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/0", "visibility": "host_ai", "label": "补完报时结局"},
+    {"citation_id": "cit-tide-ending-shutoff", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/1", "visibility": "host_ai", "label": "关闭发报机结局"},
+    {"citation_id": "cit-tide-ending-keep", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/2", "visibility": "host_ai", "label": "保留讯号结局"}
+  ],
+  "rag_expectations": [
+    {"query": "盐渍信指向哪里？", "expected_citation_ids": ["cit-tide-clue-letter", "cit-tide-scene-archive"], "forbidden_citation_ids": ["cit-tide-truth"]},
+    {"query": "信号塔里的陌生人是谁？", "expected_citation_ids": ["cit-tide-npc-luo", "cit-tide-truth"], "audience": "host_ai"},
+    {"query": "我能用哪些技能检查旧设备？", "expected_citation_ids": ["rule-coc7-solo-checks"], "audience": "host_ai"}
+  ],
+  "quality_report": {
+    "level": "ready",
+    "completeness": 1.0,
+    "issues": [
+      {"category": "assets", "severity": "info", "message": "场景缺少配图"}
+    ],
+    "checklist": {
+      "scenes": "pass: 3",
+      "npcs": "pass: 2 stable ids, hidden NPC has public description",
+      "clues": "pass: 4 with source anchors",
+      "truth_and_endings": "pass: host-only truth and 3 endings",
+      "characters": "pass: 1 preset for one player",
+      "map": "pass: explicit text graph",
+      "rules": "pass: CoC7 binding without rule text",
+      "citations_and_license": "pass: self-anchored citations and private-use license"
+    }
+  }
+}

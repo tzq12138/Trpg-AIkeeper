@@ -1,13 +1,40 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import PlayerCharacter from './PlayerCharacter';
 import PlayerInventory from './PlayerInventory';
 import { getSlotValue } from '../shared/identity';
 import TacticalButtons from '../components/TacticalButtons';
 import PlayerTerminal from '../components/PlayerTerminal';
 import VoiceInput from '../components/VoiceInput';
-import { PlayerWS } from '../ws';
+import PlayerActionComposer from '../components/PlayerActionComposer';
+import CampaignHomePanel from '../components/CampaignHomePanel';
+import { PlayerWS, type PlayerWSStatus } from '../ws';
 import { apiFetch, authHeaders } from '../api';
-import type { CharacterSheet, EngineEvent, PlayerChatMessage, SkillCheckResult, TacticalAction } from '../types';
+import {
+  analyzeActionDraft,
+  cancelAction,
+  claimPlayerDevice,
+  confirmActionDraft,
+  deleteActionDraft,
+  getActionReceipt,
+  PlayerApiError,
+  reconnectPlayer,
+} from '../shared/player-api';
+import {
+  createConfirmIdempotencyKey,
+  isActionInFlight,
+  mergeAuthoritativeReceipt,
+  shouldAutoConfirmDraft,
+} from '../shared/player-action-controller';
+import type {
+  ActionDraftDTO,
+  ActionReceiptDTO,
+  ActionStatus,
+  CharacterSheet,
+  EngineEvent,
+  PlayerChatMessage,
+  SkillCheckResult,
+  TacticalAction,
+} from '../types';
 import type { PlayerTabKey } from '../navigation';
 
 function buildEncounterActions(encounterType: string): TacticalAction[] {
@@ -32,10 +59,19 @@ function buildEncounterActions(encounterType: string): TacticalAction[] {
 }
 
 export default function PlayerActionPage({ roomId }: { roomId: string }) {
-  const [tab, setTab] = useState<PlayerTabKey>('action');
+  const [tab, setTab] = useState<PlayerTabKey>('home');
   const [character, setCharacter] = useState<CharacterSheet | null>(null);
   const [inputText, setInputText] = useState('');
-  const [actionStatus, setActionStatus] = useState<string>('idle');
+  const [actionStatus, setActionStatus] = useState<ActionStatus>('idle');
+  const [draft, setDraft] = useState<ActionDraftDTO | null>(null);
+  const [ephemeralPreview, setEphemeralPreview] = useState<ActionDraftDTO | null>(null);
+  const [receipt, setReceipt] = useState<ActionReceiptDTO | null>(null);
+  const [actionError, setActionError] = useState('');
+  const [stateVersion, setStateVersion] = useState(0);
+  const [connectionStatus, setConnectionStatus] = useState<PlayerWSStatus>('connecting');
+  const wsRef = useRef<PlayerWS | null>(null);
+  const restoredSequence = useRef(0);
+  const lastEphemeralText = useRef('');
   const [messages, setMessages] = useState<PlayerChatMessage[]>([]);
   const [pendingActions, setPendingActions] = useState<TacticalAction[]>([]);
   const [claimOpen, setClaimOpen] = useState(false);
@@ -46,6 +82,72 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
   const [isReady, setIsReady] = useState(false);
   const [charStatus, setCharStatus] = useState('joined');
   const [mapRefresh, setMapRefresh] = useState(0);
+  const [deviceControl, setDeviceControl] = useState<boolean | null>(null);
+  const localDraftKey = `aikeeper_action_draft:${roomId}`;
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(localDraftKey) || 'null') as {
+        text?: string;
+        updatedAt?: number;
+      } | null;
+      if (saved?.text && saved.updatedAt && Date.now() - saved.updatedAt <= 30 * 24 * 60 * 60 * 1000) {
+        setInputText(saved.text);
+        setActionStatus('typing');
+      } else if (saved) {
+        localStorage.removeItem(localDraftKey);
+      }
+    } catch {
+      localStorage.removeItem(localDraftKey);
+    }
+  }, [localDraftKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    reconnectPlayer()
+      .then(async (data) => {
+        if (cancelled) return;
+        setStateVersion(data.stateVersion || 0);
+        if (data.sceneState?.currentScene) {
+          setMapRefresh((value) => value + 1);
+        }
+        restoredSequence.current = data.last_sequence || 0;
+        wsRef.current?.setLastSequence(restoredSequence.current);
+        const pending = data.pending_actions?.[0];
+        if (pending?.action_id) {
+          const authoritative = await getActionReceipt(pending.action_id);
+          if (cancelled) return;
+          setReceipt(authoritative);
+          setActionStatus(authoritative.status);
+          const savedDraft = localStorage.getItem(localDraftKey);
+          if (savedDraft) {
+            setActionError('服务器行动优先；你的本地草稿已保留，当前行动结束后可继续编辑。');
+          }
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [localDraftKey, roomId]);
+
+  useEffect(() => {
+    let mounted = true;
+    const claim = async () => {
+      try {
+        const session = await claimPlayerDevice();
+        if (mounted) setDeviceControl(session.controller);
+      } catch (error) {
+        if (mounted && error instanceof PlayerApiError && error.status === 409) {
+          setDeviceControl(false);
+        }
+      }
+    };
+    void claim();
+    const heartbeat = window.setInterval(() => { void claim(); }, 15 * 60 * 1000);
+    return () => {
+      mounted = false;
+      window.clearInterval(heartbeat);
+    };
+  }, [roomId]);
 
   // Check character status from API
   useEffect(() => {
@@ -81,8 +183,41 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
   }, []);
 
   useEffect(() => {
+    const text = inputText.trim();
+    if (!text || draft || (receipt && isActionInFlight(receipt.status))) return;
+    if (!['idle', 'typing'].includes(actionStatus) || lastEphemeralText.current === text) return;
+    const timer = window.setTimeout(async () => {
+      lastEphemeralText.current = text;
+      setActionStatus('analyzing');
+      try {
+        const preview = await analyzeActionDraft({
+          declared_intent: text,
+          base_state_version: stateVersion,
+          ephemeral: true,
+        });
+        setEphemeralPreview(preview);
+      } catch (error) {
+        if (!(error instanceof PlayerApiError && error.status === 403)) {
+          setActionError(formatPlayerApiError(error));
+        }
+      } finally {
+        setActionStatus('typing');
+      }
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [actionStatus, draft, inputText, receipt, stateVersion]);
+
+  useEffect(() => {
     const token = getSlotValue('player_token') || '';
     const ws = new PlayerWS(roomId);
+    wsRef.current = ws;
+    ws.setLastSequence(restoredSequence.current);
+    ws.onStatus((status) => {
+      setConnectionStatus(status);
+      if (status === 'unauthorized') {
+        setActionError('玩家凭证已失效，请重新从邀请链接进入房间。');
+      }
+    });
     ws.onEvent((event: EngineEvent) => {
       if (event.type === 's2c_tactical_prompt') {
         const payload = event.payload as { text?: string; actions?: TacticalAction[] };
@@ -97,8 +232,31 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
         if (payload.actions && payload.actions.length > 0) {
           setPendingActions(payload.actions);
         }
-      } else if (event.type === 's2c_action_completed') {
-        setActionStatus('idle');
+      } else if (event.type === 's2c_action_queued' || event.type === 's2c_action_batched') {
+        const payload = event.payload as { actionId?: string; status?: ActionStatus };
+        setActionStatus(payload.status || (event.type === 's2c_action_queued' ? 'queued' : 'batched'));
+        if (payload.actionId) {
+          getActionReceipt(payload.actionId)
+            .then((incoming) => setReceipt((current) => mergeAuthoritativeReceipt(current, incoming)))
+            .catch(() => {});
+        }
+      } else if (
+        event.type === 's2c_action_completed'
+        || event.type === 's2c_action_choice_requested'
+        || event.type === 's2c_action_review_resolved'
+      ) {
+        const eventPayload = event.payload as { actionId?: string; status?: ActionStatus };
+        setActionStatus(eventPayload.status || (
+          event.type === 's2c_action_choice_requested' ? 'awaiting_player_choice' : 'completed'
+        ));
+        if (eventPayload.actionId) {
+          getActionReceipt(eventPayload.actionId)
+            .then((incoming) => {
+              setReceipt((current) => mergeAuthoritativeReceipt(current, incoming));
+              setActionStatus(incoming.status);
+            })
+            .catch(() => {});
+        }
         setPendingActions([]);
         // Try to extract skill check result for PlayerCharacter
         const payload = event.payload as Record<string, unknown>;
@@ -127,7 +285,13 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
           }]);
         }
       } else if (event.type === 's2c_state_patch') {
-        const payload = event.payload as { patches?: Array<{ op?: string; path?: string; value?: { name?: string } }> };
+        const payload = event.payload as {
+          patches?: Array<{ op?: string; path?: string; value?: { name?: string } }>;
+          nextStateVersion?: number;
+          stateVersion?: number;
+        };
+        const nextVersion = payload.stateVersion ?? payload.nextStateVersion;
+        if (typeof nextVersion === 'number') setStateVersion(nextVersion);
         const added = payload.patches?.find((p) => p.op === 'add' && p.path === '/inventory/-');
         const itemName = added?.value?.name;
         if (itemName) {
@@ -168,154 +332,291 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
       }
     });
     ws.connect(token);
-    return () => ws.disconnect();
+    return () => {
+      wsRef.current = null;
+      ws.disconnect();
+    };
   }, [roomId]);
 
-  const submitAction = async () => {
-    if (!inputText.trim() || actionStatus !== 'idle') return;
-    setActionStatus('submitting');
-    const actionId = crypto.randomUUID();
-    const declaredIntent = inputText.trim();
+  const confirmDraft = async (nextDraft: ActionDraftDTO) => {
+    if (!nextDraft.draft_id) return;
+    if (deviceControl === false) {
+      setActionError('此设备为只读。请先接管主控设备，再提交行动。');
+      return;
+    }
+    setActionError('');
     try {
-      const res = await fetch('/api/player/intent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Room-Token': getSlotValue('player_token') || '' },
-        body: JSON.stringify({
-          action_id: actionId,
-          intent_type: 'dialogue',
-          declared_intent: declaredIntent,
-        }),
-      });
-      if (res.ok) {
-        setActionStatus('resolving');
-        setMessages((prev) => [...prev.slice(-49), {
-          id: actionId,
-          sender: 'player',
-          text: declaredIntent,
-          timestamp: Date.now(),
-        }]);
-        setInputText('');
+      const nextReceipt = await confirmActionDraft(
+        nextDraft.draft_id,
+        nextDraft.confirmation_requirements,
+        createConfirmIdempotencyKey(nextDraft),
+      );
+      setDraft(null);
+      setEphemeralPreview(null);
+      setReceipt(nextReceipt);
+      setActionStatus(nextReceipt.status);
+      setMessages((prev) => [...prev.slice(-49), {
+        id: nextReceipt.action_id,
+        sender: 'player',
+        text: nextDraft.declared_intent,
+        timestamp: Date.now(),
+      }]);
+      setInputText('');
+      localStorage.removeItem(localDraftKey);
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+      if (error instanceof PlayerApiError && error.detail && typeof error.detail === 'object'
+        && 'code' in error.detail && error.detail.code === 'sync_required') {
+        setActionStatus('sync_required');
       } else {
-        setActionStatus('idle');
+        setActionStatus('awaiting_confirmation');
       }
-    } catch {
-      setActionStatus('idle');
     }
   };
 
-  const submitRetroClaim = async () => {
+  const submitAction = async (
+    overrideText?: string,
+    intentType = 'dialogue',
+    params: Record<string, unknown> = {},
+  ) => {
+    const declaredIntent = (overrideText ?? inputText).trim();
+    if (!declaredIntent || draft || (receipt && isActionInFlight(receipt.status))) return;
+    if (deviceControl === false) {
+      setActionError('此设备为只读。请先接管主控设备，再提交行动。');
+      return;
+    }
+    setActionError('');
+    setActionStatus('analyzing');
+    try {
+      const analyzed = await analyzeActionDraft({
+        declared_intent: declaredIntent,
+        intent_type: intentType,
+        params,
+        base_state_version: stateVersion,
+        ephemeral: false,
+      });
+      setEphemeralPreview(null);
+      if (shouldAutoConfirmDraft(analyzed)) {
+        await confirmDraft(analyzed);
+      } else {
+        setDraft(analyzed);
+        setActionStatus('awaiting_confirmation');
+      }
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+      setActionStatus('typing');
+    }
+  };
+
+  const updateInputText = (value: string) => {
+    setInputText(value);
+    setDraft(null);
+    setEphemeralPreview(null);
+    lastEphemeralText.current = '';
+    setActionStatus(value.trim() ? 'typing' : 'idle');
+    if (value.trim()) {
+      localStorage.setItem(localDraftKey, JSON.stringify({ text: value, updatedAt: Date.now() }));
+    } else {
+      localStorage.removeItem(localDraftKey);
+    }
+  };
+
+  const discardDraft = async () => {
+    if (draft?.draft_id) {
+      await deleteActionDraft(draft.draft_id).catch(() => {});
+    }
+    setDraft(null);
+    setEphemeralPreview(null);
+    setActionStatus(inputText.trim() ? 'typing' : 'idle');
+  };
+
+  const cancelSubmittedAction = async () => {
+    if (!receipt?.can_cancel) return;
+    if (deviceControl === false) {
+      setActionError('此设备为只读。请先接管主控设备，再撤回行动。');
+      return;
+    }
+    try {
+      const canceled = await cancelAction(receipt.action_id);
+      setReceipt(canceled);
+      setActionStatus(canceled.status);
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
+  const submitTacticalAction = (action: TacticalAction) => {
+    setInputText(action.label);
+    void submitAction(action.label, action.intent_type, action.params);
+  };
+
+  const submitRetroClaim = () => {
     if (!claimedItemName.trim() || actionStatus !== 'idle') return;
-    setClaimStatus('提交中...');
-    const actionId = crypto.randomUUID();
     const itemName = claimedItemName.trim();
     const justification = claimJustification.trim() || `我主张角色背景中应有${itemName}`;
+    const text = `主张物品：${itemName}。${justification}`;
+    setClaimStatus('请确认行动预览');
+    setInputText(text);
+    setClaimOpen(false);
+    void submitAction(text, 'retroactive_item_claim', {
+      claimedItemName: itemName,
+      justificationText: justification,
+    });
+  };
+
+  const takeOverDevice = async () => {
     try {
-      const res = await fetch('/api/player/intent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Room-Token': getSlotValue('player_token') || '' },
-        body: JSON.stringify({
-          action_id: actionId,
-          intent_type: 'retroactive_item_claim',
-          declared_intent: justification,
-          params: {
-            claimedItemName: itemName,
-            justificationText: justification,
-          },
-        }),
-      });
-      if (res.ok) {
-        setClaimStatus('主张已提交');
-        setMessages((prev) => [...prev.slice(-49), {
-          id: actionId,
-          sender: 'player',
-          text: `主张物品：${itemName}`,
-          timestamp: Date.now(),
-        }]);
-        setClaimedItemName('');
-        setClaimJustification('');
-        setClaimOpen(false);
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setClaimStatus(String(data.detail || '主张未通过'));
-      }
-    } catch {
-      setClaimStatus('提交失败');
+      const session = await claimPlayerDevice(true);
+      setDeviceControl(session.controller);
+      setActionError('');
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
     }
   };
 
   return (
     <PlayerTerminal activeTab={tab} character={character} onTabChange={setTab} isReady={isReady} charStatus={charStatus} onToggleReady={toggleReady}>
+      {tab === 'home' && <CampaignHomePanel roomId={roomId} />}
       {tab === 'action' && (
         <ActionPanel
           actionStatus={actionStatus}
+          connectionStatus={connectionStatus}
+          actionError={actionError}
           claimJustification={claimJustification}
           claimOpen={claimOpen}
           claimStatus={claimStatus}
           claimedItemName={claimedItemName}
           inputText={inputText}
+          draft={draft}
+          ephemeralPreview={ephemeralPreview}
+          receipt={receipt}
           messages={messages}
           pendingActions={pendingActions}
+          deviceControl={deviceControl}
           onClaimJustificationChange={setClaimJustification}
           onClaimOpenChange={setClaimOpen}
           onClaimStatusChange={setClaimStatus}
           onClaimedItemNameChange={setClaimedItemName}
-          onInputTextChange={setInputText}
+          onInputTextChange={updateInputText}
           onSubmitAction={submitAction}
+          onConfirmAction={() => draft && void confirmDraft(draft)}
+          onDiscardAction={() => void discardDraft()}
+          onCancelAction={() => void cancelSubmittedAction()}
           onSubmitRetroClaim={submitRetroClaim}
-          onTacticalSubmitted={() => setActionStatus('resolving')}
+          onTacticalSelect={submitTacticalAction}
+          onTakeOverDevice={() => void takeOverDevice()}
         />
       )}
       {tab === 'character' && <PlayerCharacter externalResult={lastSkillCheckResult} onResultConsumed={() => setLastSkillCheckResult(null)} />}
       {tab === 'inventory' && <PlayerInventory />}
       {tab === 'logs' && <PlayerLogsPanel messages={messages} />}
-      {tab === 'map' && <PlayerMapPanel roomId={roomId} mapRefresh={mapRefresh} />}
+      {tab === 'map' && (
+        <PlayerMapPanel
+          roomId={roomId}
+          mapRefresh={mapRefresh}
+          onMoveIntent={(text, params) => {
+            setInputText(text);
+            setTab('action');
+            void submitAction(text, 'move', params);
+          }}
+        />
+      )}
     </PlayerTerminal>
   );
 }
 
 interface ActionPanelProps {
-  actionStatus: string;
+  actionStatus: ActionStatus;
+  connectionStatus: PlayerWSStatus;
+  actionError: string;
   claimJustification: string;
   claimOpen: boolean;
   claimStatus: string;
   claimedItemName: string;
   inputText: string;
+  draft: ActionDraftDTO | null;
+  ephemeralPreview: ActionDraftDTO | null;
+  receipt: ActionReceiptDTO | null;
   messages: PlayerChatMessage[];
   pendingActions: TacticalAction[];
+  deviceControl: boolean | null;
   onClaimJustificationChange: (value: string) => void;
   onClaimOpenChange: (value: boolean) => void;
   onClaimStatusChange: (value: string) => void;
   onClaimedItemNameChange: (value: string) => void;
   onInputTextChange: (value: string) => void;
-  onSubmitAction: () => void;
+  onSubmitAction: (text?: string) => void;
+  onConfirmAction: () => void;
+  onDiscardAction: () => void;
+  onCancelAction: () => void;
   onSubmitRetroClaim: () => void;
-  onTacticalSubmitted: () => void;
+  onTacticalSelect: (action: TacticalAction) => void;
+  onTakeOverDevice: () => void;
+}
+
+function formatPlayerApiError(error: unknown): string {
+  if (!(error instanceof PlayerApiError)) return '行动提交失败，请稍后重试。';
+  if (error.detail && typeof error.detail === 'object' && 'code' in error.detail) {
+    const code = String(error.detail.code);
+    const messages: Record<string, string> = {
+      action_already_submitted: '本回合已有一条有效行动，请先撤回或等待结算。',
+      confirmation_required: '仍有风险项未确认。',
+      draft_analysis_disabled: '本房间已关闭停顿分析，你仍可手动生成行动预览。',
+      sync_required: '世界状态已变化，请同步后重新确认行动。',
+      v2_action_draft_required: '此房间必须通过行动预览提交。',
+    };
+    return messages[code] || `行动处理失败：${code}`;
+  }
+  return `行动处理失败（${error.status}）`;
 }
 
 function ActionPanel({
   actionStatus,
+  connectionStatus,
+  actionError,
   claimJustification,
   claimOpen,
   claimStatus,
   claimedItemName,
   inputText,
+  draft,
+  ephemeralPreview,
+  receipt,
   messages,
   pendingActions,
+  deviceControl,
   onClaimJustificationChange,
   onClaimOpenChange,
   onClaimStatusChange,
   onClaimedItemNameChange,
   onInputTextChange,
   onSubmitAction,
+  onConfirmAction,
+  onDiscardAction,
+  onCancelAction,
   onSubmitRetroClaim,
-  onTacticalSubmitted,
+  onTacticalSelect,
+  onTakeOverDevice,
 }: ActionPanelProps) {
-  const isIdle = actionStatus === 'idle';
+  const isIdle = !draft && !(receipt && isActionInFlight(receipt.status));
 
   return (
     <section className="bh-panel">
       <span className="bh-eyebrow">TACTICAL CHANNEL</span>
       <h2 className="bh-panel-title">玩家行动终端</h2>
+      {connectionStatus !== 'open' && (
+        <div className="bh-muted-box" role="status">
+          {connectionStatus === 'unauthorized'
+            ? '连接凭证失效，请重新进入房间。'
+            : '正在恢复实时连接，服务器行动状态仍为准。'}
+        </div>
+      )}
+      {deviceControl === false && (
+        <div className="bh-muted-box" role="status">
+          此设备正在只读观看，避免重复提交同一角色的行动。
+          <button className="bh-button bh-button--yellow" type="button" onClick={onTakeOverDevice}>接管主控</button>
+        </div>
+      )}
 
       <div className="bh-message-list" aria-live="polite">
         {messages.length === 0 && (
@@ -331,7 +632,7 @@ function ActionPanel({
               <TacticalButtons
                 actions={msg.actions}
                 disabled={!isIdle}
-                onSubmitted={onTacticalSubmitted}
+                onSelect={onTacticalSelect}
               />
             )}
           </div>
@@ -344,7 +645,7 @@ function ActionPanel({
           <TacticalButtons
             actions={pendingActions}
             disabled={false}
-            onSubmitted={onTacticalSubmitted}
+            onSelect={onTacticalSelect}
           />
         </div>
       )}
@@ -358,35 +659,36 @@ function ActionPanel({
           }).catch(() => {});
         }}
         onSubmitAction={(text) => {
-          onInputTextChange(text);
-          onSubmitAction();
+          onSubmitAction(text);
         }}
       />
 
+      <PlayerActionComposer
+        inputText={inputText}
+        phase={actionStatus}
+        draft={draft}
+        ephemeralPreview={ephemeralPreview}
+        receipt={receipt}
+        error={actionError}
+        onInputChange={onInputTextChange}
+        onAnalyze={() => onSubmitAction()}
+        onConfirm={onConfirmAction}
+        onDiscard={onDiscardAction}
+        onCancelAction={onCancelAction}
+      />
+
       <div className="bh-action-box">
-        <textarea
-          className="bh-textarea"
-          value={inputText}
-          onChange={(e) => onInputTextChange(e.target.value)}
-          placeholder="描述你的行动..."
+        <button
+          className="bh-button"
+          type="button"
+          onClick={() => {
+            onClaimOpenChange(!claimOpen);
+            onClaimStatusChange('');
+          }}
           disabled={!isIdle}
-        />
-        <div className="bh-action-row">
-          <button className="bh-button bh-button--yellow" type="button" onClick={onSubmitAction} disabled={!isIdle}>
-            {isIdle ? '提交行动' : '等待结算...'}
-          </button>
-          <button
-            className="bh-button"
-            type="button"
-            onClick={() => {
-              onClaimOpenChange(!claimOpen);
-              onClaimStatusChange('');
-            }}
-            disabled={!isIdle}
-          >
-            主张物品
-          </button>
-        </div>
+        >
+          主张物品
+        </button>
 
         {claimOpen && (
           <div className="bh-claim-box">
@@ -477,17 +779,54 @@ interface MapTileData {
   position: { x: number; y: number };
 }
 
-function PlayerMapPanel({ roomId, mapRefresh }: { roomId: string; mapRefresh: number }) {
+interface MapFogRegion {
+  regionId: string;
+  polygon: Array<[number, number]>;
+}
+
+interface TextSceneData {
+  name: string;
+  description: string;
+  visibleExits: string[];
+  soloAdventure?: {
+    nodeId: string;
+    citation?: { source_ref?: string; page_number?: number };
+    choices: Array<{ nodeId: string; label: string }>;
+  };
+}
+
+function mapPolygonPoints(polygon: Array<[number, number]>): string {
+  return polygon.map((coordinate) => {
+    const x = coordinate[0] <= 1 ? coordinate[0] * 100 : coordinate[0];
+    const y = coordinate[1] <= 1 ? coordinate[1] * 100 : coordinate[1];
+    return `${x},${y}`;
+  }).join(' ');
+}
+
+function PlayerMapPanel({
+  roomId,
+  mapRefresh,
+  onMoveIntent,
+}: {
+  roomId: string;
+  mapRefresh: number;
+  onMoveIntent: (text: string, params: Record<string, unknown>) => void;
+}) {
   const [tiles, setTiles] = useState<MapTileData[]>([]);
   const [currentTile, setCurrentTile] = useState<string | null>(null);
   const [hiddenCount, setHiddenCount] = useState(0);
   const [mapStatus, setMapStatus] = useState('no_map');
+  const [mapType, setMapType] = useState<'graph' | 'image' | 'hybrid'>('graph');
+  const [mapImageUrl, setMapImageUrl] = useState('');
+  const [fogRegions, setFogRegions] = useState<MapFogRegion[]>([]);
+  const [textScene, setTextScene] = useState<TextSceneData | null>(null);
   const [loading, setLoading] = useState(true);
   const [movePending, setMovePending] = useState(false);
+  const [secretMove, setSecretMove] = useState(false);
 
   const fetchMap = () => {
     const token = getSlotValue('player_token') || '';
-    fetch(`/api/map/${encodeURIComponent(roomId)}`, {
+    fetch(`/api/maps/${encodeURIComponent(roomId)}`, {
       headers: { 'X-Room-Token': token },
     })
       .then((res) => (res.ok ? res.json() : null))
@@ -497,6 +836,27 @@ function PlayerMapPanel({ roomId, mapRefresh }: { roomId: string; mapRefresh: nu
           setCurrentTile((data.currentNodeId || null) as string | null);
           setHiddenCount(Number(data.hiddenCount || 0));
           setMapStatus(String(data.mapStatus || 'no_map'));
+          setFogRegions((data.fogRegionAreas || []) as MapFogRegion[]);
+          setTextScene((data.textScene || null) as TextSceneData | null);
+          const nextMapType = data.mapType === 'image' || data.mapType === 'hybrid' ? data.mapType : 'graph';
+          setMapType(nextMapType);
+          const assetId = String(data.baseAsset?.assetId || '');
+          if (!assetId) {
+            setMapImageUrl('');
+            return;
+          }
+          fetch(`/api/maps/${encodeURIComponent(roomId)}/assets/${encodeURIComponent(assetId)}`, {
+            headers: { 'X-Room-Token': token },
+          })
+            .then((assetResponse) => assetResponse.ok ? assetResponse.blob() : null)
+            .then((blob) => {
+              if (!blob) return;
+              setMapImageUrl((previous) => {
+                if (previous) URL.revokeObjectURL(previous);
+                return URL.createObjectURL(blob);
+              });
+            })
+            .catch(() => setMapImageUrl(''));
         }
       })
       .catch(() => {})
@@ -507,24 +867,31 @@ function PlayerMapPanel({ roomId, mapRefresh }: { roomId: string; mapRefresh: nu
     fetchMap();
   }, [roomId, mapRefresh]);
 
+  useEffect(() => () => {
+    if (mapImageUrl) URL.revokeObjectURL(mapImageUrl);
+  }, [mapImageUrl]);
+
   const handleMove = async (nodeId: string) => {
     setMovePending(true);
-    const token = getSlotValue('player_token') || '';
-    try {
-      const res = await fetch(`/api/map/${encodeURIComponent(roomId)}/move`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Room-Token': token },
-        body: JSON.stringify({ target_node_id: nodeId }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.status === 'submitted') {
-          // Move submitted — position will update via WS event
-        }
-      }
-    } catch { /* ignore */ }
-    // Move pending flag auto-clears on next map refresh (WS event)
-    setTimeout(() => setMovePending(false), 5000);
+    const target = tiles.find((tile) => tile.nodeId === nodeId);
+    const targetName = target?.name || '目标地点';
+    onMoveIntent(secretMove ? `我偷偷前往${targetName}` : `移动到${targetName}`, {
+      targetNodeId: nodeId,
+      fromNodeId: currentTile || '',
+      secretMove,
+    });
+    setMovePending(false);
+  };
+
+  const handleSoloMove = (nodeId: string) => {
+    const sourceNodeId = textScene?.soloAdventure?.nodeId || '';
+    if (!sourceNodeId) return;
+    setMovePending(true);
+    onMoveIntent(`转到条目 ${nodeId}`, {
+      targetNodeId: nodeId,
+      fromNodeId: sourceNodeId,
+    });
+    setMovePending(false);
   };
 
   // No map state
@@ -539,6 +906,46 @@ function PlayerMapPanel({ roomId, mapRefresh }: { roomId: string; mapRefresh: nu
             房主尚未为本房间配置地图。请等待房主初始化地图后刷新页面。
           </p>
         </div>
+      </section>
+    );
+  }
+
+  if (!loading && mapStatus === 'text_mode') {
+    return (
+      <section className="bh-panel">
+        <span className="bh-eyebrow">TEXT SCENE</span>
+        <h2 className="bh-panel-title">{textScene?.name || '当前场景'}</h2>
+        <div className="bh-map-info" style={{ marginTop: 12 }}>
+          <p style={{ fontWeight: 700 }}>{textScene?.description || '请根据当前叙事行动。'}</p>
+          {textScene?.visibleExits?.length ? (
+            <p className="bh-eyebrow" style={{ fontSize: 9 }}>
+              可见出口：{textScene.visibleExits.join('、')}
+            </p>
+          ) : null}
+          {textScene?.soloAdventure?.choices?.length ? (
+            <div className="bh-action-box" style={{ marginTop: 12 }}>
+              {textScene.soloAdventure.choices.map((choice) => (
+                <button
+                  className="bh-button bh-button--yellow"
+                  disabled={movePending}
+                  key={choice.nodeId}
+                  onClick={() => handleSoloMove(choice.nodeId)}
+                  type="button"
+                >
+                  {choice.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {textScene?.soloAdventure?.citation?.source_ref ? (
+            <p className="bh-eyebrow" style={{ fontSize: 9, marginTop: 10 }}>
+              原文定位：{textScene.soloAdventure.citation.source_ref}
+            </p>
+          ) : null}
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--bh-dim)', marginTop: 12 }}>
+          本场景未使用可点击地图；你仍可在行动区描述探索、交谈或移动意图。
+        </p>
       </section>
     );
   }
@@ -569,8 +976,31 @@ function PlayerMapPanel({ roomId, mapRefresh }: { roomId: string; mapRefresh: nu
           移动已提交，等待本轮结算...
         </div>
       )}
+      <label className="bh-muted-box" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+        <input type="checkbox" checked={secretMove} onChange={(event) => setSecretMove(event.target.checked)} />
+        秘密移动：将隐藏你的 Token，并要求额外确认；越界或无法安全裁决时会进入 Host 异常队列。
+      </label>
 
-      <div className="bh-map-grid">
+      <div
+        className={`bh-map-grid bh-map-grid--${mapType}`}
+        style={mapImageUrl ? { backgroundImage: `url(${mapImageUrl})` } : undefined}
+      >
+        {(mapType === 'image' || mapType === 'hybrid') && fogRegions.length > 0 && (
+          <svg
+            aria-label="地图迷雾"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 1 }}
+          >
+            {fogRegions.map((region) => (
+              <polygon
+                key={region.regionId}
+                points={mapPolygonPoints(region.polygon)}
+                fill="rgba(17, 17, 17, 0.86)"
+              />
+            ))}
+          </svg>
+        )}
         {tiles.map((tile) => {
           const isCurrent = tile.nodeId === currentTile;
           const isClickable = tile.isAdjacent && !isCurrent && !movePending;
@@ -589,7 +1019,7 @@ function PlayerMapPanel({ roomId, mapRefresh }: { roomId: string; mapRefresh: nu
             <button
               key={tile.nodeId}
               className={className}
-              style={{ position: 'absolute', left: `${posX}%`, top: `${posY}%` }}
+              style={{ position: 'absolute', left: `${posX}%`, top: `${posY}%`, zIndex: 2 }}
               onClick={() => isClickable && handleMove(tile.nodeId)}
               disabled={!isClickable}
               title={tile.explored ? tile.description : '???'}

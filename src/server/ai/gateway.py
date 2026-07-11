@@ -93,6 +93,29 @@ class AiGateway:
         )
         return self._normalize_narrative_result(result)
 
+    async def analyze_action_draft(self, context: dict, room_id: str | None = None) -> dict | None:
+        prepared = dict(context)
+        prepared["system_prompt"] = (
+            "你是TRPG行动分析器。只输出JSON，不执行骰子或状态修改。"
+            "字段仅限 understanding_summary, risk, intent_type, suggested_skill, difficulty, "
+            "resource_impacts, visibility, movement_target, confirmation_requirements, confidence, citations。"
+        )
+        prepared["user_message"] = json.dumps(
+            {
+                "declared_intent": context.get("declared_intent", ""),
+                "intent_type": context.get("intent_type", ""),
+                "base_state_version": context.get("base_state_version", 0),
+            },
+            ensure_ascii=False,
+        )
+        result = await self._call_providers(
+            "analyze_action_draft",
+            prepared,
+            room_id,
+            disable_local_fallback=True,
+        )
+        return result if isinstance(result, dict) else None
+
     async def structure_scenario(self, raw_text: str) -> dict:
         # Truncate to avoid 400 from DeepSeek (matches MCP-side 12000-char limit).
         # 59-page PDFs can easily exceed model context windows.
@@ -147,9 +170,20 @@ class AiGateway:
 
     async def generate_map(self, scenes: list[dict]) -> dict:
         context = {"scenes": scenes,
-                   "system_prompt": "你是TRPG地图生成器。返回 nodes 和 edges 数组。",
+                   "system_prompt": "你是TRPG地图生成器。必须返回 JSON 对象，包含 nodes 和 edges 数组。",
                    "user_message": json.dumps({"scenes": scenes}, ensure_ascii=False)}
-        return await self._call_providers("generate_map", context)
+        result = await self._call_providers(
+            "generate_map",
+            context,
+            disable_local_fallback=True,
+        )
+        if not isinstance(result, dict):
+            return None
+        nodes = result.get("nodes")
+        edges = result.get("edges")
+        if not isinstance(nodes, list) or not isinstance(edges, list):
+            return None
+        return result
 
     async def query_knowledge(self, query: str, room_id: str, sources: str = "both") -> KnowledgeAnswer:
         context = {"query": query, "roomId": room_id, "sources": sources,
@@ -359,6 +393,8 @@ class AiGateway:
                   status: str, duration_ms: int, fallback_chain: list[str],
                   error_message: str, response: Any, context: dict | None = None):
         if not self.db:
+            return
+        if (context or {}).get("suppress_response_log"):
             return
         try:
             ctx = context or {}

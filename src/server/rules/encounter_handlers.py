@@ -7,10 +7,11 @@ from the resolution pipeline, avoiding DB reads in handlers.
 
 import random
 from .base import BaseRuleHandler, GameState, RuleResult
+from ..engine.secure_random import secure_randint
 
 
 def _d100() -> int:
-    return random.randint(1, 100)
+    return secure_randint(1, 100, test_rng=random)
 
 
 def _parse_dice(notation: str) -> int:

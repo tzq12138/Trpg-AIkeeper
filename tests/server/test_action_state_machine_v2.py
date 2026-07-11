@@ -1,0 +1,76 @@
+import pytest
+
+from src.server.engine.action_state import (
+    ACTION_STATUSES,
+    can_cancel_action,
+    is_allowed_transition,
+    is_terminal_status,
+)
+
+
+def test_action_state_registry_matches_v2_contract():
+    assert ACTION_STATUSES == {
+        "analyzing",
+        "awaiting_confirmation",
+        "queued",
+        "batched",
+        "resolving",
+        "awaiting_player_choice",
+        "awaiting_host_exception",
+        "completed",
+        "rejected",
+        "canceled",
+        "timeout",
+        "sync_required",
+    }
+
+
+@pytest.mark.parametrize(
+    ("current", "next_status"),
+    [
+        ("analyzing", "awaiting_confirmation"),
+        ("awaiting_confirmation", "queued"),
+        ("queued", "batched"),
+        ("queued", "resolving"),
+        ("batched", "resolving"),
+        ("resolving", "awaiting_player_choice"),
+        ("resolving", "awaiting_host_exception"),
+        ("resolving", "completed"),
+        ("awaiting_player_choice", "resolving"),
+        ("awaiting_host_exception", "resolving"),
+    ],
+)
+def test_allowed_state_transitions(current, next_status):
+    assert is_allowed_transition(current, next_status) is True
+
+
+@pytest.mark.parametrize("status", ["queued", "batched"])
+def test_action_can_be_canceled_only_before_resolving(status):
+    assert can_cancel_action(status) is True
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "resolving",
+        "awaiting_player_choice",
+        "awaiting_host_exception",
+        "completed",
+        "rejected",
+        "canceled",
+        "timeout",
+        "sync_required",
+    ],
+)
+def test_action_cannot_be_canceled_after_resolving_or_terminal(status):
+    assert can_cancel_action(status) is False
+
+
+@pytest.mark.parametrize("status", ["completed", "rejected", "canceled", "timeout"])
+def test_terminal_statuses_have_no_outgoing_transition(status):
+    assert is_terminal_status(status) is True
+    assert all(is_allowed_transition(status, target) is False for target in ACTION_STATUSES)
+
+
+def test_unknown_status_is_rejected():
+    assert is_allowed_transition("queued", "made_up") is False

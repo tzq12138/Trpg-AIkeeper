@@ -91,6 +91,10 @@ CREATE TABLE IF NOT EXISTS rooms (
     status TEXT NOT NULL DEFAULT 'lobby',
     spoiler_level TEXT DEFAULT 'standard',
     state_version INTEGER NOT NULL DEFAULT 0,
+    player_experience_version TEXT NOT NULL DEFAULT 'v2',
+    action_pacing_preset TEXT NOT NULL DEFAULT 'standard',
+    action_timing JSONB NOT NULL DEFAULT '{"input_hint_seconds":60,"receipt_seconds":5,"preview_seconds":30,"resolution_seconds":180}'::jsonb,
+    draft_analysis_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     started_at TIMESTAMP
 );
@@ -205,6 +209,61 @@ CREATE TABLE IF NOT EXISTS scenario_version_sources (
 CREATE INDEX IF NOT EXISTS idx_scenario_version_sources_document
     ON scenario_version_sources(source_document_id);
 
+CREATE TABLE IF NOT EXISTS content_items (
+    content_item_id TEXT PRIMARY KEY,
+    scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id) ON DELETE CASCADE,
+    source_part_id TEXT REFERENCES source_parts(source_part_id),
+    item_type TEXT NOT NULL,
+    logical_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    visibility TEXT NOT NULL DEFAULT 'host_only',
+    payload JSONB NOT NULL DEFAULT '{}',
+    citation JSONB NOT NULL DEFAULT '{}',
+    checksum TEXT NOT NULL,
+    ordinal INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (scenario_version_id, item_type, logical_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_items_version_visibility
+    ON content_items(scenario_version_id, visibility, item_type, ordinal);
+CREATE INDEX IF NOT EXISTS idx_content_items_source_part
+    ON content_items(source_part_id);
+
+CREATE TABLE IF NOT EXISTS content_item_edges (
+    content_item_edge_id TEXT PRIMARY KEY,
+    scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id) ON DELETE CASCADE,
+    from_content_item_id TEXT NOT NULL REFERENCES content_items(content_item_id) ON DELETE CASCADE,
+    to_content_item_id TEXT NOT NULL REFERENCES content_items(content_item_id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL,
+    conditions JSONB NOT NULL DEFAULT '[]',
+    citation JSONB NOT NULL DEFAULT '{}',
+    ordinal INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (scenario_version_id, from_content_item_id, to_content_item_id, relation_type, ordinal)
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_item_edges_from
+    ON content_item_edges(scenario_version_id, from_content_item_id, relation_type);
+CREATE INDEX IF NOT EXISTS idx_content_item_edges_to
+    ON content_item_edges(scenario_version_id, to_content_item_id, relation_type);
+
+CREATE TABLE IF NOT EXISTS content_projection_runs (
+    projection_run_id TEXT PRIMARY KEY,
+    scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id) ON DELETE CASCADE,
+    projection_kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    input_checksum TEXT NOT NULL,
+    output_checksum TEXT,
+    diagnostics JSONB NOT NULL DEFAULT '{}',
+    requested_by TEXT NOT NULL,
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_projection_runs_version_started
+    ON content_projection_runs(scenario_version_id, started_at DESC);
+
 CREATE TABLE IF NOT EXISTS rag_rebuild_records (
     rebuild_id TEXT PRIMARY KEY,
     scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id),
@@ -303,15 +362,248 @@ CREATE TABLE IF NOT EXISTS actions (
     action_id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL,
     character_id TEXT NOT NULL,
+    draft_id TEXT,
+    idempotency_key TEXT,
+    revision_number INTEGER NOT NULL DEFAULT 1,
     intent_type TEXT NOT NULL,
     declared_intent TEXT,
     params JSONB DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'queued',
     batch_id TEXT,
+    rule_set_version_id TEXT,
+    receipt JSONB,
     result JSONB,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    canceled_at TIMESTAMP,
     completed_at TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS action_drafts (
+    draft_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    turn_id TEXT,
+    base_state_version INTEGER NOT NULL DEFAULT 0,
+    intent_type TEXT NOT NULL,
+    declared_intent TEXT NOT NULL DEFAULT '',
+    params JSONB NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'analyzing',
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    analysis JSONB NOT NULL DEFAULT '{}',
+    current_revision INTEGER NOT NULL DEFAULT 1,
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS action_draft_revisions (
+    revision_id TEXT PRIMARY KEY,
+    draft_id TEXT NOT NULL REFERENCES action_drafts(draft_id) ON DELETE CASCADE,
+    revision_number INTEGER NOT NULL,
+    declared_intent TEXT NOT NULL DEFAULT '',
+    analysis JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (draft_id, revision_number)
+);
+
+CREATE TABLE IF NOT EXISTS action_status_events (
+    status_event_id BIGSERIAL PRIMARY KEY,
+    action_id TEXT NOT NULL REFERENCES actions(action_id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS action_review_requests (
+    review_request_id TEXT PRIMARY KEY,
+    action_id TEXT NOT NULL REFERENCES actions(action_id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    original_intent TEXT NOT NULL DEFAULT '',
+    objection TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    ai_suggestion JSONB NOT NULL DEFAULT '{}',
+    host_resolution JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS compensation_transactions (
+    transaction_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    review_request_id TEXT REFERENCES action_review_requests(review_request_id) ON DELETE SET NULL,
+    transaction_type TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}',
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    applied_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS room_player_settings (
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    draft_analysis_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    controller_device_id TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (room_id, character_id)
+);
+
+CREATE TABLE IF NOT EXISTS player_device_sessions (
+    device_session_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    is_controller BOOLEAN NOT NULL DEFAULT FALSE,
+    last_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (character_id, device_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_player_device_active_controller
+    ON player_device_sessions(character_id)
+    WHERE status = 'active' AND is_controller;
+CREATE INDEX IF NOT EXISTS idx_player_device_sessions_room_last_seen
+    ON player_device_sessions(room_id, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS campaign_sessions (
+    campaign_session_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'active',
+    started_by_character_id TEXT REFERENCES characters(character_id) ON DELETE SET NULL,
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    last_activity_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    scheduled_for TIMESTAMP,
+    ended_at TIMESTAMP,
+    end_reason TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_campaign_sessions_active_room
+    ON campaign_sessions(room_id) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_campaign_sessions_room_status
+    ON campaign_sessions(room_id, status, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS session_summaries (
+    session_summary_id TEXT PRIMARY KEY,
+    campaign_session_id TEXT NOT NULL REFERENCES campaign_sessions(campaign_session_id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    summary_text TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'local_fallback',
+    confidence NUMERIC(4,3) NOT NULL DEFAULT 1.0,
+    published_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS session_summary_citations (
+    session_summary_citation_id TEXT PRIMARY KEY,
+    session_summary_id TEXT NOT NULL REFERENCES session_summaries(session_summary_id) ON DELETE CASCADE,
+    event_sequence BIGINT REFERENCES events(sequence) ON DELETE SET NULL,
+    citation_label TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS session_attendance (
+    campaign_session_id TEXT NOT NULL REFERENCES campaign_sessions(campaign_session_id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    attendance_status TEXT NOT NULL DEFAULT 'present',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (campaign_session_id, character_id)
+);
+
+CREATE TABLE IF NOT EXISTS session_zero_confirmations (
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    step TEXT NOT NULL,
+    confirmed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (room_id, character_id, step)
+);
+
+CREATE TABLE IF NOT EXISTS player_notes (
+    note_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    parent_note_id TEXT REFERENCES player_notes(note_id) ON DELETE SET NULL,
+    title_ciphertext TEXT NOT NULL,
+    body_ciphertext TEXT NOT NULL,
+    visibility TEXT NOT NULL DEFAULT 'private',
+    is_redacted_copy BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_notes_room_visibility
+    ON player_notes(room_id, visibility, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_player_notes_character
+    ON player_notes(character_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS note_attachments (
+    note_attachment_id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL REFERENCES player_notes(note_id) ON DELETE CASCADE,
+    filename_ciphertext TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    content_ciphertext TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (note_id)
+);
+
+CREATE TABLE IF NOT EXISTS private_data_access_audits (
+    private_data_access_audit_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    note_id TEXT NOT NULL REFERENCES player_notes(note_id) ON DELETE CASCADE,
+    owner_character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    host_account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE RESTRICT,
+    reason TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS evidence_cards (
+    evidence_card_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    created_by_character_id TEXT REFERENCES characters(character_id) ON DELETE SET NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    card_type TEXT NOT NULL DEFAULT 'clue',
+    fact_status TEXT NOT NULL DEFAULT 'hypothesis',
+    visibility TEXT NOT NULL DEFAULT 'party',
+    source TEXT NOT NULL DEFAULT 'player',
+    confirmed_by TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_cards_room_visibility
+    ON evidence_cards(room_id, visibility, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS evidence_links (
+    evidence_link_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    from_evidence_card_id TEXT NOT NULL REFERENCES evidence_cards(evidence_card_id) ON DELETE CASCADE,
+    to_evidence_card_id TEXT NOT NULL REFERENCES evidence_cards(evidence_card_id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL DEFAULT 'related',
+    created_by_character_id TEXT REFERENCES characters(character_id) ON DELETE SET NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (from_evidence_card_id, to_evidence_card_id, relation_type)
+);
+
+CREATE TABLE IF NOT EXISTS evidence_references (
+    evidence_reference_id TEXT PRIMARY KEY,
+    evidence_card_id TEXT NOT NULL REFERENCES evidence_cards(evidence_card_id) ON DELETE CASCADE,
+    reference_type TEXT NOT NULL,
+    reference_id TEXT NOT NULL,
+    citation JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_action_drafts_character_status
+    ON action_drafts(character_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_action_status_events_action
+    ON action_status_events(action_id, status_event_id);
+CREATE INDEX IF NOT EXISTS idx_action_reviews_status
+    ON action_review_requests(status, created_at);
 
 CREATE TABLE IF NOT EXISTS player_sequences (
     character_id TEXT NOT NULL,
@@ -468,10 +760,28 @@ CREATE TABLE IF NOT EXISTS scenario_assets (
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS scenario_assets JSONB;
 ALTER TABLE scenario_assets ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'host_only';
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS params JSONB DEFAULT '{}';
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS draft_id TEXT;
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS revision_number INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS rule_set_version_id TEXT;
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS receipt JSONB;
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS canceled_at TIMESTAMP;
+ALTER TABLE action_drafts ADD COLUMN IF NOT EXISTS base_state_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE action_drafts ADD COLUMN IF NOT EXISTS params JSONB NOT NULL DEFAULT '{}';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_actions_character_idempotency
+    ON actions(character_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_actions_effective_per_turn
+    ON actions(turn_id, character_id)
+    WHERE turn_id IS NOT NULL AND status NOT IN ('rejected', 'canceled', 'timeout');
 ALTER TABLE characters ADD COLUMN IF NOT EXISTS account_id TEXT;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'player';
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS owner_account_id TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS player_experience_version TEXT NOT NULL DEFAULT 'v1';
+ALTER TABLE rooms ALTER COLUMN player_experience_version SET DEFAULT 'v2';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS action_pacing_preset TEXT NOT NULL DEFAULT 'standard';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS action_timing JSONB NOT NULL DEFAULT '{"input_hint_seconds":60,"receipt_seconds":5,"preview_seconds":30,"resolution_seconds":180}'::jsonb;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS draft_analysis_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE characters ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'joined';
 -- Fix default for databases created before migration
 ALTER TABLE characters ALTER COLUMN status SET DEFAULT 'joined';
@@ -559,6 +869,11 @@ CREATE TABLE IF NOT EXISTS scenario_maps (
     confirmed_at TIMESTAMP
 );
 
+ALTER TABLE scenario_maps ADD COLUMN IF NOT EXISTS map_type TEXT NOT NULL DEFAULT 'graph';
+ALTER TABLE scenario_maps ADD COLUMN IF NOT EXISTS base_asset JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE scenario_maps ADD COLUMN IF NOT EXISTS regions JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE scenario_maps ADD COLUMN IF NOT EXISTS paths JSONB NOT NULL DEFAULT '[]';
+
 CREATE TABLE IF NOT EXISTS room_map_state (
     room_id TEXT PRIMARY KEY REFERENCES rooms(room_id),
     map_id TEXT NOT NULL,
@@ -567,6 +882,9 @@ CREATE TABLE IF NOT EXISTS room_map_state (
     state_version INTEGER NOT NULL DEFAULT 0,
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE room_map_state ADD COLUMN IF NOT EXISTS fog_regions JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE room_map_state ADD COLUMN IF NOT EXISTS token_visibility JSONB NOT NULL DEFAULT '{}';
 
 CREATE TABLE IF NOT EXISTS character_map_positions (
     character_id TEXT NOT NULL,

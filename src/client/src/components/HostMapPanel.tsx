@@ -9,18 +9,65 @@ interface HostMapNode {
   npcsPresent: string[]; cluesAvailable: string[];
 }
 
+export interface HostMapRegion {
+  regionId: string;
+  nodeId: string;
+  label: string;
+}
+
 interface HostMapData {
   mapId: string; mapName: string;
   nodes: HostMapNode[];
   edges: Array<{ from: string; to: string }>;
   playerPositions: Record<string, string>;
   exploredNodes: string[]; hiddenNodes: string[];
+  regions: Array<{ regionId: string; nodeId: string }>;
+  fogRegions: string[];
   mapStatus: string;
 }
 
 interface HostMapPanelProps {
   roomId: string;
   mapRefresh: number;
+}
+
+export function RegionFogControls({
+  regions,
+  fogRegions,
+  onSetVisibility,
+  disabled = false,
+}: {
+  regions: HostMapRegion[];
+  fogRegions: string[];
+  onSetVisibility: (regionId: string, visible: boolean) => void;
+  disabled?: boolean;
+}) {
+  if (regions.length === 0) return null;
+  const fogged = new Set(fogRegions);
+  return (
+    <div className="bh-map-info" style={{ marginTop: 12, padding: 12, border: '2px solid var(--bh-black)' }}>
+      <span className="bh-eyebrow" style={{ fontSize: 9 }}>区域迷雾</span>
+      <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+        {regions.map((region) => {
+          const visible = !fogged.has(region.regionId);
+          return (
+            <div key={region.regionId} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 12 }}>{region.label}：{visible ? '已显示' : '迷雾中'}</span>
+              <button
+                className={visible ? 'bh-button' : 'bh-button bh-button--yellow'}
+                style={{ fontSize: 11, padding: '4px 8px' }}
+                type="button"
+                disabled={disabled}
+                onClick={() => onSetVisibility(region.regionId, !visible)}
+              >
+                {visible ? '雾化区域' : '揭示区域'}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) {
@@ -75,6 +122,20 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
         body: JSON.stringify({ node_id: nodeId, visible: false }),
+      });
+    } catch { /* ignore */ }
+    fetchMap();
+    setOperationPending(false);
+  };
+
+  const handleRegionVisibility = async (regionId: string, visible: boolean) => {
+    setOperationPending(true);
+    const token = getSlotValue('owner_token') || '';
+    try {
+      await fetch(`/api/host/${encodeURIComponent(roomId)}/map/regions/${encodeURIComponent(regionId)}/visibility`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
+        body: JSON.stringify({ visible }),
       });
     } catch { /* ignore */ }
     fetchMap();
@@ -221,6 +282,16 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
           })}
         </svg>
       </div>
+
+      <RegionFogControls
+        regions={(mapData.regions || []).map((region) => ({
+          ...region,
+          label: mapData.nodes.find((node) => node.nodeId === region.nodeId)?.name || region.regionId,
+        }))}
+        fogRegions={mapData.fogRegions || []}
+        disabled={operationPending}
+        onSetVisibility={handleRegionVisibility}
+      />
 
       {/* Selected node detail */}
       {selected && (

@@ -119,6 +119,35 @@ def test_reconnect_with_pending_actions(client, test_db):
     assert data["pending_actions"][0]["action_id"] == "act-pending"
 
 
+def test_reconnect_restores_all_nonterminal_v2_action_states(client, test_db):
+    room_id, _, char_id, token = _setup_player(client, test_db)
+    for index, status in enumerate(
+        ("awaiting_player_choice", "awaiting_host_exception", "sync_required"),
+        start=1,
+    ):
+        test_db.execute(
+            "INSERT INTO actions (action_id, room_id, character_id, draft_id, intent_type, "
+            "declared_intent, status) VALUES (%s, %s, %s, %s, 'dialogue', %s, %s)",
+            (
+                f"act-v2-{index}",
+                room_id,
+                char_id,
+                f"draft-v2-{index}",
+                f"action {index}",
+                status,
+            ),
+        )
+
+    response = client.get("/api/player/reconnect", headers={"X-Room-Token": token})
+
+    assert response.status_code == 200
+    assert {action["status"] for action in response.json()["pending_actions"]} == {
+        "awaiting_player_choice",
+        "awaiting_host_exception",
+        "sync_required",
+    }
+
+
 def test_action_status_endpoint(client, test_db):
     room_id, owner_token, char_id, token = _setup_player(client, test_db)
 

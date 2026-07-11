@@ -39,13 +39,24 @@ from .player.router_objectives import router as objectives_router
 from .player.router_clarification import router as clarification_router
 from .player.router_reconnect import router as reconnect_router
 from .player.router_player_archive import router as player_archive_router
+from .player.router_actions_v2 import router as player_actions_v2_router
+from .player.router_player_settings import router as player_settings_router
+from .player.router_action_reviews import router as player_action_reviews_router
+from .player.router_campaign_v2 import (
+    router as player_campaign_v2_router,
+    host_router as campaign_host_v2_router,
+    evidence_router as campaign_evidence_v2_router,
+    library_router as campaign_library_v2_router,
+)
 from .host.router_host import router as host_router, host_ws_endpoint
+from .host.router_action_reviews import router as host_action_reviews_router
 from .router_ai import router as ai_router
 from .rag_router import router as rag_router
 from .router_auth import router as auth_router
-from .router_map import router as map_router
+from .router_map import router as map_router, maps_router
 from .router_admin import router as admin_router
 from .router_archive import router as archive_router
+from .router_migration import router as migration_router
 from .agent.game_agent import GameAgent
 from .game_loop import GameLoop
 from .redis_cache import RedisCache
@@ -351,10 +362,20 @@ app.include_router(objectives_router)
 app.include_router(clarification_router)
 app.include_router(reconnect_router)
 app.include_router(player_archive_router)
+app.include_router(player_actions_v2_router)
+app.include_router(player_settings_router)
+app.include_router(player_action_reviews_router)
+app.include_router(player_campaign_v2_router)
+app.include_router(campaign_host_v2_router)
+app.include_router(campaign_evidence_v2_router)
+app.include_router(campaign_library_v2_router)
 app.include_router(host_router)
+app.include_router(host_action_reviews_router)
 app.include_router(ai_router)
 app.include_router(rag_router)
 app.include_router(auth_router)
 app.include_router(map_router)
+app.include_router(maps_router)
 app.include_router(admin_router)
 app.include_router(archive_router)
+app.include_router(migration_router)

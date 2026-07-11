@@ -49,6 +49,16 @@ beforeEach(() => {
 });
 
 describe('AdminDashboard scenario import management', () => {
+  test('renders map draft generation and confirmation controls inside scenario review', async () => {
+    const { MapDraftReviewPanel } = await loadAdminDashboard();
+    const html = renderToStaticMarkup(<MapDraftReviewPanel scenarioId="scenario-1" />);
+
+    expect(html).toContain('地图草稿');
+    expect(html).toContain('生成地图草稿');
+    expect(html).toContain('确认地图');
+    expect(html).toContain('区域与路径仅在备团阶段由管理员审核。');
+  });
+
   test('renders multimodal import control with multiple file support', async () => {
     const {
       SCENARIO_IMPORT_ACCEPT,

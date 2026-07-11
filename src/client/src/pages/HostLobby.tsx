@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getSlotValue } from '../shared/identity';
 import { buildRoomWsUrl } from '../shared/ws-url';
+import HostCampaignControls from '../components/HostCampaignControls';
 
 // ── types ──────────────────────────────────────────────────────────
 
@@ -316,6 +317,7 @@ export default function HostLobby({ roomId }: { roomId: string }) {
               </div>
             )}
           </section>
+          <HostCampaignControls roomId={roomId} />
 
           {/* RIGHT: Player list + room info */}
           <section className="bh-panel">

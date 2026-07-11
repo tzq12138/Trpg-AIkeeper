@@ -6,6 +6,14 @@ from ..models import EngineEvent
 logger = logging.getLogger(__name__)
 
 FULL_SNAPSHOT_THRESHOLD = 100
+NONTERMINAL_ACTION_STATUSES = (
+    "queued",
+    "batched",
+    "resolving",
+    "awaiting_player_choice",
+    "awaiting_host_exception",
+    "sync_required",
+)
 
 
 class ConnectionManager:
@@ -72,8 +80,8 @@ class ConnectionManager:
 
         pending = conn.execute(
             "SELECT action_id, intent_type, declared_intent, status, result, created_at "
-            "FROM actions WHERE room_id = %s AND character_id = %s AND status IN ('queued', 'batched', 'resolving')",
-            (room_id, character_id),
+            "FROM actions WHERE room_id = %s AND character_id = %s AND status = ANY(%s)",
+            (room_id, character_id, list(NONTERMINAL_ACTION_STATUSES)),
         ).fetchall()
 
         events = [dict(r) for r in rows]

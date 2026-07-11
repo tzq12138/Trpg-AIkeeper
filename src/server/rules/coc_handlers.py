@@ -2,6 +2,7 @@ import random
 import re
 
 from .base import BaseRuleHandler, GameState, RuleResult
+from ..engine.secure_random import secure_randint
 
 
 _DICE_PATTERN = re.compile(r"^(\d{1,2})d(\d{1,4})([+-]\d{1,4})?$")
@@ -20,7 +21,7 @@ def roll_dice(notation: str) -> tuple[int, list[int], int]:
     if count < 1 or count > 20 or sides < 2 or sides > 1000:
         raise ValueError(f"Dice notation out of range: {notation}")
     modifier = int(match.group(3) or 0)
-    draws = [random.randint(1, sides) for _ in range(count)]
+    draws = [secure_randint(1, sides, test_rng=random) for _ in range(count)]
     return max(0, sum(draws) + modifier), draws, modifier
 
 
@@ -150,7 +151,7 @@ class CocSanityCheckHandler(BaseRuleHandler):
         failure_loss = params.get("failure_loss", "0")
         current_san = state.character.get("san", 0)
 
-        roll = random.randint(1, 100)
+        roll = secure_randint(1, 100, test_rng=random)
         is_success = roll <= current_san
 
         if is_success:
@@ -215,7 +216,7 @@ class CocCombatHandler(BaseRuleHandler):
 class CocLuckCheckHandler(BaseRuleHandler):
     async def execute(self, state: GameState, params: dict) -> RuleResult:
         current_luck = state.character.get("luck", 0)
-        roll = random.randint(1, 100)
+        roll = secure_randint(1, 100, test_rng=random)
         is_success = roll <= current_luck
 
         return RuleResult(

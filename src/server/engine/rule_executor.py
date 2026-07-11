@@ -40,7 +40,7 @@ class RuleExecutor:
         mechanics = self._matching_trigger_mechanics(intent, scenario_assets or {})
 
         if compiled.triggered_mechanic not in {"dialogue", "auto_success", "auto_failure"}:
-            mechanics.append(self._mechanic_from_compile(compiled))
+            mechanics.append(self._mechanic_from_compile(compiled, intent.params or {}))
 
         if compiled.triggered_mechanic == "auto_failure":
             return ResolutionResult(
@@ -60,6 +60,7 @@ class RuleExecutor:
                     "params": {
                         "targetNodeId": (intent.params or {}).get("targetNodeId", ""),
                         "fromNodeId": (intent.params or {}).get("fromNodeId", ""),
+                        "solo_adventure": bool((intent.params or {}).get("solo_adventure")),
                     }
                 })
             else:
@@ -126,8 +127,20 @@ class RuleExecutor:
                 skill_name = params.get("skillName") or params.get("skill_name") or ""
                 params["skillName"] = skill_name
                 params["skillValue"] = self._skill_value(xlsx_data, skill_name)
+                hidden_modifiers = self._hidden_modifiers(params)
+                if hidden_modifiers:
+                    params["bonusDice"] = int(params.get("bonusDice", 0) or 0) + sum(
+                        item["bonus_dice"] for item in hidden_modifiers
+                    )
+            else:
+                hidden_modifiers = []
 
             result = await handler.execute(state, params)
+            if mechanic_type == "move" and params.get("solo_adventure"):
+                result.mutations = []
+                result.metadata["solo_adventure"] = True
+            if hidden_modifiers:
+                result.metadata["hidden_modifiers"] = hidden_modifiers
             merged_metadata.update(result.metadata)
             safe_mutations = []
             rejected_mutations = []
@@ -176,14 +189,29 @@ class RuleExecutor:
         )
         return mechanics
 
-    def _mechanic_from_compile(self, compiled: MechanicCompileResult) -> dict[str, Any]:
+    def _mechanic_from_compile(
+        self,
+        compiled: MechanicCompileResult,
+        intent_params: dict[str, Any],
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
+            key: intent_params[key]
+            for key in ("bonusDice", "pushed", "spendLuck")
+            if key in intent_params
+        }
+        params.update({
             "difficulty": compiled.difficulty,
             "itemConsumed": compiled.item_consumed,
-        }
+        })
         if compiled.skill_name:
             params["skillName"] = compiled.skill_name
         params.update(compiled.consequence or {})
+        if compiled.triggered_mechanic == "move":
+            params.update({
+                key: intent_params[key]
+                for key in ("fromNodeId", "targetNodeId", "solo_adventure")
+                if key in intent_params
+            })
         return {"type": compiled.triggered_mechanic, "params": params}
 
     def _normalize_params(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -193,11 +221,31 @@ class RuleExecutor:
             "failureLoss": "failure_loss",
             "skill_name": "skillName",
             "skill_value": "skillValue",
+            "hiddenModifiers": "hidden_modifiers",
         }
         for src, dest in aliases.items():
             if src in normalized and dest not in normalized:
                 normalized[dest] = normalized[src]
         return normalized
+
+    def _hidden_modifiers(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = params.get("hidden_modifiers")
+        if not isinstance(raw, list):
+            return []
+        modifiers = []
+        for item in raw[:10]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                bonus_dice = max(-2, min(2, int(item.get("bonusDice", 0))))
+            except (TypeError, ValueError):
+                bonus_dice = 0
+            modifiers.append({
+                "source": str(item.get("source") or "hidden")[:200],
+                "effect": str(item.get("effect") or f"bonus dice {bonus_dice}")[:200],
+                "bonus_dice": bonus_dice,
+            })
+        return modifiers
 
     def _xlsx_data(self, character: dict[str, Any]) -> dict[str, Any]:
         data = character.get("xlsx_data") or {}

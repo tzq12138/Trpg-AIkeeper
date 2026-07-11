@@ -34,6 +34,22 @@ def test_provider_capabilities_and_supports():
 
 
 @pytest.mark.asyncio
+async def test_local_fallback_turn_narrative_uses_action_instead_of_generic_no_discovery():
+    result = await LocalFallbackProvider().call(
+        "resolve_turn",
+        {
+            "character": {"name": "菲利普"},
+            "actions": [{"declared_intent": "仔细阅读桌上的旧报纸"}],
+        },
+    )
+
+    narrative = result["narrative"]["public"]
+    assert "旧报纸" in narrative
+    assert "注意力" in narrative
+    assert "暂时没有新的发现" not in narrative
+
+
+@pytest.mark.asyncio
 async def test_mcp_provider_wraps_generate_narrative_context(monkeypatch):
     recorded_requests: list[dict] = []
 

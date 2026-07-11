@@ -207,3 +207,45 @@ def test_index_npc_graph_keeps_version_snapshots_and_auditable_citations():
         "sv-2",
     ]
     assert all(citation["source_ref"] == "worldbook:npc:keeper" for citation in citations)
+
+
+def test_index_content_projection_preserves_item_type_and_source_citation():
+    db = RecordingDb()
+    store = RAGStore(db, FakeEmbedding())
+
+    count = store.index_content_projection(
+        "sc-1",
+        "sv-1",
+        [{
+            "content_item_id": "scene-station",
+            "item_type": "scene",
+            "logical_key": "station",
+            "title": "北落师门车站",
+            "visibility": "host_only",
+            "payload": {"description": "末班车即将离站。"},
+            "citation": {
+                "source_part_id": "part-1",
+                "source_ref": "page:1",
+                "page_number": 1,
+            },
+        }],
+    )
+
+    deletes = [
+        params
+        for sql, params in db.conn.cursor_obj.calls
+        if "DELETE FROM document_chunks" in sql
+    ]
+    assert deletes == [("content", "sv-1")]
+    rows = _insert_rows(db.conn.cursor_obj)
+    assert count == 1
+    assert rows[0]["source_type"] == "content"
+    assert rows[0]["source_id"] == "scene-station"
+    assert rows[0]["scenario_version_id"] == "sv-1"
+    assert rows[0]["source_part_id"] == "part-1"
+    assert rows[0]["visibility"] == "host_only"
+    assert json.loads(rows[0]["metadata"])["item_type"] == "scene"
+    citation = json.loads(rows[0]["citation"])
+    assert citation["source_ref"] == "page:1"
+    assert citation["page_number"] == 1
+    assert citation["source_part_id"] == "part-1"

@@ -11,6 +11,9 @@ EngineEventType = Literal[
     "s2c_private_notice", "s2c_public_observation", "s2c_tactical_prompt",
     "s2c_room_lobby_snapshot", "s2c_campaign_ended",
     "s2c_action_queued", "s2c_action_batched", "s2c_action_completed",
+    "s2c_action_review_requested", "s2c_action_review_resolved",
+    "s2c_action_exception_requested",
+    "s2c_action_choice_requested",
     "s2c_clarification_prompt", "s2c_clarification_result",
     "s2c_ready_toggled",
     "s2c_map_updated", "s2c_player_moved", "s2c_map_revealed",
@@ -20,6 +23,7 @@ EngineEventType = Literal[
     "s2c_turn_resolved",
     "s2c_clue_discovered", "s2c_clue_shared",
     "s2c_checkpoint_created", "s2c_checkpoint_restored",
+    "s2c_private_note_emergency_access",
 ]
 
 Audience = Literal["host", "player", "party", "system"]
@@ -73,6 +77,126 @@ class ActionReceipt(BaseModel):
     declared_intent: str = Field(default="", alias="declaredIntent")
     batch_id: str | None = Field(default=None, alias="batchId")
     result: str | None = None
+
+
+class ActionDraftAnalyzeRequest(BaseModel):
+    declared_intent: str = Field(min_length=1, max_length=2000)
+    intent_type: str | None = None
+    base_state_version: int = 0
+    params: dict[str, Any] = Field(default_factory=dict)
+    ephemeral: bool = False
+
+
+class ActionDraftDTO(BaseModel):
+    draft_id: str | None = None
+    revision: int = 1
+    base_state_version: int = 0
+    status: Literal["analyzing", "awaiting_confirmation"] = "awaiting_confirmation"
+    intent_type: str
+    declared_intent: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    understanding_summary: str
+    risk: Literal["low", "medium", "high"]
+    suggested_skill: str | None = None
+    difficulty: str | None = None
+    resource_impacts: list[dict[str, Any]] = Field(default_factory=list)
+    visibility: Literal["public", "party", "private"] = "public"
+    movement_target: str | None = None
+    confirmation_requirements: list[str] = Field(default_factory=list)
+    requires_confirmation: bool = False
+    confidence: float = 0.0
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    analysis_source: Literal["configured_provider", "fallback_provider", "local_fallback"]
+    resolution_route: Literal["ai", "local", "host_exception"] = "local"
+    ephemeral: bool = False
+
+
+class ActionDraftUpdateRequest(BaseModel):
+    declared_intent: str = Field(min_length=1, max_length=2000)
+    intent_type: str | None = None
+    base_state_version: int = 0
+    params: dict[str, Any] | None = None
+
+
+class ActionDraftConfirmRequest(BaseModel):
+    confirmations: list[str] = Field(default_factory=list)
+
+
+class ActionStatusEventDTO(BaseModel):
+    status: str
+    created_at: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActionReceiptV2(BaseModel):
+    action_id: str
+    draft_id: str | None = None
+    status: str
+    declared_intent: str = ""
+    revision: int = 1
+    result: Any = None
+    timeline: list[ActionStatusEventDTO] = Field(default_factory=list)
+    can_cancel: bool = False
+    can_review: bool = False
+    rule_explanation: dict[str, Any] | None = None
+
+
+class RuleExplanationDTO(BaseModel):
+    authoritative_inputs: dict[str, Any] = Field(default_factory=dict)
+    modifiers: dict[str, Any] = Field(default_factory=dict)
+    hidden_sources: list[dict[str, Any]] = Field(default_factory=list)
+    formula: str = ""
+    state_before: dict[str, Any] = Field(default_factory=dict)
+    state_after: dict[str, Any] = Field(default_factory=dict)
+    rule_set_version: str
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    verification_receipt: dict[str, Any] | None = None
+
+
+class PlayerDeviceSessionDTO(BaseModel):
+    device_session_id: str | None = None
+    device_id: str
+    status: Literal["active", "revoked", "expired"]
+    controller: bool
+    last_seen_at: str | None = None
+    expires_at: str | None = None
+
+
+class CampaignSessionDTO(BaseModel):
+    campaign_session_id: str
+    status: Literal["active", "ended", "scheduled"]
+    started_by_character_id: str | None = None
+    started_at: str
+    last_activity_at: str
+    scheduled_for: str | None = None
+    ended_at: str | None = None
+    attendance_status: Literal["attending", "tentative", "absent"] | None = None
+
+
+class EvidenceCardDTO(BaseModel):
+    evidence_card_id: str
+    title: str
+    body: str
+    card_type: Literal["clue", "person", "location", "item", "question"]
+    fact_status: Literal["hypothesis", "confirmed", "excluded"]
+    visibility: Literal["party", "private"]
+    source: Literal["player", "host", "system"]
+    confirmed_by: str | None = None
+    created_by_character_id: str | None = None
+    version: int = 1
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class CampaignHomeDTO(BaseModel):
+    room_id: str
+    session: CampaignSessionDTO | None = None
+    team_objectives: list[dict[str, Any]] = Field(default_factory=list)
+    personal_objectives: list[dict[str, Any]] = Field(default_factory=list)
+    last_summary: dict[str, Any] | None = None
+    next_session: CampaignSessionDTO | None = None
+    recent_clues: list[dict[str, Any]] = Field(default_factory=list)
+    unresolved_questions: list[EvidenceCardDTO] = Field(default_factory=list)
 
 
 class TransactionStep(BaseModel):

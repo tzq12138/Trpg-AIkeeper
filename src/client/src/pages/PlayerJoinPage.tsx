@@ -2,6 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import CharacterBuilderPage from './CharacterBuilderPage';
 import type { BuilderCharacterData } from '../types';
 import { getSlotValue, setSlotValue } from '../shared/identity';
+import {
+  buildPlayerJoinReturnPath,
+  playerRoomEntryPath,
+  type PlayerJoinSourceMode,
+} from '../shared/player-join-flow';
 
 interface CharacterPreview {
   name: string;
@@ -34,8 +39,34 @@ interface ScenarioTemplate {
   skills: Record<string, number>;
 }
 
-type SourceMode = 'preset' | 'upload' | 'builder';
+interface AccountCharacter {
+  character_id: string;
+  room_id: string;
+  room_status: string;
+  scenario_title: string;
+  player_name: string;
+  investigator_name: string;
+  occupation: string;
+  status: string;
+  hp: number;
+  san: number;
+}
+
+interface RoomPreflight {
+  room_id: string;
+  rest_ok: boolean;
+  websocket_path: string;
+  room_status: string;
+  join_mode: 'direct' | 'host_approval' | 'closed';
+  requires_login: boolean;
+  authenticated: boolean;
+  recovery_available: boolean;
+  recovery_character_id?: string | null;
+}
+
+type SourceMode = PlayerJoinSourceMode;
 type SelectedSource =
+  | { mode: 'account'; characterId: string }
   | { mode: 'preset'; presetId: string }
   | { mode: 'upload'; file: File }
   | { mode: 'builder'; data: BuilderCharacterData }
@@ -44,7 +75,7 @@ type SelectedSource =
 export default function PlayerJoinPage() {
   const [roomCode, setRoomCode] = useState('');
   const [playerName, setPlayerName] = useState('');
-  const [sourceMode, setSourceMode] = useState<SourceMode>('preset');
+  const [sourceMode, setSourceMode] = useState<SourceMode>('account');
   const [presets, setPresets] = useState<CharacterPreset[]>([]);
   const [selectedSource, setSelectedSource] = useState<SelectedSource | null>(null);
   const [preview, setPreview] = useState<CharacterPreview | null>(null);
@@ -54,10 +85,16 @@ export default function PlayerJoinPage() {
   const [error, setError] = useState('');
   const [builderDone, setBuilderDone] = useState(false);
   const [scenarioTemplates, setScenarioTemplates] = useState<ScenarioTemplate[]>([]);
+  const [accountCharacters, setAccountCharacters] = useState<AccountCharacter[]>([]);
+  const [preflight, setPreflight] = useState<RoomPreflight | null>(null);
+  const [preflightLatency, setPreflightLatency] = useState<number | null>(null);
+  const [restoring, setRestoring] = useState(false);
 
   // Check for incoming builder data (from standalone /player/builder page)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const invitedRoom = params.get('room') || params.get('room_id') || params.get('code');
+    if (invitedRoom) setRoomCode(invitedRoom);
     if (params.get('source') === 'builder') {
       setSourceMode('builder');
       const stored = sessionStorage.getItem('builder_character');
@@ -73,9 +110,58 @@ export default function PlayerJoinPage() {
     }
   }, []);
 
+  useEffect(() => {
+    const accountToken = getSlotValue('account_token');
+    if (!accountToken) {
+      setAccountCharacters([]);
+      return;
+    }
+    fetch('/api/player/me/characters', {
+      headers: { Authorization: `Bearer ${accountToken}` },
+    })
+      .then((response) => response.ok ? response.json() : [])
+      .then((characters: AccountCharacter[]) => setAccountCharacters(characters))
+      .catch(() => setAccountCharacters([]));
+  }, []);
+
   const normalizedRoomCode = roomCode.trim();
   const normalizedPlayerName = playerName.trim();
-  const canConfirm = normalizedRoomCode && normalizedPlayerName && preview && selectedSource && !joining;
+  const canConfirm = normalizedRoomCode && normalizedPlayerName && preview && selectedSource
+    && !joining && preflight?.join_mode !== 'closed';
+
+  useEffect(() => {
+    if (!normalizedRoomCode) {
+      setPreflight(null);
+      setPreflightLatency(null);
+      return;
+    }
+    let cancelled = false;
+    const startedAt = performance.now();
+    const accountToken = getSlotValue('account_token');
+    fetch(`/api/player/rooms/${encodeURIComponent(normalizedRoomCode)}/preflight`, {
+      headers: accountToken ? { Authorization: `Bearer ${accountToken}` } : {},
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(response.status === 404 ? '房间不存在' : '预检失败');
+        return response.json() as Promise<RoomPreflight>;
+      })
+      .then((result) => {
+        if (cancelled) return;
+        setPreflight(result);
+        setPreflightLatency(Math.max(0, Math.round(performance.now() - startedAt)));
+        if (result.requires_login && !result.authenticated) {
+          sessionStorage.setItem('login_return_to', buildPlayerJoinReturnPath(normalizedRoomCode));
+          window.location.href = '/login';
+        }
+      })
+      .catch((caught: Error) => {
+        if (!cancelled) {
+          setPreflight(null);
+          setError(caught.message || '房间预检失败');
+        }
+      });
+    return () => { cancelled = true; };
+  }, [normalizedRoomCode]);
 
   // Fetch scenario templates when room code changes
   useEffect(() => {
@@ -134,6 +220,26 @@ export default function PlayerJoinPage() {
     setPreview(preset);
   };
 
+  const chooseAccountCharacter = (character: AccountCharacter) => {
+    setError('');
+    setSourceMode('account');
+    setSelectedSource({ mode: 'account', characterId: character.character_id });
+    setPlayerName((current) => current || character.player_name || character.investigator_name);
+    setPreview({
+      name: character.investigator_name || character.player_name,
+      occupation: character.occupation,
+      hp: character.hp,
+      max_hp: character.hp,
+      san: character.san,
+      max_san: character.san,
+      mp: 0,
+      max_mp: 0,
+      luck: 0,
+      skill_count: 0,
+      top_skills: [],
+    });
+  };
+
   const previewUpload = async (file: File | null) => {
     setError('');
     setPreview(null);
@@ -141,6 +247,21 @@ export default function PlayerJoinPage() {
     if (!file) return;
     setSourceMode('upload');
     setPreviewing(true);
+    if (file.name.toLowerCase().endsWith('.json')) {
+      try {
+        const data = JSON.parse(await file.text()) as BuilderCharacterData;
+        if (!data.name || !data.attributes || !data.derived_stats || !data.skills) {
+          throw new Error('invalid character json');
+        }
+        handleBuilderComplete(data);
+        setSourceMode('upload');
+      } catch {
+        setError('JSON 车卡结构无效，请使用平台导出的角色 JSON。');
+      } finally {
+        setPreviewing(false);
+      }
+      return;
+    }
     const form = new FormData();
     form.append('file', file);
     try {
@@ -159,6 +280,28 @@ export default function PlayerJoinPage() {
       setError('车卡上传失败，请稍后重试。');
     } finally {
       setPreviewing(false);
+    }
+  };
+
+  const restoreExistingCharacter = async () => {
+    if (!preflight?.recovery_character_id || !normalizedRoomCode) return;
+    const accountToken = getSlotValue('account_token');
+    if (!accountToken) return;
+    setRestoring(true);
+    setError('');
+    try {
+      const response = await fetch(
+        `/api/player/characters/${encodeURIComponent(preflight.recovery_character_id)}/restore-session`,
+        { method: 'POST', headers: { Authorization: `Bearer ${accountToken}` } },
+      );
+      if (!response.ok) throw new Error('角色恢复失败');
+      const restored = await response.json();
+      setSlotValue('player_token', restored.player_token);
+      window.location.href = playerRoomEntryPath(normalizedRoomCode, preflight.room_status);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '角色恢复失败');
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -194,7 +337,7 @@ export default function PlayerJoinPage() {
     // Require login
     const acct = getSlotValue('account_token');
     if (!acct) {
-      sessionStorage.setItem('login_return_to', '/player/join');
+      sessionStorage.setItem('login_return_to', buildPlayerJoinReturnPath(normalizedRoomCode));
       window.location.href = '/login';
       return;
     }
@@ -205,6 +348,25 @@ export default function PlayerJoinPage() {
       const authHeaders: Record<string, string> = {};
       const at = getSlotValue('account_token');
       if (at) authHeaders['Authorization'] = `Bearer ${at}`;
+
+      if (selectedSource.mode === 'account') {
+        const form = new FormData();
+        form.append('player_name', normalizedPlayerName);
+        form.append('copy_character_id', selectedSource.characterId);
+        const res = await fetch(
+          `/api/player/rooms/${encodeURIComponent(normalizedRoomCode)}/join-with-character`,
+          { method: 'POST', body: form, headers: authHeaders },
+        );
+        if (!res.ok) {
+          const detail = await res.json().catch(() => ({}));
+          setError(String(detail.detail || '账号角色复制失败。'));
+          return;
+        }
+        const data = await res.json();
+        setSlotValue('player_token', data.player_token);
+        window.location.href = playerRoomEntryPath(normalizedRoomCode, preflight?.room_status || 'lobby');
+        return;
+      }
 
       if (selectedSource.mode === 'template') {
         const form = new FormData();
@@ -217,7 +379,7 @@ export default function PlayerJoinPage() {
         if (!res.ok) { const d = await res.json().catch(() => ({})); setError(String(d.detail || '加入失败')); return; }
         const data = await res.json();
         setSlotValue('player_token', data.player_token);
-        window.location.href = `/player/${normalizedRoomCode}/lobby`;
+        window.location.href = playerRoomEntryPath(normalizedRoomCode, preflight?.room_status || 'lobby');
         return;
       }
 
@@ -236,7 +398,7 @@ export default function PlayerJoinPage() {
         }
         const data = await res.json();
         setSlotValue('player_token', data.player_token);
-        window.location.href = `/player/${normalizedRoomCode}/lobby`;
+        window.location.href = playerRoomEntryPath(normalizedRoomCode, preflight?.room_status || 'lobby');
         return;
       }
 
@@ -263,7 +425,7 @@ export default function PlayerJoinPage() {
       }
       const data = await res.json();
       setSlotValue('player_token', data.player_token);
-      window.location.href = `/player/${normalizedRoomCode}/lobby`;
+      window.location.href = playerRoomEntryPath(normalizedRoomCode, preflight?.room_status || 'lobby');
     } catch {
       setError('加入失败，当前服务可能没有启动。');
     } finally {
@@ -288,12 +450,12 @@ export default function PlayerJoinPage() {
     <section className="bh-panel bh-join">
       {/* Account bar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, padding: '8px 12px', border: '3px solid var(--bh-black)', background: 'var(--bh-paper-2)' }}>
-        <span style={{ fontWeight: 900, fontSize: 13 }}>{account ? `👤 ${account.display_name || account.username}` : '👻 游客模式'}</span>
+        <span style={{ fontWeight: 900, fontSize: 13 }}>{account ? `👤 ${account.display_name || account.username}` : '🔒 邀请房间需要登录'}</span>
         <span style={{ flex: 1 }} />
         {account ? (
           <button className="bh-button" style={{ minHeight: 30, fontSize: 11, padding: '4px 10px' }} onClick={() => { setSlotValue('account_token', ''); setSlotValue('account', ''); window.location.reload(); }}>登出</button>
         ) : (
-          <a className="bh-button bh-button--yellow" style={{ minHeight: 30, fontSize: 11, padding: '4px 10px' }} href="/login" onClick={(e) => { e.preventDefault(); sessionStorage.setItem('login_return_to', '/player/join'); window.location.href = '/login'; }}>登录</a>
+          <a className="bh-button bh-button--yellow" style={{ minHeight: 30, fontSize: 11, padding: '4px 10px' }} href="/login" onClick={(e) => { e.preventDefault(); sessionStorage.setItem('login_return_to', buildPlayerJoinReturnPath(normalizedRoomCode)); window.location.href = '/login'; }}>登录 / 注册</a>
         )}
       </div>
 
@@ -311,6 +473,27 @@ export default function PlayerJoinPage() {
               onChange={(event) => setRoomCode(event.target.value)}
             />
           </label>
+          {preflight && (
+            <div className="bh-muted-box" role="status">
+              <strong>入房预检</strong>
+              <p>REST 正常 · WebSocket 端点已发现 · 延迟 {preflightLatency ?? 0}ms</p>
+              <p>
+                {preflight.join_mode === 'direct' && '开局前可直接进入。'}
+                {preflight.join_mode === 'host_approval' && '房间进行中，提交后进入 Host 审批等待页。'}
+                {preflight.join_mode === 'closed' && '房间已关闭，当前不可加入。'}
+              </p>
+              {preflight.recovery_available && (
+                <button
+                  className="bh-button bh-button--yellow"
+                  type="button"
+                  onClick={() => void restoreExistingCharacter()}
+                  disabled={restoring}
+                >
+                  {restoring ? '恢复中...' : '恢复本房间角色并继续'}
+                </button>
+              )}
+            </div>
+          )}
           <label className="bh-field">
             <span>玩家昵称</span>
             <input
@@ -321,7 +504,18 @@ export default function PlayerJoinPage() {
             />
           </label>
 
-          <div className="bh-source-toggle" role="tablist" aria-label="车卡来源" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
+          <div className="bh-source-toggle" role="tablist" aria-label="车卡来源">
+            <button
+              className={`bh-button ${sourceMode === 'account' ? 'bh-button--yellow' : ''}`}
+              type="button"
+              onClick={() => {
+                setSourceMode('account');
+                setSelectedSource(null);
+                setPreview(null);
+              }}
+            >
+              账号角色
+            </button>
             <button
               className={`bh-button ${sourceMode === 'preset' ? 'bh-button--yellow' : ''}`}
               type="button"
@@ -331,30 +525,30 @@ export default function PlayerJoinPage() {
                 setPreview(selectedPreset);
               }}
             >
-              选择预设
-            </button>
-            <button
-              className={`bh-button ${sourceMode === 'upload' ? 'bh-button--yellow' : ''}`}
-              type="button"
-              onClick={() => setSourceMode('upload')}
-            >
-              上传车卡
+              剧本预设
             </button>
             <button
               className={`bh-button ${sourceMode === 'builder' ? 'bh-button--yellow' : ''}`}
               type="button"
               onClick={() => { setSourceMode('builder'); setBuilderDone(false); }}
             >
-              现场车卡
+              快速建卡
+            </button>
+            <button
+              className={`bh-button ${sourceMode === 'upload' ? 'bh-button--yellow' : ''}`}
+              type="button"
+              onClick={() => setSourceMode('upload')}
+            >
+              高级导入
             </button>
           </div>
 
           {sourceMode === 'upload' && (
             <label className="bh-upload-box">
-              <span>{previewing ? '解析中...' : '上传 xlsx 车卡'}</span>
+              <span>{previewing ? '解析中...' : '上传 JSON / xlsx 车卡'}</span>
               <input
                 type="file"
-                accept=".xlsx"
+                accept=".json,.xlsx"
                 onChange={(event) => previewUpload(event.target.files?.[0] || null)}
                 disabled={previewing}
               />
@@ -365,6 +559,13 @@ export default function PlayerJoinPage() {
         </div>
 
         <div>
+          {sourceMode === 'account' && (
+            <AccountCharacterList
+              characters={accountCharacters.filter((character) => character.room_id !== normalizedRoomCode)}
+              selectedId={selectedSource?.mode === 'account' ? selectedSource.characterId : ''}
+              onChoose={chooseAccountCharacter}
+            />
+          )}
           {sourceMode === 'preset' && (
             <PresetList
               loading={loadingPresets}
@@ -417,6 +618,40 @@ export default function PlayerJoinPage() {
         </div>
       </div>
     </section>
+  );
+}
+
+function AccountCharacterList({
+  characters,
+  selectedId,
+  onChoose,
+}: {
+  characters: AccountCharacter[];
+  selectedId: string;
+  onChoose: (character: AccountCharacter) => void;
+}) {
+  if (characters.length === 0) {
+    return (
+      <div className="bh-muted-box">
+        当前账号没有可复制的历史角色。你可以继续选择剧本预设或快速建卡。
+      </div>
+    );
+  }
+  return (
+    <div className="bh-preset-list">
+      {characters.map((character) => (
+        <button
+          className={`bh-preset-card ${selectedId === character.character_id ? 'bh-preset-card--selected' : ''}`}
+          key={character.character_id}
+          type="button"
+          onClick={() => onChoose(character)}
+        >
+          <strong>{character.investigator_name || character.player_name}</strong>
+          <span>{character.occupation || '未知职业'}</span>
+          <small>{character.scenario_title || character.room_id}</small>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -513,6 +748,7 @@ function CharacterPreviewPanel({ preview, playerName, sourceMode }: {
 }) {
   if (!preview) {
     const hints: Record<SourceMode, string> = {
+      account: '优先恢复账号历史角色，或选择其他建卡方式。',
       preset: '选择预设或上传车卡后，这里会显示调查员摘要。',
       upload: '上传 xlsx 车卡后，这里会显示解析结果。',
       builder: '完成车卡向导后，这里会显示预览。',

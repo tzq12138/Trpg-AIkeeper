@@ -3,6 +3,8 @@ import json
 import uuid
 import os
 import logging
+import hashlib
+import re
 from pathlib import Path
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
 
@@ -503,6 +505,228 @@ def _classify_type(synopsis: str, scenes: int, npcs: int, clues: int) -> str:
 
 # ── Map Generation ──
 
+def _map_base_asset(assets: dict) -> dict:
+    if not isinstance(assets, dict):
+        return {}
+    candidates = [assets.get("baseMap"), assets.get("map"), assets.get("mapAsset")]
+    maps = assets.get("maps")
+    if isinstance(maps, list) and maps:
+        candidates.append(maps[0])
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return {"assetId": candidate}
+        if isinstance(candidate, dict):
+            asset_id = candidate.get("assetId", candidate.get("asset_id", ""))
+            if isinstance(asset_id, str) and asset_id:
+                return {"assetId": asset_id}
+    return {}
+
+
+def _map_draft_payload(map_data: dict) -> dict:
+    return {
+        "mapId": map_data["map_id"],
+        "scenarioId": map_data["scenario_id"],
+        "generatedBy": map_data["generated_by"],
+        "status": map_data["status"],
+        "mapType": map_data.get("map_type", "graph"),
+        "baseAsset": map_data.get("base_asset", {}),
+        "regions": map_data.get("regions", []),
+        "paths": map_data.get("paths", []),
+        "nodes": map_data["nodes"],
+        "edges": map_data["edges"],
+        "createdAt": map_data.get("created_at"),
+        "confirmedAt": map_data.get("confirmed_at"),
+    }
+
+
+def _load_golden_module(module_id: str) -> tuple[dict, Path]:
+    if not re.fullmatch(r"[a-z0-9-]{1,120}", module_id):
+        raise HTTPException(404, "黄金模组不存在")
+    root = Path(__file__).resolve().parents[2] / "data" / "golden_modules"
+    for path in root.glob("*/module.json"):
+        try:
+            module = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        manifest = module.get("manifest", {})
+        if isinstance(manifest, dict) and manifest.get("module_id") == module_id:
+            return module, path
+    raise HTTPException(404, "黄金模组不存在")
+
+
+def _golden_map_nodes(raw_nodes: list[dict]) -> list[dict]:
+    total = max(1, len(raw_nodes))
+    nodes = []
+    for index, raw_node in enumerate(raw_nodes):
+        node_id = raw_node.get("node_id", raw_node.get("nodeId", ""))
+        if not isinstance(node_id, str) or not node_id:
+            raise HTTPException(422, "黄金模组包含无效文字地图节点")
+        x = 50 if total == 1 else round(15 + index * 70 / (total - 1), 1)
+        nodes.append({
+            "node_id": node_id,
+            "name": raw_node.get("name", node_id),
+            "description": raw_node.get("description", ""),
+            "npcs_present": raw_node.get("npcs_present", raw_node.get("npcsPresent", [])),
+            "clues_available": raw_node.get("clues_available", raw_node.get("cluesAvailable", [])),
+            "position": raw_node.get("position", {"x": x, "y": 50}),
+            "is_start": bool(raw_node.get("is_start", raw_node.get("isStart", index == 0))),
+        })
+    return nodes
+
+
+def _golden_map_edges(raw_edges: list[dict]) -> list[dict]:
+    edges = []
+    for raw_edge in raw_edges:
+        from_node = raw_edge.get("from_node", raw_edge.get("fromNode", raw_edge.get("from", "")))
+        to_node = raw_edge.get("to_node", raw_edge.get("toNode", raw_edge.get("to", "")))
+        if not isinstance(from_node, str) or not isinstance(to_node, str) or not from_node or not to_node:
+            raise HTTPException(422, "黄金模组包含无效文字地图路径")
+        edges.append({
+            "from_node": from_node,
+            "to_node": to_node,
+            "is_one_way": bool(raw_edge.get("is_one_way", raw_edge.get("isOneWay", False))),
+            "label": raw_edge.get("label", ""),
+        })
+    return edges
+
+
+@router.post("/golden-modules/{module_id}/install", status_code=201)
+async def install_golden_module(request: Request, module_id: str):
+    account = _require_admin(request)
+    module, module_path = _load_golden_module(module_id)
+    manifest = module.get("manifest", {})
+    knowledge_graph = module.get("knowledge_graph", {})
+    scenario_assets = module.get("scenario_assets", {})
+    templates = module.get("character_templates", [])
+    quality_report = module.get("quality_report", {})
+    if (
+        manifest.get("format") != "aikeeper-golden-module"
+        or not isinstance(knowledge_graph, dict)
+        or not all(isinstance(knowledge_graph.get(key), list) and knowledge_graph[key] for key in ("scenes", "npcs", "clues"))
+        or not isinstance(scenario_assets, dict)
+        or not isinstance(templates, list)
+        or not templates
+    ):
+        raise HTTPException(422, "黄金模组结构不完整")
+    text_map = scenario_assets.get("text_map", {})
+    if not isinstance(text_map, dict):
+        raise HTTPException(422, "黄金模组缺少文字地图")
+    nodes = _golden_map_nodes(text_map.get("nodes", []))
+    edges = _golden_map_edges(text_map.get("edges", []))
+    if not nodes:
+        raise HTTPException(422, "黄金模组缺少文字地图节点")
+
+    conn = request.app.state.db
+    scenario_id = f"golden-{module_id}"
+    if conn.execute("SELECT 1 FROM scenarios WHERE scenario_id = %s", (scenario_id,)).fetchone():
+        raise HTTPException(409, "黄金模组已安装")
+    rule_version = conn.execute(
+        "SELECT rsv.rule_set_version_id FROM rule_set_versions rsv "
+        "JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id "
+        "WHERE rs.slug = 'coc7' AND rs.status = 'published' AND rsv.status = 'published' "
+        "ORDER BY rsv.version_number DESC LIMIT 1"
+    ).fetchone()
+    if not rule_version:
+        raise HTTPException(409, "需要先发布授权的 CoC7 规则版本")
+
+    raw_module = module_path.read_bytes()
+    source_sha256 = hashlib.sha256(raw_module).hexdigest()
+    scenario_version_id = f"{scenario_id}-v1"
+    source_document_id = f"{scenario_id}-source"
+    map_id = f"{scenario_id}-map"
+    created_by = account.get("account_id", "unknown")
+    prep_package = {
+        "golden_module": manifest,
+        "citations": module.get("citations", []),
+        "rag_expectations": module.get("rag_expectations", []),
+    }
+    with conn.transaction() as transaction:
+        transaction.execute(
+            "INSERT INTO scenarios "
+            "(scenario_id, title, raw_text, knowledge_graph, scenario_assets, quality_report, import_status, publish_status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 'structured', 'published')",
+            (
+                scenario_id, manifest.get("title", module_id), module.get("raw_text", ""),
+                json.dumps(knowledge_graph, ensure_ascii=False), json.dumps(scenario_assets, ensure_ascii=False),
+                json.dumps(quality_report, ensure_ascii=False),
+            ),
+        )
+        transaction.execute(
+            "INSERT INTO source_documents "
+            "(source_document_id, scenario_id, source_kind, title, source_filename, mime_type, source_sha256, "
+            "storage_path, license_type, license_ref, status, metadata, created_by) "
+            "VALUES (%s, %s, 'golden_module', %s, 'module.json', 'application/json', %s, %s, 'authorized', %s, 'parsed', %s, %s)",
+            (
+                source_document_id, scenario_id, manifest.get("title", module_id), source_sha256,
+                str(module_path.relative_to(Path(__file__).resolve().parents[2])).replace("\\", "/"),
+                manifest.get("license", {}).get("license_id", ""),
+                json.dumps({"module_id": module_id, "schema_version": manifest.get("schema_version", "")}, ensure_ascii=False),
+                created_by,
+            ),
+        )
+        transaction.execute(
+            "INSERT INTO source_parts "
+            "(source_part_id, source_document_id, ordinal, part_kind, text_content, mime_type, anchor, checksum) "
+            "VALUES (%s, %s, 1, 'text', %s, 'application/json', %s, %s)",
+            (
+                f"{source_document_id}-part-1", source_document_id, module.get("raw_text", ""),
+                json.dumps({"source_ref": "module.json#/raw_text"}), source_sha256,
+            ),
+        )
+        transaction.execute(
+            "INSERT INTO scenario_versions "
+            "(scenario_version_id, scenario_id, version_number, status, knowledge_graph, quality_report, prep_package, created_by, published_at) "
+            "VALUES (%s, %s, 1, 'published', %s, %s, %s, %s, NOW())",
+            (
+                scenario_version_id, scenario_id, json.dumps(knowledge_graph, ensure_ascii=False),
+                json.dumps(quality_report, ensure_ascii=False), json.dumps(prep_package, ensure_ascii=False), created_by,
+            ),
+        )
+        transaction.execute(
+            "INSERT INTO scenario_version_sources (scenario_version_id, source_document_id, ordinal) VALUES (%s, %s, 1)",
+            (scenario_version_id, source_document_id),
+        )
+        transaction.execute(
+            "UPDATE scenarios SET published_version_id = %s WHERE scenario_id = %s",
+            (scenario_version_id, scenario_id),
+        )
+        transaction.execute(
+            "INSERT INTO scenario_rule_bindings (scenario_version_id, rule_set_version_id) VALUES (%s, %s)",
+            (scenario_version_id, rule_version["rule_set_version_id"]),
+        )
+        for index, template in enumerate(templates):
+            transaction.execute(
+                "INSERT INTO character_templates "
+                "(template_id, scenario_id, name, occupation, background, age, gender, attributes, skills, backstory) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    f"{scenario_id}-template-{index + 1}", scenario_id, template.get("name", f"预设角色 {index + 1}"),
+                    template.get("occupation", ""), template.get("background", ""), template.get("age", 25),
+                    template.get("gender", ""), json.dumps(template.get("attributes", {}), ensure_ascii=False),
+                    json.dumps(template.get("skills", {}), ensure_ascii=False), json.dumps(template.get("backstory", {}), ensure_ascii=False),
+                ),
+            )
+        transaction.execute(
+            "INSERT INTO scenario_maps "
+            "(map_id, scenario_id, generated_by, status, map_type, nodes, edges, paths, confirmed_at) "
+            "VALUES (%s, %s, 'golden_module', 'confirmed', 'graph', %s, %s, %s, NOW())",
+            (
+                map_id, scenario_id, json.dumps(nodes, ensure_ascii=False), json.dumps(edges, ensure_ascii=False),
+                json.dumps([
+                    {"pathId": f"path-{index}", "fromNodeId": edge["from_node"], "toNodeId": edge["to_node"],
+                     "isOneWay": edge["is_one_way"], "label": edge["label"]}
+                    for index, edge in enumerate(edges)
+                ], ensure_ascii=False),
+            ),
+        )
+    return {
+        "scenarioId": scenario_id,
+        "scenarioVersionId": scenario_version_id,
+        "title": manifest.get("title", module_id),
+        "status": "published",
+    }
+
+
 @router.post("/scenarios/{scenario_id}/map/generate")
 async def admin_generate_map(request: Request, scenario_id: str):
     """Generate a map draft from knowledge_graph.scenes (primary) or scenario_assets.scenes (fallback)."""
@@ -532,22 +756,23 @@ async def admin_generate_map(request: Request, scenario_id: str):
     from .config import Settings
     settings = Settings.from_env()
 
+    from .ai.gateway import AiGateway
     from .ai.map_generator import MapGenerator
-    gen = MapGenerator(api_key=settings.deepseek_api_key, model=settings.deepseek_model)
-    nodes, edges = await gen.generate(scenes)
+    gen = MapGenerator(
+        api_key=settings.deepseek_api_key,
+        model=settings.deepseek_model,
+        gateway=AiGateway(settings=settings, db_conn=conn),
+    )
+    draft = await gen.generate_draft(scenes, _map_base_asset(_json_val(scenario.get("scenario_assets")) or {}))
 
     map_id = f"map_{scenario_id}_{str(uuid.uuid4())[:4]}"
     from .map_persistence import create_scenario_map
-    result = create_scenario_map(conn, map_id, scenario_id, gen.last_generated_by, nodes, edges)
+    result = create_scenario_map(
+        conn, map_id, scenario_id, gen.last_generated_by, draft["nodes"], draft["edges"],
+        draft["map_type"], draft["base_asset"], draft["regions"], draft["paths"],
+    )
 
-    return {
-        "mapId": result["map_id"],
-        "scenarioId": result["scenario_id"],
-        "generatedBy": result["generated_by"],
-        "status": result["status"],
-        "nodes": result["nodes"],
-        "edges": result["edges"],
-    }
+    return _map_draft_payload(result)
 
 
 @router.get("/scenarios/{scenario_id}/map")
@@ -559,16 +784,7 @@ async def admin_get_map(request: Request, scenario_id: str):
     mp = get_scenario_map_by_scenario(conn, scenario_id)
     if not mp:
         raise HTTPException(404, "该剧本暂无地图")
-    return {
-        "mapId": mp["map_id"],
-        "scenarioId": mp["scenario_id"],
-        "generatedBy": mp["generated_by"],
-        "status": mp["status"],
-        "nodes": mp["nodes"],
-        "edges": mp["edges"],
-        "createdAt": mp.get("created_at"),
-        "confirmedAt": mp.get("confirmed_at"),
-    }
+    return _map_draft_payload(mp)
 
 
 @router.patch("/scenarios/{scenario_id}/map")
@@ -585,7 +801,13 @@ async def admin_edit_map(request: Request, scenario_id: str):
         raise HTTPException(400, "已确认的地图不可编辑")
     nodes = body.get("nodes", [])
     edges = body.get("edges", [])
-    update_scenario_map(conn, mp["map_id"], nodes, edges)
+    map_type = body.get("mapType", mp.get("map_type", "graph"))
+    if map_type not in {"graph", "image", "hybrid"}:
+        raise HTTPException(422, "mapType must be graph, image, or hybrid")
+    base_asset = body.get("baseAsset", mp.get("base_asset", {}))
+    regions = body.get("regions", mp.get("regions", []))
+    paths = body.get("paths", mp.get("paths", []))
+    update_scenario_map(conn, mp["map_id"], nodes, edges, map_type, base_asset, regions, paths)
     return {"status": "updated", "mapId": mp["map_id"]}
 
 

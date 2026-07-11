@@ -624,7 +624,7 @@ def render_report(
     )
 
     lines = [
-        "# AI-Keeper 四玩家多人 Loop 测试报告",
+        f"# AI-Keeper {len(capture['players'])} 玩家多人 Loop 测试报告",
         "",
         "## 概览",
         f"- 运行时间：`{run_meta['started_at']}`",
@@ -637,9 +637,9 @@ def render_report(
         "",
         "## 覆盖链路",
         "- Host 登录 → 选择剧本 → 开房",
-        "- 4 个玩家账号登录 → 上传 xlsx 角色卡 → 入房",
-        "- 4 个玩家 ready → Host 开局",
-        "- 同回合 4 条行动提交 → 自动结算",
+        f"- {len(capture['players'])} 个玩家账号登录 → 上传 xlsx 角色卡 → 入房",
+        f"- {len(capture['players'])} 个玩家 ready → Host 开局",
+        f"- 同回合 {len(capture['players'])} 条行动提交 → 自动结算",
         "- Host 战役总结 / Timeline / Export",
         "- Player 个人 Archive / Actions / Clues / Skill Checks",
         "",
@@ -752,7 +752,7 @@ def main() -> int:
 
         for player in players:
             submit_ready(client, player["token"])
-        log("四名玩家均已 ready")
+        log(f"{len(players)} 名玩家均已 ready")
 
         started = start_room(client, room_id, owner_token)
         current_turn_index = started["turn_index"]

@@ -445,6 +445,15 @@ async def get_host_full_map(request: Request, room_id: str):
         "playerPositions": positions,
         "exploredNodes": map_state.get("explored_nodes", []),
         "hiddenNodes": map_state.get("hidden_nodes", []),
+        "regions": [
+            {
+                "regionId": region.get("regionId", region.get("region_id", "")),
+                "nodeId": region.get("nodeId", region.get("node_id", "")),
+            }
+            for region in scenario_map.get("regions", [])
+            if isinstance(region, dict)
+        ],
+        "fogRegions": map_state.get("fog_regions", []),
         "mapStatus": scenario_map.get("status", "draft"),
     }
 
@@ -474,33 +483,70 @@ async def host_reveal_node(request: Request, room_id: str):
     if node_id not in node_ids:
         raise HTTPException(400, "节点不属于当前房间地图")
 
-    host_set_node_visible(conn, room_id, node_id, visible)
+    result = host_set_node_visible(conn, room_id, node_id, visible)
+    if result is None:
+        raise HTTPException(404, "No map initialized for this room")
+    changed, map_version = result
 
-    # Bump map version
-    conn.execute(
-        "UPDATE room_map_state SET state_version = state_version + 1, updated_at = NOW() WHERE room_id = %s",
-        (room_id,),
-    )
-    conn.commit()
-    map_version = (map_state.get("state_version") or 0) + 1
-
-    from ..engine.projection import ProjectionDispatcher
-    dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
-
-    import asyncio
-    try:
-        asyncio.get_running_loop().create_task(
-            dispatcher.emit(room_id, "s2c_map_revealed", "party", {
+    if changed:
+        from ..engine.projection import ProjectionDispatcher
+        dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
+        await dispatcher.emit(room_id, "s2c_map_revealed", "party", {
                 "nodeId": node_id,
                 "visible": visible,
                 "mapVersion": map_version,
                 "roomId": room_id,
-            })
-        )
-    except RuntimeError:
-        pass
+        })
 
     return {"status": "ok", "nodeId": node_id, "visible": visible, "mapVersion": map_version}
+
+
+@router.post("/{room_id}/map/regions/{region_id}/visibility")
+async def host_set_region_visibility(request: Request, room_id: str, region_id: str):
+    """Host rescue control for image-map fog regions."""
+    _verify_owner(request, room_id)
+    body = await request.json()
+    visible = body.get("visible")
+    if not isinstance(visible, bool):
+        raise HTTPException(422, "visible must be a boolean")
+
+    conn = request.app.state.db
+    from ..map_persistence import get_room_map_state, get_scenario_map, host_set_region_visible
+
+    map_state = get_room_map_state(conn, room_id)
+    if not map_state:
+        raise HTTPException(404, "No map initialized for this room")
+    scenario_map = get_scenario_map(conn, map_state["map_id"])
+    if not scenario_map:
+        raise HTTPException(404, "Scenario map not found")
+    region_ids = {
+        region.get("regionId", region.get("region_id", ""))
+        for region in scenario_map.get("regions", [])
+        if isinstance(region, dict)
+    }
+    if region_id not in region_ids:
+        raise HTTPException(400, "区域不属于当前房间地图")
+
+    result = host_set_region_visible(conn, room_id, region_id, visible)
+    if result is None:
+        raise HTTPException(404, "No map initialized for this room")
+    changed, map_version = result
+    if changed:
+        from ..engine.projection import ProjectionDispatcher
+        dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
+        await dispatcher.emit(room_id, "s2c_map_revealed", "party", {
+            "regionId": region_id,
+            "visible": visible,
+            "mapVersion": map_version,
+            "roomId": room_id,
+        })
+
+    return {
+        "roomId": room_id,
+        "regionId": region_id,
+        "visible": visible,
+        "mapVersion": map_version,
+    }
 
 
 @router.post("/{room_id}/map/move-character")
@@ -531,7 +577,7 @@ async def host_force_move(request: Request, room_id: str):
     # Validate node belongs to this room's map
     from ..map_persistence import (
         set_character_position, mark_node_explored, get_room_map_state, get_scenario_map,
-        get_character_position,
+        get_character_position, reveal_regions_for_node,
     )
     map_state = get_room_map_state(conn, room_id)
     if not map_state:
@@ -547,13 +593,9 @@ async def host_force_move(request: Request, room_id: str):
 
     set_character_position(conn, character_id, room_id, target_node_id)
     mark_node_explored(conn, room_id, target_node_id)
-    conn.execute(
-        "UPDATE room_map_state SET state_version = state_version + 1, updated_at = NOW() WHERE room_id = %s",
-        (room_id,),
-    )
-    conn.commit()
-
-    map_version = (map_state.get("state_version") or 0) + 1
+    revealed_region_ids = reveal_regions_for_node(conn, room_id, target_node_id)
+    current_map_state = get_room_map_state(conn, room_id)
+    map_version = current_map_state.get("state_version", 0) if current_map_state else 0
 
     from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
@@ -567,6 +609,7 @@ async def host_force_move(request: Request, room_id: str):
                 "toNodeId": target_node_id,
                 "forced": True,
                 "mapVersion": map_version,
+                "revealedRegionIds": revealed_region_ids,
                 "reason": reason,
             })
         )
@@ -592,6 +635,7 @@ async def host_force_move(request: Request, room_id: str):
         "nodeId": target_node_id,
         "fromNodeId": actual_from,
         "mapVersion": map_version,
+        "revealedRegionIds": revealed_region_ids,
     }
 
 

@@ -1,7 +1,7 @@
 import json
 import logging
 from fastapi import APIRouter, Request, HTTPException
-from ..host.ws_manager import manager
+from ..host.ws_manager import NONTERMINAL_ACTION_STATUSES, manager
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +13,26 @@ logger = logging.getLogger(__name__)
 #   Apply remaining buffered patches in order
 
 router = APIRouter(prefix="/api/player")
+
+
+def _scene_snapshot(conn, room_id: str) -> dict:
+    row = conn.execute(
+        "SELECT current_scene, visited_scenes, version FROM room_scene_state WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    if not row:
+        return {"currentScene": "", "visitedScenes": [], "version": 0}
+    visited = row.get("visited_scenes") or []
+    if isinstance(visited, str):
+        try:
+            visited = json.loads(visited)
+        except json.JSONDecodeError:
+            visited = []
+    return {
+        "currentScene": row.get("current_scene") or "",
+        "visitedScenes": visited if isinstance(visited, list) else [],
+        "version": int(row.get("version") or 0),
+    }
 
 
 def _get_character(conn, token: str):
@@ -60,8 +80,8 @@ async def reconnect(request: Request):
 
         pending = conn.execute(
             "SELECT action_id, intent_type, declared_intent, status, result, created_at "
-            "FROM actions WHERE room_id = %s AND character_id = %s AND status IN ('queued', 'batched', 'resolving')",
-            (room_id, character_id),
+            "FROM actions WHERE room_id = %s AND character_id = %s AND status = ANY(%s)",
+            (room_id, character_id, list(NONTERMINAL_ACTION_STATUSES)),
         ).fetchall()
 
         max_seq_row = conn.execute(
@@ -75,6 +95,7 @@ async def reconnect(request: Request):
             "pending_actions": [dict(r) for r in pending],
             "last_sequence": max_seq,
             "stateVersion": current_state_version,
+            "sceneState": _scene_snapshot(conn, room_id),
         }
 
     char_data = dict(char)
@@ -95,6 +116,7 @@ async def reconnect(request: Request):
         "pending_actions": result["pending_actions"],
         "last_sequence": new_last,
         "stateVersion": current_state_version,
+        "sceneState": _scene_snapshot(conn, room_id),
     }
 
 
@@ -109,13 +131,11 @@ async def get_action_status(request: Request, action_id: str):
     if not char:
         raise HTTPException(403, "Invalid token")
 
-    action = conn.execute(
-        "SELECT action_id, intent_type, declared_intent, status, batch_id, result, created_at, completed_at "
-        "FROM actions WHERE action_id = %s AND character_id = %s",
-        (action_id, char["character_id"]),
-    ).fetchone()
+    from .action_service import ActionDraftError, build_action_receipt
 
-    if not action:
-        raise HTTPException(404, "Action not found")
-
-    return dict(action)
+    try:
+        return build_action_receipt(conn, char["character_id"], action_id)
+    except ActionDraftError as exc:
+        if exc.status_code == 404:
+            raise HTTPException(404, "Action not found") from exc
+        raise HTTPException(exc.status_code, exc.detail) from exc

@@ -1,10 +1,15 @@
 import base64
 import io
+import json
 import zipfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.server.engine.resolution_pipeline import ResolutionPipeline
+from src.server.models import MechanicCompileResult
+from src.server.scenario.solo_runtime import SoloAdventureRuntime
 from src.server.engine.engine import Engine
 from src.server.main import app
 from src.server.router_auth import _hash_password
@@ -57,6 +62,7 @@ class FakeRag:
     def __init__(self):
         self.scenario_calls = []
         self.npc_calls = []
+        self.content_calls = []
         self.embedding = type(
             "FakeEmbeddingMetadata",
             (),
@@ -70,6 +76,10 @@ class FakeRag:
     def index_npc_graph(self, *args, **kwargs):
         self.npc_calls.append((args, kwargs))
         return 1
+
+    def index_content_projection(self, *args, **kwargs):
+        self.content_calls.append((args, kwargs))
+        return len(args[2])
 
 
 class UnavailableMultimodalGateway:
@@ -157,6 +167,20 @@ def test_multimodal_import_review_publish_and_room_snapshot(import_client, test_
         "SELECT COUNT(*) AS count FROM document_chunks WHERE scenario_version_id = ?",
         (scenario_version_id,),
     ).fetchone()["count"] == 0
+    projected_types = {
+        row["item_type"]
+        for row in test_db.execute(
+            "SELECT item_type FROM content_items WHERE scenario_version_id = %s",
+            (scenario_version_id,),
+        ).fetchall()
+    }
+    assert {"scene", "npc", "clue", "truth", "ending"} <= projected_types
+    projection = test_db.execute(
+        "SELECT status FROM content_projection_runs "
+        "WHERE scenario_version_id = %s AND projection_kind = 'canonical_content'",
+        (scenario_version_id,),
+    ).fetchone()
+    assert projection["status"] == "completed"
 
     status = import_client.get(
         f"/api/scenarios/import-jobs/{job_id}",
@@ -199,6 +223,10 @@ def test_multimodal_import_review_publish_and_room_snapshot(import_client, test_
     assert indexed_images[0]["text"] == "图像中可见钟楼平面与通往地下室的楼梯。"
     assert indexed_images[0]["anchor"]["transcript_status"] == "provider"
     assert app.state.rag.npc_calls[0][1]["scenario_version_id"] == scenario_version_id
+    assert app.state.rag.content_calls[0][0][1] == scenario_version_id
+    assert {item["item_type"] for item in app.state.rag.content_calls[0][0][2]} >= {
+        "scene", "npc", "clue", "truth", "ending"
+    }
     rebuild = test_db.execute(
         "SELECT embedding_model, embedding_dimensions FROM rag_rebuild_records "
         "WHERE scenario_version_id = ?",
@@ -443,6 +471,154 @@ def test_multimodal_import_derives_indexable_text_when_provider_omits_transcript
     ).fetchone()
     assert source_part["text_content"]
     assert source_part["anchor"]["transcript_status"] == "derived_worldbook"
+
+
+def test_import_projects_numbered_solo_adventure_nodes(import_client, test_db):
+    admin_token = _login(import_client, "importadmin")
+    imported = import_client.post(
+        "/api/scenarios/import",
+        files={
+            "files": (
+                "solo.docx",
+                _minimal_docx("1# 你抵达车站。转到 2。\n2# 车门在你身后关上。"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        data={"title": "编号单人冒险", "license_type": "authorized"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert imported.status_code == 200, imported.text
+    scenario_version_id = imported.json()["scenario_version_id"]
+    version = test_db.execute(
+        "SELECT knowledge_graph FROM scenario_versions WHERE scenario_version_id = %s",
+        (scenario_version_id,),
+    ).fetchone()
+    solo = version["knowledge_graph"]["solo_adventure"]
+    assert solo["integrity"]["is_valid"] is True
+    assert solo["nodes"][0]["target_node_ids"] == ["2"]
+    assert solo["nodes"][0]["citation"]["source_part_id"]
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM content_items "
+        "WHERE scenario_version_id = %s AND item_type = 'branch_node'",
+        (scenario_version_id,),
+    ).fetchone()["count"] == 2
+
+
+def test_invalid_numbered_solo_adventure_cannot_be_published(import_client, test_db):
+    admin_token = _login(import_client, "importadmin")
+    imported = import_client.post(
+        "/api/scenarios/import",
+        files={
+            "files": (
+                "invalid-solo.docx",
+                _minimal_docx("1# 第一段。转到 3。\n1# 重复条目。\n2# 另一段。"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        data={"title": "无效编号冒险", "license_type": "authorized"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert imported.status_code == 200, imported.text
+    quality = test_db.execute(
+        "SELECT quality_report FROM scenario_versions WHERE scenario_version_id = %s",
+        (imported.json()["scenario_version_id"],),
+    ).fetchone()["quality_report"]
+    assert quality["level"] == "blocked"
+    assert any(issue["category"] == "solo_adventure" for issue in quality["issues"])
+    response = import_client.post(
+        f"/api/scenarios/{imported.json()['scenario_id']}/versions/"
+        f"{imported.json()['scenario_version_id']}/publish",
+        json={"confirm": True, "review_notes": "尝试绕过无效分支"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["status"] == "invalid_solo_adventure"
+
+
+@pytest.mark.asyncio
+async def test_alone_against_the_flames_pdf_imports_publishes_and_binds_room(
+    import_client, test_db
+):
+    admin_token = _login(import_client, "importadmin")
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "data" / "test_assets" / "最小测试模块" / "向火独行.pdf"
+    )
+    imported = import_client.post(
+        "/api/scenarios/import",
+        files={"files": (source.name, source.read_bytes(), "application/pdf")},
+        data={"title": "向火独行原版验收", "license_type": "authorized"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert imported.status_code == 200, imported.text
+    payload = imported.json()
+    version = test_db.execute(
+        "SELECT knowledge_graph FROM scenario_versions WHERE scenario_version_id = %s",
+        (payload["scenario_version_id"],),
+    ).fetchone()
+    integrity = version["knowledge_graph"]["solo_adventure"]["integrity"]
+    assert integrity["node_count"] == 270
+    assert integrity["edge_count"] == 376
+    assert integrity["is_valid"] is True
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM content_items "
+        "WHERE scenario_version_id = %s AND item_type = 'branch_node'",
+        (payload["scenario_version_id"],),
+    ).fetchone()["count"] == 270
+
+    host_token = _login(import_client, "importhost")
+    published = import_client.post(
+        f"/api/scenarios/{payload['scenario_id']}/versions/{payload['scenario_version_id']}/publish",
+        json={"confirm": True, "review_notes": "原版编号图验收通过"},
+        headers={"Authorization": f"Bearer {host_token}"},
+    )
+    assert published.status_code == 200, published.text
+    room = import_client.post(
+        "/api/rooms",
+        json={"scenario_id": payload["scenario_id"]},
+        headers={"Authorization": f"Bearer {host_token}"},
+    )
+    assert room.status_code == 200, room.text
+    bound = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room.json()["room_id"],),
+    ).fetchone()
+    assert bound["scenario_version_id"] == payload["scenario_version_id"]
+
+    test_db.execute(
+        """
+        INSERT INTO characters (character_id, room_id, player_name, player_token, xlsx_data)
+        VALUES ('yhdx-player', %s, '调查员', 'yhdx-player-token', %s)
+        """,
+        (room.json()["room_id"], json.dumps({"skills": {}})),
+    )
+    test_db.execute(
+        """
+        INSERT INTO actions (
+            action_id, room_id, character_id, intent_type, declared_intent,
+            params, status, draft_id, idempotency_key
+        ) VALUES ('yhdx-first-move', %s, 'yhdx-player', 'move', '我转到条目 263', %s,
+                  'queued', 'yhdx-draft', 'yhdx-idempotency')
+        """,
+        (room.json()["room_id"], json.dumps({"fromNodeId": "1", "targetNodeId": "263"})),
+    )
+
+    class AutoSuccessCompiler:
+        async def compile(self, *_args, **_kwargs):
+            return MechanicCompileResult(triggeredMechanic="auto_success")
+
+    class Dispatcher:
+        async def emit(self, *_args, **_kwargs):
+            return None
+
+    result = await ResolutionPipeline(
+        test_db, compiler=AutoSuccessCompiler(), dispatcher=Dispatcher()
+    ).resolve_action("yhdx-first-move")
+    assert result["status"] == "completed"
+    assert SoloAdventureRuntime(test_db).current(room.json()["room_id"])["node_id"] == "263"
 
 
 def _login(client, username):

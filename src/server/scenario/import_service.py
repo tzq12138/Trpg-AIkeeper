@@ -14,7 +14,9 @@ from .content_package import (
     ContentPart,
     build_content_package,
 )
+from .content_projection import ContentProjectionService
 from .quality import QualityReportGenerator
+from .solo_adventure import extract_solo_adventure
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +397,21 @@ class ScenarioImportService:
                 "status": "published",
                 "rag_index_version": row.get("rag_index_version"),
             }
+        solo_adventure = _json_value(row.get("knowledge_graph")).get(
+            "solo_adventure"
+        )
+        solo_integrity = (
+            solo_adventure.get("integrity")
+            if isinstance(solo_adventure, dict)
+            else None
+        )
+        if isinstance(solo_integrity, dict) and not solo_integrity.get("is_valid", True):
+            raise ScenarioImportFailure(409, {
+                "status": "invalid_solo_adventure",
+                "message": "编号单人冒险存在重复条目或无效跳转，不能发布",
+                "duplicate_node_ids": solo_integrity.get("duplicate_node_ids") or [],
+                "missing_target_node_ids": solo_integrity.get("missing_target_node_ids") or [],
+            })
         quality_report = _json_value(row.get("quality_report"))
         if (
             quality_report.get("level") == "blocked"
@@ -460,6 +477,16 @@ class ScenarioImportService:
                     scenario_version_id=scenario_version_id,
                     visibility="internal",
                 )
+            content_count = 0
+            if hasattr(self.rag, "index_content_projection"):
+                content_items = ContentProjectionService(self.conn).items(
+                    scenario_version_id
+                )
+                content_count = self.rag.index_content_projection(
+                    scenario_id,
+                    scenario_version_id,
+                    content_items,
+                )
             embedding_model, embedding_dimensions = _rag_embedding_metadata(self.rag)
         except Exception as exc:
             self.conn.execute(
@@ -518,7 +545,7 @@ class ScenarioImportService:
                 WHERE rebuild_id = %s
                 """,
                 (
-                    chunk_count + npc_count,
+                    chunk_count + npc_count + content_count,
                     embedding_model,
                     embedding_dimensions,
                     rebuild_id,
@@ -531,7 +558,7 @@ class ScenarioImportService:
             "scenario_version_id": scenario_version_id,
             "status": "published",
             "rag_index_version": rebuild_id,
-            "chunks_indexed": chunk_count + npc_count,
+            "chunks_indexed": chunk_count + npc_count + content_count,
         }
 
     def activate_published_version(
@@ -729,10 +756,22 @@ class ScenarioImportService:
             knowledge_graph = dict(knowledge_graph)
         self._persist_multimodal_transcripts(source_rows, knowledge_graph)
         knowledge_graph.pop("source_part_texts", None)
+        part_rows = self._load_version_parts(source_rows)
+        solo_adventure = extract_solo_adventure([
+            _rag_part(row) for row in part_rows
+        ])
+        if solo_adventure["detected"]:
+            if solo_adventure["integrity"]["is_valid"]:
+                knowledge_graph["solo_adventure"] = solo_adventure
+            else:
+                knowledge_graph["solo_adventure"] = {
+                    "root_node_id": solo_adventure["root_node_id"],
+                    "nodes": [],
+                    "integrity": solo_adventure["integrity"],
+                }
         quality_report = QualityReportGenerator().evaluate(knowledge_graph).model_dump(
             mode="json"
         )
-        part_rows = self._load_version_parts(source_rows)
         prep_package = _build_prep_package(
             scenario_title,
             knowledge_graph,
@@ -815,6 +854,12 @@ class ScenarioImportService:
                 )
             self._bind_published_base_rules(tx, scenario_version_id)
 
+        content_projection = ContentProjectionService(self.conn).rebuild(
+            scenario_version_id,
+            knowledge_graph,
+            requested_by=created_by,
+        )
+
         return {
             "scenario_id": scenario_id,
             "scenario_version_id": scenario_version_id,
@@ -826,6 +871,7 @@ class ScenarioImportService:
             "requires_multimodal": combined_package.requires_multimodal,
             "quality_report": quality_report,
             "prep_summary": _host_prep_projection(prep_package, quality_report),
+            "content_projection": content_projection,
         }
 
     def _persist_multimodal_transcripts(
@@ -966,6 +1012,8 @@ def _build_prep_package(
     scenes = list(knowledge_graph.get("scenes") or [])
     npcs = list(knowledge_graph.get("npcs") or [])
     clues = list(knowledge_graph.get("clues") or [])
+    solo_adventure = _json_value(knowledge_graph.get("solo_adventure"))
+    solo_integrity = _json_value(solo_adventure.get("integrity"))
     citations = []
     maps = []
     for row in part_rows:
@@ -1006,6 +1054,14 @@ def _build_prep_package(
         "recommended_skills": list(knowledge_graph.get("key_skills") or []),
         "rule_basis": list(knowledge_graph.get("rule_citations") or []),
         "quality_risks": list(quality_report.get("issues") or []),
+        "solo_adventure": {
+            "root_node_id": solo_adventure.get("root_node_id") or "",
+            "node_count": solo_integrity.get("node_count", 0),
+            "edge_count": solo_integrity.get("edge_count", 0),
+            "is_valid": solo_integrity.get("is_valid"),
+            "duplicate_node_ids": solo_integrity.get("duplicate_node_ids") or [],
+            "missing_target_node_ids": solo_integrity.get("missing_target_node_ids") or [],
+        } if solo_adventure else {},
         "citations": citations,
         "review_status": "pending_host_confirmation",
     }
@@ -1023,6 +1079,7 @@ def _host_prep_projection(
         "recommended_skills": prep_package.get("recommended_skills") or [],
         "rule_basis": prep_package.get("rule_basis") or [],
         "quality_report": quality_report,
+        "solo_adventure": prep_package.get("solo_adventure") or {},
         "citations": prep_package.get("citations") or [],
         "review_status": prep_package.get("review_status", "pending_host_confirmation"),
     }

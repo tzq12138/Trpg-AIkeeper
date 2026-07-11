@@ -1,6 +1,8 @@
 import random
 from typing import Literal
 
+from .secure_random import secure_randint
+
 SuccessLevel = Literal["critical", "extreme", "hard", "regular", "failure", "fumble"]
 
 SUCCESS_LEVEL_RANK = {
@@ -33,11 +35,13 @@ def roll_skill_check(
     difficulty = difficulty if difficulty in DIFFICULTY_RANK else "regular"
     skill_value = max(0, int(skill_value or 0))
 
-    tens_digit = random.randint(0, 9)
-    ones_digit = random.randint(0, 9)
+    tens_digit = secure_randint(0, 9, test_rng=random)
+    ones_digit = secure_randint(0, 9, test_rng=random)
     tens_digits = [tens_digit]
     if bonus_dice:
-        tens_digits.extend(random.randint(0, 9) for _ in range(abs(bonus_dice)))
+        tens_digits.extend(
+            secure_randint(0, 9, test_rng=random) for _ in range(abs(bonus_dice))
+        )
     candidates = [digit * 10 + ones_digit or 100 for digit in tens_digits]
     if bonus_dice > 0:
         selected_index = min(range(len(candidates)), key=candidates.__getitem__)

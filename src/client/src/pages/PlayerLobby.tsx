@@ -41,6 +41,7 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
   const [snapshot, setSnapshot] = useState<LobbySnapshot | null>(null);
   const [myCharId, setMyCharId] = useState('');
   const [isReady, setIsReady] = useState(false);
+  const [myStatus, setMyStatus] = useState('joined');
   const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [error, setError] = useState('');
@@ -62,8 +63,12 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
     const c = await apiFetch<any>('/api/player/character', { headers: authHeaders() });
     setMyCharId(c.character_id);
     setIsReady(c.is_ready || c.status === 'ready');
+    setMyStatus(c.status || 'joined');
+    if (c.room_status === 'active' && c.status !== 'pending_approval') {
+      window.location.href = `/player/${roomId}`;
+    }
     return c;
-  }, []);
+  }, [roomId]);
 
   const fetchLobby = useCallback(async () => {
     const data = await apiFetch<LobbySnapshot>(
@@ -82,11 +87,6 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
       try {
         const c = await fetchCharacter();
         if (cancelled) return;
-        // If game already started, jump straight in
-        if (c.room_status && c.room_status === 'active') {
-          window.location.href = `/player/${roomId}`;
-          return;
-        }
         await fetchLobby();
       } catch (e: any) {
         if (!cancelled) setError(e.message || '加载失败');
@@ -110,8 +110,16 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
 
       if (type === 's2c_room_lobby_snapshot') {
         setSnapshot(payload as LobbySnapshot);
+        const currentPlayer = (payload.players || []).find(
+          (player: LobbyPlayer) => player.character_id === myCharId,
+        );
+        if (currentPlayer?.status) setMyStatus(currentPlayer.status);
         // Auto-enter when game starts
-        if (payload.room_status === 'active' && !entering) {
+        if (
+          payload.room_status === 'active'
+          && currentPlayer?.status !== 'pending_approval'
+          && !entering
+        ) {
           setEntering(true);
           setTimeout(() => {
             window.location.href = `/player/${roomId}`;
@@ -131,7 +139,7 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
     ws.connect(token);
 
     return () => { ws.disconnect(); };
-  }, [roomId, entering]);
+  }, [roomId, entering, myCharId]);
 
   // ── polling fallback ─────────────────────────────────────────────
 
@@ -139,9 +147,10 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
     pollRef.current = setInterval(() => {
       // Only poll if WS might be down — refresh lobby state
       fetchLobby().catch(() => {});
+      fetchCharacter().catch(() => {});
     }, 5000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [fetchLobby]);
+  }, [fetchCharacter, fetchLobby]);
 
   // ── actions ──────────────────────────────────────────────────────
 
@@ -206,6 +215,23 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
   const players = snapshot?.players || [];
   const roomStatus = snapshot?.room_status || 'lobby';
   const scenarioTitle = snapshot?.scenario_title || '';
+
+  if (myStatus === 'pending_approval') {
+    return (
+      <div className="bh-page">
+        <section className="bh-panel" style={{ maxWidth: 640, margin: '8vh auto' }}>
+          <span className="bh-eyebrow">HOST APPROVAL</span>
+          <h2 className="bh-panel-title">等待 Host 批准加入</h2>
+          <p className="bh-panel-desc">
+            房间已经开始。你的角色和连接预检已保存，Host 批准后会自动进入游戏。
+          </p>
+          <div className="bh-muted-box" role="status">
+            房间 {roomId} · 实时连接保持中 · 请勿重复提交角色
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="bh-page" style={{ padding: 0 }}>

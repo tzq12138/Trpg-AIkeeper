@@ -1,12 +1,70 @@
 import uuid
 import json
 import logging
+from typing import Literal
+
 from fastapi import APIRouter, Request, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+
 from .models import RoomCreate
 from .turn_manager import TurnManager
 
 router = APIRouter(prefix="/api/rooms")
 logger = logging.getLogger(__name__)
+
+
+ACTION_TIMING_PRESETS = {
+    "fast": {
+        "input_hint_seconds": 30,
+        "receipt_seconds": 3,
+        "preview_seconds": 15,
+        "resolution_seconds": 90,
+    },
+    "standard": {
+        "input_hint_seconds": 60,
+        "receipt_seconds": 5,
+        "preview_seconds": 30,
+        "resolution_seconds": 180,
+    },
+    "slow": {
+        "input_hint_seconds": 120,
+        "receipt_seconds": 10,
+        "preview_seconds": 60,
+        "resolution_seconds": 300,
+    },
+}
+
+
+class ActionTimingUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input_hint_seconds: StrictInt = Field(ge=1, le=3600)
+    receipt_seconds: StrictInt = Field(ge=1, le=3600)
+    preview_seconds: StrictInt = Field(ge=1, le=3600)
+    resolution_seconds: StrictInt = Field(ge=1, le=3600)
+
+
+class RoomActionSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preset: Literal["fast", "standard", "slow", "custom"] | None = None
+    timing: ActionTimingUpdate | None = None
+    draft_analysis_enabled: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self):
+        if not self.model_fields_set:
+            raise ValueError("At least one action setting is required")
+        if (
+            "draft_analysis_enabled" in self.model_fields_set
+            and self.draft_analysis_enabled is None
+        ):
+            raise ValueError("draft_analysis_enabled must be a boolean")
+        if self.preset == "custom" and self.timing is None:
+            raise ValueError("custom preset requires timing")
+        if self.timing is not None and self.preset != "custom":
+            raise ValueError("timing is only allowed for custom preset")
+        return self
 
 
 @router.post("")
@@ -86,6 +144,54 @@ async def list_my_rooms(request: Request):
         "created_at": str(r.get("created_at", "")),
         "started_at": str(r.get("started_at", "")) if r.get("started_at") else None,
     } for r in rows]
+
+
+@router.patch("/{room_id}/action-settings")
+async def update_room_action_settings(
+    request: Request,
+    room_id: str,
+    body: RoomActionSettingsUpdate,
+):
+    conn = request.app.state.db
+    _verify_owner_or_admin(request, room_id, conn)
+    room = conn.execute(
+        "SELECT action_pacing_preset, action_timing, draft_analysis_enabled "
+        "FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    if not room:
+        raise HTTPException(404, "Room not found")
+
+    preset = body.preset or room["action_pacing_preset"]
+    if body.preset == "custom":
+        timing = body.timing.model_dump()
+    elif body.preset:
+        timing = ACTION_TIMING_PRESETS[body.preset]
+    else:
+        timing = room["action_timing"]
+    draft_analysis_enabled = (
+        body.draft_analysis_enabled
+        if "draft_analysis_enabled" in body.model_fields_set
+        else bool(room["draft_analysis_enabled"])
+    )
+
+    conn.execute(
+        "UPDATE rooms SET action_pacing_preset = %s, action_timing = %s, "
+        "draft_analysis_enabled = %s WHERE room_id = %s",
+        (
+            preset,
+            json.dumps(timing),
+            draft_analysis_enabled,
+            room_id,
+        ),
+    )
+    conn.commit()
+    return {
+        "room_id": room_id,
+        "preset": preset,
+        "timing": timing,
+        "draft_analysis_enabled": draft_analysis_enabled,
+    }
 
 
 @router.get("/{room_id}")

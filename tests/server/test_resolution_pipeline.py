@@ -268,6 +268,32 @@ def test_render_fallback_narrative_handles_identity_question():
     assert "教授" in text
 
 
+def test_render_fallback_narrative_is_action_specific_without_generic_no_change_line():
+    pipeline = ResolutionPipeline(conn=FakeConn(), compiler=MechanicCompiler(api_key=""))
+
+    text = pipeline._render_fallback_narrative(
+        PlayerIntent(
+            action_id="act-look",
+            intent_type="dialogue",
+            declared_intent="我仔细阅读桌上的旧报纸",
+        ),
+        MechanicCompileResult(triggeredMechanic="dialogue"),
+        ResolutionResult(
+            actionId="act-look",
+            roomId="room-1",
+            characterId="char-1",
+            mechanic="dialogue",
+            isSuccess=True,
+        ),
+        {"player_name": "Alice", "xlsx_data": {"name": "菲利普·格雷"}},
+    )
+
+    assert "旧报纸" in text
+    assert "注意力" in text
+    assert "周围暂时没有新的变化" not in text
+    assert "没有明显效果" not in text
+
+
 @pytest.mark.asyncio
 async def test_enrich_dialogue_narrative_accepts_narrative_payload():
     pipeline = ResolutionPipeline(

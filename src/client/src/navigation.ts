@@ -17,7 +17,7 @@ export interface AppRoute {
 }
 
 export type HostTabKey = 'narrative' | 'combat' | 'database' | 'logs' | 'map';
-export type PlayerTabKey = 'action' | 'character' | 'inventory' | 'logs' | 'map';
+export type PlayerTabKey = 'home' | 'action' | 'character' | 'inventory' | 'logs' | 'map';
 
 export const hostTabs: Array<{ key: HostTabKey; label: string; eyebrow: string }> = [
   { key: 'narrative', label: '传说', eyebrow: 'STAGE' },
@@ -28,6 +28,7 @@ export const hostTabs: Array<{ key: HostTabKey; label: string; eyebrow: string }
 ];
 
 export const playerTabs: Array<{ key: PlayerTabKey; label: string; eyebrow: string }> = [
+  { key: 'home', label: '回流', eyebrow: 'HOME' },
   { key: 'action', label: '行动', eyebrow: 'ACT' },
   { key: 'character', label: '技能', eyebrow: 'SKILLS' },
   { key: 'inventory', label: '装备', eyebrow: 'GEAR' },

@@ -33,6 +33,11 @@ def _check_rate_limit(ip: str, limit: int = 5, window: float = 60.0):
     _join_attempts[ip].append(now)
 
 
+def _join_rate_key(client_ip: str, account: dict | None) -> str:
+    account_id = account.get("account_id") if account else None
+    return f"account:{account_id}" if account_id else f"ip:{client_ip}"
+
+
 def _get_character(request: Request) -> dict:
     token = request.headers.get("X-Room-Token", "")
     if not token:
@@ -49,21 +54,67 @@ def _get_character(request: Request) -> dict:
 @router.post("/rooms/{room_id}/join")
 async def join_room(request: Request, room_id: str):
     client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit(client_ip)
     conn = request.app.state.db
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
+    account = _require_v2_join_account(request, dict(room))
+    _check_rate_limit(_join_rate_key(client_ip, account))
     player_token = str(uuid.uuid4())
     character_id = str(uuid.uuid4())[:8]
     # Set status based on room state: active rooms put joiners in pending_approval
     char_status = "pending_approval" if room["status"] == "active" else "joined"
     conn.execute(
-        "INSERT INTO characters (character_id, room_id, player_name, player_token, status) VALUES (%s, %s, %s, %s, %s)",
-        (character_id, room_id, "未命名玩家", player_token, char_status),
+        "INSERT INTO characters (character_id, room_id, player_name, player_token, status, account_id) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (
+            character_id,
+            room_id,
+            "未命名玩家",
+            player_token,
+            char_status,
+            account["account_id"] if account else None,
+        ),
     )
     conn.commit()
     return {"character_id": character_id, "player_token": player_token, "status": char_status}
+
+
+@router.get("/rooms/{room_id}/preflight")
+async def room_preflight(request: Request, room_id: str):
+    conn = request.app.state.db
+    room = conn.execute(
+        "SELECT room_id, status, player_experience_version FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    if not room:
+        raise HTTPException(404, "Room not found")
+    account = get_account_from_token(request)
+    recovered = None
+    if account:
+        recovered = conn.execute(
+            "SELECT character_id FROM characters WHERE room_id = %s AND account_id = %s "
+            "AND status != 'left' ORDER BY character_id LIMIT 1",
+            (room_id, account["account_id"]),
+        ).fetchone()
+    status = room["status"]
+    if status in ("lobby", "draft"):
+        join_mode = "direct"
+    elif status == "active":
+        join_mode = "host_approval"
+    else:
+        join_mode = "closed"
+    return {
+        "room_id": room_id,
+        "rest_ok": True,
+        "websocket_path": "/ws",
+        "room_status": status,
+        "join_mode": join_mode,
+        "requires_login": room.get("player_experience_version") == "v2",
+        "authenticated": bool(account),
+        "recovery_available": bool(recovered),
+        "recovery_character_id": recovered["character_id"] if recovered else None,
+    }
 
 
 @router.get("/rooms/{room_id}/join-info")
@@ -73,6 +124,7 @@ async def get_join_info(request: Request, room_id: str):
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
+    account = _require_v2_join_account(request, dict(room))
 
     room_status = room["status"]
     scenario_id = room.get("scenario_id")
@@ -207,18 +259,19 @@ async def join_room_with_character(
     copy_character_id: str | None = Form(default=None),
 ):
     client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit(client_ip)
     conn = request.app.state.db
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
+    account = _require_v2_join_account(request, dict(room))
+    _check_rate_limit(_join_rate_key(client_ip, account))
     nickname = player_name.strip()
     if not nickname:
         raise HTTPException(400, "Player name is required")
     source_count = sum(1 for x in [preset_id, file, character_data, template_id, copy_character_id] if x)
     if source_count != 1:
         raise HTTPException(400, "Choose exactly one character source")
-    account_id = _optional_account_id(request)
+    account_id = account["account_id"] if account else _optional_account_id(request)
     room_status = room["status"]
     # Status: lobby→joined, active→pending_approval
     char_status = "pending_approval" if room_status == "active" else "joined"
@@ -518,10 +571,19 @@ async def submit_intent(request: Request, intent: PlayerIntent):
     if not char:
         raise HTTPException(403, "Invalid token")
 
+    room = conn.execute(
+        "SELECT status, player_experience_version FROM rooms WHERE room_id = %s",
+        (char["room_id"],),
+    ).fetchone()
+    if (
+        room
+        and room.get("player_experience_version") == "v2"
+        and intent.intent_type != "ready_toggle"
+        and os.getenv("AIKEEPER_DEV_MODE", "").strip() != "1"
+    ):
+        raise HTTPException(409, detail={"code": "v2_action_draft_required"})
     if intent.intent_type == "retroactive_item_claim" or extract_retroactive_claim(intent.declared_intent):
         return await _submit_retroactive_claim(request, dict(char), intent)
-
-    room = conn.execute("SELECT status FROM rooms WHERE room_id = %s", (char["room_id"],)).fetchone()
     is_active = room and room["status"] == "active"
 
     if is_active and intent.intent_type not in ("ready_toggle",):
@@ -986,7 +1048,17 @@ async def get_inventory(request: Request):
 
 @router.post("/skill-check")
 async def skill_check(request: Request, req: SkillCheckRequest):
-    _get_character(request)
+    char = _get_character(request)
+    room = request.app.state.db.execute(
+        "SELECT player_experience_version FROM rooms WHERE room_id = %s",
+        (char["room_id"],),
+    ).fetchone()
+    if (
+        room
+        and room.get("player_experience_version") == "v2"
+        and os.getenv("AIKEEPER_DEV_MODE", "").strip() != "1"
+    ):
+        raise HTTPException(409, detail={"code": "v2_action_draft_required"})
     result = roll_skill_check(req.skill_value, req.difficulty, req.bonus_dice)
     result["skill_name"] = req.skill_name
     return result
@@ -1063,6 +1135,15 @@ def _optional_account_id(request: Request) -> str | None:
         return account["account_id"] if account else None
     except Exception:
         return None
+
+
+def _require_v2_join_account(request: Request, room: dict) -> dict | None:
+    account = get_account_from_token(request)
+    if room.get("player_experience_version") != "v2" or account:
+        return account
+    if os.getenv("AIKEEPER_DEV_MODE", "").strip() == "1":
+        return None
+    raise HTTPException(401, detail={"code": "login_required"})
 
 
 def _json_val(value):
