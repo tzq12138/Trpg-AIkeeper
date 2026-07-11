@@ -28,6 +28,13 @@ class ConnectionManager:
                     room_id, connection_id, len(self._connections))
 
     def register_accepted(self, websocket: WebSocket, room_id: str, connection_id: str):
+        # Dedup: close old connection if one already exists for this room+conn_id
+        old = self._connections.setdefault(room_id, {}).get(connection_id)
+        if old is not None and old is not websocket:
+            try:
+                old.close(code=1000, reason="replaced")
+            except Exception:
+                pass
         self._connections.setdefault(room_id, {})[connection_id] = websocket
 
     def disconnect(self, room_id: str, connection_id: str):

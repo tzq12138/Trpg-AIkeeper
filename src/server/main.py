@@ -320,15 +320,23 @@ async def player_ws_endpoint(websocket: WebSocket, room_id: str, token: str, las
         for ev in events:
             # Use standard EngineEvent format so the frontend parser sees
             # roomSequence / type / payload matching its EngineEvent interface.
-            catch_up_event = EngineEvent(
-                event_id=f"catchup:{ev.sequence}",
-                room_id=room_id,
-                type=ev.event_type,
-                room_sequence=ev.sequence,
-                audience=ev.audience,
-                payload=json.loads(ev.payload) if isinstance(ev.payload, str) else (ev.payload or {}),
-            )
-            await websocket.send_text(catch_up_event.model_dump_json(by_alias=True))
+            try:
+                catch_up_event = EngineEvent(
+                    event_id=f"catchup:{ev.sequence}",
+                    room_id=room_id,
+                    type=ev.event_type,
+                    room_sequence=ev.sequence,
+                    audience=ev.audience,
+                    payload=json.loads(ev.payload) if isinstance(ev.payload, str) else (ev.payload or {}),
+                )
+                await websocket.send_text(catch_up_event.model_dump_json(by_alias=True))
+            except Exception as catchup_err:
+                err_msg = str(catchup_err) or type(catchup_err).__name__
+                logger.warning("Player %s catch-up skip seq=%s type=%s: %s",
+                               character_id, ev.sequence, ev.event_type, err_msg)
+                # If the WS is dead, stop catch-up — can't send any more events
+                if "Cannot call" in err_msg or "close message" in err_msg:
+                    break
         ws_manager.update_last_sequence(room_id, connection_id, last_sequence)
 
         while True:

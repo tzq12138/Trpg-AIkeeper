@@ -250,8 +250,26 @@ def main():
         else:
             _check_step(f"Port {port}", True, "free")
 
-    # ── 3.5. Log directory & file handles ──────────────────────────
-    log_date_dir = ROOT / "log" / datetime.now().strftime("%Y-%m-%d")
+    # ── 3.5. Log cleanup (keep 7 days) ─────────────────────────────
+    log_root = ROOT / "log"
+    log_root.mkdir(parents=True, exist_ok=True)
+    _now_ts = datetime.now().timestamp()
+    _retention_secs = 7 * 24 * 3600
+    _cleaned = 0
+    for _entry in log_root.iterdir():
+        if _entry.is_dir() and _entry.name != "." and _entry.name != "..":
+            try:
+                _dir_ts = datetime.strptime(_entry.name, "%Y-%m-%d").timestamp()
+                if _now_ts - _dir_ts > _retention_secs:
+                    import shutil
+                    shutil.rmtree(_entry, ignore_errors=True)
+                    _cleaned += 1
+            except (ValueError, OSError):
+                pass
+    if _cleaned:
+        print(_c("DIM", f"  Log cleanup: removed {_cleaned} old dir(s) (7-day retention)\n"))
+
+    log_date_dir = log_root / datetime.now().strftime("%Y-%m-%d")
     log_date_dir.mkdir(parents=True, exist_ok=True)
 
     combined_fh = open(log_date_dir / "combined.log", "w", encoding="utf-8")
@@ -277,6 +295,7 @@ def main():
 
     be_env = sub_env.copy()
     be_env["LOG_FILE"] = str(log_date_dir / "backend.log")
+    be_env["AIKEEPER_DEV_MODE"] = "1"
 
     # Backend process
     be = subprocess.Popen(
