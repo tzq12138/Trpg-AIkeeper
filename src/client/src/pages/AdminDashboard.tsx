@@ -48,6 +48,7 @@ type ScenarioSummary = {
   publish_status?: string;
   latest_import_job_id?: string;
   latest_import_job_status?: string;
+  latest_import_job_retryable?: boolean;
 };
 
 type ScenarioVersion = {
@@ -175,13 +176,35 @@ export function recoverScenarioImportResult(
 ): Record<string, any> | null {
   if (
     scenario.import_status !== 'awaiting_provider'
+    && !scenario.latest_import_job_retryable
     || !scenario.latest_import_job_id
   ) return null;
   return normalizeScenarioImportResult({
     scenario_id: scenario.scenario_id,
     status: scenario.latest_import_job_status || scenario.import_status,
     job_id: scenario.latest_import_job_id,
+    retryable: scenario.latest_import_job_retryable === true,
   });
+}
+
+export function chooseScenarioImportResult(
+  current: Record<string, any> | null,
+  recovery: Record<string, any> | null,
+  selectedScenarioId: string,
+): Record<string, any> | null {
+  if (!recovery) {
+    if (
+      current?.scenario_id === selectedScenarioId
+      && (current.scenario_version_id || current.status === 'draft_ready')
+    ) return current;
+    return null;
+  }
+  if (
+    current
+    && current.scenario_id === recovery.scenario_id
+    && (current.scenario_version_id || current.status === 'draft_ready')
+  ) return current;
+  return recovery;
 }
 
 function sanitizeCitationText(value: unknown) {
@@ -418,7 +441,8 @@ export function ScenarioImportStatusCard({
   if (!importResult) return null;
 
   const status = getScenarioStatusMeta(importResult.status);
-  const canRetry = importResult.status === 'awaiting_provider' && !!importResult.job_id;
+  const canRetry = !!importResult.job_id
+    && (importResult.status === 'awaiting_provider' || importResult.retryable === true);
 
   return (
     <div className="bh-muted-box" style={{ marginTop: 8 }}>
@@ -966,11 +990,67 @@ type ScenarioMapDraft = {
   paths: Array<Record<string, unknown>>;
 };
 
-export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
+export type ScenarioAssetSummary = {
+  asset_id: string;
+  original_name: string;
+  mime_type: string;
+};
+
+export function buildScenarioMapGenerateEndpoint(
+  scenarioId: string,
+  scenarioVersionId: string,
+): string {
+  const base = `/api/admin/scenarios/${encodeURIComponent(scenarioId)}/map/generate`;
+  return scenarioVersionId
+    ? `${base}?scenario_version_id=${encodeURIComponent(scenarioVersionId)}`
+    : base;
+}
+
+export function MapBaseAssetControl({
+  assets,
+  disabled,
+  selectedAssetId,
+  onChange,
+}: {
+  assets: ScenarioAssetSummary[];
+  disabled: boolean;
+  selectedAssetId: string;
+  onChange: (assetId: string) => void;
+}) {
+  const imageAssets = assets.filter((asset) => asset.mime_type.startsWith('image/'));
+  return (
+    <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+      地图底图
+      <select
+        aria-label="地图底图"
+        className="bh-input"
+        disabled={disabled}
+        value={selectedAssetId}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">不使用图片底图</option>
+        {imageAssets.map((asset) => (
+          <option key={asset.asset_id} value={asset.asset_id}>{asset.original_name}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+export function MapDraftReviewPanel({
+  scenarioId,
+  scenarioVersionId = '',
+  assets = [],
+}: {
+  scenarioId: string;
+  scenarioVersionId?: string;
+  assets?: ScenarioAssetSummary[];
+}) {
   const [mapDraft, setMapDraft] = useState<ScenarioMapDraft | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [previewUrl, setPreviewUrl] = useState('');
 
   const loadDraft = async () => {
     if (!scenarioId) return;
@@ -989,11 +1069,37 @@ export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
     loadDraft();
   }, [scenarioId]);
 
+  const selectedAssetId = String(mapDraft?.baseAsset?.assetId || '');
+  useEffect(() => {
+    if (!selectedAssetId) {
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return '';
+      });
+      return;
+    }
+    let active = true;
+    fetch(
+      `/api/admin/scenarios/${encodeURIComponent(scenarioId)}/assets/${encodeURIComponent(selectedAssetId)}/content`,
+      { headers: getAuthHeader() },
+    )
+      .then((response) => response.ok ? response.blob() : null)
+      .then((blob) => {
+        if (!blob || !active) return;
+        setPreviewUrl((current) => {
+          if (current) URL.revokeObjectURL(current);
+          return URL.createObjectURL(blob);
+        });
+      })
+      .catch(() => setPreviewUrl(''));
+    return () => { active = false; };
+  }, [scenarioId, selectedAssetId]);
+
   const generate = async () => {
     setSaving(true);
     setError('');
     try {
-      setMapDraft(await api(`/api/admin/scenarios/${encodeURIComponent(scenarioId)}/map/generate`, { method: 'POST' }));
+      setMapDraft(await api(buildScenarioMapGenerateEndpoint(scenarioId, scenarioVersionId), { method: 'POST' }));
     } catch (generationError) {
       setError(sanitizeAdminScenarioError(generationError));
     } finally {
@@ -1018,6 +1124,32 @@ export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
         }),
       });
       setMapDraft({ ...mapDraft, mapType });
+    } catch (saveError) {
+      setError(sanitizeAdminScenarioError(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveBaseAsset = async (assetId: string) => {
+    if (!mapDraft || mapDraft.status !== 'draft') return;
+    const mapType = assetId && mapDraft.mapType === 'graph' ? 'hybrid' : mapDraft.mapType;
+    const baseAsset = assetId ? { assetId } : {};
+    setSaving(true);
+    setError('');
+    try {
+      await api(`/api/admin/scenarios/${encodeURIComponent(scenarioId)}/map`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          mapType,
+          baseAsset,
+          nodes: mapDraft.nodes,
+          edges: mapDraft.edges,
+          regions: mapDraft.regions,
+          paths: mapDraft.paths,
+        }),
+      });
+      setMapDraft({ ...mapDraft, mapType, baseAsset });
     } catch (saveError) {
       setError(sanitizeAdminScenarioError(saveError));
     } finally {
@@ -1064,6 +1196,19 @@ export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
               <option value="hybrid">混合地图</option>
             </select>
           </label>
+          <MapBaseAssetControl
+            assets={assets}
+            disabled={saving || mapDraft.status !== 'draft'}
+            selectedAssetId={selectedAssetId}
+            onChange={(assetId) => void saveBaseAsset(assetId)}
+          />
+          {previewUrl && (
+            <img
+              alt="地图底图预览"
+              src={previewUrl}
+              style={{ width: '100%', maxHeight: 320, objectFit: 'contain', border: '3px solid var(--bh-black)' }}
+            />
+          )}
         </div>
       ) : (
         <div className="bh-muted-box" style={{ marginTop: 8 }}>尚未生成地图草稿；可先发布文字场景模式。</div>
@@ -1077,6 +1222,229 @@ export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
         </button>
       </div>
       {error && <div className="bh-muted-box" style={{ color: 'var(--bh-red)', marginTop: 8 }}>{error}</div>}
+    </div>
+  );
+}
+
+export type AssetBindingTarget = {
+  target_type: 'map' | 'branch_node' | 'scene' | 'item' | 'clue' | 'npc' | 'ending';
+  target_key: string;
+  label: string;
+};
+
+export type ScenarioAssetBinding = {
+  binding_id: string;
+  asset_id: string;
+  original_name: string;
+  target_type: AssetBindingTarget['target_type'];
+  target_key: string;
+  confidence: number;
+  evidence: Record<string, unknown>;
+  generated_by: string;
+  status: 'draft' | 'confirmed' | 'rejected' | 'stale';
+};
+
+function AdminAssetThumbnail({
+  scenarioId,
+  assetId,
+  alt,
+}: {
+  scenarioId: string;
+  assetId: string;
+  alt: string;
+}) {
+  const [src, setSrc] = useState('');
+  useEffect(() => {
+    let active = true;
+    fetch(
+      `/api/admin/scenarios/${encodeURIComponent(scenarioId)}/assets/${encodeURIComponent(assetId)}/content`,
+      { headers: getAuthHeader() },
+    )
+      .then((response) => response.ok ? response.blob() : null)
+      .then((blob) => {
+        if (blob && active) setSrc(URL.createObjectURL(blob));
+      })
+      .catch(() => setSrc(''));
+    return () => {
+      active = false;
+      if (src) URL.revokeObjectURL(src);
+    };
+  }, [scenarioId, assetId]);
+  return (
+    <div aria-label={alt} data-asset-id={assetId}>
+      {src && <img alt={alt} src={src} style={{ width: '100%', maxHeight: 180, objectFit: 'contain' }} />}
+    </div>
+  );
+}
+
+export function AssetBindingReviewCard({
+  binding,
+  disabled,
+  scenarioId,
+  targets,
+  onReview,
+}: {
+  binding: ScenarioAssetBinding;
+  disabled: boolean;
+  scenarioId: string;
+  targets: AssetBindingTarget[];
+  onReview: (
+    bindingId: string,
+    targetType: AssetBindingTarget['target_type'],
+    targetKey: string,
+    status: ScenarioAssetBinding['status'],
+  ) => void;
+}) {
+  const [selection, setSelection] = useState(
+    JSON.stringify([binding.target_type, binding.target_key]),
+  );
+  const [targetType, targetKey] = JSON.parse(selection) as [AssetBindingTarget['target_type'], string];
+  return (
+    <article className="bh-muted-box" style={{ display: 'grid', gap: 8 }}>
+      <AdminAssetThumbnail
+        scenarioId={scenarioId}
+        assetId={binding.asset_id}
+        alt={`${binding.original_name} 缩略图`}
+      />
+      <strong>{binding.original_name}</strong>
+      <span>
+        {binding.status} · {binding.generated_by} · {Math.round(binding.confidence * 100)}%
+      </span>
+      <select
+        aria-label={`${binding.original_name} 绑定目标`}
+        className="bh-input"
+        disabled={disabled || binding.status === 'confirmed'}
+        value={selection}
+        onChange={(event) => setSelection(event.target.value)}
+      >
+        <option value={JSON.stringify(['scene', ''])}>未匹配</option>
+        {targets.map((target) => (
+          <option
+            key={`${target.target_type}:${target.target_key}`}
+            value={JSON.stringify([target.target_type, target.target_key])}
+          >
+            {target.label} · {target.target_type}
+          </option>
+        ))}
+      </select>
+      <code>{JSON.stringify(binding.evidence)}</code>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          className="bh-button bh-button--yellow"
+          disabled={disabled || !targetKey || binding.status === 'confirmed'}
+          onClick={() => onReview(binding.binding_id, targetType, targetKey, 'confirmed')}
+          type="button"
+        >
+          确认绑定
+        </button>
+        <button
+          className="bh-button"
+          disabled={disabled || binding.status === 'rejected'}
+          onClick={() => onReview(binding.binding_id, targetType, targetKey, 'rejected')}
+          type="button"
+        >
+          拒绝
+        </button>
+      </div>
+    </article>
+  );
+}
+
+export function ScenarioAssetBindingsPanel({
+  scenarioId,
+  scenarioVersionId,
+}: {
+  scenarioId: string;
+  scenarioVersionId: string;
+}) {
+  const [bindings, setBindings] = useState<ScenarioAssetBinding[]>([]);
+  const [targets, setTargets] = useState<AssetBindingTarget[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const endpoint = scenarioId && scenarioVersionId
+    ? `/api/admin/scenarios/${encodeURIComponent(scenarioId)}/versions/${encodeURIComponent(scenarioVersionId)}/asset-bindings`
+    : '';
+  const applyPayload = (payload: { bindings?: ScenarioAssetBinding[]; targets?: AssetBindingTarget[] }) => {
+    setBindings(payload.bindings || []);
+    setTargets(payload.targets || []);
+  };
+  const load = async () => {
+    if (!endpoint) {
+      applyPayload({});
+      return;
+    }
+    try {
+      applyPayload(await api(endpoint));
+    } catch {
+      applyPayload({});
+    }
+  };
+  useEffect(() => { void load(); }, [endpoint]);
+
+  const generate = async () => {
+    if (!endpoint) return;
+    setSaving(true);
+    setError('');
+    try {
+      applyPayload(await api(`${endpoint}/generate`, { method: 'POST' }));
+    } catch (generationError) {
+      setError(sanitizeAdminScenarioError(generationError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const review = async (
+    bindingId: string,
+    targetType: AssetBindingTarget['target_type'],
+    targetKey: string,
+    status: ScenarioAssetBinding['status'],
+  ) => {
+    if (!endpoint) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api(`${endpoint}/${encodeURIComponent(bindingId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ target_type: targetType, target_key: targetKey, status }),
+      });
+      await load();
+    } catch (reviewError) {
+      setError(sanitizeAdminScenarioError(reviewError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bh-panel" style={{ padding: 12, marginTop: 12 }}>
+      <span className="bh-eyebrow">ASSET BINDINGS</span>
+      <strong>图片素材绑定</strong>
+      <p style={{ fontSize: 12, color: 'var(--bh-dim)' }}>
+        只有确认后的图片才会出现在对应条目、线索、物品或结局中。
+      </p>
+      <button
+        className="bh-button bh-button--yellow"
+        disabled={saving || !endpoint}
+        onClick={() => void generate()}
+        type="button"
+      >
+        {saving ? '匹配中...' : '自动匹配素材'}
+      </button>
+      <div className="bh-preset-list" style={{ marginTop: 8 }}>
+        {bindings.map((binding) => (
+          <AssetBindingReviewCard
+            key={binding.binding_id}
+            binding={binding}
+            disabled={saving}
+            scenarioId={scenarioId}
+            targets={targets}
+            onReview={review}
+          />
+        ))}
+      </div>
+      {error && <div className="bh-muted-box" style={{ color: 'var(--bh-red)' }}>{error}</div>}
     </div>
   );
 }
@@ -1172,6 +1540,11 @@ export function ScenariosPanel() {
 
   const selectScenario = async (sid: string, preferredVersionId?: string) => {
     setSelectedId(sid);
+    const selectedScenario = scenarios.find((scenario) => scenario.scenario_id === sid);
+    const recovery = selectedScenario ? recoverScenarioImportResult(selectedScenario) : null;
+    if (recovery) {
+      setImportResult((current) => chooseScenarioImportResult(current, recovery, sid));
+    } else setImportResult((current) => chooseScenarioImportResult(current, null, sid));
     loadAssets(sid);
     await loadVersions(sid, preferredVersionId);
   };
@@ -1430,7 +1803,15 @@ export function ScenariosPanel() {
               )}
             </div>
 
-            <MapDraftReviewPanel scenarioId={selectedId} />
+            <MapDraftReviewPanel
+              scenarioId={selectedId}
+              scenarioVersionId={selectedVersionId}
+              assets={assets}
+            />
+            <ScenarioAssetBindingsPanel
+              scenarioId={selectedId}
+              scenarioVersionId={selectedVersionId}
+            />
 
             <label className="bh-upload-box" style={{ marginTop: 12 }}>
               <span>{uploading ? '上传中...' : '上传素材文件'}</span>

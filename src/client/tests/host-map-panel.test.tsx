@@ -1,6 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, test } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 
 function createStorageMock(): Storage {
@@ -19,7 +20,7 @@ Object.defineProperty(globalThis, 'sessionStorage', { value: createStorageMock()
 
 
 describe('RegionFogControls', () => {
-  test('renders current fog state and reversible host controls', async () => {
+  test('renders current fog state as read-only director evidence', async () => {
     const { RegionFogControls } = await import('../src/components/HostMapPanel');
     const html = renderToStaticMarkup(
       <RegionFogControls
@@ -35,7 +36,20 @@ describe('RegionFogControls', () => {
     expect(html).toContain('区域迷雾');
     expect(html).toContain('图书馆：已显示');
     expect(html).toContain('地下室：迷雾中');
-    expect(html).toContain('雾化区域');
-    expect(html).toContain('揭示区域');
+    expect(html).toContain('只读');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('雾化区域');
+    expect(html).not.toContain('揭示区域');
+  });
+
+  test('does not retain dangerous map mutation POST handlers in source', () => {
+    const source = readFileSync(new URL('../src/components/HostMapPanel.tsx', import.meta.url), 'utf8');
+
+    expect(source).not.toContain('/map/reveal');
+    expect(source).not.toContain('/map/move-character');
+    expect(source).not.toContain('/visibility');
+    expect(source).not.toContain('handleForceMove');
+    expect(source).not.toContain('handleReveal');
+    expect(source).not.toContain('handleHide');
   });
 });

@@ -34,34 +34,24 @@ interface HostMapPanelProps {
 export function RegionFogControls({
   regions,
   fogRegions,
-  onSetVisibility,
   disabled = false,
 }: {
   regions: HostMapRegion[];
   fogRegions: string[];
-  onSetVisibility: (regionId: string, visible: boolean) => void;
   disabled?: boolean;
 }) {
   if (regions.length === 0) return null;
   const fogged = new Set(fogRegions);
   return (
     <div className="bh-map-info" style={{ marginTop: 12, padding: 12, border: '2px solid var(--bh-black)' }}>
-      <span className="bh-eyebrow" style={{ fontSize: 9 }}>区域迷雾</span>
+      <span className="bh-eyebrow" style={{ fontSize: 9 }}>区域迷雾 · 只读</span>
       <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
         {regions.map((region) => {
           const visible = !fogged.has(region.regionId);
           return (
             <div key={region.regionId} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
               <span style={{ fontSize: 12 }}>{region.label}：{visible ? '已显示' : '迷雾中'}</span>
-              <button
-                className={visible ? 'bh-button' : 'bh-button bh-button--yellow'}
-                style={{ fontSize: 11, padding: '4px 8px' }}
-                type="button"
-                disabled={disabled}
-                onClick={() => onSetVisibility(region.regionId, !visible)}
-              >
-                {visible ? '雾化区域' : '揭示区域'}
-              </button>
+              <span className="bh-eyebrow" style={{ fontSize: 9 }}>{disabled ? '只读' : '只读'}</span>
             </div>
           );
         })}
@@ -75,7 +65,6 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
   const [loading, setLoading] = useState(true);
   const [mapStatus, setMapStatus] = useState('no_map');
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [operationPending, setOperationPending] = useState(false);
 
   const fetchMap = useCallback(() => {
     const token = getSlotValue('owner_token') || '';
@@ -99,68 +88,6 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
   useEffect(() => {
     fetchMap();
   }, [fetchMap, mapRefresh]);
-
-  const handleReveal = async (nodeId: string) => {
-    setOperationPending(true);
-    const token = getSlotValue('owner_token') || '';
-    try {
-      await fetch(`/api/host/${encodeURIComponent(roomId)}/map/reveal`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
-        body: JSON.stringify({ node_id: nodeId, visible: true }),
-      });
-    } catch { /* ignore */ }
-    fetchMap();
-    setOperationPending(false);
-  };
-
-  const handleHide = async (nodeId: string) => {
-    setOperationPending(true);
-    const token = getSlotValue('owner_token') || '';
-    try {
-      await fetch(`/api/host/${encodeURIComponent(roomId)}/map/reveal`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
-        body: JSON.stringify({ node_id: nodeId, visible: false }),
-      });
-    } catch { /* ignore */ }
-    fetchMap();
-    setOperationPending(false);
-  };
-
-  const handleRegionVisibility = async (regionId: string, visible: boolean) => {
-    setOperationPending(true);
-    const token = getSlotValue('owner_token') || '';
-    try {
-      await fetch(`/api/host/${encodeURIComponent(roomId)}/map/regions/${encodeURIComponent(regionId)}/visibility`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
-        body: JSON.stringify({ visible }),
-      });
-    } catch { /* ignore */ }
-    fetchMap();
-    setOperationPending(false);
-  };
-
-  const handleForceMove = async (nodeId: string) => {
-    if (!mapData) return;
-    // Find a character to move — use first player with a known position
-    const players = Object.entries(mapData.playerPositions || {});
-    if (players.length === 0) return;
-    const [characterId] = players[0];
-    setOperationPending(true);
-    const token = getSlotValue('owner_token') || '';
-    try {
-      // Use the host move-character endpoint
-      await fetch(`/api/host/${encodeURIComponent(roomId)}/map/move-character`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
-        body: JSON.stringify({ character_id: characterId, node_id: nodeId }),
-      });
-    } catch { /* ignore */ }
-    fetchMap();
-    setOperationPending(false);
-  };
 
   if (loading) {
     return (
@@ -212,10 +139,6 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
           <span>隐藏 {mapData.hiddenNodes?.length || 0}</span>
         </div>
       </div>
-
-      {operationPending && (
-        <div className="bh-muted-box" style={{ marginBottom: 8 }}>操作已提交...</div>
-      )}
 
       <div className="bh-map-grid" style={{ position: 'relative', minHeight: 300, border: '2px solid var(--bh-black)' }}>
         {mapData.nodes.map((node) => {
@@ -289,8 +212,7 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
           label: mapData.nodes.find((node) => node.nodeId === region.nodeId)?.name || region.regionId,
         }))}
         fogRegions={mapData.fogRegions || []}
-        disabled={operationPending}
-        onSetVisibility={handleRegionVisibility}
+        disabled
       />
 
       {/* Selected node detail */}
@@ -308,52 +230,7 @@ export default function HostMapPanel({ roomId, mapRefresh }: HostMapPanelProps) 
               )}
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
-              {mapData.hiddenNodes?.includes(selected.nodeId) ? (
-                <button
-                  className="bh-button bh-button--yellow"
-                  style={{ fontSize: 11, padding: '4px 8px' }}
-                  onClick={() => handleReveal(selected.nodeId)}
-                  type="button"
-                >
-                  揭示节点
-                </button>
-              ) : (
-                <button
-                  className="bh-button"
-                  style={{ fontSize: 11, padding: '4px 8px' }}
-                  onClick={() => handleHide(selected.nodeId)}
-                  type="button"
-                >
-                  隐藏节点
-                </button>
-              )}
-              {Object.keys(playerPositions).length > 0 && (
-                <select
-                  style={{
-                    fontSize: 11, padding: '4px 8px',
-                    border: '2px solid var(--bh-black)',
-                    background: 'var(--bh-paper)',
-                    fontFamily: 'inherit',
-                  }}
-                  onChange={(e) => {
-                    const charId = e.target.value;
-                    if (charId) {
-                      const token = getSlotValue('owner_token') || '';
-                      fetch(`/api/host/${encodeURIComponent(roomId)}/map/move-character`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
-                        body: JSON.stringify({ character_id: charId, node_id: selected.nodeId }),
-                      }).then(() => fetchMap());
-                    }
-                  }}
-                  value=""
-                >
-                  <option value="">强制移动...</option>
-                  {Object.entries(playerPositions).map(([charId, _nodeId]) => (
-                    <option key={charId} value={charId}>角色 {charId.slice(0, 4)}</option>
-                  ))}
-                </select>
-              )}
+              <span className="bh-eyebrow" style={{ fontSize: 9 }}>只读导演台</span>
             </div>
           </div>
         </div>

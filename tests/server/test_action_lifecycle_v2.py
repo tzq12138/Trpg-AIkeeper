@@ -9,6 +9,20 @@ from src.server.engine.state_service import StateService
 from src.server.models import MechanicCompileResult, ResolutionResult
 
 
+def _verified_params(**extra):
+    payload = {
+        "director_plan": {
+            "context_version": 0,
+            "preconditions": [],
+            "permissions": [],
+            "state_patch": [],
+            "state_patch_authority": "advisory_only",
+        }
+    }
+    payload.update(extra)
+    return payload
+
+
 def _insert_action(test_db, *, action_id="action-v2", status="queued"):
     test_db.execute(
         "INSERT INTO rooms (room_id, owner_token) VALUES ('room-v2', 'owner-token')"
@@ -19,9 +33,9 @@ def _insert_action(test_db, *, action_id="action-v2", status="queued"):
     )
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, draft_id, intent_type, "
-        "declared_intent, status) VALUES (%s, 'room-v2', 'char-v2', 'draft-v2', "
-        "'dialogue', '观察房间', %s)",
-        (action_id, status),
+        "declared_intent, params, status) VALUES (%s, 'room-v2', 'char-v2', 'draft-v2', "
+        "'dialogue', '观察房间', %s, %s)",
+        (action_id, json.dumps(_verified_params(), ensure_ascii=False), status),
     )
 
 
@@ -88,6 +102,11 @@ class _SkillCheckCompiler:
             skillName="侦查",
             difficulty="regular",
         )
+
+
+class _DialogueCompiler:
+    async def compile(self, _intent, _scenario, _character):
+        return MechanicCompileResult(triggeredMechanic="dialogue")
 
 
 class _HiddenModifierCompiler:
@@ -171,7 +190,7 @@ async def test_v2_pipeline_records_completed_timeline_and_verifiable_rule_receip
     test_db.execute(
         "UPDATE actions SET intent_type = 'skill_check', declared_intent = '我仔细侦查房间', "
         "rule_set_version_id = 'coc7-v1', params = %s WHERE action_id = 'action-v2'",
-        (json.dumps({"skillName": "侦查"}),),
+        (json.dumps(_verified_params(skillName="侦查"), ensure_ascii=False),),
     )
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "
@@ -223,10 +242,58 @@ async def test_v2_pipeline_records_completed_timeline_and_verifiable_rule_receip
 
 
 @pytest.mark.asyncio
+async def test_v2_background_item_claim_adds_inventory_exactly_once(test_db):
+    _insert_action(test_db)
+    test_db.execute(
+        "UPDATE characters SET xlsx_data = %s WHERE character_id = 'char-v2'",
+        (json.dumps({"background": "宝贵之物：父亲留下的黄铜打火机"}),),
+    )
+    test_db.execute(
+        "UPDATE actions SET intent_type = 'retroactive_item_claim', declared_intent = %s, "
+        "params = %s WHERE action_id = 'action-v2'",
+        (
+            "我拿出黄铜打火机",
+            json.dumps(
+                _verified_params(
+                    **{
+                        "claimedItemName": "黄铜打火机",
+                        "justificationText": "这是父亲留下的遗物",
+                    }
+                ),
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    pipeline = ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        state_service=StateService(test_db),
+    )
+
+    first_result = await pipeline.resolve_action("action-v2")
+    second_result = await pipeline.resolve_action("action-v2")
+
+    assert first_result["status"] == "completed"
+    assert second_result["status"] == "completed"
+    items = test_db.execute(
+        "SELECT name, quantity, source FROM inventory WHERE character_id = 'char-v2'"
+    ).fetchall()
+    assert [dict(item) for item in items] == [
+        {"name": "黄铜打火机", "quantity": 1, "source": "backstory"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_v2_pipeline_does_not_complete_or_project_when_state_persistence_fails(test_db):
     _insert_action(test_db)
     test_db.execute(
-        "UPDATE actions SET intent_type = 'use_item', params = '{}' WHERE action_id = 'action-v2'"
+        "UPDATE actions SET intent_type = 'use_item', params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(_verified_params(), ensure_ascii=False),),
     )
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "
@@ -274,7 +341,7 @@ async def test_failed_v2_pushed_roll_waits_for_host_consequence_without_state_ch
     test_db.execute(
         "UPDATE actions SET intent_type = 'skill_check', params = %s "
         "WHERE action_id = 'action-v2'",
-        (json.dumps({"skillName": "侦查", "pushed": True}),),
+        (json.dumps(_verified_params(skillName="侦查", pushed=True), ensure_ascii=False),),
     )
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "
@@ -313,7 +380,8 @@ async def test_v2_rule_explanation_uses_authoritative_runtime_before_and_after_s
         (json.dumps({"skills": {}, "luck": 40}),),
     )
     test_db.execute(
-        "UPDATE actions SET intent_type = 'use_item', params = '{}' WHERE action_id = 'action-v2'"
+        "UPDATE actions SET intent_type = 'use_item', params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(_verified_params(), ensure_ascii=False),),
     )
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "
@@ -418,7 +486,7 @@ async def test_player_receipt_applies_hidden_modifier_and_never_exposes_source(
     test_db.execute(
         "UPDATE actions SET intent_type = 'skill_check', params = %s "
         "WHERE action_id = 'action-v2'",
-        (json.dumps({"skillName": "侦查"}),),
+        (json.dumps(_verified_params(skillName="侦查"), ensure_ascii=False),),
     )
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "

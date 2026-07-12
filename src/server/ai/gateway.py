@@ -7,6 +7,7 @@ from typing import Any
 
 from ..config import Settings
 from .contracts import KpResponse, KnowledgeAnswer, NarrativePayload
+from ..models import DirectorPlanDTO, NarrationResultDTO
 from .providers import (
     BaseAiProvider,
     ConfiguredOpenAIProvider,
@@ -25,9 +26,46 @@ TASK_SCHEMAS: dict[str, Any] = {
     "structure_scenario": None,        # validated by caller
     "compile_mechanic": None,           # validated by caller
     "generate_map": None,               # validated by caller
+    "bind_scenario_assets": None,       # validated by caller
+    "analyze_director_action": DirectorPlanDTO,
+    "narrate_action": None,            # validated after local action_id/provider_source injection
     "query_knowledge": KnowledgeAnswer,
     "resolve_sanity": KpResponse,
     "resolve_combat_round": KpResponse,
+}
+
+DIRECTOR_REQUIRED_KEYS = {
+    "action_id",
+    "context_version",
+    "actor_display_name",
+    "declared_intent",
+    "interpreted_intent",
+    "intent_type",
+    "preconditions",
+    "mechanic_plan",
+    "state_patch",
+    "event_plan",
+    "semantic_progression",
+    "npc_reactions",
+    "time_impact",
+    "visibility",
+    "basis_refs",
+    "citations",
+    "confidence",
+    "requires_player_clarification",
+    "clarification_options",
+    "requires_host_exception",
+    "exception_reason",
+    "narration_mode",
+}
+
+DIRECTOR_PROVIDER_CORE_KEYS = {
+    "interpreted_intent",
+    "intent_type",
+    "confidence",
+    "requires_player_clarification",
+    "requires_host_exception",
+    "narration_mode",
 }
 
 
@@ -116,6 +154,68 @@ class AiGateway:
         )
         return result if isinstance(result, dict) else None
 
+    async def analyze_director_action(self, context: dict, room_id: str | None = None) -> dict | None:
+        prepared = dict(context)
+        prepared["system_prompt"] = (
+            "You are AI-Keeper Director. Return structured JSON only. "
+            "Do not directly mutate authoritative game state; state_patch is advisory only. "
+            "Required fields include interpreted_intent, intent_type, confidence, "
+            "requires_player_clarification, requires_host_exception, narration_mode. "
+            "Use actor_display_name for narration identity, not character_id."
+        )
+        prepared["user_message"] = json.dumps(context, ensure_ascii=False)
+        result = await self._call_providers(
+            "analyze_director_action",
+            prepared,
+            room_id,
+            disable_local_fallback=True,
+        )
+        if isinstance(result, DirectorPlanDTO):
+            return result.model_dump(mode="json", by_alias=True)
+        if not isinstance(result, dict):
+            return None
+        try:
+            validated = DirectorPlanDTO(**result)
+        except Exception:
+            return None
+        return validated.model_dump(mode="json", by_alias=True)
+
+    async def narrate_action(
+        self,
+        context: dict,
+        room_id: str | None = None,
+        *,
+        action_id: str | None = None,
+    ) -> dict | None:
+        local_action_id = str(action_id or context.get("local_action_id") or context.get("action_id") or "")
+        prepared = _scrub_narrator_provider_payload(context)
+        prepared["system_prompt"] = (
+            "You are AI-Keeper Narrator. Return JSON only. "
+            "Narrate only from allowed_facts and deterministic_rule_outcome. "
+            "Do not create state_patch, mutations, hidden facts, room_id, character_id, action_id, or internal IDs. "
+            "Required fields: context_version, director_plan_digest, narrative_text, "
+            "environment_changes, interactable_objects, open_question, redacted_citations, "
+            "style_pack_version, fact_refs, status. Do not return provider_source."
+        )
+        prepared["user_message"] = json.dumps(
+            _scrub_narrator_provider_payload(context),
+            ensure_ascii=False,
+        )
+        result = await self._call_providers(
+            "narrate_action",
+            prepared,
+            room_id,
+            disable_local_fallback=True,
+        )
+        if not isinstance(result, dict):
+            return None
+        result = {**result, "action_id": local_action_id}
+        try:
+            validated = NarrationResultDTO(**result)
+        except Exception:
+            return None
+        return validated.model_dump(mode="json", by_alias=True)
+
     async def structure_scenario(self, raw_text: str) -> dict:
         # Truncate to avoid 400 from DeepSeek (matches MCP-side 12000-char limit).
         # 59-page PDFs can easily exceed model context windows.
@@ -184,6 +284,47 @@ class AiGateway:
         if not isinstance(nodes, list) or not isinstance(edges, list):
             return None
         return result
+
+    async def bind_scenario_assets(
+        self,
+        assets: list[dict],
+        targets: list[dict],
+    ) -> list[dict]:
+        package = {
+            "canonical_text": json.dumps({"targets": targets}, ensure_ascii=False),
+            "requires_multimodal": True,
+            "parts": [
+                {
+                    "ordinal": index,
+                    "kind": "image",
+                    "mime_type": asset.get("mime_type", "image/png"),
+                    "data_url": asset.get("data_url", ""),
+                    "source_ref": asset.get("asset_id", f"asset:{index}"),
+                    "metadata": {
+                        "asset_id": asset.get("asset_id", ""),
+                        "filename": asset.get("original_name", ""),
+                    },
+                }
+                for index, asset in enumerate(assets, start=1)
+            ],
+        }
+        context = {
+            "contentPackage": package,
+            "system_prompt": (
+                "你是TRPG图片素材绑定器。只返回JSON对象：bindings数组。"
+                "每项字段为 asset_id,target_type,target_key,confidence,evidence。"
+                "target_type和target_key只能从给定targets中选择；无法判断时confidence设为0。"
+            ),
+            "user_message": json.dumps({"targets": targets}, ensure_ascii=False),
+        }
+        result = await self._call_providers(
+            "bind_scenario_assets",
+            context,
+            required_capabilities={"image"},
+            disable_local_fallback=True,
+        )
+        bindings = result.get("bindings") if isinstance(result, dict) else None
+        return [item for item in (bindings or []) if isinstance(item, dict)]
 
     async def query_knowledge(self, query: str, room_id: str, sources: str = "both") -> KnowledgeAnswer:
         context = {"query": query, "roomId": room_id, "sources": sources,
@@ -258,6 +399,17 @@ class AiGateway:
                 if raw is None:
                     fallback_chain.append(f"{provider.name}:null_response")
                     continue
+                if task_type == "analyze_director_action":
+                    if (
+                        not isinstance(raw, dict)
+                        or not DIRECTOR_PROVIDER_CORE_KEYS.issubset(raw.keys())
+                    ):
+                        fallback_chain.append(f"{provider.name}:incomplete_director_plan")
+                        continue
+                    raw = _normalize_director_provider_result(raw, context)
+                    if not DIRECTOR_REQUIRED_KEYS.issubset(raw.keys()):
+                        fallback_chain.append(f"{provider.name}:incomplete_director_plan")
+                        continue
                 if task_type == "structure_scenario" and not _is_worldbook_result(raw):
                     logger.warning(
                         "structure_scenario returned an invalid worldbook from %s",
@@ -281,6 +433,19 @@ class AiGateway:
 
                 provider_used = provider.name
                 status = "success"
+                if task_type == "analyze_director_action":
+                    source = _analysis_source_for_provider(provider.name)
+                    if hasattr(final_result, "model_copy"):
+                        final_result = final_result.model_copy(
+                            update={"analysis_source": source}
+                        )
+                    elif isinstance(final_result, dict):
+                        final_result = {**final_result, "analysis_source": source}
+                if task_type == "narrate_action" and isinstance(final_result, dict):
+                    final_result = {
+                        **final_result,
+                        "provider_source": _analysis_source_for_provider(provider.name),
+                    }
                 if isinstance(final_result, KpResponse) and final_result.error:
                     status = "fallback"
                     last_error = str(final_result.error)
@@ -428,6 +593,85 @@ def _normalize_required_capabilities(required_capabilities: str | set[str] | Non
     if isinstance(required_capabilities, str):
         return {required_capabilities}
     return {capability for capability in required_capabilities if capability}
+
+
+def _analysis_source_for_provider(provider_name: str) -> str:
+    if provider_name.startswith("configured:"):
+        return "configured_provider"
+    if provider_name == "local":
+        return "local_fallback"
+    return "fallback_provider"
+
+
+def _normalize_director_provider_result(
+    raw: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    local_analysis = context.get("local_analysis")
+    if not isinstance(local_analysis, dict):
+        local_analysis = {}
+    result = dict(raw)
+    if result.get("intent_type") == "observation":
+        result["intent_type"] = "dialogue"
+    if not isinstance(result.get("state_patch"), list):
+        result["state_patch"] = []
+    result.setdefault("action_id", str(local_analysis.get("draft_id") or "director-plan"))
+    result.setdefault("context_version", int(context.get("context_version") or 0))
+    result.setdefault("actor_display_name", str(context.get("actor_display_name") or ""))
+    result.setdefault("declared_intent", str(context.get("declared_intent") or ""))
+    result.setdefault("preconditions", [])
+    result.setdefault("permissions", [])
+    result.setdefault("mechanic_plan", {"mechanic": "dialogue"})
+    result.setdefault("state_patch", [])
+    result.setdefault("event_plan", [])
+    result.setdefault("semantic_progression", {})
+    result.setdefault("npc_reactions", [])
+    result.setdefault("time_impact", {})
+    result.setdefault("visibility", str(local_analysis.get("visibility") or "public"))
+    result.setdefault("basis_refs", [])
+    result.setdefault("citations", [])
+    result.setdefault("clarification_options", [])
+    result.setdefault("exception_reason", None)
+    return {
+        key: value
+        for key, value in result.items()
+        if key in DirectorPlanDTO.model_fields
+    }
+
+
+_NARRATOR_PROVIDER_DENIED_KEYS = {
+    "action_id",
+    "actionId",
+    "local_action_id",
+    "localActionId",
+    "room_id",
+    "roomId",
+    "character_id",
+    "characterId",
+    "truth",
+    "ending",
+    "endings",
+    "raw_text",
+    "rawText",
+    "original_text",
+    "originalText",
+    "source_text",
+    "full_text",
+    "state_patch",
+    "mutations",
+}
+
+
+def _scrub_narrator_provider_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _scrub_narrator_provider_payload(item)
+            for key, item in value.items()
+            if key not in _NARRATOR_PROVIDER_DENIED_KEYS
+        }
+    if isinstance(value, list):
+        return [_scrub_narrator_provider_payload(item) for item in value]
+    return value
 
 
 def _is_worldbook_result(value: Any) -> bool:

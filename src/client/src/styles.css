@@ -715,7 +715,7 @@ textarea {
   bottom: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0;
   border-top: 5px solid var(--bh-black);
   background: var(--bh-paper);
@@ -1589,7 +1589,7 @@ textarea {
     position: sticky;
     bottom: 0;
     z-index: 20;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     padding-bottom: env(safe-area-inset-bottom);
     background: var(--bh-paper);
   }

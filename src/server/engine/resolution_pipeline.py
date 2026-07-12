@@ -8,11 +8,13 @@ from typing import Any
 
 from ..ai.contracts import KpResponse, NarrativePayload
 from ..ai.mechanic_compiler import MechanicCompiler
-from ..models import MechanicCompileResult, PlayerIntent, ResolutionResult
+from ..models import MechanicCompileResult, NarrationResultDTO, PlayerIntent, ResolutionResult
 from ..models import RuleExplanationDTO
+from ..ai.narrator import build_narrator_context, validate_narration_result
 from .action_lifecycle import complete_action, transition_action
 from .fallback_narrative import render_action_aware_fallback
 from .projection import ProjectionDispatcher
+from .retro_items import RetroactiveClaimError, RetroactiveItemService
 from .roll_receipt import create_roll_receipt
 from .rule_executor import RuleExecutor
 
@@ -105,6 +107,7 @@ class ResolutionPipeline:
                 action_id,
                 from_statuses=("queued",),
                 to_status="resolving",
+                metadata={"ai_stage": "retrieving"},
             )
             claimed = self.conn.execute(
                 "SELECT * FROM actions WHERE action_id = %s",
@@ -126,6 +129,7 @@ class ResolutionPipeline:
 
         action = claimed
         self.conn.commit()
+        await self._emit_ai_stage(action, "retrieving")
 
         character = self.conn.execute(
             "SELECT * FROM characters WHERE character_id = %s", (action["character_id"],)
@@ -166,6 +170,31 @@ class ResolutionPipeline:
             declared_intent=action.get("declared_intent") or "",
             params=self._json_value(action.get("params")) or {},
         )
+        if is_v2:
+            await self._emit_ai_stage(action, "directing")
+            director_err = self._validate_director_plan(action, intent, dict(room))
+            if director_err:
+                await self._await_host_exception(action, director_err)
+                return {
+                    "status": "awaiting_host_exception",
+                    "action_id": action_id,
+                    "reason": director_err,
+                }
+        retroactive_decision = None
+        if is_v2 and intent.intent_type == "retroactive_item_claim":
+            try:
+                retroactive_decision = RetroactiveItemService(self.conn).evaluate_claim(
+                    intent,
+                    character_data,
+                    scenario_assets,
+                )
+            except RetroactiveClaimError as exc:
+                await self._reject(action, exc.detail)
+                return {
+                    "status": "rejected",
+                    "action_id": action_id,
+                    "reason": exc.detail,
+                }
 
         # ── Pre-resolution validation for move intent ──
         if action["intent_type"] == "move":
@@ -182,7 +211,10 @@ class ResolutionPipeline:
                 return {"status": "rejected", "action_id": action_id, "reason": enc_err}
 
         try:
+            await self._emit_ai_stage(action, "validating_rules")
             compiled = await self.compiler.compile(intent, scenario or {}, character_data)
+            if retroactive_decision and retroactive_decision.branch == "roll_required":
+                compiled = MechanicCompileResult(triggeredMechanic="luck_check")
             resolution = await self.rule_executor.execute(
                 intent,
                 compiled,
@@ -195,17 +227,34 @@ class ResolutionPipeline:
             return {"status": "rejected", "action_id": action_id, "reason": str(exc)}
         resolution.narrative = self._render_fallback_narrative(intent, compiled, resolution, character_data)
 
-        # For dialogue intents, attempt AI-enriched narrative
-        if compiled.triggered_mechanic == "dialogue" and self.gateway:
-            enriched = await self._enrich_dialogue_narrative(
-                action, character_data, dict(room), dict(scenario) if scenario else None,
-            )
-            if enriched:
-                resolution.narrative = enriched
+        inventory_changes = None
+        if retroactive_decision:
+            resolution.metadata["retroactive_item_claim"] = {
+                "branch": retroactive_decision.branch,
+                "claimed_item_name": retroactive_decision.claimed_item_name,
+            }
+            if resolution.is_success:
+                item = retroactive_decision.item
+                narrative = item.get("narrative") or {}
+                inventory_changes = [
+                    {
+                        "characterId": action["character_id"],
+                        "itemAdd": {
+                            "name": item.get("name", retroactive_decision.claimed_item_name),
+                            "description": narrative.get(
+                                "description", item.get("description", "")
+                            ),
+                            "quantity": 1,
+                            "isSecret": False,
+                            "source": "backstory",
+                        },
+                    }
+                ]
 
         result_payload = resolution.model_dump(by_alias=True)
         completion_status = "completed" if is_v2 else "resolved"
         completed_with_state = False
+        rule_explanation_for_completion = None
         pending_consequence = (resolution.metadata or {}).get("pending_consequence")
         if (
             is_v2
@@ -245,7 +294,7 @@ class ResolutionPipeline:
                 "action_id": action_id,
                 "reason": reason_code,
             }
-        if resolution.mutations:
+        if resolution.mutations or inventory_changes:
             if not self.state_service:
                 if is_v2:
                     await self._await_host_exception(action, "state_service_unavailable")
@@ -263,7 +312,8 @@ class ResolutionPipeline:
                                 characterId=action["character_id"],
                                 mutations=resolution.mutations,
                             )
-                        ]
+                        ] if resolution.mutations else [],
+                        inventoryChanges=inventory_changes,
                     )
                     if is_v2:
                         with self.conn.transaction() as tx:
@@ -288,18 +338,7 @@ class ResolutionPipeline:
                                     action["room_id"],
                                 ),
                             )
-                            if not complete_action(
-                                self.conn,
-                                action_id,
-                                from_statuses=("resolving",),
-                                to_status=completion_status,
-                                result=result_payload,
-                                receipt=rule_explanation,
-                                metadata={"has_rule_explanation": True},
-                                transaction=tx,
-                            ):
-                                raise RuntimeError("action completion claim lost")
-                        completed_with_state = True
+                            rule_explanation_for_completion = rule_explanation
                     else:
                         self.state_service.apply_change(
                             room_id=action["room_id"],
@@ -331,27 +370,50 @@ class ResolutionPipeline:
                         target_node_id=str(intent.params.get("targetNodeId") or ""),
                         transaction=tx,
                     )
+                    current_solo_scene = SoloAdventureRuntime(self.conn).current(
+                        action["room_id"]
+                    )
+                    if current_solo_scene:
+                        resolution.narrative = self._render_solo_scene_narrative(
+                            current_solo_scene
+                        )
                     resolution.metadata["solo_adventure_transition"] = solo_transition
                     result_payload = resolution.model_dump(by_alias=True)
                     rule_explanation = self._build_rule_explanation(
                         action, character_data, resolution,
                         state_before=state_before, state_after=state_before,
                     )
-                    if not complete_action(
-                        self.conn, action_id, from_statuses=("resolving",),
-                        to_status=completion_status, result=result_payload,
-                        receipt=rule_explanation, metadata={"has_rule_explanation": True},
-                        transaction=tx,
-                    ):
-                        raise RuntimeError("action completion claim lost")
-                completed_with_state = True
+                    rule_explanation_for_completion = rule_explanation
             except Exception as exc:
                 await self._reject(action, f"solo_transition_failed:{exc}")
                 return {"status": "rejected", "action_id": action_id, "reason": str(exc)}
 
+        if self.gateway and hasattr(self.gateway, "narrate_action"):
+            await self._emit_ai_stage(action, "narrating")
+            narration_error = await self._apply_narrator(
+                action,
+                character_data,
+                dict(room),
+                resolution,
+            )
+            if narration_error:
+                await self._emit_ai_stage(action, "recovering")
+                await self._await_host_exception(
+                    action,
+                    narration_error,
+                    result=resolution.model_dump(by_alias=True),
+                    ai_recovery=True,
+                )
+                return {
+                    "status": "awaiting_host_exception",
+                    "action_id": action_id,
+                    "reason": narration_error,
+                }
+            result_payload = resolution.model_dump(by_alias=True)
+
         if is_v2:
             if not completed_with_state:
-                rule_explanation = self._build_rule_explanation(
+                rule_explanation = rule_explanation_for_completion or self._build_rule_explanation(
                     action,
                     character_data,
                     resolution,
@@ -365,7 +427,7 @@ class ResolutionPipeline:
                     to_status=completion_status,
                     result=result_payload,
                     receipt=rule_explanation,
-                    metadata={"has_rule_explanation": True},
+                        metadata={"has_rule_explanation": True},
                 )
         else:
             self.conn.execute(
@@ -380,6 +442,7 @@ class ResolutionPipeline:
             self.conn.commit()
 
         await self._project(action, resolution)
+        await self._emit_ai_stage(action, "completed")
 
         if solo_transition:
             await self.dispatcher.emit(
@@ -466,6 +529,58 @@ class ResolutionPipeline:
             verification_receipt=verification_receipt,
         )
         return explanation.model_dump(mode="json")
+
+    def _validate_director_plan(
+        self,
+        action: dict[str, Any],
+        intent: PlayerIntent,
+        room: dict[str, Any],
+    ) -> str | None:
+        plan = intent.params.get("director_plan")
+        if not isinstance(plan, dict):
+            return "director_plan_required"
+        if plan.get("state_patch_authority") != "advisory_only":
+            return "director_plan_unverified"
+        context_version = plan.get("context_version")
+        if context_version is not None:
+            try:
+                if int(context_version) != int(room.get("state_version") or 0):
+                    return "director_context_stale"
+            except (TypeError, ValueError):
+                return "director_context_invalid"
+        preconditions = plan.get("preconditions") or []
+        if not isinstance(preconditions, list):
+            return "director_preconditions_invalid"
+        permissions = plan.get("permissions") or []
+        if not isinstance(permissions, list):
+            return "director_permissions_invalid"
+        for permission in permissions:
+            if not isinstance(permission, dict):
+                return "director_permissions_invalid"
+            if permission.get("allowed") is False:
+                return "director_permission_denied"
+            if "allowed" not in permission:
+                return "director_permissions_invalid"
+        for precondition in preconditions:
+            if not isinstance(precondition, dict):
+                return "director_preconditions_invalid"
+            kind = precondition.get("kind")
+            if kind == "room_status":
+                expected = precondition.get("expected")
+                if expected and room.get("status") != expected:
+                    return "director_precondition_failed"
+            elif kind == "state_version":
+                expected = precondition.get("expected")
+                try:
+                    if expected is not None and int(expected) != int(room.get("state_version") or 0):
+                        return "director_precondition_failed"
+                except (TypeError, ValueError):
+                    return "director_preconditions_invalid"
+            elif kind in {"position", "resource", "visibility", "permission"}:
+                return "director_precondition_unverified"
+            else:
+                return "director_precondition_unsupported"
+        return None
 
     @staticmethod
     def _runtime_snapshot(executor, character_id: str, room_id: str) -> dict[str, Any]:
@@ -615,13 +730,17 @@ class ResolutionPipeline:
         reason_code: str,
         *,
         result: dict | None = None,
+        ai_recovery: bool = False,
     ):
         transition_action(
             self.conn,
             action["action_id"],
             from_statuses=("resolving",),
             to_status="awaiting_host_exception",
-            metadata={"reason_code": reason_code},
+            metadata={
+                "reason_code": reason_code,
+                **({"ai_stage": "recovering"} if ai_recovery else {}),
+            },
             result=result,
         )
         await self.dispatcher.emit(
@@ -634,6 +753,92 @@ class ResolutionPipeline:
                 "reasonCode": reason_code,
             },
         )
+        if ai_recovery:
+            await self.dispatcher.emit(
+                action["room_id"],
+                "s2c_ai_recovery_required",
+                "player",
+                {
+                    "actionId": action["action_id"],
+                    "characterId": action["character_id"],
+                    "reasonCode": reason_code,
+                },
+                character_id=action["character_id"],
+            )
+
+    async def _emit_ai_stage(self, action: dict[str, Any], stage: str) -> None:
+        if not action.get("draft_id"):
+            return
+        try:
+            self._record_ai_stage(action["action_id"], stage)
+            await self.dispatcher.emit(
+                action["room_id"],
+                "s2c_ai_stage_changed",
+                "player",
+                {
+                    "actionId": action["action_id"],
+                    "stage": stage,
+                },
+                character_id=action["character_id"],
+            )
+        except Exception:
+            logger.debug("Failed to emit AI stage %s for action %s", stage, action["action_id"])
+
+    def _record_ai_stage(self, action_id: str, stage: str) -> None:
+        row = self.conn.execute(
+            "SELECT status_event_id, metadata FROM action_status_events "
+            "WHERE action_id = %s ORDER BY status_event_id DESC LIMIT 1",
+            (action_id,),
+        ).fetchone()
+        if not row:
+            return
+        metadata = self._json_value(row.get("metadata")) or {}
+        metadata["ai_stage"] = stage
+        self.conn.execute(
+            "UPDATE action_status_events SET metadata = %s WHERE status_event_id = %s",
+            (json.dumps(metadata, ensure_ascii=False), row["status_event_id"]),
+        )
+        self.conn.commit()
+
+    async def _apply_narrator(
+        self,
+        action: dict[str, Any],
+        character: dict[str, Any],
+        room: dict[str, Any],
+        resolution: ResolutionResult,
+    ) -> str | None:
+        try:
+            context = build_narrator_context(
+                self.conn,
+                action,
+                character,
+                room,
+                resolution,
+            )
+            payload = dict(context)
+            raw = await self.gateway.narrate_action(
+                payload,
+                action["room_id"],
+                action_id=action["action_id"],
+            )
+            if not isinstance(raw, dict):
+                return "narrator_invalid_response"
+            narration = NarrationResultDTO(**raw)
+            violation = validate_narration_result(narration, context)
+            if violation:
+                return violation
+            resolution.narrative = narration.narrative_text
+            metadata = dict(resolution.metadata or {})
+            metadata["narration"] = narration.model_dump(mode="json")
+            resolution.metadata = metadata
+            return None
+        except Exception as exc:
+            logger.warning(
+                "Narrator failed for action %s: %s",
+                action.get("action_id"),
+                type(exc).__name__,
+            )
+            return "narrator_invalid_response"
 
     async def _project(self, action: dict[str, Any], resolution: ResolutionResult):
         host_steps = []
@@ -737,6 +942,22 @@ class ResolutionPipeline:
             {"actionId": action["action_id"], "text": final_text,
              "spoilerStatus": spoiler_status} if spoiler_status != "none" else {"actionId": action["action_id"], "text": final_text},
         )
+        narration = (resolution.metadata or {}).get("narration")
+        if isinstance(narration, dict):
+            await self.dispatcher.emit(
+                action["room_id"],
+                "s2c_narration_completed",
+                "party",
+                {
+                    "actionId": action["action_id"],
+                    "narrativeText": final_text,
+                    "environmentChanges": narration.get("environment_changes") or [],
+                    "interactableObjects": narration.get("interactable_objects") or [],
+                    "openQuestion": narration.get("open_question") or "",
+                    "stylePackVersion": narration.get("style_pack_version") or "",
+                    "redactedCitations": narration.get("redacted_citations") or [],
+                },
+            )
         await self.dispatcher.emit(
             action["room_id"],
             "s2c_action_completed",
@@ -834,6 +1055,22 @@ class ResolutionPipeline:
             character_name=(character or {}).get("player_name", ""),
             succeeded=resolution.is_success,
         )
+
+    @staticmethod
+    def _render_solo_scene_narrative(scene: dict[str, Any]) -> str:
+        title = str(scene.get("title") or f"条目 {scene.get('node_id', '')}").strip()
+        text = str(scene.get("text") or "").strip()
+        choices = [
+            f"转到条目 {node_id}"
+            for node_id in scene.get("target_node_ids") or []
+            if str(node_id).strip()
+        ]
+        direction = (
+            f"接下来可选方向：{'、'.join(choices)}。你准备怎么做？"
+            if choices
+            else "当前条目没有新的编号方向；你可以描述调查、交谈或其他行动。"
+        )
+        return "\n\n".join(part for part in (title, text, direction) if part)
 
     async def _enrich_dialogue_narrative(
         self, action: dict, character: dict, room: dict, scenario: dict | None,
@@ -1005,10 +1242,25 @@ class ResolutionPipeline:
         room_id = action["room_id"]
         character_id = action["character_id"]
 
+        from ..encounter_persistence import (
+            get_active_encounter,
+            get_encounter,
+            get_participant,
+            get_participants,
+        )
         if not encounter_id:
-            return "encounterId is required"
+            active_encounter = get_active_encounter(self.conn, room_id)
+            if not active_encounter and intent.intent_type == "combat_action":
+                active_encounter = self._bootstrap_solo_combat_encounter(
+                    room_id,
+                    character_id,
+                    intent.declared_intent,
+                )
+            if not active_encounter:
+                return "encounterId is required"
+            encounter_id = active_encounter["encounter_id"]
+            intent.params["encounterId"] = encounter_id
 
-        from ..encounter_persistence import get_encounter, get_participant
         enc = get_encounter(self.conn, encounter_id)
         if not enc:
             return "encounter_not_found"
@@ -1029,8 +1281,16 @@ class ResolutionPipeline:
                 return "already_acted_this_round"
 
         # Inject encounter context into intent params for handler access
-        from ..encounter_persistence import get_participants
         all_participants = get_participants(self.conn, encounter_id)
+        if intent.intent_type == "combat_action":
+            intent.params.setdefault("actionKind", "attack")
+            if not intent.params.get("targetId"):
+                enemy = next(
+                    (item for item in all_participants if item.get("side") == "enemy"),
+                    None,
+                )
+                if enemy:
+                    intent.params["targetId"] = enemy["character_id"]
         authoritative_participants = []
         for item in all_participants:
             participant_data = dict(item)
@@ -1050,6 +1310,83 @@ class ResolutionPipeline:
         intent.params["characterId"] = character_id
 
         return None
+
+    def _bootstrap_solo_combat_encounter(
+        self,
+        room_id: str,
+        character_id: str,
+        declared_intent: str,
+    ) -> dict[str, Any] | None:
+        from ..encounter_persistence import (
+            add_participant,
+            create_encounter,
+            get_encounter,
+            update_encounter_round,
+        )
+        from ..scenario.solo_runtime import SoloAdventureRuntime
+
+        scene = SoloAdventureRuntime(self.conn).current(room_id)
+        text = str(scene.get("text") or "") if scene else ""
+        if not scene or not all(marker in text for marker in ("黑熊", "生命值", "爪击")):
+            return None
+        node_id = str(scene["node_id"])
+        encounter_id = f"solo:{room_id}:{node_id}"
+        existing = get_encounter(self.conn, encounter_id)
+        if existing:
+            return existing
+        character = self.conn.execute(
+            "SELECT player_name, xlsx_data FROM characters WHERE character_id = %s",
+            (character_id,),
+        ).fetchone()
+        if not character:
+            return None
+        sheet = self._json_value(character.get("xlsx_data")) or {}
+        attributes = sheet.get("attributes") or {}
+        skills = sheet.get("skills") or {}
+        main_skill = next(
+            (name for name in ("格斗（斗殴）", "格斗(斗殴)", "斗殴", "格斗") if name in skills),
+            "格斗（斗殴）",
+        )
+        uses_knife = "刀" in declared_intent
+        encounter = create_encounter(
+            self.conn,
+            encounter_id,
+            room_id,
+            enc_type="combat",
+            status="active",
+            summary=f"{scene['title']}：黑熊近身战",
+        )
+        update_encounter_round(self.conn, encounter_id, 1)
+        add_participant(
+            self.conn,
+            encounter_id,
+            character_id,
+            side="player",
+            hp=int(sheet.get("hp", 0) or 0),
+            hp_max=int(sheet.get("max_hp", sheet.get("hp", 0)) or 0),
+            san=int(sheet.get("san", 0) or 0),
+            san_max=int(sheet.get("max_san", sheet.get("san", 0)) or 0),
+            dex=int(attributes.get("dex", 0) or 0),
+            weapon_name="小刀" if uses_knife else "徒手",
+            damage_expression="1d4" if uses_knife else "1d3",
+            main_skill=main_skill,
+            display_name=str(sheet.get("name") or character.get("player_name") or "调查员"),
+        )
+        add_participant(
+            self.conn,
+            encounter_id,
+            f"npc:bear:{node_id}",
+            side="enemy",
+            hp=20,
+            hp_max=20,
+            dex=58,
+            weapon_name="爪击",
+            damage_expression="2d6",
+            main_skill="爪击",
+            notes="厚皮每轮吸收前3点伤害；第一轮双爪，第二轮爪击与啃咬，第三轮双爪。",
+            display_name="黑熊",
+        )
+        return get_encounter(self.conn, encounter_id) or encounter
 
     async def _apply_encounter_result(
         self, action: dict[str, Any], intent: PlayerIntent, resolution: ResolutionResult,
@@ -1072,32 +1409,44 @@ class ResolutionPipeline:
         if not participant:
             return
 
-        # Apply HP damage from mutations
+        # Apply encounter mutations to the participant named in each path.
         for mutation in resolution.mutations:
             path = mutation.get("path", "")
+            match = re.match(
+                r"^/encounter/([^/]+)/participants/([^/]+)/(hp_delta|distance_band_delta|status_tag)$",
+                path,
+            )
+            if not match or match.group(1) != encounter_id:
+                continue
+            target_character_id = match.group(2)
+            target_participant = get_participant(
+                self.conn, encounter_id, target_character_id
+            )
+            if not target_participant:
+                continue
             if "hp_delta" in path:
                 delta = mutation.get("value", 0)
-                new_hp = max(0, participant["hp"] + delta)
-                status_tags = list(participant.get("status_tags", []) or [])
+                new_hp = max(0, target_participant["hp"] + delta)
+                status_tags = list(target_participant.get("status_tags", []) or [])
                 if new_hp <= 0 and "unconscious" not in status_tags:
                     status_tags.append("unconscious")
-                update_participant(self.conn, encounter_id, character_id,
+                update_participant(self.conn, encounter_id, target_character_id,
                                    hp=new_hp, status_tags=status_tags)
             # Apply distance band delta
             if "distance_band_delta" in path:
                 delta = mutation.get("value", 0)
                 if delta != 0:
-                    current_band = participant.get("distance_band", "medium")
+                    current_band = target_participant.get("distance_band", "medium")
                     new_band = shift_band(current_band, delta)
-                    update_participant(self.conn, encounter_id, character_id, distance_band=new_band)
+                    update_participant(self.conn, encounter_id, target_character_id, distance_band=new_band)
             # Apply status tag additions
             if "status_tag" in path and mutation.get("op") == "add":
                 tag = mutation.get("value", "")
                 if tag:
-                    status_tags = list(participant.get("status_tags", []) or [])
+                    status_tags = list(target_participant.get("status_tags", []) or [])
                     if tag not in status_tags:
                         status_tags.append(tag)
-                    update_participant(self.conn, encounter_id, character_id, status_tags=status_tags)
+                    update_participant(self.conn, encounter_id, target_character_id, status_tags=status_tags)
 
         # Mark acted_this_round
         update_participant(self.conn, encounter_id, character_id, acted_this_round=True)
@@ -1133,8 +1482,8 @@ class ResolutionPipeline:
             "party",
             {
                 "encounterId": encounter_id,
-                "encounter": dict(updated_enc) if updated_enc else {},
-                "participants": [dict(p) for p in updated_parts],
+                "encounter": self._event_safe_record(updated_enc) if updated_enc else {},
+                "participants": [self._event_safe_record(p) for p in updated_parts],
             },
         )
 
@@ -1148,6 +1497,14 @@ class ResolutionPipeline:
                     "reason": resolve_reason,
                 },
             )
+
+    @staticmethod
+    def _event_safe_record(value: Any) -> dict[str, Any]:
+        record = dict(value)
+        for key, item in record.items():
+            if isinstance(item, (datetime,)):
+                record[key] = item.isoformat()
+        return record
 
     def _json_value(self, value):
         if value is None:

@@ -95,6 +95,27 @@ ALL_EVENTS: dict[str, EventDef] = {
     ),
 
     # ── State sync ──
+    "s2c_ai_stage_changed": EventDef(
+        "s2c_ai_stage_changed", EventDomain.ACTION, "player",
+        "Director / AI adjudication stage changed.",
+    ),
+    "s2c_player_clarification_required": EventDef(
+        "s2c_player_clarification_required", EventDomain.ACTION, "player",
+        "Director requires the player to clarify the intended action.",
+    ),
+    "s2c_director_plan_validated": EventDef(
+        "s2c_director_plan_validated", EventDomain.ACTION, "host",
+        "Director plan was validated and persisted for deterministic resolution.",
+    ),
+    "s2c_narration_completed": EventDef(
+        "s2c_narration_completed", EventDomain.NARRATIVE, "party",
+        "Narrator completed human-readable narration after deterministic resolution.",
+    ),
+    "s2c_ai_recovery_required": EventDef(
+        "s2c_ai_recovery_required", EventDomain.ACTION, "player",
+        "AI adjudication could not safely proceed and requires host recovery.",
+    ),
+
     "s2c_state_patch": EventDef(
         "s2c_state_patch", EventDomain.STATE, "player",
         "状态增量更新（JSON Patch 格式）",

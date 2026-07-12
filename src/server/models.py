@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from typing import Literal, Any
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Event type literals — canonical registry is at .events.events_registry.ALL_EVENTS
 EngineEventType = Literal[
@@ -24,6 +24,8 @@ EngineEventType = Literal[
     "s2c_clue_discovered", "s2c_clue_shared",
     "s2c_checkpoint_created", "s2c_checkpoint_restored",
     "s2c_private_note_emergency_access",
+    "s2c_ai_stage_changed", "s2c_player_clarification_required",
+    "s2c_director_plan_validated", "s2c_narration_completed", "s2c_ai_recovery_required",
 ]
 
 Audience = Literal["host", "player", "party", "system"]
@@ -87,6 +89,83 @@ class ActionDraftAnalyzeRequest(BaseModel):
     ephemeral: bool = False
 
 
+class RedactedCitation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = "已校验依据"
+    page: int | None = None
+    scene: str | None = None
+    verified: bool = True
+
+
+def _redact_citation(value: Any) -> dict[str, Any]:
+    if isinstance(value, RedactedCitation):
+        return value.model_dump()
+    if not isinstance(value, dict):
+        return {"label": "已校验依据"}
+    label = value.get("label") or value.get("citation_label") or value.get("source") or value.get("source_part_id")
+    page = value.get("page", value.get("page_number"))
+    scene = value.get("scene") or value.get("location")
+    redacted: dict[str, Any] = {"label": str(label or "已校验依据")}
+    if isinstance(page, int):
+        redacted["page"] = page
+    if isinstance(scene, str) and scene:
+        redacted["scene"] = scene
+    redacted["verified"] = bool(value.get("verified", True))
+    return redacted
+
+
+def redact_citation(value: Any) -> dict[str, Any]:
+    return _redact_citation(value)
+
+
+def _redact_citations(values: Any) -> list[dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    return [_redact_citation(value) for value in values]
+
+
+AiStageName = Literal[
+    "retrieving",
+    "directing",
+    "validating_rules",
+    "narrating",
+    "recovering",
+    "completed",
+]
+
+
+class AiStageProgress(BaseModel):
+    stage: AiStageName
+    status: Literal["idle", "active", "completed", "failed"] = "active"
+    label: str | None = None
+    detail: str | None = None
+    updated_at: str | None = None
+
+
+class SemanticMapProjectionDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    room_id: str = Field(alias="roomId")
+    map_status: str = Field(default="active", alias="mapStatus")
+    map_type: Literal["graph", "image", "hybrid", "text"] = Field(default="graph", alias="mapType")
+    base_asset: dict[str, Any] = Field(default_factory=dict, alias="baseAsset")
+    known_locations: list[dict[str, Any]] = Field(default_factory=list, alias="knownLocations")
+    known_connections: list[dict[str, Any]] = Field(default_factory=list, alias="knownConnections")
+    party_position: dict[str, Any] | None = Field(default=None, alias="partyPosition")
+    fog_of_war: list[dict[str, Any]] = Field(default_factory=list, alias="fogOfWar")
+    text_scene: dict[str, Any] | None = Field(default=None, alias="textScene")
+
+
+class HostDirectorSnapshotDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    current_scene: str = Field(default="", alias="currentScene")
+    confirmed_facts: list[str] = Field(default_factory=list, alias="confirmedFacts")
+    pending_triggers: list[str] = Field(default_factory=list, alias="pendingTriggers")
+    ai_evidence: list[RedactedCitation] = Field(default_factory=list, alias="aiEvidence")
+    stage: AiStageName = "completed"
+    risks: list[str] = Field(default_factory=list)
+    exception_queue: list[str] = Field(default_factory=list, alias="exceptionQueue")
+
+
 class ActionDraftDTO(BaseModel):
     draft_id: str | None = None
     revision: int = 1
@@ -105,10 +184,146 @@ class ActionDraftDTO(BaseModel):
     confirmation_requirements: list[str] = Field(default_factory=list)
     requires_confirmation: bool = False
     confidence: float = 0.0
-    citations: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[RedactedCitation] = Field(default_factory=list)
     analysis_source: Literal["configured_provider", "fallback_provider", "local_fallback"]
     resolution_route: Literal["ai", "local", "host_exception"] = "local"
     ephemeral: bool = False
+    context_version: int = 0
+    candidate_interpretations: list[dict[str, Any]] = Field(default_factory=list)
+    semantic_progression: dict[str, Any] = Field(default_factory=dict)
+    adjudication_stage: str = "local_analysis"
+    npc_reactions: list[dict[str, Any]] = Field(default_factory=list)
+    time_impact: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def _citations_are_redacted(cls, values):
+        return _redact_citations(values)
+
+
+class DirectorCitationDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: str | None = None
+    source_part_id: str | None = None
+    content_item_id: str | None = None
+    page_number: int | None = None
+    location: str | None = None
+
+
+class DirectorBasisRefDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: str
+    citation: DirectorCitationDTO | None = None
+
+
+class DirectorPreconditionDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["room_status", "state_version", "position", "resource", "visibility", "permission"]
+    expected: Any = None
+    path: str | None = None
+    scope: str | None = None
+
+
+class DirectorPermissionDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scope: str
+    allowed: bool
+    reason: str | None = None
+
+
+class DirectorMechanicPlanDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    mechanic: str = "dialogue"
+    skill_name: str | None = Field(default=None, alias="skillName")
+    difficulty: str | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class DirectorStatePatchDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["add", "replace", "remove", "test"]
+    path: str = Field(min_length=1)
+    value: Any = None
+
+
+class DirectorEventPlanDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: EngineEventType
+    audience: Audience | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class DirectorSemanticProgressionDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    target_node_id: str | None = Field(default=None, alias="targetNodeId")
+    from_node_id: str | None = Field(default=None, alias="fromNodeId")
+    citation: DirectorCitationDTO | None = None
+    rationale: str | None = None
+
+
+class DirectorPlanDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    context_version: int = 0
+    actor_display_name: str = ""
+    declared_intent: str = ""
+    interpreted_intent: str = ""
+    intent_type: str = "dialogue"
+    preconditions: list[DirectorPreconditionDTO] = Field(default_factory=list)
+    permissions: list[DirectorPermissionDTO] = Field(default_factory=list)
+    mechanic_plan: DirectorMechanicPlanDTO = Field(default_factory=DirectorMechanicPlanDTO)
+    state_patch: list[DirectorStatePatchDTO] = Field(default_factory=list)
+    event_plan: list[DirectorEventPlanDTO] = Field(default_factory=list)
+    semantic_progression: DirectorSemanticProgressionDTO = Field(default_factory=DirectorSemanticProgressionDTO)
+    npc_reactions: list[dict[str, Any]] = Field(default_factory=list)
+    time_impact: dict[str, Any] = Field(default_factory=dict)
+    visibility: Literal["public", "party", "private"] = "public"
+    basis_refs: list[DirectorBasisRefDTO] = Field(default_factory=list)
+    citations: list[DirectorCitationDTO] = Field(default_factory=list)
+    confidence: float = 0.0
+    requires_player_clarification: bool = False
+    clarification_options: list[dict[str, Any]] = Field(default_factory=list)
+    requires_host_exception: bool = False
+    exception_reason: str | None = None
+    narration_mode: str = "summarize"
+    analysis_source: Literal["configured_provider", "fallback_provider", "local_fallback"] = "fallback_provider"
+
+
+class NarrationResultDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action_id: str
+    context_version: int
+    director_plan_digest: str
+    narrative_text: str = Field(min_length=1)
+    environment_changes: list[str] = Field(min_length=1)
+    interactable_objects: list[str] = Field(min_length=1)
+    open_question: str = Field(min_length=1)
+    fact_refs: dict[str, list[str]]
+    redacted_citations: list[RedactedCitation] = Field(default_factory=list)
+    style_pack_version: str
+    provider_source: Literal["configured_provider", "fallback_provider", "local_fallback"]
+    status: Literal["completed", "invalid_response"] = "completed"
+
+    @field_validator("redacted_citations", mode="before")
+    @classmethod
+    def _narration_citations_are_redacted(cls, values):
+        return _redact_citations(values)
+
+    @model_validator(mode="after")
+    def _requires_visible_fact_refs(self):
+        required = {
+            "narrative_text",
+            "environment_changes",
+            "interactable_objects",
+            "open_question",
+        }
+        if set(self.fact_refs) != required:
+            raise ValueError("fact_refs must cover all player-visible fields")
+        for key in required:
+            refs = self.fact_refs.get(key)
+            if not isinstance(refs, list) or not refs or any(not str(item).strip() for item in refs):
+                raise ValueError("fact_refs values must be non-empty string lists")
+        return self
 
 
 class ActionDraftUpdateRequest(BaseModel):
@@ -149,8 +364,13 @@ class RuleExplanationDTO(BaseModel):
     state_before: dict[str, Any] = Field(default_factory=dict)
     state_after: dict[str, Any] = Field(default_factory=dict)
     rule_set_version: str
-    citations: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[RedactedCitation] = Field(default_factory=list)
     verification_receipt: dict[str, Any] | None = None
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def _rule_citations_are_redacted(cls, values):
+        return _redact_citations(values)
 
 
 class PlayerDeviceSessionDTO(BaseModel):
@@ -188,15 +408,35 @@ class EvidenceCardDTO(BaseModel):
     updated_at: str | None = None
 
 
+class CampaignCurrentSceneDTO(BaseModel):
+    node_id: str
+    title: str
+    text_preview: str
+    citation: RedactedCitation = Field(default_factory=RedactedCitation)
+    choice_count: int = 0
+    image_asset_id: str | None = None
+
+
+class CampaignQuestionDTO(BaseModel):
+    evidence_card_id: str
+    title: str
+    fact_status: Literal["hypothesis", "confirmed", "excluded"]
+
+
 class CampaignHomeDTO(BaseModel):
     room_id: str
+    current_scene: CampaignCurrentSceneDTO | None = None
     session: CampaignSessionDTO | None = None
     team_objectives: list[dict[str, Any]] = Field(default_factory=list)
     personal_objectives: list[dict[str, Any]] = Field(default_factory=list)
     last_summary: dict[str, Any] | None = None
     next_session: CampaignSessionDTO | None = None
     recent_clues: list[dict[str, Any]] = Field(default_factory=list)
-    unresolved_questions: list[EvidenceCardDTO] = Field(default_factory=list)
+    unresolved_questions: list[CampaignQuestionDTO] = Field(default_factory=list)
+
+
+class ActionHintsDTO(BaseModel):
+    hints: list[str] = Field(default_factory=list)
 
 
 class TransactionStep(BaseModel):

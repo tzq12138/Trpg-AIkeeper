@@ -393,6 +393,37 @@ async def test_combat_ignores_forged_skill_damage_and_unknown_target(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_combat_applies_target_armor_from_authoritative_encounter_notes(monkeypatch):
+    monkeypatch.setattr(
+        "src.server.rules.encounter_handlers._skill_check",
+        lambda _value, _params: {
+            "roll": 20,
+            "target": 40,
+            "is_success": True,
+            "success_level": "regular",
+            "bonus_dice": 0,
+            "roll_trace": {"candidates": [20]},
+        },
+    )
+    monkeypatch.setattr("src.server.rules.encounter_handlers._parse_dice", lambda _expr: 2)
+    context = _encounter_context()
+    context["allParticipants"][1]["notes"] = "厚皮每轮吸收前3点伤害"
+
+    result = await CombatAttackHandler().execute(
+        GameState(character={"skills": {"斗殴": 40}}),
+        {
+            "targetId": "enemy",
+            "encounter_context": context,
+        },
+    )
+
+    assert result.metadata["raw_damage"] == 2
+    assert result.metadata["armor"] == 3
+    assert result.metadata["damage"] == 0
+    assert result.mutations == []
+
+
+@pytest.mark.asyncio
 async def test_registered_handler_cannot_emit_non_allowlisted_mutation():
     from src.server.rules.base import BaseRuleHandler, RuleResult
 

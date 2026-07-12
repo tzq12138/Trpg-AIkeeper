@@ -69,6 +69,7 @@ def test_db():
     conn.execute(
         "TRUNCATE TABLE ai_provider_config_audits, ai_provider_configs, "
         "document_chunks, content_item_edges, content_items, content_projection_runs, "
+        "runtime_package_exception_confirmations, runtime_package_versions, v2_cutover_records, "
         "import_jobs, source_parts, source_documents, "
         "scenario_versions, clarifications, clue_shares, clues, objectives, inventory, "
         "actions, events, player_sequences, checkpoints, campaign_archives, "

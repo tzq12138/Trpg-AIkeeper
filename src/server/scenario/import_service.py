@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from .content_package import (
     build_content_package,
 )
 from .content_projection import ContentProjectionService
+from .module_compiler import ModuleCompiler, ModuleCompilerError
 from .quality import QualityReportGenerator
 from .solo_adventure import extract_solo_adventure
 
@@ -24,6 +26,34 @@ MAX_SOURCE_FILES = 20
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_TOTAL_BYTES = 100 * 1024 * 1024
 ALLOWED_LICENSE_TYPES = {"authorized", "open"}
+STALE_IMPORT_SECONDS = 300
+STALE_RETRYABLE_IMPORT_STATUSES = {"parsing", "structuring"}
+
+
+def is_import_job_retryable(
+    status: str | None,
+    updated_at: Any,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if status == "awaiting_provider":
+        return True
+    if status not in STALE_RETRYABLE_IMPORT_STATUSES or not updated_at:
+        return False
+    timestamp = updated_at
+    if isinstance(timestamp, str):
+        try:
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    if not isinstance(timestamp, datetime):
+        return False
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    return (reference - timestamp).total_seconds() >= STALE_IMPORT_SECONDS
 
 
 @dataclass(slots=True)
@@ -41,12 +71,22 @@ class ScenarioImportFailure(Exception):
 
 
 class ScenarioImportService:
-    def __init__(self, conn, gateway=None, rag=None, storage_root: Path | None = None):
+    def __init__(
+        self,
+        conn,
+        gateway=None,
+        rag=None,
+        storage_root: Path | None = None,
+        asset_root: Path | None = None,
+    ):
         self.conn = conn
         self.gateway = gateway
         self.rag = rag
         self.storage_root = storage_root or (
             Path(__file__).resolve().parents[3] / "data" / "scenarios"
+        )
+        self.asset_root = asset_root or (
+            Path(__file__).resolve().parents[3] / "data" / "scenario_assets"
         )
 
     async def import_sources(
@@ -83,6 +123,11 @@ class ScenarioImportService:
                 (prepared[0]["sha256"],),
             ).fetchone()
             if duplicate:
+                latest_job = self.conn.execute(
+                    "SELECT job_id, status, updated_at FROM import_jobs "
+                    "WHERE scenario_id = %s ORDER BY updated_at DESC, created_at DESC LIMIT 1",
+                    (duplicate["scenario_id"],),
+                ).fetchone()
                 return {
                     "scenario_id": duplicate["scenario_id"],
                     "scenario_version_id": duplicate.get("published_version_id"),
@@ -90,6 +135,11 @@ class ScenarioImportService:
                     "title": duplicate["title"],
                     "import_status": duplicate["import_status"],
                     "publish_status": duplicate.get("publish_status", "draft"),
+                    "job_id": latest_job.get("job_id") if latest_job else None,
+                    "retryable": is_import_job_retryable(
+                        latest_job.get("status") if latest_job else None,
+                        latest_job.get("updated_at") if latest_job else None,
+                    ),
                 }
 
         duplicate_hashes = []
@@ -236,7 +286,7 @@ class ScenarioImportService:
                 "job_ids": [row["job_id"] for row in source_rows],
             }) from exc
 
-        return self._create_draft_version(
+        return await self._create_draft_version(
             scenario_id=scenario_id,
             scenario_title=scenario_title,
             knowledge_graph=knowledge_graph,
@@ -250,7 +300,8 @@ class ScenarioImportService:
         target = self.conn.execute(
             """
             SELECT ij.job_id, ij.source_document_id, ij.scenario_id,
-                   ij.status AS job_status, ij.diagnostics,
+                   ij.status AS job_status, ij.updated_at AS job_updated_at,
+                   ij.diagnostics,
                    sd.metadata, s.title, s.import_status
             FROM import_jobs ij
             JOIN source_documents sd
@@ -262,9 +313,11 @@ class ScenarioImportService:
         ).fetchone()
         if not target:
             raise ScenarioImportFailure(404, {"message": "导入任务不存在"})
-        if target.get("job_status") != "awaiting_provider":
+        if not is_import_job_retryable(
+            target.get("job_status"), target.get("job_updated_at")
+        ):
             raise ScenarioImportFailure(409, {
-                "message": "仅等待多模态供应商的任务可重试",
+                "message": "该导入任务仍在处理中或不可重试",
                 "status": target.get("job_status"),
             })
 
@@ -320,9 +373,11 @@ class ScenarioImportService:
             source_path = (storage_root / Path(row["relative_path"])).resolve()
             if not source_path.is_relative_to(storage_root) or not source_path.is_file():
                 raise ScenarioImportFailure(409, {"message": "导入来源文件不可用"})
-            packages.append(build_content_package(
+            package = build_content_package(
                 row["filename"], source_path.read_bytes(), row["mime_type"]
-            ))
+            )
+            packages.append(package)
+            self._persist_source_parts(row, package)
 
         combined_sha = hashlib.sha256(
             "|".join(row["sha256"] for row in source_rows).encode("ascii")
@@ -337,7 +392,9 @@ class ScenarioImportService:
                     "error_message = NULL, updated_at = NOW() WHERE job_id = %s",
                     (row["job_id"],),
                 )
-        update_scenario = target.get("import_status") == "awaiting_provider"
+        update_scenario = target.get("import_status") in {
+            "awaiting_provider", "parsing", "structuring"
+        }
         try:
             knowledge_graph = await self._structure_package(combined_package)
         except Exception as exc:
@@ -355,7 +412,7 @@ class ScenarioImportService:
                 "requires_multimodal": combined_package.requires_multimodal,
             }
 
-        return self._create_draft_version(
+        return await self._create_draft_version(
             scenario_id=target["scenario_id"],
             scenario_title=target["title"],
             knowledge_graph=knowledge_graph,
@@ -421,6 +478,16 @@ class ScenarioImportService:
                 "status": "blocked",
                 "message": "该版本质量报告为 blocked，仅管理员可处理",
             })
+        try:
+            runtime_package = ModuleCompiler(self.conn).latest_ready_for_version(
+                scenario_version_id
+            )
+        except ModuleCompilerError as exc:
+            raise ScenarioImportFailure(409, {
+                "status": "runtime_package_not_ready",
+                "message": "发布前必须先生成并确认 ready 的运行包",
+                "reason": str(exc),
+            }) from exc
         if not self.rag:
             raise ScenarioImportFailure(503, {"message": "RAG not available"})
 
@@ -558,6 +625,7 @@ class ScenarioImportService:
             "scenario_version_id": scenario_version_id,
             "status": "published",
             "rag_index_version": rebuild_id,
+            "runtime_package_version_id": runtime_package["runtime_package_version_id"],
             "chunks_indexed": chunk_count + npc_count + content_count,
         }
 
@@ -658,41 +726,55 @@ class ScenarioImportService:
                 row["filename"], row["content"], row["mime_type"]
             )
             packages.append(package)
-            with self.conn.transaction() as tx:
-                for part in package.parts:
-                    source_part_id = str(uuid.uuid4())
-                    anchor = {
-                        "source_ref": part.source_ref,
-                        **(part.metadata if isinstance(part.metadata, dict) else {}),
-                    }
-                    checksum_payload = part.text or part.data_url or part.source_ref
-                    tx.execute(
-                        """
-                        INSERT INTO source_parts (
-                            source_part_id, source_document_id, ordinal, part_kind,
-                            page_number, text_content, mime_type, storage_path,
-                            anchor, checksum
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            source_part_id,
-                            row["source_document_id"],
-                            part.ordinal,
-                            part.kind,
-                            part.page_number,
-                            part.text or "",
-                            part.mime_type or package.mime_type,
-                            row["relative_path"],
-                            json.dumps(anchor, ensure_ascii=False),
-                            hashlib.sha256(checksum_payload.encode("utf-8")).hexdigest(),
-                        ),
-                    )
-                tx.execute(
-                    "UPDATE import_jobs SET status = 'structuring', progress = 50, "
-                    "updated_at = NOW() WHERE job_id = %s",
-                    (row["job_id"],),
-                )
+            self._persist_source_parts(row, package)
         return packages
+
+    def _persist_source_parts(
+        self,
+        source_row: dict[str, Any],
+        package: ContentPackage,
+    ) -> None:
+        with self.conn.transaction() as tx:
+            for part in package.parts:
+                anchor = {
+                    "source_ref": part.source_ref,
+                    **(part.metadata if isinstance(part.metadata, dict) else {}),
+                }
+                checksum_payload = part.text or part.data_url or part.source_ref
+                tx.execute(
+                    """
+                    INSERT INTO source_parts (
+                        source_part_id, source_document_id, ordinal, part_kind,
+                        page_number, text_content, mime_type, storage_path,
+                        anchor, checksum
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (source_document_id, ordinal) DO UPDATE SET
+                        part_kind = EXCLUDED.part_kind,
+                        page_number = EXCLUDED.page_number,
+                        text_content = EXCLUDED.text_content,
+                        mime_type = EXCLUDED.mime_type,
+                        storage_path = EXCLUDED.storage_path,
+                        anchor = EXCLUDED.anchor,
+                        checksum = EXCLUDED.checksum
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        source_row["source_document_id"],
+                        part.ordinal,
+                        part.kind,
+                        part.page_number,
+                        part.text or "",
+                        part.mime_type or package.mime_type,
+                        source_row["relative_path"],
+                        json.dumps(anchor, ensure_ascii=False),
+                        hashlib.sha256(checksum_payload.encode("utf-8")).hexdigest(),
+                    ),
+                )
+            tx.execute(
+                "UPDATE import_jobs SET status = 'structuring', progress = 50, "
+                "updated_at = NOW() WHERE job_id = %s",
+                (source_row["job_id"],),
+            )
 
     def _combine_packages(
         self,
@@ -739,7 +821,7 @@ class ScenarioImportService:
             return await structure_scenario(package.canonical_text)
         raise RuntimeError("multimodal_provider_unavailable")
 
-    def _create_draft_version(
+    async def _create_draft_version(
         self,
         *,
         scenario_id: str,
@@ -859,6 +941,50 @@ class ScenarioImportService:
             knowledge_graph,
             requested_by=created_by,
         )
+        try:
+            from .asset_binding import ScenarioAssetBindingService
+
+            binding_service = ScenarioAssetBindingService(
+                self.conn,
+                asset_root=self.asset_root,
+                gateway=self.gateway,
+            )
+            binding_service.materialize_source_images(
+                scenario_id,
+                source_rows,
+                self.storage_root,
+            )
+            await binding_service.generate_bindings(scenario_version_id)
+        except Exception as exc:
+            logger.exception(
+                "Scenario asset binding generation failed for version %s",
+                scenario_version_id,
+            )
+            diagnostic = {
+                "code": "asset_binding_generation_failed",
+                "message": f"{type(exc).__name__}: {exc}",
+                "target_type": "asset_binding",
+                "target_key": "source_images",
+            }
+            knowledge_graph.setdefault("runtime_diagnostics", []).append(diagnostic)
+            with self.conn.transaction() as tx:
+                tx.execute(
+                    "UPDATE scenario_versions SET knowledge_graph = %s "
+                    "WHERE scenario_version_id = %s",
+                    (
+                        json.dumps(knowledge_graph, ensure_ascii=False),
+                        scenario_version_id,
+                    ),
+                )
+                if update_scenario:
+                    tx.execute(
+                        "UPDATE scenarios SET knowledge_graph = %s WHERE scenario_id = %s",
+                        (json.dumps(knowledge_graph, ensure_ascii=False), scenario_id),
+                    )
+        runtime_package = ModuleCompiler(self.conn).compile(
+            scenario_version_id,
+            requested_by=created_by,
+        )
 
         return {
             "scenario_id": scenario_id,
@@ -872,6 +998,12 @@ class ScenarioImportService:
             "quality_report": quality_report,
             "prep_summary": _host_prep_projection(prep_package, quality_report),
             "content_projection": content_projection,
+            "runtime_package": {
+                "runtime_package_version_id": runtime_package["runtime_package_version_id"],
+                "package_version_number": runtime_package["package_version_number"],
+                "gate_status": runtime_package["gate_status"],
+                "quality_exceptions": runtime_package["quality_exceptions"],
+            },
         }
 
     def _persist_multimodal_transcripts(

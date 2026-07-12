@@ -264,6 +264,43 @@ CREATE TABLE IF NOT EXISTS content_projection_runs (
 CREATE INDEX IF NOT EXISTS idx_content_projection_runs_version_started
     ON content_projection_runs(scenario_version_id, started_at DESC);
 
+CREATE TABLE IF NOT EXISTS runtime_package_versions (
+    runtime_package_version_id TEXT PRIMARY KEY,
+    scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id) ON DELETE CASCADE,
+    package_version_number INTEGER NOT NULL,
+    gate_status TEXT NOT NULL,
+    input_checksum TEXT NOT NULL,
+    runtime_package JSONB NOT NULL DEFAULT '{}',
+    quality_exceptions JSONB NOT NULL DEFAULT '[]',
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (scenario_version_id, package_version_number),
+    CHECK (gate_status IN ('ready', 'blocked'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_package_versions_latest
+    ON runtime_package_versions(scenario_version_id, package_version_number DESC);
+
+CREATE TABLE IF NOT EXISTS runtime_package_exception_confirmations (
+    runtime_package_version_id TEXT NOT NULL REFERENCES runtime_package_versions(runtime_package_version_id) ON DELETE CASCADE,
+    exception_key TEXT NOT NULL,
+    confirmed_by TEXT NOT NULL,
+    confirmed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    note TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (runtime_package_version_id, exception_key)
+);
+
+CREATE TABLE IF NOT EXISTS v2_cutover_records (
+    cutover_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    room_count INTEGER NOT NULL DEFAULT 0,
+    backup_path TEXT NOT NULL,
+    backup_sha256 TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS rag_rebuild_records (
     rebuild_id TEXT PRIMARY KEY,
     scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id),
@@ -759,6 +796,35 @@ CREATE TABLE IF NOT EXISTS scenario_assets (
 
 ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS scenario_assets JSONB;
 ALTER TABLE scenario_assets ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'host_only';
+ALTER TABLE scenario_assets ADD COLUMN IF NOT EXISTS source_document_id TEXT REFERENCES source_documents(source_document_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_scenario_assets_source_document
+    ON scenario_assets(source_document_id) WHERE source_document_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS scenario_asset_bindings (
+    binding_id TEXT PRIMARY KEY,
+    scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id) ON DELETE CASCADE,
+    asset_id TEXT NOT NULL REFERENCES scenario_assets(asset_id) ON DELETE CASCADE,
+    target_type TEXT NOT NULL,
+    target_key TEXT NOT NULL DEFAULT '',
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+    evidence JSONB NOT NULL DEFAULT '{}',
+    generated_by TEXT NOT NULL DEFAULT 'local',
+    status TEXT NOT NULL DEFAULT 'draft',
+    reviewed_by TEXT,
+    reviewed_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (scenario_version_id, asset_id),
+    CHECK (target_type IN ('map', 'branch_node', 'scene', 'item', 'clue', 'npc', 'ending')),
+    CHECK (status IN ('draft', 'confirmed', 'rejected', 'stale'))
+);
+CREATE INDEX IF NOT EXISTS idx_scenario_asset_bindings_target
+    ON scenario_asset_bindings(scenario_version_id, target_type, target_key, status);
+ALTER TABLE scenario_asset_bindings ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE scenario_asset_bindings ADD COLUMN IF NOT EXISTS generated_by TEXT NOT NULL DEFAULT 'local';
+ALTER TABLE scenario_asset_bindings ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
+ALTER TABLE scenario_asset_bindings ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP;
+ALTER TABLE scenario_asset_bindings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW();
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS params JSONB DEFAULT '{}';
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS draft_id TEXT;
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS idempotency_key TEXT;

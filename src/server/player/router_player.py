@@ -13,6 +13,7 @@ from ..models import PlayerIntent, SkillCheckRequest
 from ..ai.mechanic_compiler import MechanicCompiler
 from ..engine.projection import ProjectionDispatcher
 from ..engine.resolution_pipeline import ResolutionPipeline
+from ..engine.action_lifecycle import transition_action
 from ..engine.retro_items import RetroactiveClaimError, RetroactiveItemService, extract_retroactive_claim
 from ..engine.skill_check import roll_skill_check
 from ..scenario.character_presets import character_preview, find_preset, list_presets, preset_dir_from_app
@@ -277,6 +278,7 @@ async def join_room_with_character(
     char_status = "pending_approval" if room_status == "active" else "joined"
 
     source: dict
+    initial_inventory: list[dict] = []
     if character_data:
         try:
             parsed = _parse_builder_character_data(character_data)
@@ -322,6 +324,7 @@ async def join_room_with_character(
             "backstory": _json_val(tpl.get("backstory")) or {},
             "raw": {"format": "template"},
         }
+        initial_inventory = _template_initial_inventory(parsed["backstory"])
         source = {"type": "template", "template_id": template_id}
     elif copy_character_id:
         src = conn.execute("SELECT * FROM characters WHERE character_id = %s", (copy_character_id,)).fetchone()
@@ -348,6 +351,21 @@ async def join_room_with_character(
         "VALUES (%s, %s, %s, %s, %s, %s, %s)",
         (character_id, room_id, nickname, player_token, json.dumps(parsed, ensure_ascii=False), account_id, char_status),
     )
+    for item in initial_inventory:
+        conn.execute(
+            "INSERT INTO inventory "
+            "(id, character_id, room_id, name, description, quantity, is_secret, source) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'scenario_template')",
+            (
+                str(uuid.uuid4()),
+                character_id,
+                room_id,
+                item["name"],
+                item["description"],
+                item["quantity"],
+                item["is_secret"],
+            ),
+        )
     conn.commit()
     _index_character_if_available(request, room_id, character_id, parsed)
     # Initialize runtime state via StateService
@@ -676,6 +694,37 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
                     })
             except Exception as e:
                 logger.warning("Action %s failed in turn %s: %s", action["action_id"], turn_id, e)
+                transitioned = transition_action(
+                    conn,
+                    action["action_id"],
+                    from_statuses=("resolving",),
+                    to_status="awaiting_host_exception",
+                    metadata={"reason_code": "resolution_pipeline_error", "ai_stage": "recovering"},
+                    result={"reason_code": "resolution_pipeline_error"},
+                )
+                dispatcher = getattr(app.state, "dispatcher", None)
+                if transitioned and dispatcher:
+                    await dispatcher.emit(
+                        room_id,
+                        "s2c_action_exception_requested",
+                        "host",
+                        {
+                            "actionId": action["action_id"],
+                            "characterId": action["character_id"],
+                            "reasonCode": "resolution_pipeline_error",
+                        },
+                    )
+                    await dispatcher.emit(
+                        room_id,
+                        "s2c_ai_recovery_required",
+                        "player",
+                        {
+                            "actionId": action["action_id"],
+                            "characterId": action["character_id"],
+                            "reasonCode": "resolution_pipeline_error",
+                        },
+                        character_id=action["character_id"],
+                    )
                 results.append({
                     "action_id": action["action_id"],
                     "character_name": char_name,
@@ -683,32 +732,13 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
                     "error": str(e),
                 })
 
-        # Generate narrative
-        provider = getattr(app.state, "narrative_provider", None)
-        if not provider:
-            from ..narrative_provider import TemplateNarrativeProvider, DeepSeekNarrativeProvider
-            settings = getattr(app.state, "settings", None)
-            api_key = getattr(settings, "deepseek_api_key", "") if settings else ""
-            if api_key:
-                provider = DeepSeekNarrativeProvider(api_key=api_key)
-            else:
-                provider = TemplateNarrativeProvider()
-
-        try:
-            room = conn.execute("SELECT r.*, s.title FROM rooms r LEFT JOIN scenarios s ON r.scenario_id = s.scenario_id WHERE r.room_id = %s", (room_id,)).fetchone()
-            narrative = await provider.generate({
-                "turn_index": conn.execute("SELECT turn_index FROM room_turns WHERE turn_id = %s", (turn_id,)).fetchone()["turn_index"],
-                "scenario_title": dict(room).get("title", ""),
-                "actions": results,
-            })
-        except Exception as e:
-            logger.exception("Narrative generation failed: %s", e)
-            from ..narrative_provider import TemplateNarrativeProvider
-            narrative = await TemplateNarrativeProvider().generate({
-                "turn_index": 1,
-                "scenario_title": "",
-                "actions": results,
-            })
+        narrative_parts = []
+        for item in results:
+            result_payload = item.get("result") if isinstance(item, dict) else None
+            resolved = result_payload.get("result") if isinstance(result_payload, dict) else None
+            if isinstance(resolved, dict) and resolved.get("narrative"):
+                narrative_parts.append(str(resolved["narrative"]))
+        narrative = "\n".join(narrative_parts)
 
         tm.mark_resolved(turn_id, narrative[:500])
 
@@ -727,8 +757,6 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
         if dispatcher:
             await dispatcher.emit(room_id, "s2c_turn_resolved", "party",
                                   {"turn_id": turn_id, "narrative": narrative, "actions": results})
-            await dispatcher.emit(room_id, "s2c_public_observation", "party",
-                                  {"text": narrative})
 
         if pg_db:
             conn.close()
@@ -1153,6 +1181,31 @@ def _json_val(value):
         try: return json.loads(value)
         except json.JSONDecodeError: return None
     return value
+
+
+def _template_initial_inventory(backstory: dict | None) -> list[dict]:
+    raw_items = (backstory or {}).get("inventory") if isinstance(backstory, dict) else []
+    if not isinstance(raw_items, list):
+        return []
+    items = []
+    for raw in raw_items:
+        value = {"name": raw} if isinstance(raw, str) else raw
+        if not isinstance(value, dict):
+            continue
+        name = str(value.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            quantity = max(1, min(99, int(value.get("quantity") or 1)))
+        except (TypeError, ValueError):
+            quantity = 1
+        items.append({
+            "name": name[:120],
+            "description": str(value.get("description") or "")[:1000],
+            "quantity": quantity,
+            "is_secret": bool(value.get("is_secret", False)),
+        })
+    return items[:50]
 
 
 def _build_lobby_snapshot(conn, room_id: str) -> dict:

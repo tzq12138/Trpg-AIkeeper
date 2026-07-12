@@ -2,14 +2,16 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
-from starlette.responses import Response
+from starlette.responses import FileResponse, Response
 
 from .private_data import PrivateDataDecryptionError, private_data_cipher_from_env
 from ..events.events_registry import event_type
+from ..models import CampaignHomeDTO, redact_citation
 
 
 router = APIRouter(prefix="/api/player")
@@ -374,7 +376,7 @@ async def list_device_sessions(request: Request):
     return {"sessions": [_device_session_payload(dict(row)) for row in rows]}
 
 
-@router.get("/campaign-home")
+@router.get("/campaign-home", response_model=CampaignHomeDTO)
 async def campaign_home(request: Request):
     character = _require_character(request)
     conn = request.app.state.db
@@ -419,8 +421,32 @@ async def campaign_home(request: Request):
         "AND fact_status = 'hypothesis' ORDER BY updated_at DESC",
         (character["room_id"],),
     ).fetchall()
+    current_scene = None
+    try:
+        from ..scenario.solo_runtime import SoloAdventureRuntime
+
+        solo_scene = SoloAdventureRuntime(conn).current(character["room_id"])
+        if solo_scene:
+            from ..scenario.asset_binding import ScenarioAssetBindingService
+
+            image_binding = ScenarioAssetBindingService(conn).confirmed_asset_for_target(
+                solo_scene["scenario_version_id"],
+                "branch_node",
+                solo_scene["node_id"],
+            )
+            current_scene = {
+                "node_id": solo_scene["node_id"],
+                "title": solo_scene["title"],
+                "text_preview": str(solo_scene.get("text") or "")[:400],
+                "citation": redact_citation(solo_scene.get("citation") or {}),
+                "choice_count": len(solo_scene.get("target_node_ids") or []),
+                "image_asset_id": image_binding["asset_id"] if image_binding else None,
+            }
+    except Exception:
+        current_scene = None
     return {
         "room_id": character["room_id"],
+        "current_scene": current_scene,
         "session": _serialize_session(dict(session)) if session else None,
         "team_objectives": [dict(row) for row in team_objectives],
         "personal_objectives": [dict(row) for row in personal_objectives],
@@ -435,6 +461,36 @@ async def campaign_home(request: Request):
         "recent_clues": [],
         "unresolved_questions": [dict(row) for row in unresolved_questions],
     }
+
+
+@router.get("/assets/{asset_id}")
+async def get_current_scene_asset(request: Request, asset_id: str):
+    character = _require_character(request)
+    conn = request.app.state.db
+    from ..scenario.solo_runtime import SoloAdventureRuntime
+
+    current = SoloAdventureRuntime(conn).current(character["room_id"])
+    if not current:
+        raise HTTPException(404, detail={"code": "asset_not_visible"})
+    row = conn.execute(
+        "SELECT sa.scenario_id, sa.filename, sa.mime_type "
+        "FROM scenario_asset_bindings sab "
+        "JOIN scenario_assets sa ON sa.asset_id = sab.asset_id "
+        "WHERE sab.scenario_version_id = %s AND sab.asset_id = %s "
+        "AND sab.target_type = 'branch_node' AND sab.target_key = %s "
+        "AND sab.status = 'confirmed'",
+        (current["scenario_version_id"], asset_id, current["node_id"]),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, detail={"code": "asset_not_visible"})
+    configured_root = getattr(request.app.state, "scenario_asset_root", None)
+    asset_root = Path(configured_root) if configured_root else (
+        Path(__file__).resolve().parents[3] / "data" / "scenario_assets"
+    )
+    asset_path = (asset_root / row["scenario_id"] / row["filename"]).resolve()
+    if not asset_path.is_relative_to(asset_root.resolve()) or not asset_path.is_file():
+        raise HTTPException(404, detail={"code": "asset_file_unavailable"})
+    return FileResponse(asset_path, media_type=row["mime_type"])
 
 
 @router.post("/notes", status_code=201)

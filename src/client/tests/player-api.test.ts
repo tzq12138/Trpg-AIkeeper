@@ -124,4 +124,18 @@ describe('player V2 API', () => {
       detail: { code: 'sync_required', current_state_version: 9 },
     }));
   });
+
+  test('normalizes action hint examples to the shared hints contract', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      examples: ['检查窗台', '询问售票员', '整理线索'],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const { getActionHints } = await import('../src/shared/player-api');
+
+    await expect(getActionHints()).resolves.toEqual({
+      hints: ['检查窗台', '询问售票员', '整理线索'],
+    });
+    expect(fetchSpy).toHaveBeenCalledWith('/api/player/action-hints', expect.objectContaining({
+      method: 'POST',
+    }));
+  });
 });

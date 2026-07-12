@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  canStartNewAction,
   createConfirmIdempotencyKey,
   isActionInFlight,
   mergeAuthoritativeReceipt,
@@ -36,6 +37,12 @@ describe('player action controller', () => {
     expect(isActionInFlight('queued')).toBe(true);
     expect(isActionInFlight('awaiting_host_exception')).toBe(true);
     expect(isActionInFlight('completed')).toBe(false);
+  });
+
+  test('allows a new action after the previous receipt is completed', () => {
+    expect(canStartNewAction(null, { ...queuedReceipt, status: 'completed' })).toBe(true);
+    expect(canStartNewAction(draft, { ...queuedReceipt, status: 'completed' })).toBe(false);
+    expect(canStartNewAction(null, queuedReceipt)).toBe(false);
   });
 
   test('merges duplicate timeline events without losing newer server status', () => {

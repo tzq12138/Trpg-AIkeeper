@@ -1,4 +1,5 @@
 """Admin API router — requires admin-role account authentication."""
+import asyncio
 import json
 import uuid
 import os
@@ -7,6 +8,7 @@ import hashlib
 import re
 from pathlib import Path
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 
 from .router_auth import verify_token, get_account_from_token, _hash_password
 
@@ -35,6 +37,14 @@ MAGIC_BYTES: dict[str, bytes] = {
     ".pdf": b'%PDF',
     ".mp3": b'\xff\xfb',  # MPEG audio frame sync
 }
+
+
+async def _safe_json(request: Request) -> dict:
+    try:
+        value = await request.json()
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _get_account_id(request: Request) -> str:
@@ -280,6 +290,8 @@ async def update_character(request: Request, character_id: str):
 @router.get("/scenarios")
 async def admin_list_scenarios(request: Request):
     _require_admin(request)
+    from .scenario.import_service import is_import_job_retryable
+
     conn = request.app.state.db
     rows = conn.execute(
         """
@@ -297,7 +309,15 @@ async def admin_list_scenarios(request: Request):
         ORDER BY s.created_at DESC
         """
     ).fetchall()
-    return [dict(r) for r in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["latest_import_job_retryable"] = is_import_job_retryable(
+            item.get("latest_import_job_status"),
+            item.get("latest_import_job_updated_at"),
+        )
+        result.append(item)
+    return result
 
 
 @router.get("/scenarios/{scenario_id}/assets")
@@ -435,13 +455,20 @@ def _find_asset_references(conn, asset_id: str, scenario_id: str) -> list[dict]:
     ).fetchall()
     for r in rows:
         refs.append({"table": "room_scene_state", "room_id": r["room_id"]})
-    # Check scenario_maps
+    # Check scenario_maps, including image/hybrid base assets.
     rows = conn.execute(
-        "SELECT map_id FROM scenario_maps WHERE nodes::text LIKE %s",
-        (f"%{asset_id}%",)
+        "SELECT map_id FROM scenario_maps WHERE scenario_id = %s "
+        "AND (nodes::text LIKE %s OR base_asset::text LIKE %s)",
+        (scenario_id, f"%{asset_id}%", f"%{asset_id}%")
     ).fetchall()
     for r in rows:
         refs.append({"table": "scenario_maps", "map_id": r["map_id"]})
+    rows = conn.execute(
+        "SELECT binding_id FROM scenario_asset_bindings WHERE asset_id = %s",
+        (asset_id,),
+    ).fetchall()
+    for r in rows:
+        refs.append({"table": "scenario_asset_bindings", "binding_id": r["binding_id"]})
     return refs
 
 
@@ -522,6 +549,24 @@ def _map_base_asset(assets: dict) -> dict:
     return {}
 
 
+def _select_map_base_asset(conn, scenario_id: str) -> dict[str, str]:
+    rows = conn.execute(
+        "SELECT asset_id, original_name, filename FROM scenario_assets "
+        "WHERE scenario_id = %s AND mime_type LIKE 'image/%%' ORDER BY created_at",
+        (scenario_id,),
+    ).fetchall()
+    exact = []
+    partial = []
+    for row in rows:
+        name = Path(str(row.get("original_name") or row.get("filename") or "")).stem.lower()
+        if name in {"地图", "map"}:
+            exact.append(row)
+        elif "地图" in name or "map" in name:
+            partial.append(row)
+    selected = (exact or partial)
+    return {"assetId": selected[0]["asset_id"]} if selected else {}
+
+
 def _map_draft_payload(map_data: dict) -> dict:
     return {
         "mapId": map_data["map_id"],
@@ -537,6 +582,132 @@ def _map_draft_payload(map_data: dict) -> dict:
         "createdAt": map_data.get("created_at"),
         "confirmedAt": map_data.get("confirmed_at"),
     }
+
+
+@router.post("/player-experience-v2/cutover")
+async def cutover_player_experience_v2(request: Request):
+    account = _require_admin(request)
+    body = await _safe_json(request)
+    from .v2_cutover import V2CutoverError, V2CutoverService
+
+    backup_root = getattr(request.app.state, "v2_cutover_backup_root", None)
+    if backup_root is None:
+        backup_root = Path(__file__).resolve().parents[2] / "data" / "backups" / "v2-cutover"
+    try:
+        return V2CutoverService(
+            request.app.state.db,
+            Path(backup_root),
+        ).backup_and_clear(
+            str(body.get("confirmation") or ""),
+            requested_by=str(account.get("account_id") or "unknown"),
+        )
+    except V2CutoverError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/scenarios/{scenario_id}/assets/{asset_id}/content")
+async def preview_asset(request: Request, scenario_id: str, asset_id: str):
+    _require_admin(request)
+    row = request.app.state.db.execute(
+        "SELECT filename, mime_type FROM scenario_assets "
+        "WHERE asset_id = %s AND scenario_id = %s",
+        (asset_id, scenario_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "素材不存在")
+    asset_path = (ASSETS_ROOT / scenario_id / row["filename"]).resolve()
+    if not asset_path.is_relative_to(ASSETS_ROOT.resolve()) or not asset_path.is_file():
+        raise HTTPException(404, "素材文件不存在")
+    return FileResponse(asset_path, media_type=row["mime_type"])
+
+
+def _asset_binding_service(request: Request):
+    from .scenario.asset_binding import ScenarioAssetBindingService
+
+    asset_root = getattr(request.app.state, "scenario_asset_root", None)
+    return ScenarioAssetBindingService(
+        request.app.state.db,
+        asset_root=Path(asset_root) if asset_root else None,
+        gateway=getattr(request.app.state, "gateway", None),
+    )
+
+
+def _verify_asset_binding_version(conn, scenario_id: str, scenario_version_id: str) -> None:
+    row = conn.execute(
+        "SELECT 1 FROM scenario_versions WHERE scenario_version_id = %s AND scenario_id = %s",
+        (scenario_version_id, scenario_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "剧本版本不存在")
+
+
+@router.post("/scenarios/{scenario_id}/versions/{scenario_version_id}/asset-bindings/generate")
+async def generate_asset_bindings(
+    request: Request,
+    scenario_id: str,
+    scenario_version_id: str,
+):
+    _require_admin(request)
+    _verify_asset_binding_version(request.app.state.db, scenario_id, scenario_version_id)
+    service = _asset_binding_service(request)
+    try:
+        bindings = await service.generate_bindings(scenario_version_id)
+        targets = service.list_targets(scenario_version_id)
+    except Exception as exc:
+        logger.exception("Asset binding generation failed version=%s", scenario_version_id)
+        raise HTTPException(500, "素材自动匹配失败") from exc
+    return {"bindings": bindings, "targets": targets}
+
+
+@router.get("/scenarios/{scenario_id}/versions/{scenario_version_id}/asset-bindings")
+async def list_asset_bindings(
+    request: Request,
+    scenario_id: str,
+    scenario_version_id: str,
+):
+    _require_admin(request)
+    _verify_asset_binding_version(request.app.state.db, scenario_id, scenario_version_id)
+    service = _asset_binding_service(request)
+    return {
+        "bindings": service.list_bindings(scenario_version_id),
+        "targets": service.list_targets(scenario_version_id),
+    }
+
+
+@router.patch(
+    "/scenarios/{scenario_id}/versions/{scenario_version_id}/asset-bindings/{binding_id}"
+)
+async def review_asset_binding(
+    request: Request,
+    scenario_id: str,
+    scenario_version_id: str,
+    binding_id: str,
+):
+    _require_admin(request)
+    _verify_asset_binding_version(request.app.state.db, scenario_id, scenario_version_id)
+    binding = request.app.state.db.execute(
+        "SELECT 1 FROM scenario_asset_bindings "
+        "WHERE binding_id = %s AND scenario_version_id = %s",
+        (binding_id, scenario_version_id),
+    ).fetchone()
+    if not binding:
+        raise HTTPException(404, "素材绑定不存在")
+    body = await request.json()
+    from .scenario.asset_binding import AssetBindingError
+
+    try:
+        result = _asset_binding_service(request).review_binding(
+            binding_id,
+            target_type=str(body.get("target_type") or ""),
+            target_key=str(body.get("target_key") or ""),
+            status=str(body.get("status") or "draft"),
+            reviewed_by=_get_account_id(request),
+        )
+    except AssetBindingError as exc:
+        code = str(exc)
+        status_code = 404 if code == "binding_not_found" else 409
+        raise HTTPException(status_code, code) from exc
+    return result
 
 
 def _load_golden_module(module_id: str) -> tuple[dict, Path]:
@@ -728,7 +899,11 @@ async def install_golden_module(request: Request, module_id: str):
 
 
 @router.post("/scenarios/{scenario_id}/map/generate")
-async def admin_generate_map(request: Request, scenario_id: str):
+async def admin_generate_map(
+    request: Request,
+    scenario_id: str,
+    scenario_version_id: str | None = None,
+):
     """Generate a map draft from knowledge_graph.scenes (primary) or scenario_assets.scenes (fallback)."""
     _require_admin(request)
     conn = request.app.state.db
@@ -739,8 +914,19 @@ async def admin_generate_map(request: Request, scenario_id: str):
     if not scenario:
         raise HTTPException(404, "剧本不存在")
 
-    # Primary source: knowledge_graph.scenes (WorldBook structured output)
-    kg = _json_val(scenario.get("knowledge_graph")) or {}
+    if scenario_version_id:
+        version = conn.execute(
+            "SELECT knowledge_graph FROM scenario_versions "
+            "WHERE scenario_version_id = %s AND scenario_id = %s",
+            (scenario_version_id, scenario_id),
+        ).fetchone()
+        if not version:
+            raise HTTPException(404, "剧本版本不存在")
+        kg = _json_val(version.get("knowledge_graph")) or {}
+    else:
+        kg = _json_val(scenario.get("knowledge_graph")) or {}
+
+    # Primary source: versioned knowledge_graph.scenes (WorldBook structured output)
     scenes = kg.get("scenes", [])
 
     # Fallback: scenario_assets.scenes (legacy)
@@ -763,12 +949,26 @@ async def admin_generate_map(request: Request, scenario_id: str):
         model=settings.deepseek_model,
         gateway=AiGateway(settings=settings, db_conn=conn),
     )
-    draft = await gen.generate_draft(scenes, _map_base_asset(_json_val(scenario.get("scenario_assets")) or {}))
+    base_asset = (
+        _map_base_asset(_json_val(scenario.get("scenario_assets")) or {})
+        or _select_map_base_asset(conn, scenario_id)
+    )
+    try:
+        draft = await asyncio.wait_for(
+            gen.generate_draft(scenes, base_asset),
+            timeout=35,
+        )
+        generated_by = gen.last_generated_by
+    except TimeoutError:
+        logger.warning("AI map generation timed out for scenario %s; using local fallback", scenario_id)
+        fallback = MapGenerator(api_key="", gateway=None)
+        draft = await fallback.generate_draft(scenes, base_asset)
+        generated_by = fallback.last_generated_by
 
     map_id = f"map_{scenario_id}_{str(uuid.uuid4())[:4]}"
     from .map_persistence import create_scenario_map
     result = create_scenario_map(
-        conn, map_id, scenario_id, gen.last_generated_by, draft["nodes"], draft["edges"],
+        conn, map_id, scenario_id, generated_by, draft["nodes"], draft["edges"],
         draft["map_type"], draft["base_asset"], draft["regions"], draft["paths"],
     )
 

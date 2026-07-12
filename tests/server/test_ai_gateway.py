@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from src.server.ai.contracts import KpResponse, NarrativePayload
@@ -103,6 +105,225 @@ async def test_ephemeral_action_analysis_does_not_create_ai_call_log(test_db):
 
     after = test_db.execute("SELECT COUNT(*) AS count FROM ai_call_logs").fetchone()["count"]
     assert after == before
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_requires_structured_json_without_local_fallback():
+    gateway = AiGateway()
+    remote = RecordingProvider("remote", {"text": "not a director plan"})
+    local = RecordingProvider("local", {"interpreted_intent": "local story"})
+    gateway._providers = {"remote": remote, "local": local}
+    gateway._provider_order = ["remote", "local"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "declared_intent": "I open the door",
+            "actor_display_name": "Ada",
+            "room": {"state_version": 3},
+        },
+        room_id="room-director",
+    )
+
+    assert result is None
+    assert local.calls == []
+    assert remote.calls[0][0] == "analyze_director_action"
+    assert "JSON" in remote.calls[0][1]["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_rejects_incomplete_json_schema():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "interpreted_intent": "open the door",
+            "confidence": 0.8,
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "declared_intent": "I open the door",
+            "actor_display_name": "Ada",
+            "room": {"state_version": 3},
+        },
+        room_id="room-director",
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_accepts_core_provider_fields_with_safe_defaults():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "inspect the visible station",
+            "intent_type": "dialogue",
+            "confidence": 0.88,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 3,
+            "declared_intent": "I look around",
+            "actor_display_name": "Ada",
+            "local_analysis": {"draft_id": "draft-1", "visibility": "public"},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert result["action_id"] == "draft-1"
+    assert result["context_version"] == 3
+    assert result["state_patch"] == []
+    assert result["event_plan"] == []
+    assert result["semantic_progression"] == {
+        "targetNodeId": None,
+        "fromNodeId": None,
+        "citation": None,
+        "rationale": None,
+    }
+    assert result["analysis_source"] == "fallback_provider"
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_normalizes_observation_and_unsafe_state_patch():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "inspect the visible station",
+            "intent_type": "observation",
+            "state_patch": {"hp": 0},
+            "narration_identity": "Ada",
+            "confidence": 0.91,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 3,
+            "declared_intent": "I look around",
+            "actor_display_name": "Ada",
+            "local_analysis": {"draft_id": "draft-1", "visibility": "public"},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert result["intent_type"] == "dialogue"
+    assert result["state_patch"] == []
+    assert "narration_identity" not in result
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_marks_actual_provider_source():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "action_id": "action-1",
+            "context_version": 3,
+            "actor_display_name": "Ada",
+            "declared_intent": "I open the door",
+            "interpreted_intent": "open the door",
+            "intent_type": "move",
+            "preconditions": [],
+            "mechanic_plan": {"mechanic": "auto_success"},
+            "state_patch": [],
+            "event_plan": [],
+            "semantic_progression": {},
+            "npc_reactions": [],
+            "time_impact": {},
+            "visibility": "public",
+            "basis_refs": [],
+            "citations": [],
+            "confidence": 0.8,
+            "requires_player_clarification": False,
+            "clarification_options": [],
+            "requires_host_exception": False,
+            "exception_reason": None,
+            "narration_mode": "summarize",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "declared_intent": "I open the door",
+            "actor_display_name": "Ada",
+            "room": {"state_version": 3},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert result["analysis_source"] == "fallback_provider"
+
+
+@pytest.mark.asyncio
+async def test_narrate_action_scrubs_internal_ids_and_overwrites_provider_source():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "context_version": 4,
+            "director_plan_digest": "digest",
+            "narrative_text": "Ada checks the brass key on the oak desk.",
+            "environment_changes": ["The desk drawer is open."],
+            "interactable_objects": ["oak desk", "brass key"],
+            "open_question": "How do you inspect the brass key?",
+            "fact_refs": {
+                "narrative_text": ["fact:ada", "fact:brass-key", "fact:oak-desk"],
+                "environment_changes": ["fact:desk-drawer"],
+                "interactable_objects": ["fact:oak-desk", "fact:brass-key"],
+                "open_question": ["fact:brass-key"],
+            },
+            "redacted_citations": [{"source": "scene", "page_number": 1}],
+            "style_pack_version": "noir-v1",
+            "provider_source": "configured_provider",
+            "status": "completed",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.narrate_action(
+        {
+            "local_action_id": "action-secret",
+            "room_id": "room-secret",
+            "character_id": "char-secret",
+            "investigator_name": "Ada",
+            "allowed_facts": [{"fact_ref": "fact:ada", "text": "Ada"}],
+        },
+        room_id="room-secret",
+    )
+
+    provider_context = remote.calls[0][1]
+    serialized = json.dumps(provider_context, ensure_ascii=False)
+    assert "action-secret" not in serialized
+    assert "room-secret" not in serialized
+    assert "char-secret" not in serialized
+    assert result["action_id"] == "action-secret"
+    assert result["provider_source"] == "fallback_provider"
 
 
 @pytest.mark.asyncio

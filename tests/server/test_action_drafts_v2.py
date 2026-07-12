@@ -119,6 +119,27 @@ def test_action_analysis_requires_player_token(client):
     assert response.status_code == 401
 
 
+def test_completed_room_rejects_action_confirmation(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    headers = {"X-Room-Token": player_token}
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我继续调查"},
+    ).json()
+    test_db.execute("UPDATE rooms SET status = 'completed' WHERE room_id = %s", (room_id,))
+    test_db.commit()
+
+    response = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "after-ending"},
+        json={"confirmations": draft["confirmation_requirements"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "room_not_active"
+
+
 def test_patch_draft_reanalyzes_and_keeps_revision_history(client, test_db):
     _, _, player_token = _setup_player(client, test_db)
     headers = {"X-Room-Token": player_token}
@@ -305,6 +326,19 @@ def test_ambiguous_local_fallback_routes_to_host_exception_without_state_change(
         "resolving",
         "awaiting_host_exception",
     ]
+    recovery_event = test_db.execute(
+        "SELECT audience, payload FROM events WHERE room_id = %s AND event_type = %s "
+        "ORDER BY sequence DESC LIMIT 1",
+        (room_id, "s2c_ai_recovery_required"),
+    ).fetchone()
+    assert recovery_event["audience"] in {"player", "party"}
+    assert recovery_event["payload"]["actionId"] == receipt["action_id"]
+    stage_rows = test_db.execute(
+        "SELECT status, metadata FROM action_status_events WHERE action_id = %s "
+        "ORDER BY status_event_id ASC",
+        (receipt["action_id"],),
+    ).fetchall()
+    assert any(row["metadata"].get("ai_stage") == "recovering" for row in stage_rows)
     after_version = test_db.execute(
         "SELECT state_version FROM rooms WHERE room_id = %s",
         (room_id,),
@@ -431,7 +465,10 @@ def test_configured_ai_analysis_is_structured_and_cannot_change_player_text(
     assert draft["resolution_route"] == "ai"
     assert draft["declared_intent"] == "我悄悄前往图书馆"
     assert draft["movement_target"] == "图书馆"
-    assert draft["citations"] == [{"source_ref": "scenario#library"}]
+    assert draft["citations"] == [
+        {"label": "已校验依据", "page": None, "scene": None, "verified": True}
+    ]
+    assert "scenario#library" not in response.text
     assert "mutations" not in draft
 
 

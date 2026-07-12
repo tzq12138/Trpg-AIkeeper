@@ -18,6 +18,8 @@ export type EngineEventType =
   | 's2c_clue_discovered' | 's2c_clue_shared'
   // ── System ──
   | 's2c_atmosphere' | 's2c_checkpoint_created' | 's2c_checkpoint_restored'
+  | 's2c_ai_stage_changed' | 's2c_ai_recovery_required'
+  | 's2c_director_plan_validated' | 's2c_narration_completed'
   // ── Map ──
   | 's2c_map_updated' | 's2c_player_moved' | 's2c_map_revealed'
   // ── Encounter ──
@@ -35,6 +37,57 @@ export interface EngineEvent {
   visibility: string;
   issuedAt: string;
   payload: Record<string, unknown>;
+}
+
+export interface RedactedCitation {
+  label: string;
+  page?: number | null;
+  scene?: string | null;
+  verified: boolean;
+}
+
+export type AiStageName =
+  | 'retrieving'
+  | 'directing'
+  | 'validating_rules'
+  | 'narrating'
+  | 'recovering'
+  | 'completed';
+
+export interface AiStageProgress {
+  stage: AiStageName;
+  status: 'idle' | 'active' | 'completed' | 'failed';
+  label?: string;
+  detail?: string;
+  updated_at?: string;
+}
+
+export interface SemanticMapProjectionDTO {
+  roomId: string;
+  mapStatus: string;
+  mapType?: 'graph' | 'image' | 'hybrid' | 'text';
+  baseAsset?: { assetId?: string | null };
+  knownLocations: Array<{
+    nodeId: string;
+    label: string;
+    description?: string;
+    isCurrent?: boolean;
+    position?: { x: number; y: number };
+  }>;
+  knownConnections: Array<{ fromNodeId: string; toNodeId: string; label?: string }>;
+  partyPosition?: { nodeId: string; label: string } | null;
+  fogOfWar: Array<{ regionId: string; polygon?: Array<[number, number]> }>;
+  textScene?: { name: string; description: string; visibleExits: string[] } | null;
+}
+
+export interface HostDirectorSnapshotDTO {
+  currentScene: string;
+  confirmedFacts: string[];
+  pendingTriggers: string[];
+  aiEvidence: RedactedCitation[];
+  stage: AiStageName;
+  risks: string[];
+  exceptionQueue: string[];
 }
 
 export type ActionStatus =
@@ -61,7 +114,7 @@ export interface ActionDraftDTO {
   confirmation_requirements: string[];
   requires_confirmation: boolean;
   confidence: number;
-  citations: Array<Record<string, unknown>>;
+  citations: RedactedCitation[];
   analysis_source: 'configured_provider' | 'fallback_provider' | 'local_fallback';
   resolution_route: 'ai' | 'local' | 'host_exception';
   ephemeral: boolean;
@@ -81,7 +134,7 @@ export interface RuleExplanationDTO {
   state_before: Record<string, unknown>;
   state_after: Record<string, unknown>;
   rule_set_version: string;
-  citations: Array<Record<string, unknown>>;
+  citations: RedactedCitation[];
   verification_receipt: Record<string, unknown> | null;
 }
 
@@ -96,6 +149,21 @@ export interface ActionReceiptDTO {
   can_cancel: boolean;
   can_review: boolean;
   rule_explanation: RuleExplanationDTO | null;
+}
+
+export interface NarrationResultDTO {
+  action_id: string;
+  context_version: number;
+  director_plan_digest: string;
+  narrative_text: string;
+  environment_changes: string[];
+  interactable_objects: string[];
+  open_question: string;
+  fact_refs: Record<string, string[]>;
+  redacted_citations: RedactedCitation[];
+  style_pack_version: string;
+  provider_source: 'configured_provider' | 'fallback_provider' | 'local_fallback';
+  status: 'completed' | 'invalid_response';
 }
 
 export interface PlayerReconnectDTO {
@@ -148,6 +216,14 @@ export interface EvidenceCardDTO {
 
 export interface CampaignHomeDTO {
   room_id: string;
+  current_scene: {
+    node_id: string;
+    title: string;
+    text_preview: string;
+    citation: RedactedCitation;
+    choice_count: number;
+    image_asset_id?: string | null;
+  } | null;
   session: CampaignSessionDTO | null;
   team_objectives: Array<{ objective_id: string; text: string; status: string; assigned_at: string }>;
   personal_objectives: Array<{ objective_id: string; text: string; status: string; assigned_at: string }>;

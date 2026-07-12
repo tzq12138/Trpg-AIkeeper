@@ -85,6 +85,22 @@ def test_evaluate_auto_pass_for_professional_common_item():
     assert decision.item["name"] == "医用塑胶手套"
 
 
+def test_evaluate_auto_pass_for_item_explicitly_declared_in_background():
+    service = RetroactiveItemService(conn=None)
+    character = doctor_character()
+    character["xlsx_data"]["background"] = "宝贵之物：父亲留下的黄铜打火机"
+    intent = PlayerIntent(
+        intent_type="retroactive_item_claim",
+        declared_intent="我拿出黄铜打火机",
+        params={"claimedItemName": "黄铜打火机", "justificationText": "这是父亲的遗物"},
+    )
+
+    decision = service.evaluate_claim(intent, character, scenario_assets())
+
+    assert decision.branch == "auto_pass"
+    assert decision.item["name"] == "黄铜打火机"
+
+
 def test_evaluate_restricted_related_item_requires_roll():
     service = RetroactiveItemService(conn=None)
     intent = PlayerIntent(

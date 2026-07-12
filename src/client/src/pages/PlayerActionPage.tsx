@@ -15,11 +15,13 @@ import {
   claimPlayerDevice,
   confirmActionDraft,
   deleteActionDraft,
+  getActionHints,
   getActionReceipt,
   PlayerApiError,
   reconnectPlayer,
 } from '../shared/player-api';
 import {
+  canStartNewAction,
   createConfirmIdempotencyKey,
   isActionInFlight,
   mergeAuthoritativeReceipt,
@@ -29,13 +31,17 @@ import type {
   ActionDraftDTO,
   ActionReceiptDTO,
   ActionStatus,
+  AiStageName,
+  AiStageProgress,
   CharacterSheet,
   EngineEvent,
   PlayerChatMessage,
+  SemanticMapProjectionDTO,
   SkillCheckResult,
   TacticalAction,
 } from '../types';
 import type { PlayerTabKey } from '../navigation';
+export { default as RedactedCitationDisclosure } from '../components/RedactedCitationDisclosure';
 
 function buildEncounterActions(encounterType: string): TacticalAction[] {
   if (encounterType === 'combat') {
@@ -58,8 +64,142 @@ function buildEncounterActions(encounterType: string): TacticalAction[] {
   ];
 }
 
-export default function PlayerActionPage({ roomId }: { roomId: string }) {
-  const [tab, setTab] = useState<PlayerTabKey>('home');
+export type NarrativeFeedItem = {
+  id: string;
+  kind: 'kp_narration' | 'environment_change' | 'interactable_object' | 'open_question' | 'judgement' | 'clarification' | 'recovery' | 'player';
+  text: string;
+};
+
+const AI_STAGE_ORDER: AiStageName[] = [
+  'retrieving',
+  'directing',
+  'validating_rules',
+  'narrating',
+  'recovering',
+  'completed',
+];
+
+export function applyActionInspiration(text: string): { inputText: string; shouldSubmit: false } {
+  return { inputText: text, shouldSubmit: false };
+}
+
+export function NarrativeFeed({
+  items,
+  recoveryText,
+}: {
+  items: NarrativeFeedItem[];
+  recoveryText?: string;
+}) {
+  return (
+    <section className="bh-panel bh-narrative-feed" aria-label="叙事对话流">
+      <span className="bh-eyebrow">叙事对话流</span>
+      <h2 className="bh-panel-title">你眼前发生的事</h2>
+      {recoveryText ? <div className="bh-muted-box">{recoveryText}</div> : null}
+      <div className="bh-message-list" aria-live="polite">
+        {items.length === 0 ? (
+          <article className="bh-message">等待 KP 叙事，或用自然语言描述你的下一步。</article>
+        ) : items.map((item) => (
+          <article key={item.id} className={`bh-message bh-message--${item.kind}`}>
+            <span className="bh-eyebrow">{item.kind}</span>
+            <p>{item.text}</p>
+          </article>
+        ))}
+      </div>
+      <PlayerAuxiliarySidebar activeTab="action" />
+    </section>
+  );
+}
+
+export function AiStageIndicator({ progress }: { progress: AiStageProgress }) {
+  const currentIndex = AI_STAGE_ORDER.indexOf(progress.stage);
+  return (
+    <section className="bh-ai-stage" aria-label="AI 阶段">
+      <div className="bh-action-row bh-action-row--responsive">
+        {AI_STAGE_ORDER.map((stage, index) => (
+          <span
+            key={stage}
+            className={`bh-eyebrow ${index <= currentIndex ? 'bh-ai-stage--done' : ''} ${stage === progress.stage ? 'bh-ai-stage--active' : ''}`}
+          >
+            {stage}
+          </span>
+        ))}
+      </div>
+      <p className="bh-muted-box">{progress.detail || progress.label || progress.stage}</p>
+    </section>
+  );
+}
+
+export function PlayerAuxiliarySidebar({ activeTab }: { activeTab: PlayerTabKey }) {
+  const panels = [
+    ['角色', '角色卡、状态和技能保留在侧栏中。'],
+    ['物品', '物品与主张能力保留为辅助入口。'],
+    ['线索', '线索、问题和证据板保留为辅助入口。'],
+    ['地图', activeTab === 'map' ? '当前地图已打开。' : '地图移入可折叠侧栏。'],
+    ['历史', '历史记录保留为回看入口。'],
+  ];
+  return (
+    <aside className="bh-player-auxiliary" aria-label="辅助面板">
+      <span className="bh-eyebrow">辅助面板</span>
+      {panels.map(([label, text]) => (
+        <details key={label}>
+          <summary>{label}</summary>
+          <p>{text}</p>
+        </details>
+      ))}
+    </aside>
+  );
+}
+
+export function SemanticMapPanel({ projection }: { projection: SemanticMapProjectionDTO }) {
+  return (
+    <section className="bh-panel bh-semantic-map" aria-label="语义地图">
+      <span className="bh-eyebrow">语义地图 · 只读</span>
+      <h2 className="bh-panel-title">{projection.partyPosition?.label || '已知区域'}</h2>
+      {projection.baseAsset?.assetId ? <p className="bh-muted-box">图片底图已加载</p> : null}
+      {projection.textScene ? (
+        <div className="bh-map-info">
+          <strong>{projection.textScene.name}</strong>
+          <p>{projection.textScene.description}</p>
+        </div>
+      ) : null}
+      <div className={`bh-map-grid bh-map-grid--${projection.mapType || 'graph'}`}>
+        {projection.knownConnections.map((connection, index) => (
+          <span key={`${connection.fromNodeId}-${connection.toNodeId}-${index}`} className="bh-map-edge-label">
+            {connection.label || `${connection.fromNodeId} → ${connection.toNodeId}`}
+          </span>
+        ))}
+        {projection.knownLocations.map((location) => (
+          <div
+            key={location.nodeId}
+            className={`bh-map-node ${location.isCurrent ? 'bh-map-node--current' : 'bh-map-node--explored'}`}
+            style={{
+              position: 'absolute',
+              left: `${location.position?.x ?? 50}%`,
+              top: `${location.position?.y ?? 50}%`,
+              zIndex: 2,
+            }}
+            title={location.description || location.label}
+          >
+            <span className="bh-map-node-name">{location.label}</span>
+          </div>
+        ))}
+      </div>
+      {projection.fogOfWar.length > 0 ? (
+        <p className="bh-muted-box">迷雾区域：{projection.fogOfWar.length}</p>
+      ) : null}
+      <p className="bh-muted-box">移动请在自然语言输入中描述，系统会生成行动预览。</p>
+    </section>
+  );
+}
+
+export default function PlayerActionPage({
+  roomId,
+  initialTab = 'home',
+}: {
+  roomId: string;
+  initialTab?: PlayerTabKey;
+}) {
+  const [tab, setTab] = useState<PlayerTabKey>(initialTab);
   const [character, setCharacter] = useState<CharacterSheet | null>(null);
   const [inputText, setInputText] = useState('');
   const [actionStatus, setActionStatus] = useState<ActionStatus>('idle');
@@ -83,6 +223,9 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
   const [charStatus, setCharStatus] = useState('joined');
   const [mapRefresh, setMapRefresh] = useState(0);
   const [deviceControl, setDeviceControl] = useState<boolean | null>(null);
+  const [aiProgress, setAiProgress] = useState<AiStageProgress>({ stage: 'completed', status: 'idle', label: '待命' });
+  const [recoveryText, setRecoveryText] = useState('');
+  const [actionHints, setActionHints] = useState<string[]>([]);
   const localDraftKey = `aikeeper_action_draft:${roomId}`;
 
   useEffect(() => {
@@ -119,6 +262,13 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
           if (cancelled) return;
           setReceipt(authoritative);
           setActionStatus(authoritative.status);
+          const latestStage = [...(authoritative.timeline || [])].reverse()
+            .map((event) => event.metadata?.ai_stage || event.metadata?.stage)
+            .find((stage): stage is AiStageName => typeof stage === 'string' && AI_STAGE_ORDER.includes(stage as AiStageName));
+          if (latestStage) {
+            setAiProgress({ stage: latestStage, status: latestStage === 'completed' ? 'completed' : 'active', detail: '已从行动时间线恢复。' });
+            setRecoveryText('已从行动时间线恢复。');
+          }
           const savedDraft = localStorage.getItem(localDraftKey);
           if (savedDraft) {
             setActionError('服务器行动优先；你的本地草稿已保留，当前行动结束后可继续编辑。');
@@ -304,6 +454,27 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
         }
       } else if (event.type === 's2c_map_updated' || event.type === 's2c_player_moved' || event.type === 's2c_map_revealed') {
         setMapRefresh((n) => n + 1);
+      } else if (event.type === 's2c_ai_stage_changed') {
+        const payload = event.payload as { stage?: AiStageName; label?: string; detail?: string };
+        if (payload.stage && AI_STAGE_ORDER.includes(payload.stage)) {
+          setAiProgress({ stage: payload.stage, status: 'active', label: payload.label, detail: payload.detail });
+        }
+      } else if (event.type === 's2c_ai_recovery_required') {
+        const payload = event.payload as { actionId?: string };
+        setAiProgress({ stage: 'recovering', status: 'active', label: '恢复中', detail: 'AI 正在恢复本次行动。' });
+        setRecoveryText('AI 正在恢复本次行动。');
+        if (payload.actionId) {
+          getActionReceipt(payload.actionId)
+            .then((incoming) => {
+              setReceipt((current) => mergeAuthoritativeReceipt(current, incoming));
+              setActionStatus(incoming.status);
+            })
+            .catch(() => {});
+        }
+      } else if (event.type === 's2c_director_plan_validated') {
+        setAiProgress({ stage: 'validating_rules', status: 'completed', label: '导演计划已验证' });
+      } else if (event.type === 's2c_narration_completed') {
+        setAiProgress({ stage: 'completed', status: 'completed', label: '叙事完成' });
       } else if (event.type === 's2c_encounter_started') {
         const payload = event.payload as { encounter?: { type?: string }; participants?: any[] };
         // Show encounter tactical buttons
@@ -421,6 +592,20 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
     }
   };
 
+  const requestActionHints = async () => {
+    try {
+      const response = await getActionHints();
+      setActionHints((response.hints || []).slice(0, 5));
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
+  const applyHint = (hint: string) => {
+    const result = applyActionInspiration(hint);
+    updateInputText(result.inputText);
+  };
+
   const discardDraft = async () => {
     if (draft?.draft_id) {
       await deleteActionDraft(draft.draft_id).catch(() => {});
@@ -451,7 +636,7 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
   };
 
   const submitRetroClaim = () => {
-    if (!claimedItemName.trim() || actionStatus !== 'idle') return;
+    if (!claimedItemName.trim() || !canStartNewAction(draft, receipt)) return;
     const itemName = claimedItemName.trim();
     const justification = claimJustification.trim() || `我主张角色背景中应有${itemName}`;
     const text = `主张物品：${itemName}。${justification}`;
@@ -476,12 +661,16 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
 
   return (
     <PlayerTerminal activeTab={tab} character={character} onTabChange={setTab} isReady={isReady} charStatus={charStatus} onToggleReady={toggleReady}>
-      {tab === 'home' && <CampaignHomePanel roomId={roomId} />}
+      {tab === 'home' && (
+        <CampaignHomePanel roomId={roomId} onContinueScene={() => setTab('map')} />
+      )}
       {tab === 'action' && (
         <ActionPanel
           actionStatus={actionStatus}
           connectionStatus={connectionStatus}
           actionError={actionError}
+          aiProgress={aiProgress}
+          actionHints={actionHints}
           claimJustification={claimJustification}
           claimOpen={claimOpen}
           claimStatus={claimStatus}
@@ -491,6 +680,7 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
           ephemeralPreview={ephemeralPreview}
           receipt={receipt}
           messages={messages}
+          recoveryText={recoveryText}
           pendingActions={pendingActions}
           deviceControl={deviceControl}
           onClaimJustificationChange={setClaimJustification}
@@ -505,6 +695,8 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
           onSubmitRetroClaim={submitRetroClaim}
           onTacticalSelect={submitTacticalAction}
           onTakeOverDevice={() => void takeOverDevice()}
+          onRequestActionHints={() => void requestActionHints()}
+          onApplyHint={applyHint}
         />
       )}
       {tab === 'character' && <PlayerCharacter externalResult={lastSkillCheckResult} onResultConsumed={() => setLastSkillCheckResult(null)} />}
@@ -514,11 +706,6 @@ export default function PlayerActionPage({ roomId }: { roomId: string }) {
         <PlayerMapPanel
           roomId={roomId}
           mapRefresh={mapRefresh}
-          onMoveIntent={(text, params) => {
-            setInputText(text);
-            setTab('action');
-            void submitAction(text, 'move', params);
-          }}
         />
       )}
     </PlayerTerminal>
@@ -529,6 +716,8 @@ interface ActionPanelProps {
   actionStatus: ActionStatus;
   connectionStatus: PlayerWSStatus;
   actionError: string;
+  aiProgress: AiStageProgress;
+  actionHints: string[];
   claimJustification: string;
   claimOpen: boolean;
   claimStatus: string;
@@ -538,6 +727,7 @@ interface ActionPanelProps {
   ephemeralPreview: ActionDraftDTO | null;
   receipt: ActionReceiptDTO | null;
   messages: PlayerChatMessage[];
+  recoveryText: string;
   pendingActions: TacticalAction[];
   deviceControl: boolean | null;
   onClaimJustificationChange: (value: string) => void;
@@ -552,6 +742,8 @@ interface ActionPanelProps {
   onSubmitRetroClaim: () => void;
   onTacticalSelect: (action: TacticalAction) => void;
   onTakeOverDevice: () => void;
+  onRequestActionHints: () => void;
+  onApplyHint: (hint: string) => void;
 }
 
 function formatPlayerApiError(error: unknown): string {
@@ -574,6 +766,8 @@ function ActionPanel({
   actionStatus,
   connectionStatus,
   actionError,
+  aiProgress,
+  actionHints,
   claimJustification,
   claimOpen,
   claimStatus,
@@ -583,6 +777,7 @@ function ActionPanel({
   ephemeralPreview,
   receipt,
   messages,
+  recoveryText,
   pendingActions,
   deviceControl,
   onClaimJustificationChange,
@@ -597,13 +792,25 @@ function ActionPanel({
   onSubmitRetroClaim,
   onTacticalSelect,
   onTakeOverDevice,
+  onRequestActionHints,
+  onApplyHint,
 }: ActionPanelProps) {
-  const isIdle = !draft && !(receipt && isActionInFlight(receipt.status));
+  const isIdle = canStartNewAction(draft, receipt);
+  const narrativeItems: NarrativeFeedItem[] = messages.map((message) => ({
+    id: message.id,
+    kind: message.sender === 'player' ? 'player' : message.sender === 'system' ? 'recovery' : 'kp_narration',
+    text: message.text,
+  }));
 
   return (
-    <section className="bh-panel">
+    <section
+      className="bh-panel bh-player-narrative-layout bh-player-narrative-layout--mobile-safe"
+      data-safe-widths="360 390 430"
+    >
       <span className="bh-eyebrow">TACTICAL CHANNEL</span>
-      <h2 className="bh-panel-title">玩家行动终端</h2>
+      <h2 className="bh-panel-title">自然语言行动</h2>
+      <NarrativeFeed items={narrativeItems} recoveryText={recoveryText} />
+      <AiStageIndicator progress={aiProgress} />
       {connectionStatus !== 'open' && (
         <div className="bh-muted-box" role="status">
           {connectionStatus === 'unauthorized'
@@ -662,6 +869,21 @@ function ActionPanel({
           onSubmitAction(text);
         }}
       />
+
+      <div className="bh-action-box">
+        <button className="bh-button" type="button" onClick={onRequestActionHints}>
+          给我一些行动灵感
+        </button>
+        {actionHints.length > 0 && (
+          <div className="bh-hint-list">
+            {actionHints.slice(0, 5).map((hint) => (
+              <button className="bh-button" key={hint} type="button" onClick={() => onApplyHint(hint)}>
+                {hint}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       <PlayerActionComposer
         inputText={inputText}
@@ -771,58 +993,17 @@ function PlayerLogsPanel({ messages }: { messages: PlayerChatMessage[] }) {
   );
 }
 
-interface MapTileData {
-  nodeId: string; name: string; description: string;
-  explored: boolean; isCurrent: boolean; isAdjacent: boolean;
-  hasClues: boolean; hasNpcs: boolean;
-  npcsPresent: string[]; cluesAvailable: string[];
-  position: { x: number; y: number };
-}
-
-interface MapFogRegion {
-  regionId: string;
-  polygon: Array<[number, number]>;
-}
-
-interface TextSceneData {
-  name: string;
-  description: string;
-  visibleExits: string[];
-  soloAdventure?: {
-    nodeId: string;
-    citation?: { source_ref?: string; page_number?: number };
-    choices: Array<{ nodeId: string; label: string }>;
-  };
-}
-
-function mapPolygonPoints(polygon: Array<[number, number]>): string {
-  return polygon.map((coordinate) => {
-    const x = coordinate[0] <= 1 ? coordinate[0] * 100 : coordinate[0];
-    const y = coordinate[1] <= 1 ? coordinate[1] * 100 : coordinate[1];
-    return `${x},${y}`;
-  }).join(' ');
-}
-
 function PlayerMapPanel({
   roomId,
   mapRefresh,
-  onMoveIntent,
 }: {
   roomId: string;
   mapRefresh: number;
-  onMoveIntent: (text: string, params: Record<string, unknown>) => void;
 }) {
-  const [tiles, setTiles] = useState<MapTileData[]>([]);
-  const [currentTile, setCurrentTile] = useState<string | null>(null);
-  const [hiddenCount, setHiddenCount] = useState(0);
   const [mapStatus, setMapStatus] = useState('no_map');
-  const [mapType, setMapType] = useState<'graph' | 'image' | 'hybrid'>('graph');
   const [mapImageUrl, setMapImageUrl] = useState('');
-  const [fogRegions, setFogRegions] = useState<MapFogRegion[]>([]);
-  const [textScene, setTextScene] = useState<TextSceneData | null>(null);
+  const [projection, setProjection] = useState<SemanticMapProjectionDTO | null>(null);
   const [loading, setLoading] = useState(true);
-  const [movePending, setMovePending] = useState(false);
-  const [secretMove, setSecretMove] = useState(false);
 
   const fetchMap = () => {
     const token = getSlotValue('player_token') || '';
@@ -832,14 +1013,28 @@ function PlayerMapPanel({
       .then((res) => (res.ok ? res.json() : null))
       .then((data: Record<string, any> | null) => {
         if (data) {
-          setTiles((data.nodes || []) as MapTileData[]);
-          setCurrentTile((data.currentNodeId || null) as string | null);
-          setHiddenCount(Number(data.hiddenCount || 0));
+          const knownLocations = Array.isArray(data.knownLocations)
+            ? data.knownLocations
+            : (data.nodes || []).map((node: Record<string, any>) => ({
+              nodeId: node.nodeId,
+              label: node.name,
+              description: node.description,
+              isCurrent: node.isCurrent || node.nodeId === data.currentNodeId,
+              position: node.position,
+            }));
+          const knownConnections = Array.isArray(data.knownConnections) ? data.knownConnections : [];
+          setProjection({
+            roomId: String(data.roomId || roomId),
+            mapStatus: String(data.mapStatus || 'active'),
+            mapType: data.mapType === 'image' || data.mapType === 'hybrid' ? data.mapType : 'graph',
+            baseAsset: data.baseAsset || {},
+            knownLocations,
+            knownConnections,
+            partyPosition: data.partyPosition || knownLocations.find((location: any) => location.isCurrent) || null,
+            fogOfWar: Array.isArray(data.fogOfWar) ? data.fogOfWar : (data.fogRegionAreas || []),
+            textScene: data.textScene || null,
+          });
           setMapStatus(String(data.mapStatus || 'no_map'));
-          setFogRegions((data.fogRegionAreas || []) as MapFogRegion[]);
-          setTextScene((data.textScene || null) as TextSceneData | null);
-          const nextMapType = data.mapType === 'image' || data.mapType === 'hybrid' ? data.mapType : 'graph';
-          setMapType(nextMapType);
           const assetId = String(data.baseAsset?.assetId || '');
           if (!assetId) {
             setMapImageUrl('');
@@ -871,29 +1066,6 @@ function PlayerMapPanel({
     if (mapImageUrl) URL.revokeObjectURL(mapImageUrl);
   }, [mapImageUrl]);
 
-  const handleMove = async (nodeId: string) => {
-    setMovePending(true);
-    const target = tiles.find((tile) => tile.nodeId === nodeId);
-    const targetName = target?.name || '目标地点';
-    onMoveIntent(secretMove ? `我偷偷前往${targetName}` : `移动到${targetName}`, {
-      targetNodeId: nodeId,
-      fromNodeId: currentTile || '',
-      secretMove,
-    });
-    setMovePending(false);
-  };
-
-  const handleSoloMove = (nodeId: string) => {
-    const sourceNodeId = textScene?.soloAdventure?.nodeId || '';
-    if (!sourceNodeId) return;
-    setMovePending(true);
-    onMoveIntent(`转到条目 ${nodeId}`, {
-      targetNodeId: nodeId,
-      fromNodeId: sourceNodeId,
-    });
-    setMovePending(false);
-  };
-
   // No map state
   if (!loading && mapStatus === 'no_map') {
     return (
@@ -910,44 +1082,8 @@ function PlayerMapPanel({
     );
   }
 
-  if (!loading && mapStatus === 'text_mode') {
-    return (
-      <section className="bh-panel">
-        <span className="bh-eyebrow">TEXT SCENE</span>
-        <h2 className="bh-panel-title">{textScene?.name || '当前场景'}</h2>
-        <div className="bh-map-info" style={{ marginTop: 12 }}>
-          <p style={{ fontWeight: 700 }}>{textScene?.description || '请根据当前叙事行动。'}</p>
-          {textScene?.visibleExits?.length ? (
-            <p className="bh-eyebrow" style={{ fontSize: 9 }}>
-              可见出口：{textScene.visibleExits.join('、')}
-            </p>
-          ) : null}
-          {textScene?.soloAdventure?.choices?.length ? (
-            <div className="bh-action-box" style={{ marginTop: 12 }}>
-              {textScene.soloAdventure.choices.map((choice) => (
-                <button
-                  className="bh-button bh-button--yellow"
-                  disabled={movePending}
-                  key={choice.nodeId}
-                  onClick={() => handleSoloMove(choice.nodeId)}
-                  type="button"
-                >
-                  {choice.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {textScene?.soloAdventure?.citation?.source_ref ? (
-            <p className="bh-eyebrow" style={{ fontSize: 9, marginTop: 10 }}>
-              原文定位：{textScene.soloAdventure.citation.source_ref}
-            </p>
-          ) : null}
-        </div>
-        <p style={{ fontSize: 12, color: 'var(--bh-dim)', marginTop: 12 }}>
-          本场景未使用可点击地图；你仍可在行动区描述探索、交谈或移动意图。
-        </p>
-      </section>
-    );
+  if (!loading && projection) {
+    return <SemanticMapPanel projection={projection} />;
   }
 
   // Loading state
@@ -961,84 +1097,15 @@ function PlayerMapPanel({
     );
   }
 
-  const current = tiles.find((t) => t.nodeId === currentTile);
-
   return (
     <section className="bh-panel">
       <span className="bh-eyebrow">INVESTIGATION MAP</span>
-      <h2 className="bh-panel-title">
-        {current ? current.name : '调查区域地图'}
-        {hiddenCount > 0 && <span className="bh-eyebrow" style={{ fontSize: 9, marginLeft: 8 }}>+{hiddenCount} 未探索</span>}
-      </h2>
-
-      {movePending && (
-        <div className="bh-muted-box" style={{ marginBottom: 8 }}>
-          移动已提交，等待本轮结算...
-        </div>
-      )}
-      <label className="bh-muted-box" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-        <input type="checkbox" checked={secretMove} onChange={(event) => setSecretMove(event.target.checked)} />
-        秘密移动：将隐藏你的 Token，并要求额外确认；越界或无法安全裁决时会进入 Host 异常队列。
-      </label>
-
+      <h2 className="bh-panel-title">调查区域地图</h2>
       <div
-        className={`bh-map-grid bh-map-grid--${mapType}`}
+        className="bh-map-grid bh-map-grid--readonly"
         style={mapImageUrl ? { backgroundImage: `url(${mapImageUrl})` } : undefined}
-      >
-        {(mapType === 'image' || mapType === 'hybrid') && fogRegions.length > 0 && (
-          <svg
-            aria-label="地图迷雾"
-            viewBox="0 0 100 100"
-            preserveAspectRatio="none"
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 1 }}
-          >
-            {fogRegions.map((region) => (
-              <polygon
-                key={region.regionId}
-                points={mapPolygonPoints(region.polygon)}
-                fill="rgba(17, 17, 17, 0.86)"
-              />
-            ))}
-          </svg>
-        )}
-        {tiles.map((tile) => {
-          const isCurrent = tile.nodeId === currentTile;
-          const isClickable = tile.isAdjacent && !isCurrent && !movePending;
-
-          // Use position from data, fall back to circle layout
-          const posX = tile.position?.x ?? 50;
-          const posY = tile.position?.y ?? 50;
-
-          let className = 'bh-map-node';
-          if (isCurrent) className += ' bh-map-node--current';
-          if (tile.explored) className += ' bh-map-node--explored';
-          if (tile.isAdjacent) className += ' bh-map-node--adjacent';
-          if (!tile.explored && !tile.isAdjacent) className += ' bh-map-node--hidden';
-
-          return (
-            <button
-              key={tile.nodeId}
-              className={className}
-              style={{ position: 'absolute', left: `${posX}%`, top: `${posY}%`, zIndex: 2 }}
-              onClick={() => isClickable && handleMove(tile.nodeId)}
-              disabled={!isClickable}
-              title={tile.explored ? tile.description : '???'}
-            >
-              <span className="bh-map-node-name">{tile.name}</span>
-              {tile.hasClues && <span className="bh-map-node-badge">🔍</span>}
-              {tile.hasNpcs && <span className="bh-map-node-badge">👤</span>}
-            </button>
-          );
-        })}
-      </div>
-
-      {current && (
-        <div className="bh-map-info" style={{ marginTop: 12 }}>
-          <p style={{ fontWeight: 700 }}>{current.explored ? current.description : '???'}</p>
-          {current.hasClues && <span className="bh-eyebrow" style={{ fontSize: 9 }}>HAS CLUES</span>}
-          {current.hasNpcs && <span className="bh-eyebrow" style={{ fontSize: 9, marginLeft: 8 }}>HAS NPCs</span>}
-        </div>
-      )}
+      />
+      <p className="bh-muted-box">地图仅显示已知信息。移动请在行动区用自然语言描述。</p>
     </section>
   );
 }

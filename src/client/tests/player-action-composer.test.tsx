@@ -23,7 +23,7 @@ const highRiskDraft: ActionDraftDTO = {
   confirmation_requirements: ['attack', 'state_change'],
   requires_confirmation: true,
   confidence: 0.92,
-  citations: [{ source_ref: 'coc7#combat' }],
+  citations: [{ label: '规则依据', page: 4, scene: '战斗', verified: true }],
   analysis_source: 'configured_provider',
   resolution_route: 'ai',
   ephemeral: false,
@@ -51,7 +51,7 @@ const receipt: ActionReceiptDTO = {
     state_before: { luck: 40 },
     state_after: { mutations: [] },
     rule_set_version: 'coc7-v1',
-    citations: [{ source_ref: 'coc7#combat' }],
+    citations: [{ label: '规则依据', page: 4, scene: '战斗', verified: true }],
     verification_receipt: { action_id: 'action-1', signature: 'signed' },
   },
 };
@@ -119,7 +119,44 @@ describe('PlayerActionComposer', () => {
     expect(html).toContain('coc7-v1');
     expect(html).toContain('隐藏来源');
     expect(html).toContain('1 penalty die');
+    expect(html).toContain('依据已校验');
+    expect(html).toContain('规则依据');
     expect(html).not.toContain('撤回行动');
+  });
+
+  test('redacts raw citation fields from collapsed and expanded receipts', () => {
+    const html = renderToStaticMarkup(
+      <PlayerActionComposer
+        inputText=""
+        phase="completed"
+        receipt={{
+          ...receipt,
+          rule_explanation: {
+            ...receipt.rule_explanation!,
+            citations: [{
+              label: '图书馆场景',
+              page: 12,
+              scene: '图书馆',
+              verified: true,
+              source_ref: 'secret-module.pdf#raw=keeper',
+              raw: 'the murderer is hidden here',
+            } as any],
+          },
+        }}
+        onInputChange={() => {}}
+        onAnalyze={() => {}}
+        onConfirm={() => {}}
+        onDiscard={() => {}}
+        onCancelAction={() => {}}
+      />,
+    );
+
+    expect(html).toContain('依据已校验');
+    expect(html).toContain('图书馆场景');
+    expect(html).toContain('第 12 页');
+    expect(html).not.toContain('secret-module.pdf');
+    expect(html).not.toContain('murderer');
+    expect(html).not.toContain('source_ref');
   });
 
   test('shows cancel action only when server receipt allows it', () => {

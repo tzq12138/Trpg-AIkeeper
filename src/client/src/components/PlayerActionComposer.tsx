@@ -1,4 +1,5 @@
 import type { ActionDraftDTO, ActionReceiptDTO, ActionStatus } from '../shared/types';
+import RedactedCitationDisclosure from './RedactedCitationDisclosure';
 
 
 interface PlayerActionComposerProps {
@@ -87,6 +88,7 @@ export default function PlayerActionComposer({
               ))}
             </div>
           )}
+          <RedactedCitationDisclosure citations={preview.citations || []} />
           {draft && (
             <div className="bh-action-row bh-action-row--responsive">
               <button className="bh-button bh-button--yellow" type="button" onClick={onConfirm}>
@@ -129,9 +131,7 @@ export default function PlayerActionComposer({
               {receipt.rule_explanation.hidden_sources.map((item, index) => (
                 <p key={index}>隐藏来源：{String(item.effect ?? '已应用隐藏机械影响')}</p>
               ))}
-              {receipt.rule_explanation.citations.map((citation, index) => (
-                <code key={index}>{String(citation.source_ref ?? citation.source ?? 'citation')}</code>
-              ))}
+              <RedactedCitationDisclosure citations={receipt.rule_explanation.citations || []} />
             </details>
           )}
         </article>

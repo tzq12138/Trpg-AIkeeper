@@ -1,9 +1,11 @@
+import json
+
 from tests.server.conftest import create_room, login, setup_auth_test_data
 
 
 def test_campaign_v2_dtos_and_emergency_notice_are_registered():
     from src.server.events.events_registry import ALL_EVENTS
-    from src.server.models import CampaignHomeDTO, EvidenceCardDTO, PlayerDeviceSessionDTO
+    from src.server.models import CampaignHomeDTO, CampaignQuestionDTO, EvidenceCardDTO, PlayerDeviceSessionDTO
 
     device = PlayerDeviceSessionDTO(device_id="phone-a", status="active", controller=True)
     card = EvidenceCardDTO(
@@ -15,7 +17,12 @@ def test_campaign_v2_dtos_and_emergency_notice_are_registered():
         visibility="party",
         source="player",
     )
-    home = CampaignHomeDTO(room_id="room-1", unresolved_questions=[card])
+    question = CampaignQuestionDTO(
+        evidence_card_id=card.evidence_card_id,
+        title=card.title,
+        fact_status=card.fact_status,
+    )
+    home = CampaignHomeDTO(room_id="room-1", unresolved_questions=[question])
 
     assert device.device_id == "phone-a"
     assert home.unresolved_questions[0].evidence_card_id == "card-1"
@@ -140,6 +147,84 @@ def test_confirmed_action_starts_player_scoped_campaign_home(client, test_db):
     assert [item["objective_id"] for item in payload["team_objectives"]] == ["team-goal"]
     assert [item["objective_id"] for item in payload["personal_objectives"]] == ["my-goal"]
     assert "other-goal" not in str(payload)
+
+
+def test_campaign_home_projects_only_the_current_solo_entry(client, test_db):
+    from src.server.scenario.content_projection import ContentProjectionService
+
+    room_id, _, player_token = _setup_player(client, test_db)
+    version = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    graph = {
+        "solo_adventure": {
+            "root_node_id": "1",
+            "integrity": {"is_valid": True},
+            "nodes": [
+                {
+                    "node_id": "1",
+                    "title": "条目 1",
+                    "text": "太阳高悬，你正在奥斯本药店门口等车。",
+                    "target_node_ids": ["263"],
+                    "citation": {"source_ref": "向火独行.pdf#page=4"},
+                },
+                {
+                    "node_id": "263",
+                    "title": "条目 263",
+                    "text": "下一条隐藏正文不应提前泄露。",
+                    "target_node_ids": [],
+                    "citation": {"source_ref": "向火独行.pdf#page=58"},
+                },
+            ],
+        }
+    }
+    test_db.execute(
+        "UPDATE scenario_versions SET knowledge_graph = %s WHERE scenario_version_id = %s",
+        (json.dumps(graph, ensure_ascii=False), version["scenario_version_id"]),
+    )
+    ContentProjectionService(test_db).rebuild(
+        version["scenario_version_id"], graph, requested_by="test"
+    )
+    test_db.execute(
+        "INSERT INTO scenario_assets "
+        "(asset_id, scenario_id, filename, original_name, mime_type, file_size, relative_path, visibility) "
+        "SELECT 'opening-image', scenario_id, 'opening.png', '长途车.png', 'image/png', 10, "
+        "'data/scenario_assets/opening.png', 'host_only' FROM scenario_versions "
+        "WHERE scenario_version_id = %s",
+        (version["scenario_version_id"],),
+    )
+    test_db.execute(
+        "INSERT INTO scenario_asset_bindings "
+        "(binding_id, scenario_version_id, asset_id, target_type, target_key, confidence, status) "
+        "VALUES ('opening-binding', %s, 'opening-image', 'branch_node', '1', 0.95, 'confirmed')",
+        (version["scenario_version_id"],),
+    )
+    test_db.commit()
+
+    response = client.get(
+        "/api/player/campaign-home",
+        headers={"X-Room-Token": player_token},
+    )
+
+    assert response.status_code == 200
+    scene = response.json()["current_scene"]
+    assert scene == {
+        "node_id": "1",
+        "title": "条目 1",
+        "text_preview": "太阳高悬，你正在奥斯本药店门口等车。",
+        "citation": {
+            "label": "已校验依据",
+            "page": None,
+            "scene": None,
+            "verified": True,
+        },
+        "choice_count": 1,
+        "image_asset_id": "opening-image",
+    }
+    assert "source_ref" not in response.text
+    assert "向火独行.pdf" not in response.text
+    assert "下一条隐藏正文" not in response.text
 
 
 def test_campaign_home_ends_session_after_offline_quiet_window(client, test_db):
@@ -434,8 +519,11 @@ def test_image_map_returns_visible_regions_and_safe_token_projection(client, tes
     payload = response.json()
     assert payload["mapType"] == "image"
     assert payload["baseAsset"] == {"assetId": "handdrawn-map"}
-    assert [region["regionId"] for region in payload["regions"]] == ["library", "cellar"]
-    assert payload["tokens"] == [{"characterId": character_id, "nodeId": "library"}]
+    assert [location["nodeId"] for location in payload["knownLocations"]] == ["library", "cellar"]
+    assert payload["partyPosition"] == {"nodeId": "library", "label": "图书馆"}
+    assert payload["fogOfWar"] == []
+    assert "regions" not in payload
+    assert "tokens" not in payload
 
 
 def test_host_can_fog_a_map_region_with_a_versioned_party_event(client, test_db):
@@ -477,8 +565,9 @@ def test_host_can_fog_a_map_region_with_a_versioned_party_event(client, test_db)
     player_view = client.get(
         f"/api/maps/{room_id}", headers={"X-Room-Token": player_token}
     ).json()
-    assert [region["regionId"] for region in player_view["regions"]] == ["library"]
-    assert player_view["fogRegions"] == ["cellar"]
+    assert "regions" not in player_view
+    assert "fogRegions" not in player_view
+    assert [region["regionId"] for region in player_view["fogOfWar"]] == ["cellar"]
     event = test_db.execute(
         "SELECT event_type, audience, payload FROM events WHERE room_id = %s "
         "ORDER BY sequence DESC LIMIT 1",
@@ -645,18 +734,20 @@ def test_player_map_falls_back_to_a_safe_text_scene_when_no_map_exists(client, t
     response = client.get(f"/api/maps/{room_id}", headers={"X-Room-Token": player_token})
 
     assert response.status_code == 200
-    assert response.json() == {
-        "roomId": room_id,
-        "nodes": [],
-        "currentNodeId": None,
-        "hiddenCount": 0,
-        "mapStatus": "text_mode",
-        "textScene": {
-            "name": "入口大厅",
-            "description": "雨水顺着玻璃窗流下。",
-            "visibleExits": [],
-        },
+    payload = response.json()
+    assert payload["roomId"] == room_id
+    assert payload["mapStatus"] == "text_mode"
+    assert payload["knownLocations"] == []
+    assert payload["knownConnections"] == []
+    assert payload["partyPosition"] is None
+    assert payload["fogOfWar"] == []
+    assert payload["textScene"] == {
+        "name": "入口大厅",
+        "description": "雨水顺着玻璃窗流下。",
+        "visibleExits": [],
     }
+    assert "nodes" not in payload
+    assert "currentNodeId" not in payload
     assert "邪教地窖" not in response.text
     assert "不应公开的真相" not in response.text
 
@@ -712,11 +803,10 @@ def test_hidden_map_token_is_visible_only_to_its_owner(client, test_db):
     second_view = client.get(
         f"/api/maps/{room_id}", headers={"X-Room-Token": second["player_token"]}
     ).json()
-    assert first_view["tokens"] == [{"characterId": first_character_id, "nodeId": "hall"}]
-    assert second_view["tokens"] == [
-        {"characterId": first_character_id, "nodeId": "hall"},
-        {"characterId": second["character_id"], "nodeId": "hall"},
-    ]
+    assert "tokens" not in first_view
+    assert "tokens" not in second_view
+    assert first_view["partyPosition"] == {"nodeId": "hall", "label": "大厅"}
+    assert second_view["partyPosition"] == {"nodeId": "hall", "label": "大厅"}
 
 
 def test_secret_move_is_compiled_as_private_confirmed_movement(client, test_db):

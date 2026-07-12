@@ -14,6 +14,8 @@ import {
 } from '../shared/player-api';
 import type { CampaignHomeDTO, EvidenceCardDTO, PlayerNoteDTO } from '../shared/types';
 import type { SessionZeroDTO } from '../shared/player-api';
+import { getSlotValue } from '../shared/identity';
+import RedactedCitationDisclosure from './RedactedCitationDisclosure';
 
 
 interface EvidenceState {
@@ -28,7 +30,80 @@ interface EvidenceState {
 
 const emptyEvidence: EvidenceState = { cards: [], links: [] };
 
-export default function CampaignHomePanel({ roomId }: { roomId: string }) {
+type CurrentScene = NonNullable<CampaignHomeDTO['current_scene']>;
+
+function PlayerAssetImage({ assetId, alt }: { assetId: string; alt: string }) {
+  const endpoint = `/api/player/assets/${encodeURIComponent(assetId)}`;
+  const [src, setSrc] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    fetch(endpoint, {
+      headers: { 'X-Room-Token': getSlotValue('player_token') || '' },
+    })
+      .then((response) => response.ok ? response.blob() : null)
+      .then((blob) => {
+        if (!blob || !active) return;
+        setSrc(URL.createObjectURL(blob));
+      })
+      .catch(() => setSrc(''));
+    return () => {
+      active = false;
+      setSrc((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return '';
+      });
+    };
+  }, [endpoint]);
+
+  return (
+    <div aria-label={alt} data-asset-endpoint={endpoint}>
+      {src && (
+        <img
+          alt={alt}
+          src={src}
+          style={{ width: '100%', maxHeight: 360, objectFit: 'contain', border: '3px solid var(--bh-black)' }}
+        />
+      )}
+    </div>
+  );
+}
+
+export function CampaignCurrentSceneCard({
+  scene,
+  onContinue,
+}: {
+  scene: CurrentScene;
+  onContinue: () => void;
+}) {
+  return (
+    <div className="bh-campaign-home__section">
+      <span className="bh-eyebrow">CURRENT SCENE</span>
+      <h3>当前场景</h3>
+      {scene.image_asset_id && (
+        <PlayerAssetImage assetId={scene.image_asset_id} alt="当前场景插图" />
+      )}
+      <p>{scene.text_preview}</p>
+      <p className="bh-eyebrow" style={{ fontSize: 9 }}>
+        {scene.choice_count} 个可选方向
+      </p>
+      {scene.citation?.verified && (
+        <RedactedCitationDisclosure citations={[scene.citation]} />
+      )}
+      <button className="bh-button bh-button--yellow" type="button" onClick={onContinue}>
+        继续当前场景
+      </button>
+    </div>
+  );
+}
+
+export default function CampaignHomePanel({
+  roomId,
+  onContinueScene = () => {},
+}: {
+  roomId: string;
+  onContinueScene?: () => void;
+}) {
   const [home, setHome] = useState<CampaignHomeDTO | null>(null);
   const [notes, setNotes] = useState<PlayerNoteDTO[]>([]);
   const [evidence, setEvidence] = useState<EvidenceState>(emptyEvidence);
@@ -152,6 +227,10 @@ export default function CampaignHomePanel({ roomId }: { roomId: string }) {
       <span className="bh-eyebrow">CAMPAIGN RETURN</span>
       <h2 className="bh-panel-title">战役回流</h2>
       {error && <div className="bh-error" role="alert">{error}</div>}
+
+      {home?.current_scene && (
+        <CampaignCurrentSceneCard scene={home.current_scene} onContinue={onContinueScene} />
+      )}
 
       <div className="bh-campaign-home__section">
         <h3>本场状态</h3>

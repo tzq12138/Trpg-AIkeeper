@@ -26,6 +26,14 @@ export function isActionInFlight(status: ActionStatus): boolean {
 }
 
 
+export function canStartNewAction(
+  draft: ActionDraftDTO | null,
+  receipt: ActionReceiptDTO | null,
+): boolean {
+  return !draft && !(receipt && isActionInFlight(receipt.status));
+}
+
+
 export function mergeAuthoritativeReceipt(
   current: ActionReceiptDTO | null,
   incoming: ActionReceiptDTO,

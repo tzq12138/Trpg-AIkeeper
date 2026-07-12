@@ -10,6 +10,7 @@ from ..models import (
     ActionReceiptV2,
     ActionStatusEventDTO,
 )
+from ..events.events_registry import event_type
 
 
 _ATTACK_WORDS = ("攻击", "射击", "开枪", "砍", "刺", "殴打", "战斗")
@@ -236,24 +237,23 @@ def apply_ai_action_analysis(local: ActionDraftDTO, raw: dict) -> ActionDraftDTO
         movement_target = local.movement_target
     else:
         movement_target = str(movement_target)[:200]
-    return local.model_copy(
-        update={
-            "intent_type": intent_type,
-            "understanding_summary": summary,
-            "risk": risk,
-            "suggested_skill": suggested_skill,
-            "difficulty": difficulty,
-            "resource_impacts": resource_impacts,
-            "visibility": visibility,
-            "movement_target": movement_target,
-            "confirmation_requirements": requirements,
-            "requires_confirmation": bool(requirements),
-            "confidence": confidence,
-            "citations": citations,
-            "analysis_source": "configured_provider",
-            "resolution_route": "ai" if confidence >= 0.75 else "host_exception",
-        }
-    )
+    return ActionDraftDTO.model_validate({
+        **local.model_dump(mode="json"),
+        "intent_type": intent_type,
+        "understanding_summary": summary,
+        "risk": risk,
+        "suggested_skill": suggested_skill,
+        "difficulty": difficulty,
+        "resource_impacts": resource_impacts,
+        "visibility": visibility,
+        "movement_target": movement_target,
+        "confirmation_requirements": requirements,
+        "requires_confirmation": bool(requirements),
+        "confidence": confidence,
+        "citations": citations,
+        "analysis_source": "configured_provider",
+        "resolution_route": "ai" if confidence >= 0.75 else "host_exception",
+    })
 
 
 def _sanitize_citation(value: dict) -> dict:
@@ -261,7 +261,17 @@ def _sanitize_citation(value: dict) -> dict:
         key: item
         for key, item in value.items()
         if not str(key).lower().endswith("_path")
-        and str(key).lower() not in {"absolute_path", "storage_path"}
+        and str(key).lower()
+        not in {
+            "absolute_path",
+            "storage_path",
+            "raw_text",
+            "source_text",
+            "full_text",
+            "original_text",
+            "text",
+            "content",
+        }
     }
 
 
@@ -416,6 +426,8 @@ def confirm_action_draft(
             "SELECT status, state_version FROM rooms WHERE room_id = %s FOR UPDATE",
             (character["room_id"],),
         ).fetchone()
+        if not room or room["status"] in {"completed", "archived"}:
+            raise ActionDraftError(409, {"code": "room_not_active"})
         if room and draft.get("base_state_version", 0) != room.get("state_version", 0):
             raise ActionDraftError(
                 409,
@@ -442,6 +454,12 @@ def confirm_action_draft(
         action_params = _json_value(draft.get("params")) or {}
         action_params["analysis"] = analysis
         action_params["confirmations"] = confirmations
+        director_plan = action_params.get("director_plan")
+        exception_reason = (
+            director_plan.get("exception_reason")
+            if isinstance(director_plan, dict)
+            else None
+        ) or "ambiguous_without_ai"
         action_id = str(uuid.uuid4())
         tx.execute(
             "INSERT INTO actions (action_id, room_id, character_id, draft_id, idempotency_key, "
@@ -468,6 +486,24 @@ def confirm_action_draft(
             "INSERT INTO action_status_events (action_id, status, metadata) VALUES (%s, 'queued', %s)",
             (action_id, json.dumps({"draft_id": draft_id}, ensure_ascii=False)),
         )
+        if isinstance(director_plan, dict):
+            tx.execute(
+                "INSERT INTO events (room_id, event_type, audience, payload) "
+                "VALUES (%s, %s, 'host', %s)",
+                (
+                    character["room_id"],
+                    event_type("s2c_director_plan_validated"),
+                    json.dumps(
+                        {
+                            "actionId": action_id,
+                            "draftId": draft_id,
+                            "contextVersion": director_plan.get("context_version"),
+                            "statePatchAuthority": "advisory_only",
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
         if analysis.get("resolution_route") == "host_exception":
             tx.execute(
                 "UPDATE actions SET status = 'awaiting_host_exception' WHERE action_id = %s",
@@ -483,19 +519,39 @@ def confirm_action_draft(
                 "VALUES (%s, 'awaiting_host_exception', %s)",
                 (
                     action_id,
-                    json.dumps({"reason_code": "ambiguous_without_ai"}, ensure_ascii=False),
+                    json.dumps(
+                        {"reason_code": exception_reason, "ai_stage": "recovering"},
+                        ensure_ascii=False,
+                    ),
                 ),
             )
             tx.execute(
                 "INSERT INTO events (room_id, event_type, audience, payload) "
-                "VALUES (%s, 's2c_action_exception_requested', 'host', %s)",
+                "VALUES (%s, %s, 'host', %s)",
                 (
                     character["room_id"],
+                    event_type("s2c_action_exception_requested"),
                     json.dumps(
                         {
                             "actionId": action_id,
                             "characterId": character["character_id"],
-                            "reasonCode": "ambiguous_without_ai",
+                            "reasonCode": exception_reason,
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+            tx.execute(
+                "INSERT INTO events (room_id, event_type, audience, payload) "
+                "VALUES (%s, %s, 'player', %s)",
+                (
+                    character["room_id"],
+                    event_type("s2c_ai_recovery_required"),
+                    json.dumps(
+                        {
+                            "actionId": action_id,
+                            "characterId": character["character_id"],
+                            "reasonCode": exception_reason,
                         },
                         ensure_ascii=False,
                     ),

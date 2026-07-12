@@ -11,6 +11,7 @@ from .import_service import (
     _host_prep_projection,
     _json_value,
 )
+from .module_compiler import ModuleCompiler, ModuleCompilerError
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +38,37 @@ def _require_admin_account(request: Request) -> dict:
 
 def _import_service(request: Request) -> ScenarioImportService:
     storage_root = getattr(request.app.state, "scenario_storage_root", None)
+    asset_root = getattr(request.app.state, "scenario_asset_root", None)
     return ScenarioImportService(
         request.app.state.db,
         gateway=getattr(request.app.state, "gateway", None),
         rag=getattr(request.app.state, "rag", None),
         storage_root=Path(storage_root) if storage_root else None,
+        asset_root=Path(asset_root) if asset_root else None,
     )
+
+
+def _module_compiler(request: Request) -> ModuleCompiler:
+    return ModuleCompiler(request.app.state.db)
+
+
+def _verify_scenario_version(conn, scenario_id: str, scenario_version_id: str) -> None:
+    row = conn.execute(
+        "SELECT 1 FROM scenario_versions WHERE scenario_id = %s AND scenario_version_id = %s",
+        (scenario_id, scenario_version_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "scenario version not found")
+
+
+def _module_compiler_error(exc: ModuleCompilerError) -> HTTPException:
+    code = str(exc)
+    status_code = 404 if code in {
+        "runtime_package_not_found",
+        "scenario_version_not_found",
+        "quality_exception_not_found",
+    } else 409
+    return HTTPException(status_code, code)
 
 
 async def _run_import(
@@ -116,6 +142,40 @@ async def list_available_scenarios(request: Request):
             entry["risk_warning"] = "该剧本存在质量警告"
         result.append(entry)
     return result
+
+
+@router.get("/{scenario_id}/templates")
+async def list_scenario_character_templates(request: Request, scenario_id: str):
+    conn = request.app.state.db
+    scenario = conn.execute(
+        "SELECT 1 FROM scenarios WHERE scenario_id = %s",
+        (scenario_id,),
+    ).fetchone()
+    if not scenario:
+        raise HTTPException(404, "scenario not found")
+    rows = conn.execute(
+        """
+        SELECT template_id, name, occupation, background, age, gender,
+               attributes, skills
+        FROM character_templates
+        WHERE scenario_id = %s
+        ORDER BY created_at, template_id
+        """,
+        (scenario_id,),
+    ).fetchall()
+    return [
+        {
+            "template_id": row["template_id"],
+            "name": row.get("name") or "",
+            "occupation": row.get("occupation") or "",
+            "background": row.get("background") or "",
+            "age": int(row.get("age") or 25),
+            "gender": row.get("gender") or "",
+            "attributes": _json_value(row.get("attributes")) or {},
+            "skills": _json_value(row.get("skills")) or {},
+        }
+        for row in rows
+    ]
 
 
 @router.post("/import")
@@ -289,6 +349,59 @@ async def get_prep_package(
         "status": row["status"],
         **_host_prep_projection(prep_package, quality_report),
     }
+
+
+@router.get("/{scenario_id}/versions/{scenario_version_id}/runtime-package")
+async def get_runtime_package(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    _require_host_or_admin(request)
+    _verify_scenario_version(request.app.state.db, scenario_id, scenario_version_id)
+    try:
+        return _module_compiler(request).preview_latest(scenario_version_id)
+    except ModuleCompilerError as exc:
+        raise _module_compiler_error(exc) from exc
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/runtime-package/recompile")
+async def recompile_runtime_package(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    account = _require_host_or_admin(request)
+    _verify_scenario_version(request.app.state.db, scenario_id, scenario_version_id)
+    try:
+        return _module_compiler(request).compile(
+            scenario_version_id,
+            requested_by=account.get("account_id", "unknown"),
+        )
+    except ModuleCompilerError as exc:
+        raise _module_compiler_error(exc) from exc
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/runtime-package/exceptions/confirm")
+async def confirm_runtime_package_exception(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    account = _require_host_or_admin(request)
+    _verify_scenario_version(request.app.state.db, scenario_id, scenario_version_id)
+    body = await request.json()
+    runtime_package_version_id = str(body.get("runtime_package_version_id") or "")
+    exception_key = str(body.get("exception_key") or "")
+    if not runtime_package_version_id or not exception_key:
+        raise HTTPException(400, "runtime_package_version_id and exception_key required")
+    compiler = _module_compiler(request)
+    try:
+        preview = compiler.preview(runtime_package_version_id)
+        if preview["scenario_version_id"] != scenario_version_id:
+            raise HTTPException(404, "runtime package version not found")
+        return compiler.confirm_quality_exception(
+            runtime_package_version_id,
+            exception_key,
+            confirmed_by=account.get("account_id", "unknown"),
+            note=str(body.get("note") or ""),
+        )
+    except ModuleCompilerError as exc:
+        raise _module_compiler_error(exc) from exc
 
 
 @router.post("/{scenario_id}/versions/{scenario_version_id}/publish")

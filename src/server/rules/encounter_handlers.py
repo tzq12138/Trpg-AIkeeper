@@ -6,6 +6,7 @@ from the resolution pipeline, avoiding DB reads in handlers.
 """
 
 import random
+import re
 from .base import BaseRuleHandler, GameState, RuleResult
 from ..engine.secure_random import secure_randint
 
@@ -100,15 +101,19 @@ class CombatAttackHandler(BaseRuleHandler):
         is_success = check["is_success"]
         success_level = check["success_level"]
 
-        damage = _parse_dice(damage_expr) if is_success and success_level != "fumble" else 0
+        raw_damage = _parse_dice(damage_expr) if is_success and success_level != "fumble" else 0
         if success_level == "critical":
-            damage = max(damage, _parse_dice(damage_expr))  # crit = max of double roll (v1 simple)
+            raw_damage = max(raw_damage, _parse_dice(damage_expr))  # crit = max of double roll (v1 simple)
+        armor_match = re.search(r"吸收前\s*(\d+)\s*点伤害", str(target.get("notes") or ""))
+        armor = int(armor_match.group(1)) if armor_match else 0
+        damage = max(0, raw_damage - armor)
 
         return RuleResult(
             is_success=is_success,
             metadata={
                 "roll": roll, "skill_name": skill_name, "skill_value": skill_value,
-                "success_level": success_level, "damage": damage,
+                "success_level": success_level, "raw_damage": raw_damage,
+                "armor": armor, "damage": damage,
                 "target_id": target_id, "difficulty": difficulty,
                 "damage_expression": damage_expr,
                 "bonus_dice": check["bonus_dice"],
@@ -124,6 +129,7 @@ class CombatAttackHandler(BaseRuleHandler):
             cascading_state_changes=(
                 ["攻击大失败！"] if success_level == "fumble"
                 else [f"{skill_name}攻击成功，造成 {damage} 点伤害"] if damage > 0
+                else [f"{skill_name}攻击命中，但 {raw_damage} 点伤害被护甲吸收"] if raw_damage > 0
                 else [f"{skill_name}攻击失败"]
             ),
         )

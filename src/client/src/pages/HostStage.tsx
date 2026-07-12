@@ -5,6 +5,8 @@ import { hostTabs, type HostTabKey } from '../navigation';
 import { getSlotValue } from '../shared/identity';
 import { buildRoomWsUrl } from '../shared/ws-url';
 import { normalizeHud as normalizeHostStageHud } from './hostStageModel';
+import type { HostDirectorSnapshotDTO } from '../shared/types';
+import RedactedCitationDisclosure from '../components/RedactedCitationDisclosure';
 
 interface PlayerStatus {
   character_id: string;
@@ -173,8 +175,54 @@ function NarrativeProjection({ imageUrl, messages, rollEvent, onDiceSettled }: {
   );
 }
 
-export default function HostStage({ roomId }: { roomId: string }) {
-  const [activeTab, setActiveTab] = useState<HostTabKey>('narrative');
+export function HostDirectorConsole({
+  snapshot,
+  onPause,
+  onTakeOverException,
+}: {
+  snapshot: HostDirectorSnapshotDTO;
+  onPause: () => void;
+  onTakeOverException: () => void;
+}) {
+  return (
+    <section className="bh-panel bh-host-director-console" aria-label="只读导演台">
+      <span className="bh-eyebrow">只读导演台</span>
+      <h2 className="bh-panel-title">{snapshot.currentScene || '当前场景'}</h2>
+      <div className="bh-action-row bh-action-row--responsive">
+        <button className="bh-button" type="button" onClick={onPause}>暂停</button>
+        <button className="bh-button bh-button--yellow" type="button" onClick={onTakeOverException}>异常接管</button>
+      </div>
+      <dl className="bh-action-preview__facts">
+        <div><dt>阶段</dt><dd>{snapshot.stage}</dd></div>
+        <div><dt>风险</dt><dd>{snapshot.risks.join('；') || '无'}</dd></div>
+      </dl>
+      <ReadOnlyList title="确认事实" items={snapshot.confirmedFacts} />
+      <ReadOnlyList title="待触发条件" items={snapshot.pendingTriggers} />
+      <ReadOnlyList title="异常队列" items={snapshot.exceptionQueue} />
+      <RedactedCitationDisclosure citations={snapshot.aiEvidence} />
+    </section>
+  );
+}
+
+function ReadOnlyList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="bh-muted-box">
+      <strong>{title}</strong>
+      {items.length ? (
+        <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul>
+      ) : <p>暂无</p>}
+    </div>
+  );
+}
+
+export default function HostStage({
+  roomId,
+  initialTab = 'narrative',
+}: {
+  roomId: string;
+  initialTab?: HostTabKey;
+}) {
+  const [activeTab, setActiveTab] = useState<HostTabKey>(initialTab);
   const [hud, setHud] = useState<HUDData | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [rollEvent, setRollEvent] = useState<Record<string, unknown> | null>(null);
@@ -259,15 +307,6 @@ export default function HostStage({ roomId }: { roomId: string }) {
     setRollEvent(null);
   }, []);
 
-  const handleReset = async () => {
-    await fetch(`/api/host/${roomId}/reset`, {
-      method: 'POST',
-      headers: { 'X-Owner-Token': getSlotValue('owner_token') || '' },
-    });
-    setMessages([]);
-    setRollEvent(null);
-  };
-
   const handlePause = async () => {
     await fetch(`/api/host/${roomId}/pause`, {
       method: 'POST',
@@ -284,6 +323,15 @@ export default function HostStage({ roomId }: { roomId: string }) {
   const filterStyle = visual?.filter ? `hue-rotate(${visual.filter === 'cold_blue' ? '180deg' : '0deg'}) saturate(1.5)` : undefined;
   const shakeClass = visual?.shake ? 'bh-host-shake' : '';
   const players = hud?.players ?? [];
+  const directorSnapshot: HostDirectorSnapshotDTO = {
+    currentScene: messages[messages.length - 1]?.text || messages[messages.length - 1]?.content || '当前场景',
+    confirmedFacts: messages.slice(-3).map((message) => message.text || message.content || '').filter(Boolean),
+    pendingTriggers: [`普通 ${hud?.queue_status?.normal ?? 0}`, `紧急 ${hud?.queue_status?.urgent ?? 0}`],
+    aiEvidence: [],
+    stage: hud?.engine_state === 'thinking' ? 'directing' : hud?.engine_state === 'busy' ? 'narrating' : 'completed',
+    risks: encounterSuggestion ? ['遭遇建议待确认'] : [],
+    exceptionQueue: hud?.queue_status?.urgent ? [`${hud.queue_status.urgent} 个紧急事项`] : [],
+  };
 
   return (
     <div className="bh-host">
@@ -320,7 +368,6 @@ export default function HostStage({ roomId }: { roomId: string }) {
             <button className="bh-button bh-button--yellow" onClick={unlockAudio} type="button">解锁音频</button>
           )}
           <button className="bh-button" onClick={handlePause} type="button">系统锁定</button>
-          <button className="bh-button bh-button--red" onClick={handleReset} type="button">紧急重置</button>
         </div>
       </header>
 
@@ -378,6 +425,11 @@ export default function HostStage({ roomId }: { roomId: string }) {
 
         <aside className="bh-monitor">
           <div className="bh-monitor-label">调查员监控</div>
+          <HostDirectorConsole
+            snapshot={directorSnapshot}
+            onPause={() => void handlePause()}
+            onTakeOverException={() => setActiveTab('logs')}
+          />
           <div className="bh-player-monitor-list">
             {players.length === 0 && (
               <article className="bh-player-card">

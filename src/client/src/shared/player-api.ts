@@ -88,6 +88,13 @@ export async function getActionReceipt(actionId: string): Promise<ActionReceiptD
   return requestJson(`/api/player/actions/${encodeURIComponent(actionId)}`);
 }
 
+export async function getActionHints(): Promise<{ hints: string[] }> {
+  const payload = await requestJson<{ hints?: string[]; examples?: string[] }>('/api/player/action-hints', {
+    method: 'POST',
+  });
+  return { hints: (payload.hints || payload.examples || []).slice(0, 5) };
+}
+
 export async function reconnectPlayer(): Promise<PlayerReconnectDTO> {
   return requestJson('/api/player/reconnect');
 }

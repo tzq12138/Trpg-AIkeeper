@@ -100,11 +100,24 @@ class SoloAdventureRuntime:
                     json.dumps({"solo_adventure_version": context["scenario_version_id"]}, ensure_ascii=False),
                 ),
             )
+            target_text = str(
+                _json_object(context["nodes"][target_node_id].get("payload")).get("text")
+                or ""
+            )
+            is_ending = "【剧终】" in target_text
             room = tx.execute(
-                "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s "
+                "UPDATE rooms SET state_version = state_version + 1, "
+                "status = CASE WHEN %s THEN 'completed' ELSE status END WHERE room_id = %s "
                 "RETURNING state_version",
-                (room_id,),
+                (is_ending, room_id),
             ).fetchone()
+            if is_ending:
+                tx.execute(
+                    "UPDATE encounters SET status = 'resolved', resolved_at = NOW(), "
+                    "summary = COALESCE(summary, '') || ' [solo adventure ended]' "
+                    "WHERE room_id = %s AND status IN ('suggested', 'active')",
+                    (room_id,),
+                )
             edge = context["edges"][(current_node_id, target_node_id)]
         return {
             "scenario_version_id": context["scenario_version_id"],
@@ -113,6 +126,7 @@ class SoloAdventureRuntime:
             "current_scene": f"solo:{target_node_id}",
             "citation": _json_object(edge.get("citation")),
             "state_version": int(room.get("state_version") or 0) if room else 0,
+            "is_ending": is_ending,
         }
 
     def _context(self, room_id: str, *, connection=None) -> dict[str, Any] | None:
