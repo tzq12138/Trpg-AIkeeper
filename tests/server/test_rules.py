@@ -120,6 +120,11 @@ async def test_sanity_check_success_loss():
         make_state(san=50), {"success_loss": "1d3", "failure_loss": "1d10"}
     )
     assert result.is_success is True
+    assert result.metadata["skill_name"] == "理智"
+    assert result.metadata["skill_value"] == 50
+    assert result.metadata["target"] == 50
+    assert result.metadata["difficulty"] == "regular"
+    assert result.metadata["success_level"] == "regular"
     assert result.metadata["san_loss"] >= 1
     assert result.metadata["new_san"] < 50
 

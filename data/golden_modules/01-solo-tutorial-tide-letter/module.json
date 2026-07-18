@@ -159,21 +159,36 @@
     },
     "endings": [
       {
+        "ending_id": "tide-report-complete",
         "name": "补完报时",
         "description": "调查员依日志完成最后一次报时；回环消失，罗青的声音平静道别。",
         "type": "victory",
+        "completion_conditions": {
+          "entered_scenes": ["signal-tower"],
+          "all_clues": ["operator-log"]
+        },
         "citation_ids": ["cit-tide-ending-report"]
       },
       {
+        "ending_id": "tide-shutoff",
         "name": "关闭发报机",
         "description": "调查员切断旧设备；异常停止，但港口失去那道意外有效的潮位预警。",
         "type": "mixed",
+        "completion_conditions": {
+          "entered_scenes": ["signal-tower"],
+          "all_clues": ["altered-tide-table"]
+        },
         "citation_ids": ["cit-tide-ending-shutoff"]
       },
       {
+        "ending_id": "tide-keep-signal",
         "name": "保留讯号",
         "description": "调查员与温海舟约定保留设备并记录规律；回环留下，成为需要长期管理的未知风险。",
         "type": "mixed",
+        "completion_conditions": {
+          "entered_scenes": ["signal-tower"],
+          "all_clues": ["pier-marks"]
+        },
         "citation_ids": ["cit-tide-ending-keep"]
       }
     ]

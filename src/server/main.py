@@ -96,6 +96,9 @@ async def lifespan(app: FastAPI):
     conn = pg_db.get_connection()
     app.state.db = conn
     app.state.pg_db = pg_db
+    from .router_auth import ensure_reserved_admin
+    ensure_reserved_admin(conn)
+    logger.info("Authentication [OK] reserved admin account ensured")
 
     # ── 2. Embedding ──
     try:
@@ -346,7 +349,7 @@ async def player_ws_endpoint(websocket: WebSocket, room_id: str, token: str, las
     except Exception as e:
         logger.error("Player %s error: %s", character_id, e)
     finally:
-        ws_manager.disconnect(room_id, connection_id)
+        ws_manager.disconnect(room_id, connection_id, websocket=websocket)
 
 
 @app.websocket("/ws")

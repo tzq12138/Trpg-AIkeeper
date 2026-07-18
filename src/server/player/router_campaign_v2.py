@@ -20,6 +20,27 @@ evidence_router = APIRouter(prefix="/api")
 library_router = APIRouter(prefix="/api")
 
 
+_SOLO_NAVIGATION_INSTRUCTION = re.compile(
+    r"\s*(?:请|再|然后)?(?:转|翻|跳|前往|进入|见)\s*(?:到|至|去|向|往)?"
+    r"(?:条目|段落)?\s*(?:第)?\s*\d+\s*[。．.!！?？]*",
+    re.IGNORECASE,
+)
+_PLAYER_SOURCE_MARKER_RE = re.compile(
+    r"(?:七宫涟(?:个人)?汉化?|七宫(?:涟)?个人汉化?|七宫(?=\s+)|火独行|向火|宫涟(?:个人)?汉化|宫涟|人汉化|个人汉|汉化)"
+)
+_PLAYER_SOURCE_LINE_RE = re.compile(r"(?m)^\s*七宫\s*(?:\n|$)")
+
+
+def _player_safe_solo_preview(text: object) -> str:
+    preview = _SOLO_NAVIGATION_INSTRUCTION.sub("", str(text or ""))
+    preview = _PLAYER_SOURCE_LINE_RE.sub("", preview)
+    preview = _PLAYER_SOURCE_MARKER_RE.sub("", preview)
+    preview = re.sub(r"\s+", " ", preview)
+    preview = preview.replace("看出 了", "看出了").replace("沮个丧", "沮丧")
+    preview = preview.strip()
+    return preview[:400] or "请根据当前场景的叙事继续行动。"
+
+
 class DeviceSessionClaim(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -435,11 +456,9 @@ async def campaign_home(request: Request):
                 solo_scene["node_id"],
             )
             current_scene = {
-                "node_id": solo_scene["node_id"],
-                "title": solo_scene["title"],
-                "text_preview": str(solo_scene.get("text") or "")[:400],
+                "title": "当前场景",
+                "text_preview": _player_safe_solo_preview(solo_scene.get("text")),
                 "citation": redact_citation(solo_scene.get("citation") or {}),
-                "choice_count": len(solo_scene.get("target_node_ids") or []),
                 "image_asset_id": image_binding["asset_id"] if image_binding else None,
             }
     except Exception:

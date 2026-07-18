@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { getSlotValue } from '../shared/identity';
 import { apiFetch, authHeaders } from '../shared/api';
 import { PlayerWS } from '../shared/ws';
+import { buildPlayerLobbyChecklist } from '../shared/lobby-checklist';
 
 // ── types ──────────────────────────────────────────────────────────
 
@@ -29,6 +30,16 @@ interface ChatMsg {
   createdAt: string;
 }
 
+interface CampaignEnding {
+  ending_type: 'victory' | 'defeat' | 'mixed' | 'abandoned';
+  summary: string;
+  highlights: string[];
+}
+
+interface CampaignSummary {
+  ending: CampaignEnding | null;
+}
+
 // ── helpers ────────────────────────────────────────────────────────
 
 function playerToken(): string {
@@ -45,7 +56,9 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
   const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [error, setError] = useState('');
+  const [campaignEnding, setCampaignEnding] = useState<CampaignEnding | null>(null);
   const [entering, setEntering] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<PlayerWS | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const seenMsgIds = useRef<Set<string>>(new Set());
@@ -95,6 +108,24 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
     return () => { cancelled = true; };
   }, [roomId, fetchCharacter, fetchLobby]);
 
+  useEffect(() => {
+    if (snapshot?.room_status !== 'completed') {
+      setCampaignEnding(null);
+      return;
+    }
+    let cancelled = false;
+    apiFetch<CampaignSummary>(`/api/rooms/${roomId}/campaign`, {
+      headers: { 'X-Room-Token': playerToken() },
+    })
+      .then((campaign) => {
+        if (!cancelled) setCampaignEnding(campaign.ending);
+      })
+      .catch(() => {
+        if (!cancelled) setCampaignEnding(null);
+      });
+    return () => { cancelled = true; };
+  }, [roomId, snapshot?.room_status]);
+
   // ── WebSocket ────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -103,6 +134,10 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
 
     const ws = new PlayerWS(roomId);
     wsRef.current = ws;
+
+    ws.onStatus((status) => {
+      setIsConnected(status === 'open');
+    });
 
     ws.onEvent((event: any) => {
       const type = event.eventType || event.type;
@@ -138,7 +173,10 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
 
     ws.connect(token);
 
-    return () => { ws.disconnect(); };
+    return () => {
+      setIsConnected(false);
+      ws.disconnect();
+    };
   }, [roomId, entering, myCharId]);
 
   // ── polling fallback ─────────────────────────────────────────────
@@ -215,6 +253,13 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
   const players = snapshot?.players || [];
   const roomStatus = snapshot?.room_status || 'lobby';
   const scenarioTitle = snapshot?.scenario_title || '';
+  const preparationChecklist = buildPlayerLobbyChecklist({
+    scenarioTitle,
+    hasCharacter: Boolean(myCharId),
+    isReady,
+    isConnected,
+    roomStatus,
+  });
 
   if (myStatus === 'pending_approval') {
     return (
@@ -244,15 +289,37 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
 
         {/* Two-column layout */}
         <div className="bh-lobby-layout">
+          {roomStatus === 'completed' && (
+            <section className="bh-panel" role="status" style={{ gridColumn: '1 / -1' }}>
+              <span className="bh-eyebrow">ADVENTURE COMPLETE</span>
+              <h2 className="bh-panel-title">本次冒险已结束</h2>
+              <p className="bh-panel-desc">
+                {campaignEnding?.summary || '结局条件已验证，战报正在整理。'}
+              </p>
+              {campaignEnding?.highlights.map((highlight) => (
+                <p key={highlight} style={{ fontSize: 13, color: 'var(--bh-dim)' }}>{highlight}</p>
+              ))}
+            </section>
+          )}
           {/* LEFT: Player list */}
           <section className="bh-panel">
-            <span className="bh-eyebrow">INVESTIGATORS</span>
+            <span className="bh-eyebrow">SESSION PREP</span>
             <h2 className="bh-panel-title">
-              {scenarioTitle || '等待中'}
+              开局准备台
             </h2>
-            <p className="bh-panel-desc" style={{ marginBottom: 12 }}>
-              {players.length} 名调查员
-            </p>
+            <div className="bh-preparation-checklist" aria-label="开局准备状态">
+              {preparationChecklist.map((item) => (
+                <div key={item.key} className={`bh-preparation-item ${item.complete ? 'bh-preparation-item--complete' : ''}`}>
+                  <strong>{item.complete ? '✓' : '○'} {item.label}</strong>
+                  <span>{item.detail}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="bh-lobby-section-heading">
+              <span className="bh-eyebrow">INVESTIGATORS</span>
+              <span>{players.length} 名调查员</span>
+            </div>
 
             {players.length === 0 && (
               <p style={{ fontSize: 13, color: 'var(--bh-dim)' }}>

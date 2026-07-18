@@ -4,6 +4,7 @@ import type { BuilderCharacterData } from '../types';
 import { getSlotValue, setSlotValue } from '../shared/identity';
 import {
   buildPlayerJoinReturnPath,
+  getPrimaryJoinSource,
   playerRoomEntryPath,
   type PlayerJoinSourceMode,
 } from '../shared/player-join-flow';
@@ -75,7 +76,8 @@ type SelectedSource =
 export default function PlayerJoinPage() {
   const [roomCode, setRoomCode] = useState('');
   const [playerName, setPlayerName] = useState('');
-  const [sourceMode, setSourceMode] = useState<SourceMode>('account');
+  const [sourceMode, setSourceMode] = useState<SourceMode>(() => getPrimaryJoinSource(false));
+  const [showAdvancedSources, setShowAdvancedSources] = useState(false);
   const [presets, setPresets] = useState<CharacterPreset[]>([]);
   const [selectedSource, setSelectedSource] = useState<SelectedSource | null>(null);
   const [preview, setPreview] = useState<CharacterPreview | null>(null);
@@ -504,7 +506,26 @@ export default function PlayerJoinPage() {
             />
           </label>
 
-          <div className="bh-source-toggle" role="tablist" aria-label="车卡来源">
+          <div className="bh-join-source-primary">
+            <span className="bh-eyebrow">推荐开始方式</span>
+            <button
+              className={`bh-button ${sourceMode === 'preset' ? 'bh-button--yellow' : ''}`}
+              type="button"
+              onClick={() => {
+                setSourceMode('preset');
+                setShowAdvancedSources(false);
+                setSelectedSource(selectedPreset ? { mode: 'preset', presetId: selectedPreset.preset_id } : null);
+                setPreview(selectedPreset);
+              }}
+            >
+              选择剧本推荐角色
+            </button>
+            <button className="bh-button" type="button" onClick={() => setShowAdvancedSources((current) => !current)}>
+              {showAdvancedSources ? '收起其他方式' : '其他角色方式'}
+            </button>
+          </div>
+          {showAdvancedSources && (
+            <div className="bh-source-toggle" role="tablist" aria-label="高级车卡来源">
             <button
               className={`bh-button ${sourceMode === 'account' ? 'bh-button--yellow' : ''}`}
               type="button"
@@ -515,17 +536,6 @@ export default function PlayerJoinPage() {
               }}
             >
               账号角色
-            </button>
-            <button
-              className={`bh-button ${sourceMode === 'preset' ? 'bh-button--yellow' : ''}`}
-              type="button"
-              onClick={() => {
-                setSourceMode('preset');
-                setSelectedSource(selectedPreset ? { mode: 'preset', presetId: selectedPreset.preset_id } : null);
-                setPreview(selectedPreset);
-              }}
-            >
-              剧本预设
             </button>
             <button
               className={`bh-button ${sourceMode === 'builder' ? 'bh-button--yellow' : ''}`}
@@ -541,7 +551,8 @@ export default function PlayerJoinPage() {
             >
               高级导入
             </button>
-          </div>
+            </div>
+          )}
 
           {sourceMode === 'upload' && (
             <label className="bh-upload-box">
@@ -607,13 +618,20 @@ export default function PlayerJoinPage() {
           )}
 
           <CharacterPreviewPanel preview={preview} playerName={normalizedPlayerName} sourceMode={sourceMode} />
+          {preview && (
+            <div className="bh-muted-box bh-join-confirmation" role="status">
+              <strong>加入确认</strong>
+              <p>{preview.name} · {preview.occupation || '调查员'} · HP {preview.hp}/{preview.max_hp} · SAN {preview.san}/{preview.max_san}</p>
+              <p>房间 {normalizedRoomCode || '待填写'} · {preflight?.join_mode === 'host_approval' ? '进入后等待 Host 批准' : '确认后进入开局准备台'}</p>
+            </div>
+          )}
           <button
             className="bh-button bh-button--yellow bh-confirm-button"
             type="button"
             onClick={join}
             disabled={!canConfirm}
           >
-            {joining ? '加入中...' : '确认并进入'}
+            {joining ? '加入中...' : '确认角色并进入准备台'}
           </button>
         </div>
       </div>

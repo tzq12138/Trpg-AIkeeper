@@ -41,7 +41,14 @@ class FakeGateway:
                 "name": "黑色钥匙", "description": "可打开地下室", "location": "钟楼大厅"
             }],
             "truth": {"summary": "地下室正在举行召唤仪式"},
-            "endings": [{"name": "阻止仪式", "description": "摧毁祭坛", "type": "victory"}],
+            "endings": [{
+                "ending_id": "stop-ritual",
+                "name": "阻止仪式",
+                "description": "摧毁祭坛",
+                "type": "victory",
+                "completion_conditions": {"room_status": "active"},
+                "citation": {"source_ref": "page:1"},
+            }],
             "spoiler_boundaries": [{"id": "truth", "level": "keeper"}],
             "key_skills": ["侦查", "聆听", "神秘学"],
             "rule_citations": [{"source_ref": "coc7-srd#checks"}],
@@ -94,6 +101,51 @@ class NoTranscriptGateway(FakeGateway):
         return result
 
 
+def test_runtime_contract_repair_only_runs_for_missing_executable_graph():
+    from src.server.scenario.import_service import _needs_runtime_contract_repair
+
+    assert _needs_runtime_contract_repair({"branches": [], "endings": []}) is True
+    assert _needs_runtime_contract_repair({
+        "branches": [{
+            "from_scene_id": "study",
+            "to_scene_id": "harbor",
+            "citation": {"source_ref": "page:1"},
+        }],
+        "endings": [{
+            "ending_id": "escape",
+            "citation": {"source_ref": "page:2"},
+            "completion_conditions": {"entered_scenes": ["harbor"]},
+        }],
+    }) is False
+
+
+class CamelCaseBranchGateway(FakeGateway):
+    async def structure_content_package(self, package):
+        result = await super().structure_content_package(package)
+        result["scenes"] = [
+            {
+                "sceneId": "tower-hall",
+                "name": "钟楼大厅",
+                "description": "尘封的大厅",
+                "order": 1,
+            },
+            {
+                "sceneId": "cellar",
+                "name": "地下室",
+                "description": "隐藏的祭坛",
+                "order": 2,
+            },
+        ]
+        result["branches"] = [{
+            "branchId": "tower-hall-to-cellar",
+            "fromSceneId": "tower-hall",
+            "toSceneId": "cellar",
+            "conditions": [{"kind": "clue", "id": "black-key"}],
+            "citation": {"source_ref": "page:1", "page_number": 1},
+        }]
+        return result
+
+
 @pytest.fixture
 def import_client(test_db, tmp_path):
     client = TestClient(app)
@@ -114,6 +166,47 @@ def import_client(test_db, tmp_path):
             (account_id, username, _hash_password("test123"), username, role),
         )
     return client
+
+
+def test_import_normalizes_camel_case_branches_into_projected_scene_edges(import_client, test_db):
+    app.state.gateway = CamelCaseBranchGateway()
+    admin_token = _login(import_client, "importadmin")
+
+    response = import_client.post(
+        "/api/scenarios/import",
+        files={
+            "files": (
+                "module.docx",
+                _minimal_docx("钟楼大厅通向地下室。"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        data={"title": "分支导入测试", "license_type": "authorized"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    scenario_version_id = response.json()["scenario_version_id"]
+    graph = test_db.execute(
+        "SELECT knowledge_graph FROM scenario_versions WHERE scenario_version_id = %s",
+        (scenario_version_id,),
+    ).fetchone()["knowledge_graph"]
+    assert graph["scenes"][0]["scene_id"] == "tower-hall"
+    assert graph["branches"] == [{
+        "branch_id": "tower-hall-to-cellar",
+        "from_scene_id": "tower-hall",
+        "to_scene_id": "cellar",
+        "conditions": [{"kind": "clue", "id": "black-key"}],
+        "citation": {"source_ref": "page:1", "page_number": 1},
+    }]
+    edge = test_db.execute(
+        "SELECT relation_type, conditions, citation FROM content_item_edges "
+        "WHERE scenario_version_id = %s",
+        (scenario_version_id,),
+    ).fetchone()
+    assert edge["relation_type"] == "transitions_to"
+    assert edge["conditions"] == [{"kind": "clue", "id": "black-key"}]
+    assert edge["citation"] == {"source_ref": "page:1", "page_number": 1}
 
 
 def test_multimodal_import_review_publish_and_room_snapshot(import_client, test_db):
@@ -234,10 +327,25 @@ def test_multimodal_import_review_publish_and_room_snapshot(import_client, test_
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert confirmed_binding.status_code == 200, confirmed_binding.text
+    test_db.execute(
+        "INSERT INTO character_templates "
+        "(template_id, scenario_id, name, occupation, attributes, skills, backstory) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (
+            f"{scenario_id}-template",
+            scenario_id,
+            "钟楼调查员",
+            "研究者",
+            json.dumps({"pow": 50}),
+            json.dumps({"侦查": 50}),
+            json.dumps({}),
+        ),
+    )
+    test_db.commit()
     runtime_package = _make_runtime_package_ready(
         import_client, scenario_id, scenario_version_id, admin_token
     )
-    assert runtime_package["gate_status"] == "ready"
+    assert runtime_package["gate_status"] == "ready", runtime_package["quality_exceptions"]
 
     published = import_client.post(
         f"/api/scenarios/{scenario_id}/versions/{scenario_version_id}/publish",
@@ -354,6 +462,59 @@ def test_multimodal_import_review_publish_and_room_snapshot(import_client, test_
     assert duplicate.status_code == 200
     assert duplicate.json()["status"] == "already_imported"
     assert duplicate.json()["scenario_id"] == scenario_id
+
+
+def test_admin_rebuilds_draft_from_existing_sources_without_mutating_old_version(
+    import_client, test_db
+):
+    admin_token = _login(import_client, "importadmin")
+    imported = import_client.post(
+        "/api/scenarios/import",
+        files={
+            "files": (
+                "module.docx",
+                _minimal_docx("钟楼大厅。黑色钥匙藏在祭坛下。"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        data={"title": "钟楼重编译", "license_type": "authorized"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert imported.status_code == 200, imported.text
+    original = imported.json()
+    scenario_id = original["scenario_id"]
+    original_version_id = original["scenario_version_id"]
+    original_graph = test_db.execute(
+        "SELECT knowledge_graph FROM scenario_versions WHERE scenario_version_id = %s",
+        (original_version_id,),
+    ).fetchone()["knowledge_graph"]
+    original_job = test_db.execute(
+        "SELECT job_id, diagnostics FROM import_jobs WHERE scenario_id = %s",
+        (scenario_id,),
+    ).fetchone()
+
+    rebuilt = import_client.post(
+        f"/api/scenarios/{scenario_id}/versions/{original_version_id}/rebuild-from-sources",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert rebuilt.status_code == 200, rebuilt.text
+    payload = rebuilt.json()
+    assert payload["status"] == "draft_ready"
+    assert payload["scenario_version_id"] != original_version_id
+    assert payload["version_number"] == 2
+    assert test_db.execute(
+        "SELECT knowledge_graph FROM scenario_versions WHERE scenario_version_id = %s",
+        (original_version_id,),
+    ).fetchone()["knowledge_graph"] == original_graph
+    assert test_db.execute(
+        "SELECT diagnostics FROM import_jobs WHERE job_id = %s",
+        (original_job["job_id"],),
+    ).fetchone()["diagnostics"] == original_job["diagnostics"]
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM scenario_version_sources WHERE scenario_version_id = %s",
+        (payload["scenario_version_id"],),
+    ).fetchone()["count"] == 1
 
 
 def test_malformed_import_persists_failed_job(import_client, test_db):
@@ -750,6 +911,39 @@ def test_invalid_numbered_solo_adventure_cannot_be_published(import_client, test
     assert response.json()["detail"]["status"] == "invalid_solo_adventure"
 
 
+def test_blocked_quality_report_cannot_be_published_even_by_admin(import_client, test_db):
+    admin_token = _login(import_client, "importadmin")
+    scenario_id = "quality-blocked"
+    version_id = "quality-blocked-v1"
+    test_db.execute(
+        "INSERT INTO scenarios (scenario_id, title, raw_text, import_status, publish_status) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        (scenario_id, "质量阻塞剧本", "测试内容", "draft_ready", "draft"),
+    )
+    test_db.execute(
+        "INSERT INTO scenario_versions (scenario_version_id, scenario_id, version_number, status, quality_report, created_by) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (
+            version_id,
+            scenario_id,
+            1,
+            "draft_review",
+            json.dumps({"level": "blocked", "issues": [{"message": "缺少可绑定的关键素材"}]}),
+            "import-admin",
+        ),
+    )
+    test_db.commit()
+
+    response = import_client.post(
+        f"/api/scenarios/{scenario_id}/versions/{version_id}/publish",
+        json={"confirm": True, "review_notes": "管理员尝试发布"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["status"] == "quality_blocked"
+
+
 @pytest.mark.asyncio
 async def test_alone_against_the_flames_pdf_imports_publishes_and_binds_room(
     import_client, test_db
@@ -774,13 +968,26 @@ async def test_alone_against_the_flames_pdf_imports_publishes_and_binds_room(
     ).fetchone()
     integrity = version["knowledge_graph"]["solo_adventure"]["integrity"]
     assert integrity["node_count"] == 270
-    assert integrity["edge_count"] == 376
+    assert integrity["edge_count"] == 410
     assert integrity["is_valid"] is True
     assert test_db.execute(
         "SELECT COUNT(*) AS count FROM content_items "
         "WHERE scenario_version_id = %s AND item_type = 'branch_node'",
         (payload["scenario_version_id"],),
     ).fetchone()["count"] == 270
+    template = test_db.execute(
+        "SELECT name, occupation, attributes, skills, backstory "
+        "FROM character_templates WHERE scenario_id = %s",
+        (payload["scenario_id"],),
+    ).fetchone()
+    assert template["name"] == "独行调查员"
+    assert template["occupation"] == "旅行者"
+    assert template["attributes"]["pow"] == 50
+    assert template["skills"]["侦查"] == 50
+    assert [item["name"] for item in template["backstory"]["initial_inventory"]] == [
+        "行李箱",
+        "笔记本和钢笔",
+    ]
 
     host_token = _login(import_client, "importhost")
     runtime_package = _make_runtime_package_ready(

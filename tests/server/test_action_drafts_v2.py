@@ -4,7 +4,8 @@ from threading import Barrier
 import pytest
 
 from src.server.db_adapter import PgConnection
-from src.server.player.action_service import confirm_action_draft
+from src.server.models import ActionDraftAnalyzeRequest
+from src.server.player.action_service import analyze_action_draft, confirm_action_draft
 from tests.server.conftest import create_room, setup_auth_test_data
 
 
@@ -13,6 +14,27 @@ def _setup_player(client, test_db):
     room_id = create_room(client)["room_id"]
     joined = client.post(f"/api/player/rooms/{room_id}/join").json()
     return room_id, joined["character_id"], joined["player_token"]
+
+
+@pytest.mark.parametrize(
+    ("declared_intent", "expected_intent_type"),
+    [
+        ("我前往港口邮驿站", "move"),
+        ("我用手枪射击门后的怪物", "combat_action"),
+        ("我检定侦查技能", "skill_check"),
+        ("我使用急救包", "use_item"),
+    ],
+)
+def test_natural_language_action_overrides_dialogue_ui_default(
+    declared_intent,
+    expected_intent_type,
+):
+    draft = analyze_action_draft(ActionDraftAnalyzeRequest(
+        declared_intent=declared_intent,
+        intent_type="dialogue",
+    ))
+
+    assert draft.intent_type == expected_intent_type
 
 
 def test_analyze_stateful_action_requires_confirmation_and_persists(client, test_db):
@@ -54,6 +76,42 @@ def test_analyze_stateful_action_requires_confirmation_and_persists(client, test
         "revision_number": 1,
         "declared_intent": "我用手枪射击门后的怪物",
     }
+
+
+def test_player_can_restore_current_awaiting_confirmation_draft(client, test_db):
+    _, _, player_token = _setup_player(client, test_db)
+    headers = {"X-Room-Token": player_token}
+    created = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我检查车尾的行李架"},
+    ).json()
+
+    response = client.get("/api/player/action-drafts/current", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["draft_id"] == created["draft_id"]
+    assert response.json()["status"] == "awaiting_confirmation"
+    assert response.json()["declared_intent"] == "我检查车尾的行李架"
+
+
+def test_player_does_not_restore_a_stale_confirmation_draft(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    headers = {"X-Room-Token": player_token}
+    client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我检查车尾的行李架"},
+    )
+    test_db.execute(
+        "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s",
+        (room_id,),
+    )
+
+    response = client.get("/api/player/action-drafts/current", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() is None
 
 
 def test_ephemeral_idle_analysis_never_persists_text(client, test_db):
@@ -375,6 +433,32 @@ def test_confirming_stale_draft_requires_sync_and_creates_no_action(client, test
     assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()["count"] == 0
 
 
+def test_analysis_rebases_stale_client_version_to_current_room_state(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET state_version = 4 WHERE room_id = %s",
+        (room_id,),
+    )
+
+    response = client.post(
+        "/api/player/action-drafts/analyze",
+        headers={"X-Room-Token": player_token},
+        json={
+            "declared_intent": "我继续观察周围环境",
+            "base_state_version": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    draft = response.json()
+    assert draft["base_state_version"] == 4
+    row = test_db.execute(
+        "SELECT base_state_version FROM action_drafts WHERE draft_id = %s",
+        (draft["draft_id"],),
+    ).fetchone()
+    assert row["base_state_version"] == 4
+
+
 def test_host_exception_queue_is_owner_only_and_can_request_player_choice(client, test_db):
     room_id, _, player_token = _setup_player(client, test_db)
     room = test_db.execute(
@@ -417,6 +501,44 @@ def test_host_exception_queue_is_owner_only_and_can_request_player_choice(client
         headers=headers,
     ).json()
     assert receipt["timeline"][-1]["status"] == "awaiting_player_choice"
+
+
+def test_host_can_reject_an_exception_without_applying_state_changes(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    room = test_db.execute(
+        "SELECT owner_token, state_version FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    headers = {"X-Room-Token": player_token}
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我用无法确定规则的方式改变现实"},
+    ).json()
+    action = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "host-reject-exception"},
+        json={"confirmations": ["stateful_action"]},
+    ).json()
+
+    resolved = client.post(
+        f"/api/host/{room_id}/action-exceptions/{action['action_id']}/resolve",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"decision": "rejected", "reason": "请重新描述可验证的行动。"},
+    )
+
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "rejected"
+    receipt = client.get(
+        f"/api/player/actions/{action['action_id']}",
+        headers=headers,
+    ).json()
+    assert receipt["status"] == "rejected"
+    current_room = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert current_room["state_version"] == room["state_version"]
 
 
 def test_configured_ai_analysis_is_structured_and_cannot_change_player_text(
@@ -749,6 +871,41 @@ def test_cancel_action_is_atomic_before_resolving(client, test_db):
         headers=headers,
     )
     assert second.status_code == 409
+
+
+def test_player_can_cancel_retryable_semantic_progression_recovery(client, test_db):
+    room_id, character_id, player_token = _setup_player(client, test_db)
+    test_db.execute(
+        """
+        INSERT INTO actions (
+            action_id, room_id, character_id, intent_type, declared_intent, params, status
+        ) VALUES (%s, %s, %s, 'skill_check', '我尝试挣脱锁链', %s, 'awaiting_host_exception')
+        """,
+        (
+            "retryable-recovery-action",
+            room_id,
+            character_id,
+            '{"analysis":{"semantic_progression":{"reason":"semantic_progression_evidence_required"}}}',
+        ),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('retryable-recovery-action', 'awaiting_host_exception', '{}')"
+    )
+
+    response = client.post(
+        "/api/player/actions/retryable-recovery-action/cancel",
+        headers={"X-Room-Token": player_token},
+    )
+
+    assert response.status_code == 200
+    receipt = response.json()
+    assert receipt["status"] == "canceled"
+    assert receipt["can_cancel"] is False
+    assert [event["status"] for event in receipt["timeline"]] == [
+        "awaiting_host_exception",
+        "canceled",
+    ]
 
 
 def test_delete_draft_preserves_a_canceled_audit_record(client, test_db):

@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from src.server.main import app
-from src.server.router_auth import _hash_password
+from src.server.router_auth import _hash_password, _verify_password, ensure_reserved_admin
 
 
 @pytest.fixture
@@ -74,6 +74,26 @@ class TestFirstAccountAdmin:
         })
         assert res.status_code == 200
         assert res.json()["role"] == "player"
+
+
+class TestReservedAdmin:
+    def test_reserved_admin_is_created_and_repaired(self, test_db):
+        ensured = ensure_reserved_admin(test_db)
+        assert ensured["username"] == "admin"
+        assert ensured["role"] == "admin"
+
+        test_db.execute(
+            "UPDATE accounts SET role = 'player', password_hash = %s WHERE username = 'admin'",
+            (_hash_password("not-admin"),),
+        )
+        test_db.commit()
+
+        ensure_reserved_admin(test_db)
+        account = test_db.execute(
+            "SELECT username, role, password_hash FROM accounts WHERE username = 'admin'"
+        ).fetchone()
+        assert account["role"] == "admin"
+        assert _verify_password("admin", account["password_hash"])
 
 
 class TestAuthMe:

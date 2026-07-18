@@ -7,6 +7,8 @@ import type {
   PlayerDeviceSessionDTO,
   PlayerNoteDTO,
   PlayerReconnectDTO,
+  SoloCombatReactionDTO,
+  SoloCombatReactionResolutionDTO,
 } from './types';
 
 
@@ -50,6 +52,10 @@ export async function analyzeActionDraft(input: AnalyzeActionDraftInput): Promis
   });
 }
 
+export async function getCurrentActionDraft(): Promise<ActionDraftDTO | null> {
+  return requestJson('/api/player/action-drafts/current');
+}
+
 export async function reviseActionDraft(
   draftId: string,
   input: AnalyzeActionDraftInput,
@@ -86,6 +92,22 @@ export async function cancelAction(actionId: string): Promise<ActionReceiptDTO> 
 
 export async function getActionReceipt(actionId: string): Promise<ActionReceiptDTO> {
   return requestJson(`/api/player/actions/${encodeURIComponent(actionId)}`);
+}
+
+export async function getPendingEncounterReaction(): Promise<{
+  reaction: SoloCombatReactionDTO | null;
+}> {
+  return requestJson('/api/player/encounter-reactions/pending');
+}
+
+export async function resolveEncounterReaction(
+  reactionId: string,
+  choice: 'dodge' | 'counterattack',
+): Promise<SoloCombatReactionResolutionDTO> {
+  return requestJson(`/api/player/encounter-reactions/${encodeURIComponent(reactionId)}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ choice }),
+  });
 }
 
 export async function getActionHints(): Promise<{ hints: string[] }> {

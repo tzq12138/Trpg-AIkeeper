@@ -27,6 +27,9 @@ class _ClosableWebSocket(_RecordingWebSocket):
     async def close(self, **_kwargs):
         self.closed.set()
 
+    async def accept(self):
+        return None
+
 
 @pytest.mark.asyncio
 async def test_broadcast_drops_hanging_connection_without_blocking_healthy_player(monkeypatch):
@@ -64,5 +67,20 @@ async def test_register_accepted_closes_replaced_socket():
 
     manager.register_accepted(new, "room-1", "player:one")
     await asyncio.wait_for(old.closed.wait(), timeout=0.1)
+
+    assert manager._connections["room-1"]["player:one"] is new
+
+
+@pytest.mark.asyncio
+async def test_replaced_connection_cannot_disconnect_its_successor():
+    manager = ConnectionManager()
+    old = _ClosableWebSocket()
+    new = _ClosableWebSocket()
+
+    await manager.connect(old, "room-1", "player:one")
+    await manager.connect(new, "room-1", "player:one")
+    await asyncio.wait_for(old.closed.wait(), timeout=0.1)
+
+    manager.disconnect("room-1", "player:one", websocket=old)
 
     assert manager._connections["room-1"]["player:one"] is new

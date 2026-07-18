@@ -112,6 +112,47 @@ async def test_chat_completions_protocol_sends_openai_image_url(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_structure_call_uses_bounded_extended_timeout(monkeypatch):
+    from src.server.ai.providers import ConfiguredOpenAIProvider
+
+    _RecordingClient.requests = []
+    _RecordingClient.response = _FakeResponse({
+        "choices": [{"message": {"content": json.dumps({"scenes": []})}}],
+    })
+    monkeypatch.setattr("src.server.ai.providers.httpx.AsyncClient", _RecordingClient)
+    provider = ConfiguredOpenAIProvider(_provider_config("chat_completions"), timeout=30)
+
+    await provider.call(
+        "structure_scenario",
+        {"user_message": "编译完整剧本", "timeout_seconds": 3600},
+    )
+
+    assert _RecordingClient.requests[0]["client"]["timeout"] == 900
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_unwraps_nested_json_for_runtime_tasks(monkeypatch):
+    from src.server.ai.providers import ConfiguredOpenAIProvider
+
+    _RecordingClient.requests = []
+    _RecordingClient.response = _FakeResponse({
+        "choices": [{"message": {"content": json.dumps({
+            "narrative": {
+                "public": json.dumps({"narrative_text": "车门在身后关闭。"})
+            }
+        })}}],
+    })
+    monkeypatch.setattr("src.server.ai.providers.httpx.AsyncClient", _RecordingClient)
+
+    result = await ConfiguredOpenAIProvider(_provider_config("chat_completions")).call(
+        "narrate_action",
+        {"user_message": "返回叙事 JSON。", "system_prompt": "JSON only"},
+    )
+
+    assert result == {"narrative_text": "车门在身后关闭。"}
+
+
+@pytest.mark.asyncio
 async def test_connection_probe_tests_text_and_declared_image_capability(monkeypatch):
     from src.server.ai.providers import ConfiguredOpenAIProvider
 

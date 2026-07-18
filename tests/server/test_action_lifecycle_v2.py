@@ -6,7 +6,7 @@ from src.server.engine.action_lifecycle import transition_action
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.engine.roll_receipt import verify_roll_receipt
 from src.server.engine.state_service import StateService
-from src.server.models import MechanicCompileResult, ResolutionResult
+from src.server.models import MechanicCompileResult, PlayerIntent, ResolutionResult
 
 
 def _verified_params(**extra):
@@ -37,6 +37,120 @@ def _insert_action(test_db, *, action_id="action-v2", status="queued"):
         "'dialogue', '观察房间', %s, %s)",
         (action_id, json.dumps(_verified_params(), ensure_ascii=False), status),
     )
+
+
+def test_director_plan_accepts_the_same_resolving_turn_snapshot(test_db):
+    _insert_action(test_db)
+    test_db.execute(
+        "UPDATE rooms SET status = 'active', state_version = 1 WHERE room_id = 'room-v2'"
+    )
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, base_state_version) "
+        "VALUES ('turn-v2', 'room-v2', 1, 'resolving', 0)"
+    )
+    test_db.execute(
+        "UPDATE actions SET turn_id = 'turn-v2' WHERE action_id = 'action-v2'"
+    )
+
+    action = dict(
+        test_db.execute("SELECT * FROM actions WHERE action_id = 'action-v2'").fetchone()
+    )
+    room = dict(test_db.execute("SELECT * FROM rooms WHERE room_id = 'room-v2'").fetchone())
+    intent = PlayerIntent(
+        action_id="action-v2",
+        intent_type="dialogue",
+        declared_intent="观察房间",
+        params=_verified_params(),
+    )
+    pipeline = ResolutionPipeline(test_db, _DialogueCompiler())
+
+    assert pipeline._validate_director_plan(action, intent, room) is None
+
+
+def test_shared_turn_scene_arrival_is_not_rejected_as_stale(test_db):
+    _insert_action(test_db)
+    citation = {"source_ref": "module#edge", "page_number": 1}
+    analysis = {
+        "semantic_progression": {
+            "validated": True,
+            "fromNodeId": "gallery",
+            "targetNodeId": "orchid-hall",
+            "ruleCitation": citation,
+        },
+        "director_plan": {
+            "context_version": 0,
+            "preconditions": [],
+            "permissions": [],
+            "state_patch": [],
+            "state_patch_authority": "advisory_only",
+        },
+    }
+    params = {
+        "fromNodeId": "gallery",
+        "targetNodeId": "orchid-hall",
+        "analysis": analysis,
+        "director_plan": analysis["director_plan"],
+    }
+    test_db.execute(
+        "INSERT INTO scenarios (scenario_id, title) VALUES ('scenario-shared-turn', 'Shared turn')"
+    )
+    test_db.execute(
+        "INSERT INTO scenario_versions (scenario_version_id, scenario_id, version_number, created_by) "
+        "VALUES ('version-shared-turn', 'scenario-shared-turn', 1, 'test')"
+    )
+    test_db.execute(
+        "UPDATE rooms SET status = 'active', state_version = 1, scenario_id = 'scenario-shared-turn', "
+        "scenario_version_id = 'version-shared-turn' WHERE room_id = 'room-v2'"
+    )
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, "
+        "input_checksum, runtime_package, created_by) VALUES "
+        "('package-shared-turn', 'version-shared-turn', 1, 'ready', 'shared-turn', %s, 'test')",
+        (
+            json.dumps(
+                {
+                    "semantic_progression_rules": {
+                        "edges": [{
+                            "from_scene_id": "gallery",
+                            "to_scene_id": "orchid-hall",
+                            "relation_type": "transitions_to",
+                            "conditions": [],
+                            "citation": citation,
+                        }],
+                    },
+                }
+            ),
+        ),
+    )
+    test_db.execute(
+        "INSERT INTO room_scene_state (room_id, current_scene, visited_scenes, version) "
+        "VALUES ('room-v2', 'orchid-hall', '[\"gallery\", \"orchid-hall\"]', 2)"
+    )
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, base_state_version) "
+        "VALUES ('turn-shared', 'room-v2', 1, 'resolving', 0)"
+    )
+    test_db.execute(
+        "UPDATE actions SET turn_id = 'turn-shared', params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(params),),
+    )
+
+    action = dict(
+        test_db.execute("SELECT * FROM actions WHERE action_id = 'action-v2'").fetchone()
+    )
+    intent = PlayerIntent(
+        action_id="action-v2",
+        intent_type="move",
+        declared_intent="与队友一起前往兰花展厅",
+        params=params,
+    )
+    transition, error = ResolutionPipeline(
+        test_db, _DialogueCompiler()
+    )._validated_generic_scene_transition(action, intent)
+
+    assert error is None
+    assert transition["already_applied"] is True
 
 
 def test_transition_action_updates_status_and_timeline_atomically(test_db):
@@ -218,6 +332,7 @@ async def test_v2_pipeline_records_completed_timeline_and_verifiable_rule_receip
     explanation = action["receipt"]
     assert explanation["rule_set_version"] == "coc7-v1"
     assert explanation["authoritative_inputs"]["skill_value"] == 60
+    assert explanation["authoritative_inputs"]["success_level"] == "regular"
     assert explanation["formula"] == "d100 <= 60"
     assert verify_roll_receipt(
         explanation["verification_receipt"],

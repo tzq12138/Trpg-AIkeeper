@@ -12,6 +12,7 @@ import type { ActionDraftDTO, ActionReceiptDTO } from '../src/shared/types';
 const draft = {
   draft_id: 'draft-1',
   revision: 2,
+  status: 'awaiting_confirmation',
   requires_confirmation: true,
 } as ActionDraftDTO;
 
@@ -31,6 +32,15 @@ describe('player action controller', () => {
   test('auto-confirms only drafts without confirmation requirements', () => {
     expect(shouldAutoConfirmDraft(draft)).toBe(false);
     expect(shouldAutoConfirmDraft({ ...draft, requires_confirmation: false })).toBe(true);
+  });
+
+  test('does not auto-confirm a draft still awaiting clarification', () => {
+    expect(shouldAutoConfirmDraft({
+      ...draft,
+      status: 'analyzing',
+      requires_confirmation: false,
+      confirmation_requirements: [],
+    })).toBe(false);
   });
 
   test('treats server pending states as authoritative in-flight actions', () => {

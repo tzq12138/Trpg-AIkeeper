@@ -61,6 +61,9 @@ class RuleExecutor:
                         "targetNodeId": (intent.params or {}).get("targetNodeId", ""),
                         "fromNodeId": (intent.params or {}).get("fromNodeId", ""),
                         "solo_adventure": bool((intent.params or {}).get("solo_adventure")),
+                        "generic_scene_progression": (intent.params or {}).get(
+                            "generic_scene_progression"
+                        ),
                     }
                 })
             else:
@@ -136,6 +139,8 @@ class RuleExecutor:
                 hidden_modifiers = []
 
             result = await handler.execute(state, params)
+            if mechanic_type == "move" and params.get("generic_scene_progression"):
+                result.mutations = []
             if mechanic_type == "move" and params.get("solo_adventure"):
                 result.mutations = []
                 result.metadata["solo_adventure"] = True
@@ -209,7 +214,13 @@ class RuleExecutor:
         if compiled.triggered_mechanic == "move":
             params.update({
                 key: intent_params[key]
-                for key in ("fromNodeId", "targetNodeId", "solo_adventure")
+                for key in (
+                    "fromNodeId",
+                    "targetNodeId",
+                    "solo_adventure",
+                    "solo_adventure_damage",
+                    "generic_scene_progression",
+                )
                 if key in intent_params
             })
         return {"type": compiled.triggered_mechanic, "params": params}
@@ -259,6 +270,20 @@ class RuleExecutor:
     def _skill_value(self, xlsx_data: dict[str, Any], skill_name: str) -> int:
         skills = xlsx_data.get("skills", {}) or {}
         value = skills.get(skill_name, 0)
+        if value in (None, 0, ""):
+            attribute_key = {
+                "力量": "str",
+                "体质": "con",
+                "体型": "siz",
+                "敏捷": "dex",
+                "外貌": "app",
+                "智力": "int",
+                "意志": "pow",
+                "教育": "edu",
+                "幸运": "luck",
+            }.get(str(skill_name).upper(), str(skill_name).lower())
+            attributes = xlsx_data.get("attributes", {}) or {}
+            value = attributes.get(attribute_key, xlsx_data.get(attribute_key, value))
         try:
             return int(value)
         except (TypeError, ValueError):

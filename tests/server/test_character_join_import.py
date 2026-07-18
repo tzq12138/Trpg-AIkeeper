@@ -149,7 +149,7 @@ def test_join_with_scenario_template_creates_initial_inventory(client, test_db):
         "(template_id, scenario_id, name, occupation, attributes, skills, backstory) "
         "VALUES ('yhdx-reporter', 'sc-test', '查尔斯·钱伯斯', '记者', %s, %s, %s)",
         (
-            json.dumps({"con": 55, "pow": 50, "luck": 50}),
+            json.dumps({"con": 50, "pow": 50, "siz": 40, "luck": 50}),
             json.dumps({"侦查": 65, "图书馆使用": 70}),
             json.dumps({
                 "inventory": [
@@ -167,6 +167,14 @@ def test_join_with_scenario_template_creates_initial_inventory(client, test_db):
     )
 
     assert response.status_code == 200
+    assert response.json()["character"]["hp"] == 9
+    assert response.json()["character"]["max_hp"] == 9
+    assert response.json()["character"]["attributes"] == {
+        "con": 50,
+        "pow": 50,
+        "siz": 40,
+        "luck": 50,
+    }
     rows = test_db.execute(
         "SELECT name, description, quantity, source FROM inventory "
         "WHERE character_id = %s ORDER BY acquired_at, name",

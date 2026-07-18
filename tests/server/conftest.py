@@ -5,6 +5,7 @@ import psycopg2
 
 # Ensure tests never hit the production JWT_SECRET guard
 os.environ.setdefault("AIKEEPER_DEV_MODE", "1")
+os.environ.setdefault("AI_CONFIG_MASTER_KEY", "aikeeper-test-ai-config-master-key")
 
 from src.server.db_adapter import PgDatabase
 from src.server.engine.engine import Engine

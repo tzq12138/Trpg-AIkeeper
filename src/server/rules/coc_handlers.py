@@ -153,6 +153,7 @@ class CocSanityCheckHandler(BaseRuleHandler):
 
         roll = secure_randint(1, 100, test_rng=random)
         is_success = roll <= current_san
+        success_level = "regular" if is_success else "failure"
 
         if is_success:
             san_loss, loss_draws, modifier = roll_dice(success_loss) if success_loss != "0" else (0, [], 0)
@@ -169,6 +170,11 @@ class CocSanityCheckHandler(BaseRuleHandler):
             metadata={
                 "roll": roll,
                 "current_san": current_san,
+                "skill_name": "理智",
+                "skill_value": current_san,
+                "target": current_san,
+                "difficulty": "regular",
+                "success_level": success_level,
                 "san_loss": san_loss,
                 "new_san": new_san,
                 "roll_trace": {"d100": [roll], "loss_draws": loss_draws, "modifier": modifier},
@@ -234,6 +240,11 @@ class CocMoveHandler(BaseRuleHandler):
     async def execute(self, state: GameState, params: dict) -> RuleResult:
         target_node = params.get("targetNodeId", "")
         from_node = params.get("fromNodeId", "")
+        if params.get("solo_adventure_damage"):
+            return RuleResult(
+                is_success=True,
+                metadata={"solo_damage_transition": True},
+            )
         if not target_node:
             return RuleResult(
                 is_success=False,

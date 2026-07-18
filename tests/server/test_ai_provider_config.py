@@ -46,6 +46,35 @@ def test_secret_cipher_rejects_tampered_ciphertext():
         cipher.decrypt(tampered)
 
 
+def test_secret_cipher_requires_configured_master_secret(monkeypatch):
+    from src.server.ai.provider_config import (
+        ProviderConfigStateError,
+        secret_cipher_from_env,
+    )
+
+    monkeypatch.delenv("AI_CONFIG_MASTER_KEY", raising=False)
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+
+    with pytest.raises(ProviderConfigStateError, match="config_master_key_unavailable"):
+        secret_cipher_from_env()
+
+
+def test_store_lists_masked_configs_without_a_master_secret(test_db, monkeypatch):
+    from src.server.ai.provider_config import AiProviderConfigStore, SecretCipher
+
+    created = AiProviderConfigStore(test_db, SecretCipher("master-secret")).create(
+        _config_payload(),
+        actor_id="admin-1",
+    )
+    monkeypatch.delenv("AI_CONFIG_MASTER_KEY", raising=False)
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+
+    listed = AiProviderConfigStore(test_db).list_public()
+
+    assert listed == [created]
+    assert "api_key_ciphertext" not in listed[0]
+
+
 @pytest.mark.parametrize(
     "url",
     [

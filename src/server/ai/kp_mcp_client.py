@@ -3,9 +3,8 @@ KP MCP Client — async wrapper for the MCP StreamableHTTP protocol.
 
 Usage:
     client = KpMcpClient("http://127.0.0.1:9100/mcp")
-    response = await client.call_tool("kp_resolve_turn", {
-        "roomId": "...", "action": {...}, "context": {...}
-    })
+    plan = await client.analyze_director_action({"declared_intent": "我查看门缝"})
+    narration = await client.narrate_action({"allowed_facts": ["门后有脚步声"]})
     health = await client.health_check()
 
 Session is reused across calls.  Call close() when done.
@@ -86,39 +85,21 @@ class KpMcpClient:
     async def health_check(self) -> dict:
         return await self.call_tool("kp_health_check", {})
 
-    async def resolve_turn(self, room_id: str, action: dict, context: dict) -> dict:
-        return await self.call_tool("kp_resolve_turn", {
-            "roomId": room_id, "action": action, "context": context,
-        })
-
-    async def resolve_sanity(self, room_id: str, context: dict, trigger: dict) -> dict:
-        return await self.call_tool("kp_resolve_sanity", {
-            "roomId": room_id, "context": context, "trigger": trigger,
-        })
-
-    async def resolve_combat_round(self, room_id: str, combatants: list) -> dict:
-        return await self.call_tool("kp_resolve_combat_round", {
-            "roomId": room_id, "combatants": combatants,
-        })
-
     async def structure_scenario(self, raw_text: str, format: str = "full") -> dict:
         return await self.call_tool("kp_structure_scenario", {
             "rawText": raw_text, "format": format,
         })
 
-    async def query_rules(self, question: str, context: dict | None = None) -> dict:
-        return await self.call_tool("kp_query_rules", {
-            "question": question, "context": context or {},
-        })
+    async def analyze_director_action(self, context: dict) -> dict:
+        return await self.call_tool("kp_analyze_director_action", {"context": context})
 
-    async def query_knowledge(self, query: str, room_id: str = "",
-                              sources: list | None = None) -> dict:
-        return await self.call_tool("kp_query_knowledge", {
-            "query": query, "roomId": room_id,
-            "sources": sources or ["scenario", "rules"],
-        })
+    async def narrate_action(self, context: dict) -> dict:
+        return await self.call_tool("kp_narrate_action", {"context": context})
 
     async def close(self):
+        exit_stack = self._exit_stack
         self._read_stream = None
         self._write_stream = None
         self._exit_stack = None
+        if exit_stack is not None:
+            await exit_stack.aclose()

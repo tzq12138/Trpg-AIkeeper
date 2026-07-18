@@ -309,16 +309,28 @@ async def join_room_with_character(
                 raise HTTPException(404, "Template not found")
             tpl_rows = [tpl]
         tpl = dict(tpl_rows[0])
+        template_attributes = {
+            str(key).lower(): value
+            for key, value in _json_val(tpl.get("attributes")).items()
+        }
+        con_score = int(template_attributes.get("con", 50) or 50)
+        size_score = template_attributes.get("siz")
+        template_hp = (
+            (con_score + int(size_score)) // 10
+            if size_score is not None
+            else con_score // 5 or 10
+        )
         parsed = {
             "name": tpl.get("name", ""), "occupation": tpl.get("occupation", ""),
             "age": tpl.get("age", 25), "sex": tpl.get("gender", ""),
-            "hp": _json_val(tpl.get("attributes")).get("con", 50) // 5 or 10,
-            "max_hp": _json_val(tpl.get("attributes")).get("con", 50) // 5 or 10,
-            "san": _json_val(tpl.get("attributes")).get("pow", 50),
-            "max_san": _json_val(tpl.get("attributes")).get("pow", 50),
-            "mp": _json_val(tpl.get("attributes")).get("pow", 50) // 5,
-            "max_mp": _json_val(tpl.get("attributes")).get("pow", 50) // 5,
-            "luck": _json_val(tpl.get("attributes")).get("luck", 50),
+            "hp": template_hp,
+            "max_hp": template_hp,
+            "san": template_attributes.get("pow", 50),
+            "max_san": template_attributes.get("pow", 50),
+            "mp": template_attributes.get("pow", 50) // 5,
+            "max_mp": template_attributes.get("pow", 50) // 5,
+            "luck": template_attributes.get("luck", 50),
+            "attributes": template_attributes,
             "skills": _json_val(tpl.get("skills")) or {},
             "background": tpl.get("background", ""),
             "backstory": _json_val(tpl.get("backstory")) or {},

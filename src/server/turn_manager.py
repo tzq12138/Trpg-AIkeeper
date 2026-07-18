@@ -28,9 +28,14 @@ class TurnManager:
         ).fetchone()["max_idx"]
         turn_id = str(uuid.uuid4())[:8]
         new_idx = max_idx + 1
+        room = self.conn.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()
         self.conn.execute(
-            "INSERT INTO room_turns (turn_id, room_id, turn_index, status) VALUES (%s, %s, %s, 'collecting')",
-            (turn_id, room_id, new_idx),
+            "INSERT INTO room_turns (turn_id, room_id, turn_index, status, base_state_version) "
+            "VALUES (%s, %s, %s, 'collecting', %s)",
+            (turn_id, room_id, new_idx, int(room["state_version"]) if room else 0),
         )
         self.conn.commit()
         logger.info("create_turn: room=%s turn=%s index=%s", room_id, turn_id, new_idx)
@@ -59,7 +64,7 @@ class TurnManager:
         turn = self.ensure_current_turn(room_id)
         chars = self.conn.execute(
             "SELECT character_id, player_name, xlsx_data, status FROM characters "
-            "WHERE room_id = %s AND status = 'joined'",
+            "WHERE room_id = %s AND status IN ('joined', 'ready')",
             (room_id,)
         ).fetchall()
         submitted = set()

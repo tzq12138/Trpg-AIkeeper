@@ -84,9 +84,6 @@ export function CampaignCurrentSceneCard({
         <PlayerAssetImage assetId={scene.image_asset_id} alt="当前场景插图" />
       )}
       <p>{scene.text_preview}</p>
-      <p className="bh-eyebrow" style={{ fontSize: 9 }}>
-        {scene.choice_count} 个可选方向
-      </p>
       {scene.citation?.verified && (
         <RedactedCitationDisclosure citations={[scene.citation]} />
       )}

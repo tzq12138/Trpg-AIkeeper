@@ -5,6 +5,7 @@ describe('navigation configuration', () => {
   test('parses existing app routes without a router dependency', () => {
     expect(getRouteForPath('/')).toEqual({ page: 'home', param: '' });
     expect(getRouteForPath('/admin')).toEqual({ page: 'admin', param: '' });
+    expect(getRouteForPath('/admin/acceptance')).toEqual({ page: 'admin-acceptance', param: '' });
     expect(getRouteForPath('/rag-test')).toEqual({ page: 'rag-test', param: '' });
     expect(getRouteForPath('/host/create')).toEqual({ page: 'host-create', param: '' });
     expect(getRouteForPath('/host/ABCD/stage')).toEqual({ page: 'host-stage', param: 'ABCD' });

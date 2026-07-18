@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getSlotValue } from '../shared/identity';
 import { buildRoomWsUrl } from '../shared/ws-url';
+import { buildHostLaunchChecklist } from '../shared/host-launch-checklist';
 import HostCampaignControls from '../components/HostCampaignControls';
 
 // ── types ──────────────────────────────────────────────────────────
@@ -184,6 +185,11 @@ export default function HostLobby({ roomId }: { roomId: string }) {
   const ownerToken = getSlotValue('owner_token') || '';
   const unreadyPlayers = players.filter((p) => !p.is_ready);
   const canStart = players.length > 0 && !!scenarioTitle && unreadyPlayers.length === 0;
+  const launchChecklist = buildHostLaunchChecklist({
+    scenarioTitle,
+    playerCount: players.length,
+    unreadyPlayerCount: unreadyPlayers.length,
+  });
 
   let disabledReason = '';
   if (!scenarioTitle) disabledReason = '请先选择剧本再开始游戏';
@@ -264,6 +270,15 @@ export default function HostLobby({ roomId }: { roomId: string }) {
                 </button>
               </div>
             )}
+
+            <div className="bh-preparation-checklist" aria-label="开团检查清单">
+              {launchChecklist.map((item) => (
+                <div key={item.key} className={`bh-preparation-item ${item.complete ? 'bh-preparation-item--complete' : ''}`}>
+                  <strong>{item.complete ? '✓' : '○'} {item.label}</strong>
+                  <span>{item.detail}</span>
+                </div>
+              ))}
+            </div>
 
             {/* Start button + reason */}
             {room?.status === 'lobby' && (

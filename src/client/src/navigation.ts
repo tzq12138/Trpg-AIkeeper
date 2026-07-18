@@ -1,6 +1,7 @@
 export type AppPage =
   | 'home'
   | 'admin'
+  | 'admin-acceptance'
   | 'rag-test'
   | 'host-create'
   | 'host-lobby'
@@ -38,6 +39,7 @@ export const playerTabs: Array<{ key: PlayerTabKey; label: string; eyebrow: stri
 
 export function getRouteForPath(path: string): AppRoute {
   if (path === '/') return { page: 'home', param: '' };
+  if (path === '/admin/acceptance') return { page: 'admin-acceptance', param: '' };
   if (path === '/admin') return { page: 'admin', param: '' };
   if (path === '/rag-test') return { page: 'rag-test', param: '' };
   if (path === '/host/create') return { page: 'host-create', param: '' };

@@ -79,7 +79,12 @@ def _graph_with_citations():
         "npcs": [{"npc_id": "driver", "name": "Driver", "citation": _citation("part-npc")}],
         "items": [{"item_id": "ticket", "name": "Ticket", "citation": _citation("part-item")}],
         "clues": [{"clue_id": "ticket", "name": "Ticket", "citation": _citation("part-clue")}],
-        "endings": [{"ending_id": "safe", "name": "Safe", "citation": _citation("part-ending")}],
+        "endings": [{
+            "ending_id": "safe",
+            "name": "Safe",
+            "citation": _citation("part-ending"),
+            "completion_conditions": {"entered_scenes": ["station"]},
+        }],
         "rule_triggers": [{"trigger": "spot_hidden", "citation": _citation("part-rule")}],
         "style_pack": {"tone": "investigative", "citation": _citation("part-style")},
         "solo_adventure": {
@@ -170,6 +175,53 @@ def test_runtime_package_blocks_when_scenario_has_no_character_template(test_db)
         and issue["waivable"] is False
         for issue in package["quality_exceptions"]
     )
+
+
+def test_runtime_package_exposes_generic_scene_edge_logical_keys(test_db):
+    from src.server.scenario.module_compiler import ModuleCompiler
+
+    graph = _graph_with_citations()
+    graph["scenes"].append({
+        "scene_id": "harbor",
+        "name": "Harbor",
+        "citation": _citation("part-harbor"),
+    })
+    graph["branches"] = [{
+        "branch_id": "station-to-harbor",
+        "from_scene_id": "station",
+        "to_scene_id": "harbor",
+        "citation": _citation("part-branch"),
+    }]
+    _insert_compiler_fixture(test_db, graph=graph)
+    test_db.execute(
+        "INSERT INTO content_items "
+        "(content_item_id, scenario_version_id, item_type, logical_key, title, visibility, payload, citation, checksum) "
+        "VALUES ('item-scene-harbor', 'module-version-1', 'scene', 'harbor', 'Harbor', 'host_only', %s, %s, 'checksum-scene-harbor')",
+        (
+            json.dumps({"name": "Harbor"}),
+            json.dumps(_citation("part-harbor")),
+        ),
+    )
+    test_db.execute(
+        "INSERT INTO content_item_edges "
+        "(content_item_edge_id, scenario_version_id, from_content_item_id, to_content_item_id, relation_type, conditions, citation) "
+        "VALUES ('edge-station-harbor', 'module-version-1', 'item-scene-station', 'item-scene-harbor', 'transitions_to', '[]', %s)",
+        (json.dumps(_citation("part-branch")),),
+    )
+    test_db.execute(
+        "UPDATE scenario_asset_bindings SET status = 'confirmed' WHERE binding_id = 'binding-map'"
+    )
+    test_db.commit()
+
+    package = ModuleCompiler(test_db).compile("module-version-1", requested_by="admin")
+    edge = next(
+        item
+        for item in package["runtime_package"]["semantic_progression_rules"]["edges"]
+        if item["from_content_item_id"] == "item-scene-station"
+    )
+
+    assert edge["from_scene_id"] == "station"
+    assert edge["to_scene_id"] == "harbor"
 
 
 def test_missing_citation_can_be_confirmed_but_invalid_solo_cannot(test_db):

@@ -18,6 +18,7 @@ from .content_package import (
 from .content_projection import ContentProjectionService
 from .module_compiler import ModuleCompiler, ModuleCompilerError
 from .quality import QualityReportGenerator
+from .review_service import review_publish_blockers
 from .solo_adventure import extract_solo_adventure
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,9 @@ class ScenarioImportService:
         rag=None,
         storage_root: Path | None = None,
         asset_root: Path | None = None,
+        max_source_files: int = MAX_SOURCE_FILES,
+        max_file_bytes: int = MAX_FILE_BYTES,
+        max_total_bytes: int = MAX_TOTAL_BYTES,
     ):
         self.conn = conn
         self.gateway = gateway
@@ -88,6 +92,9 @@ class ScenarioImportService:
         self.asset_root = asset_root or (
             Path(__file__).resolve().parents[3] / "data" / "scenario_assets"
         )
+        self.max_source_files = max_source_files
+        self.max_file_bytes = max_file_bytes
+        self.max_total_bytes = max_total_bytes
 
     async def import_sources(
         self,
@@ -259,6 +266,10 @@ class ScenarioImportService:
         combined_package = self._combine_packages(scenario_title, combined_sha, packages)
         try:
             knowledge_graph = await self._structure_package(combined_package)
+            knowledge_graph = await self._repair_runtime_contract_if_needed(
+                combined_package,
+                knowledge_graph,
+            )
         except Exception as exc:
             status = (
                 "awaiting_provider"
@@ -422,6 +433,80 @@ class ScenarioImportService:
             update_scenario=update_scenario,
         )
 
+    async def rebuild_draft_from_sources(
+        self,
+        scenario_id: str,
+        source_version_id: str,
+        *,
+        requested_by: str,
+    ) -> dict[str, Any]:
+        source_version = self.conn.execute(
+            """
+            SELECT sv.scenario_version_id, s.title
+            FROM scenario_versions sv
+            JOIN scenarios s ON s.scenario_id = sv.scenario_id
+            WHERE sv.scenario_id = %s AND sv.scenario_version_id = %s
+            """,
+            (scenario_id, source_version_id),
+        ).fetchone()
+        if not source_version:
+            raise ScenarioImportFailure(404, {"message": "剧本版本不存在"})
+        source_rows = self.conn.execute(
+            """
+            SELECT svs.ordinal, sd.source_document_id, sd.source_filename,
+                   sd.mime_type, sd.source_sha256, sd.storage_path
+            FROM scenario_version_sources svs
+            JOIN source_documents sd
+              ON sd.source_document_id = svs.source_document_id
+            WHERE svs.scenario_version_id = %s
+            ORDER BY svs.ordinal
+            """,
+            (source_version_id,),
+        ).fetchall()
+        if not source_rows:
+            raise ScenarioImportFailure(409, {
+                "message": "剧本版本缺少可重建的原始来源",
+            })
+
+        normalized_rows = [dict(row) for row in source_rows]
+        storage_root = self.storage_root.resolve()
+        packages = []
+        for row in normalized_rows:
+            source_path = (storage_root / Path(row["storage_path"])).resolve()
+            if not source_path.is_relative_to(storage_root) or not source_path.is_file():
+                raise ScenarioImportFailure(409, {
+                    "message": "剧本原始来源不可用",
+                    "source_document_id": row["source_document_id"],
+                })
+            packages.append(build_content_package(
+                row["source_filename"],
+                source_path.read_bytes(),
+                row["mime_type"],
+            ))
+        combined_sha = hashlib.sha256(
+            "|".join(row["source_sha256"] for row in normalized_rows).encode("ascii")
+        ).hexdigest()
+        combined_package = self._combine_packages(
+            source_version["title"], combined_sha, packages
+        )
+        try:
+            knowledge_graph = await self._structure_package(combined_package)
+        except Exception as exc:
+            raise ScenarioImportFailure(502, {
+                "status": "failed",
+                "message": "剧本重建结构化失败",
+            }) from exc
+        return await self._create_draft_version(
+            scenario_id=scenario_id,
+            scenario_title=source_version["title"],
+            knowledge_graph=knowledge_graph,
+            combined_package=combined_package,
+            source_rows=normalized_rows,
+            created_by=requested_by,
+            update_scenario=False,
+            preserve_source_history=True,
+        )
+
     def publish_version(
         self,
         scenario_id: str,
@@ -454,6 +539,13 @@ class ScenarioImportService:
                 "status": "published",
                 "rag_index_version": row.get("rag_index_version"),
             }
+        review_blockers = review_publish_blockers(self.conn, scenario_version_id)
+        if review_blockers:
+            raise ScenarioImportFailure(409, {
+                "status": "review_incomplete",
+                "message": "Core review issues must be fixed before publishing.",
+                "issues": review_blockers,
+            })
         solo_adventure = _json_value(row.get("knowledge_graph")).get(
             "solo_adventure"
         )
@@ -470,13 +562,11 @@ class ScenarioImportService:
                 "missing_target_node_ids": solo_integrity.get("missing_target_node_ids") or [],
             })
         quality_report = _json_value(row.get("quality_report"))
-        if (
-            quality_report.get("level") == "blocked"
-            and reviewer.get("role") != "admin"
-        ):
-            raise ScenarioImportFailure(403, {
-                "status": "blocked",
-                "message": "该版本质量报告为 blocked，仅管理员可处理",
+        if quality_report.get("level") == "blocked":
+            raise ScenarioImportFailure(409, {
+                "status": "quality_blocked",
+                "message": "该版本存在阻塞质量问题，修复后才能发布",
+                "issues": quality_report.get("issues") or [],
             })
         try:
             runtime_package = ModuleCompiler(self.conn).latest_ready_for_version(
@@ -697,13 +787,13 @@ class ScenarioImportService:
             raise ScenarioImportFailure(400, {
                 "message": "license_type 必须为 authorized 或 open"
             })
-        if not sources or len(sources) > MAX_SOURCE_FILES:
+        if not sources or len(sources) > self.max_source_files:
             raise ScenarioImportFailure(400, {"message": "来源文件数量不合法"})
         total = sum(len(source.content) for source in sources)
-        if total > MAX_TOTAL_BYTES:
+        if total > self.max_total_bytes:
             raise ScenarioImportFailure(413, {"message": "来源文件总大小超过限制"})
-        if any(len(source.content) > MAX_FILE_BYTES for source in sources):
-            raise ScenarioImportFailure(413, {"message": "单个来源文件超过限制"})
+        if any(len(source.content) > self.max_file_bytes for source in sources):
+            raise ScenarioImportFailure(413, {"message": "来源文件过大"})
 
     def _prepare_source(self, source: UploadedSource) -> dict[str, Any]:
         filename = Path(source.filename.replace("\\", "/")).name
@@ -813,13 +903,43 @@ class ScenarioImportService:
         )
 
     async def _structure_package(self, package: ContentPackage) -> dict[str, Any]:
+        from ..ai.ai_kp import normalize_knowledge_graph
+
         if self.gateway and hasattr(self.gateway, "structure_content_package"):
-            return await self.gateway.structure_content_package(package)
+            return normalize_knowledge_graph(
+                await self.gateway.structure_content_package(package)
+            )
         if package.canonical_text:
             from ..ai.ai_kp import structure_scenario
 
-            return await structure_scenario(package.canonical_text)
+            return normalize_knowledge_graph(
+                await structure_scenario(package.canonical_text)
+            )
         raise RuntimeError("multimodal_provider_unavailable")
+
+    async def _repair_runtime_contract_if_needed(
+        self,
+        package: ContentPackage,
+        knowledge_graph: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not _needs_runtime_contract_repair(knowledge_graph):
+            return knowledge_graph
+        if not self.gateway or not hasattr(self.gateway, "repair_runtime_contract"):
+            return knowledge_graph
+        from ..ai.ai_kp import normalize_knowledge_graph
+
+        try:
+            repair = await self.gateway.repair_runtime_contract(package, knowledge_graph)
+        except Exception as exc:
+            logger.warning("Runtime contract repair failed: %s", type(exc).__name__)
+            return knowledge_graph
+        if not isinstance(repair, dict):
+            return knowledge_graph
+        merged = dict(knowledge_graph)
+        for key in ("branches", "endings"):
+            if key in repair:
+                merged[key] = repair[key]
+        return normalize_knowledge_graph(merged)
 
     async def _create_draft_version(
         self,
@@ -831,18 +951,21 @@ class ScenarioImportService:
         source_rows: list[dict[str, Any]],
         created_by: str,
         update_scenario: bool,
+        preserve_source_history: bool = False,
     ) -> dict[str, Any]:
         if not isinstance(knowledge_graph, dict):
             knowledge_graph = {}
         else:
             knowledge_graph = dict(knowledge_graph)
-        self._persist_multimodal_transcripts(source_rows, knowledge_graph)
+        if not preserve_source_history:
+            self._persist_multimodal_transcripts(source_rows, knowledge_graph)
         knowledge_graph.pop("source_part_texts", None)
         part_rows = self._load_version_parts(source_rows)
         solo_adventure = extract_solo_adventure([
             _rag_part(row) for row in part_rows
         ])
-        if solo_adventure["detected"]:
+        detected_solo_adventure = solo_adventure["detected"]
+        if detected_solo_adventure:
             if solo_adventure["integrity"]["is_valid"]:
                 knowledge_graph["solo_adventure"] = solo_adventure
             else:
@@ -897,28 +1020,29 @@ class ScenarioImportService:
                         row["ordinal"],
                     ),
                 )
-                tx.execute(
-                    "UPDATE source_documents SET status = 'ready', updated_at = NOW() "
-                    "WHERE source_document_id = %s",
-                    (row["source_document_id"],),
-                )
-                tx.execute(
-                    """
-                    UPDATE import_jobs
-                    SET status = 'complete', progress = 100,
-                        error_message = NULL, diagnostics = %s, updated_at = NOW()
-                    WHERE job_id = %s
-                    """,
-                    (
-                        json.dumps({
-                            "import_batch_id": row.get("import_batch_id") or "",
-                            "scenario_version_id": scenario_version_id,
-                            "requires_multimodal": combined_package.requires_multimodal,
-                            "part_count": len(part_rows),
-                        }, ensure_ascii=False),
-                        row["job_id"],
-                    ),
-                )
+                if not preserve_source_history:
+                    tx.execute(
+                        "UPDATE source_documents SET status = 'ready', updated_at = NOW() "
+                        "WHERE source_document_id = %s",
+                        (row["source_document_id"],),
+                    )
+                    tx.execute(
+                        """
+                        UPDATE import_jobs
+                        SET status = 'complete', progress = 100,
+                            error_message = NULL, diagnostics = %s, updated_at = NOW()
+                        WHERE job_id = %s
+                        """,
+                        (
+                            json.dumps({
+                                "import_batch_id": row.get("import_batch_id") or "",
+                                "scenario_version_id": scenario_version_id,
+                                "requires_multimodal": combined_package.requires_multimodal,
+                                "part_count": len(part_rows),
+                            }, ensure_ascii=False),
+                            row["job_id"],
+                        ),
+                    )
             if update_scenario:
                 tx.execute(
                     """
@@ -934,6 +1058,8 @@ class ScenarioImportService:
                         scenario_id,
                     ),
                 )
+            if detected_solo_adventure:
+                self._ensure_solo_character_template(tx, scenario_id)
             self._bind_published_base_rules(tx, scenario_version_id)
 
         content_projection = ContentProjectionService(self.conn).rebuild(
@@ -991,7 +1117,7 @@ class ScenarioImportService:
             "scenario_version_id": scenario_version_id,
             "version_number": version_number,
             "status": "draft_ready",
-            "job_ids": [row["job_id"] for row in source_rows],
+            "job_ids": [row["job_id"] for row in source_rows if row.get("job_id")],
             "source_document_count": len(source_rows),
             "part_count": len(part_rows),
             "requires_multimodal": combined_package.requires_multimodal,
@@ -1134,6 +1260,65 @@ class ScenarioImportService:
             (scenario_version_id,),
         )
 
+    def _ensure_solo_character_template(self, tx, scenario_id: str) -> None:
+        existing = tx.execute(
+            "SELECT 1 FROM character_templates WHERE scenario_id = %s LIMIT 1",
+            (scenario_id,),
+        ).fetchone()
+        if existing:
+            return
+        tx.execute(
+            """
+            INSERT INTO character_templates (
+                template_id, scenario_id, name, occupation, background, age,
+                gender, attributes, skills, backstory
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                f"{scenario_id}-solo-investigator",
+                scenario_id,
+                "独行调查员",
+                "旅行者",
+                "可在开局前编辑的默认调查员。",
+                30,
+                "",
+                json.dumps({
+                    "str": 50,
+                    "con": 50,
+                    "pow": 50,
+                    "dex": 50,
+                    "app": 50,
+                    "siz": 50,
+                    "int": 60,
+                    "edu": 60,
+                    "luck": 50,
+                }, ensure_ascii=False),
+                json.dumps({
+                    "侦查": 50,
+                    "聆听": 40,
+                    "图书馆使用": 40,
+                    "心理学": 30,
+                    "闪避": 25,
+                }, ensure_ascii=False),
+                json.dumps({
+                    "initial_inventory": [
+                        {
+                            "name": "行李箱",
+                            "description": "旅行随身行李。",
+                            "quantity": 1,
+                            "is_secret": False,
+                        },
+                        {
+                            "name": "笔记本和钢笔",
+                            "description": "用于记录见闻。",
+                            "quantity": 1,
+                            "is_secret": False,
+                        },
+                    ],
+                }, ensure_ascii=False),
+            ),
+        )
+
 
 def _build_prep_package(
     title: str,
@@ -1260,6 +1445,35 @@ def _rag_embedding_metadata(rag: Any) -> tuple[str | None, int | None]:
     except (TypeError, ValueError):
         dimensions = None
     return model_name, dimensions
+
+
+def _needs_runtime_contract_repair(knowledge_graph: dict[str, Any]) -> bool:
+    branches = knowledge_graph.get("branches")
+    has_cited_branch = isinstance(branches, list) and any(
+        isinstance(branch, dict)
+        and str(branch.get("from_scene_id") or branch.get("from") or "").strip()
+        and str(branch.get("to_scene_id") or branch.get("to") or "").strip()
+        and isinstance(branch.get("citation"), dict)
+        and bool(
+            branch["citation"].get("source_part_id")
+            or branch["citation"].get("source_ref")
+        )
+        for branch in branches
+    )
+    endings = knowledge_graph.get("endings")
+    has_executable_ending = isinstance(endings, list) and any(
+        isinstance(ending, dict)
+        and str(ending.get("ending_id") or ending.get("id") or "").strip()
+        and isinstance(ending.get("citation"), dict)
+        and bool(
+            ending["citation"].get("source_part_id")
+            or ending["citation"].get("source_ref")
+        )
+        and isinstance(ending.get("completion_conditions"), dict)
+        and bool(ending["completion_conditions"])
+        for ending in endings
+    )
+    return not has_cited_branch or not has_executable_ending
 
 
 def _worldbook_search_text(knowledge_graph: dict[str, Any]) -> str:

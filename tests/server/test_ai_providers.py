@@ -11,8 +11,12 @@ from src.server.ai.providers import (
 )
 
 
-def test_task_to_tool_maps_generate_narrative():
-    assert _task_to_tool("generate_narrative") == "kp_generate_narrative"
+def test_task_to_tool_maps_minimal_mcp_runtime_tasks_only():
+    assert _task_to_tool("structure_scenario") == "kp_structure_scenario"
+    assert _task_to_tool("analyze_director_action") == "kp_analyze_director_action"
+    assert _task_to_tool("narrate_action") == "kp_narrate_action"
+    assert _task_to_tool("resolve_turn") is None
+    assert _task_to_tool("generate_narrative") is None
 
 
 class DummyProvider(BaseAiProvider):
@@ -50,7 +54,7 @@ async def test_local_fallback_turn_narrative_uses_action_instead_of_generic_no_d
 
 
 @pytest.mark.asyncio
-async def test_mcp_provider_wraps_generate_narrative_context(monkeypatch):
+async def test_mcp_provider_forwards_director_context(monkeypatch):
     recorded_requests: list[dict] = []
 
     class FakeResponse:
@@ -84,12 +88,16 @@ async def test_mcp_provider_wraps_generate_narrative_context(monkeypatch):
     monkeypatch.setattr(KpMcpProvider, "_ensure_initialized", fake_initialized)
 
     provider = KpMcpProvider()
-    result = await provider.call("generate_narrative", {"declared_intent": "我敲了敲门"})
+    context = {
+        "declared_intent": "我敲了敲门",
+        "context_version": 3,
+        "system_prompt": "Director JSON only",
+    }
+    result = await provider.call("analyze_director_action", context)
 
     assert result == {"narrative": {"public": "ok"}}
-    assert recorded_requests[0]["params"]["arguments"] == {
-        "context": {"declared_intent": "我敲了敲门"}
-    }
+    assert recorded_requests[0]["params"]["name"] == "kp_analyze_director_action"
+    assert recorded_requests[0]["params"]["arguments"] == {"context": context}
 
 
 @pytest.mark.asyncio
@@ -288,7 +296,7 @@ async def test_mcp_provider_retries_tool_call_after_session_expiry(monkeypatch):
     provider._initialized = True
     provider._session_id = "stale-session"
 
-    assert await provider.call("resolve_turn", {"action": {}}) == {"outcome": "ok"}
+    assert await provider.call("analyze_director_action", {"declared_intent": "我观察四周"}) == {"outcome": "ok"}
     assert [request["payload"]["method"] for request in requests] == [
         "tools/call", "initialize", "tools/call",
     ]

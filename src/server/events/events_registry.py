@@ -218,6 +218,10 @@ ALL_EVENTS: dict[str, EventDef] = {
         "s2c_encounter_updated", EventDomain.STATE, "party",
         "遭遇状态更新（回合变化、参与者 HP/距离变化）",
     ),
+    "s2c_solo_combat_reaction_requested": EventDef(
+        "s2c_solo_combat_reaction_requested", EventDomain.ACTION, "player",
+        "单人剧本敌方攻击要求玩家选择闪避或反击",
+    ),
     "s2c_encounter_resolved": EventDef(
         "s2c_encounter_resolved", EventDomain.STATE, "party",
         "遭遇已结束",

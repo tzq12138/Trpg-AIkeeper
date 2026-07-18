@@ -88,6 +88,33 @@ describe('HostDirectorConsole', () => {
   });
 });
 
+describe('HostExceptionQueue', () => {
+  test('shows only exceptional actions with auditable resolution controls', async () => {
+    const { HostExceptionQueue } = await import('../src/pages/HostStage');
+    const html = renderToStaticMarkup(
+      React.createElement(HostExceptionQueue, {
+        items: [{
+          action_id: 'action-1',
+          character_id: 'char-1',
+          intent_type: 'unknown',
+          declared_intent: '我用未知仪式改变现实。',
+          status: 'awaiting_host_exception',
+          created_at: '2026-07-15T10:00:00Z',
+        }],
+        resolvingActionId: null,
+        onResolve: () => {},
+      }),
+    );
+
+    expect(html).toContain('异常行动队列');
+    expect(html).toContain('我用未知仪式改变现实。');
+    expect(html).toContain('请求玩家澄清');
+    expect(html).toContain('拒绝行动');
+    expect(html).toContain('处理原因');
+    expect(html).not.toContain('直接裁决');
+  });
+});
+
 describe('HostStage read-only runtime surface', () => {
   test('renders runtime director stage without normal-flow mutation entries', async () => {
     const { default: HostStage } = await import('../src/pages/HostStage');

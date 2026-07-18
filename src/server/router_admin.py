@@ -77,6 +77,39 @@ def _require_admin(request: Request) -> dict:
 
 # ── Overview ──
 
+@router.get("/acceptance")
+async def admin_acceptance(request: Request):
+    _require_admin(request)
+    conn = request.app.state.db
+    rooms = conn.execute("SELECT COUNT(*) AS c FROM rooms").fetchone()["c"]
+    scenarios = conn.execute("SELECT COUNT(*) AS c FROM scenarios").fetchone()["c"]
+    return {
+        "fixtures": [
+            {
+                "label": "玩家邀请与准备",
+                "description": "登录、选预设角色、进入准备台。",
+                "href": "/player/join",
+            },
+            {
+                "label": "玩家叙事行动",
+                "description": "自然语言、风险确认、判定卡与地图投影。",
+                "href": "/player/join",
+            },
+            {
+                "label": "房主开局检查",
+                "description": "可开团剧本、玩家状态与开始门禁。",
+                "href": "/host/create",
+            },
+            {
+                "label": "剧本编译向导",
+                "description": "导入、质量审核、素材绑定与发布。",
+                "href": "/admin",
+            },
+        ],
+        "counts": {"rooms": rooms, "scenarios": scenarios},
+        "retention_days": 90,
+    }
+
 @router.get("/overview")
 async def admin_overview(request: Request):
     _require_admin(request)
@@ -190,6 +223,8 @@ async def update_account(request: Request, account_id: str):
     if not acc:
         raise HTTPException(404, "账户不存在")
     body = await request.json()
+    if acc["username"] == "admin" and "role" in body and body["role"] != "admin":
+        raise HTTPException(409, "保留管理员账号不能降权")
     allowed = ["role", "display_name"]
     sets, vals = [], []
     for k in allowed:
@@ -761,19 +796,146 @@ def _golden_map_edges(raw_edges: list[dict]) -> list[dict]:
     return edges
 
 
+def _normalize_golden_knowledge_graph(
+    raw_graph: dict,
+    raw_citations: list,
+    *,
+    source_part_id: str,
+) -> dict:
+    """Adapt authored golden-module references into runtime-verifiable evidence."""
+    graph = json.loads(json.dumps(raw_graph, ensure_ascii=False))
+    citations = {
+        str(entry.get("citation_id") or ""): entry
+        for entry in raw_citations
+        if isinstance(entry, dict) and str(entry.get("citation_id") or "")
+    }
+
+    def source_citation(value: dict, fallback_ref: str) -> dict:
+        existing = value.get("citation")
+        if isinstance(existing, dict) and (
+            existing.get("source_part_id") or existing.get("source_ref")
+        ):
+            citation = dict(existing)
+            citation.setdefault("source_part_id", source_part_id)
+            citation.setdefault("source_ref", fallback_ref)
+            return citation
+        citation_ids = value.get("citation_ids")
+        if not isinstance(citation_ids, list):
+            citation_ids = []
+        entry = next(
+            (
+                citations.get(str(citation_id))
+                for citation_id in citation_ids
+                if citations.get(str(citation_id))
+            ),
+            {},
+        )
+        citation = {
+            "source_part_id": source_part_id,
+            "source_ref": str(entry.get("source_ref") or fallback_ref),
+        }
+        if entry.get("citation_id"):
+            citation["citation_id"] = str(entry["citation_id"])
+        if entry.get("label"):
+            citation["label"] = str(entry["label"])
+        return citation
+
+    for collection_name in ("scenes", "npcs", "clues", "endings"):
+        values = graph.get(collection_name)
+        if not isinstance(values, list):
+            continue
+        for ordinal, value in enumerate(values):
+            if not isinstance(value, dict):
+                continue
+            value["citation"] = source_citation(
+                value,
+                f"module.json#/knowledge_graph/{collection_name}/{ordinal}",
+            )
+    truth = graph.get("truth")
+    if isinstance(truth, dict):
+        truth["citation"] = source_citation(
+            truth,
+            "module.json#/knowledge_graph/truth",
+        )
+
+    raw_rule_triggers = graph.get("rule_triggers") or graph.get("rule_citations")
+    if isinstance(raw_rule_triggers, dict):
+        raw_rule_triggers = [raw_rule_triggers]
+    if isinstance(raw_rule_triggers, list):
+        rule_triggers = []
+        for ordinal, trigger in enumerate(raw_rule_triggers):
+            if not isinstance(trigger, dict):
+                continue
+            normalized_trigger = dict(trigger)
+            source_ref = str(normalized_trigger.get("source_ref") or "")
+            if source_ref:
+                normalized_trigger["citation"] = {
+                    "source_ref": source_ref,
+                    "citation_id": str(normalized_trigger.get("citation_id") or ""),
+                }
+            else:
+                normalized_trigger["citation"] = source_citation(
+                    normalized_trigger,
+                    f"module.json#/knowledge_graph/rule_citations/{ordinal}",
+                )
+            rule_triggers.append(normalized_trigger)
+        graph["rule_triggers"] = rule_triggers
+
+    branches = graph.get("branches")
+    if not isinstance(branches, list) or not branches:
+        scene_ids = {
+            str(scene.get("scene_id") or scene.get("id") or "")
+            for scene in graph.get("scenes") or []
+            if isinstance(scene, dict)
+        }
+        generated_branches = []
+        emitted_pairs = set()
+        for scene_index, scene in enumerate(graph.get("scenes") or []):
+            if not isinstance(scene, dict):
+                continue
+            from_scene_id = str(scene.get("scene_id") or scene.get("id") or "")
+            if not from_scene_id:
+                continue
+            for target in scene.get("exits") or []:
+                to_scene_id = str(target or "")
+                pair = (from_scene_id, to_scene_id)
+                if to_scene_id not in scene_ids or pair in emitted_pairs:
+                    continue
+                emitted_pairs.add(pair)
+                generated_branches.append({
+                    "branch_id": f"{from_scene_id}-to-{to_scene_id}",
+                    "from_scene_id": from_scene_id,
+                    "to_scene_id": to_scene_id,
+                    "conditions": [],
+                    "citation": source_citation(
+                        scene,
+                        f"module.json#/knowledge_graph/scenes/{scene_index}",
+                    ),
+                })
+        graph["branches"] = generated_branches
+    else:
+        for ordinal, branch in enumerate(branches):
+            if isinstance(branch, dict):
+                branch["citation"] = source_citation(
+                    branch,
+                    f"module.json#/knowledge_graph/branches/{ordinal}",
+                )
+    return graph
+
+
 @router.post("/golden-modules/{module_id}/install", status_code=201)
 async def install_golden_module(request: Request, module_id: str):
     account = _require_admin(request)
     module, module_path = _load_golden_module(module_id)
     manifest = module.get("manifest", {})
-    knowledge_graph = module.get("knowledge_graph", {})
+    raw_knowledge_graph = module.get("knowledge_graph", {})
     scenario_assets = module.get("scenario_assets", {})
     templates = module.get("character_templates", [])
     quality_report = module.get("quality_report", {})
     if (
         manifest.get("format") != "aikeeper-golden-module"
-        or not isinstance(knowledge_graph, dict)
-        or not all(isinstance(knowledge_graph.get(key), list) and knowledge_graph[key] for key in ("scenes", "npcs", "clues"))
+        or not isinstance(raw_knowledge_graph, dict)
+        or not all(isinstance(raw_knowledge_graph.get(key), list) and raw_knowledge_graph[key] for key in ("scenes", "npcs", "clues"))
         or not isinstance(scenario_assets, dict)
         or not isinstance(templates, list)
         or not templates
@@ -804,8 +966,14 @@ async def install_golden_module(request: Request, module_id: str):
     source_sha256 = hashlib.sha256(raw_module).hexdigest()
     scenario_version_id = f"{scenario_id}-v1"
     source_document_id = f"{scenario_id}-source"
+    source_part_id = f"{source_document_id}-part-1"
     map_id = f"{scenario_id}-map"
     created_by = account.get("account_id", "unknown")
+    knowledge_graph = _normalize_golden_knowledge_graph(
+        raw_knowledge_graph,
+        module.get("citations", []),
+        source_part_id=source_part_id,
+    )
     prep_package = {
         "golden_module": manifest,
         "citations": module.get("citations", []),
@@ -840,7 +1008,7 @@ async def install_golden_module(request: Request, module_id: str):
             "(source_part_id, source_document_id, ordinal, part_kind, text_content, mime_type, anchor, checksum) "
             "VALUES (%s, %s, 1, 'text', %s, 'application/json', %s, %s)",
             (
-                f"{source_document_id}-part-1", source_document_id, module.get("raw_text", ""),
+                source_part_id, source_document_id, module.get("raw_text", ""),
                 json.dumps({"source_ref": "module.json#/raw_text"}), source_sha256,
             ),
         )
@@ -890,11 +1058,38 @@ async def install_golden_module(request: Request, module_id: str):
                 ], ensure_ascii=False),
             ),
         )
+    from .scenario.content_projection import ContentProjectionService
+    from .scenario.module_compiler import ModuleCompiler
+
+    ContentProjectionService(conn).rebuild(
+        scenario_version_id,
+        knowledge_graph,
+        requested_by=created_by,
+    )
+    runtime_package = ModuleCompiler(conn).compile(
+        scenario_version_id,
+        requested_by=created_by,
+    )
+    if runtime_package["gate_status"] != "ready":
+        conn.execute(
+            "UPDATE scenario_versions SET status = 'draft' WHERE scenario_version_id = %s",
+            (scenario_version_id,),
+        )
+        conn.execute(
+            "UPDATE scenarios SET publish_status = 'draft' WHERE scenario_id = %s",
+            (scenario_id,),
+        )
+        conn.commit()
+        raise HTTPException(422, {
+            "message": "黄金模组运行包未达到可开团门槛",
+            "quality_exceptions": runtime_package["quality_exceptions"],
+        })
     return {
         "scenarioId": scenario_id,
         "scenarioVersionId": scenario_version_id,
         "title": manifest.get("title", module_id),
         "status": "published",
+        "runtimePackage": runtime_package,
     }
 
 

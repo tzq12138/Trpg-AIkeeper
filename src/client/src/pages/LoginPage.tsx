@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { setSlotValue } from '../shared/identity';
+import { describeLoginReturnContext } from '../shared/login-return';
 
 export default function LoginPage() {
   const [tab, setTab] = useState<'login' | 'register'>('login');
@@ -8,6 +9,7 @@ export default function LoginPage() {
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const returnContext = describeLoginReturnContext(sessionStorage.getItem('login_return_to'));
 
   const handleSubmit = async () => {
     if (!username.trim() || !password.trim()) {
@@ -61,6 +63,12 @@ export default function LoginPage() {
     <section className="bh-panel" style={{ maxWidth: 420, margin: '0 auto' }}>
       <span className="bh-eyebrow">ACCOUNT</span>
       <h2 className="bh-panel-title">{tab === 'login' ? '登录' : '注册'}</h2>
+      {returnContext && (
+        <div className="bh-muted-box" style={{ marginBottom: 16 }}>
+          <strong>{returnContext.title}</strong><br />
+          {returnContext.detail}
+        </div>
+      )}
 
       <div className="bh-source-toggle" style={{ marginBottom: 16 }}>
         <button

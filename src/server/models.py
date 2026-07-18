@@ -19,6 +19,7 @@ EngineEventType = Literal[
     "s2c_map_updated", "s2c_player_moved", "s2c_map_revealed",
     "s2c_encounter_suggested", "s2c_encounter_started",
     "s2c_encounter_updated", "s2c_encounter_resolved",
+    "s2c_solo_combat_reaction_requested",
     "s2c_team_message",
     "s2c_turn_resolved",
     "s2c_clue_discovered", "s2c_clue_shared",
@@ -409,11 +410,9 @@ class EvidenceCardDTO(BaseModel):
 
 
 class CampaignCurrentSceneDTO(BaseModel):
-    node_id: str
     title: str
     text_preview: str
     citation: RedactedCitation = Field(default_factory=RedactedCitation)
-    choice_count: int = 0
     image_asset_id: str | None = None
 
 
@@ -689,6 +688,7 @@ class ScenarioKnowledgeGraph(BaseModel):
     scenes: list[dict[str, Any]] = []
     npcs: list[dict[str, Any]] = []
     clues: list[dict[str, Any]] = []
+    branches: list[dict[str, Any]] = []
     truth: dict[str, Any] | None = None
     endings: list[dict[str, Any]] = []
 

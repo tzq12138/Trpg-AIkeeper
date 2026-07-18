@@ -4,9 +4,16 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+from src.server.engine import resolution_pipeline
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.player.router_player import _settle_turn_background
 from src.server.models import MechanicCompileResult, NarrationResultDTO, ResolutionResult
+from src.server.ai import narrator as narrator_module
+from src.server.ai.narrator import (
+    _visible_state_changes,
+    build_narrator_context,
+    validate_narration_result,
+)
 from tests.server.conftest import create_room, setup_auth_test_data
 
 
@@ -64,6 +71,154 @@ class _TurnPipeline:
                 },
             },
         }
+
+
+def test_solo_transition_exposes_a_safe_visible_change_without_node_number():
+    result = ResolutionResult(
+        actionId="solo-action",
+        roomId="solo-room",
+        characterId="solo-character",
+        mechanic="move",
+        metadata={
+            "solo_adventure_transition": {
+                "from_node_id": "1",
+                "target_node_id": "263",
+                "is_ending": False,
+            }
+        },
+    )
+
+    assert _visible_state_changes(result) == ["你已抵达新的可见场景。"]
+
+
+def test_generic_scene_transition_exposes_a_safe_visible_change():
+    result = ResolutionResult(
+        actionId="generic-action",
+        roomId="generic-room",
+        characterId="generic-character",
+        mechanic="move",
+        metadata={
+            "generic_scene_transition": {
+                "from_scene_id": "study",
+                "target_scene_id": "harbor",
+            }
+        },
+    )
+
+    assert _visible_state_changes(result) == ["你已抵达新的可见场景。"]
+
+
+def test_narrator_context_uses_visible_solo_scene_when_runtime_brief_is_missing(client, test_db):
+    from src.server.scenario.content_projection import ContentProjectionService
+
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    version = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    graph = {
+        "solo_adventure": {
+            "root_node_id": "1",
+            "integrity": {"is_valid": True},
+            "nodes": [
+                {
+                    "node_id": "1",
+                    "title": "条目 1",
+                    "text": "司机发动长途车，车窗外的街道慢慢远去。请转到 263。",
+                    "target_node_ids": ["263"],
+                    "citation": {"page_number": 4},
+                },
+                {
+                    "node_id": "263",
+                    "title": "条目 263",
+                    "text": "未到达的后续内容。",
+                    "target_node_ids": [],
+                    "citation": {"page_number": 58},
+                },
+            ],
+        }
+    }
+    test_db.execute(
+        "UPDATE scenario_versions SET knowledge_graph = %s WHERE scenario_version_id = %s",
+        (json.dumps(graph, ensure_ascii=False), version),
+    )
+    ContentProjectionService(test_db).rebuild(version, graph, requested_by="test")
+    test_db.execute(
+        "UPDATE room_scene_state SET current_scene = 'solo:1' WHERE room_id = %s",
+        (room_id,),
+    )
+    _insert_action(test_db, room_id, character_id)
+    action = test_db.execute("SELECT * FROM actions WHERE action_id = 'narrator-action'").fetchone()
+    character = test_db.execute(
+        "SELECT * FROM characters WHERE character_id = %s", (character_id,)
+    ).fetchone()
+    room = test_db.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
+
+    context = build_narrator_context(
+        test_db,
+        action,
+        character,
+        room,
+        ResolutionResult(
+            actionId="narrator-action",
+            roomId=room_id,
+            characterId=character_id,
+        ),
+    )
+
+    assert "长途车" in context["scene_brief"]
+    assert "263" not in context["scene_brief"]
+    assert "转到" not in context["scene_brief"]
+    assert {
+        "fact_ref": "fact:scene-brief",
+        "text": context["scene_brief"],
+    } in context["allowed_facts"]
+
+
+def test_narrator_context_uses_compiled_generic_scene_description(client, test_db):
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    runtime_row = test_db.execute(
+        "SELECT runtime_package FROM runtime_package_versions WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (room_id,),
+    ).fetchone()
+    runtime_package = dict(runtime_row["runtime_package"])
+    runtime_package["semantic_scenes"] = [{
+        "scene_id": "harbor",
+        "name": "雾港",
+        "description": "潮湿的栈桥消失在浓雾里，远处传来断续的船铃。",
+    }]
+    test_db.execute(
+        "UPDATE runtime_package_versions SET runtime_package = %s WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (json.dumps(runtime_package, ensure_ascii=False), room_id),
+    )
+    test_db.execute(
+        "UPDATE room_scene_state SET current_scene = 'harbor' WHERE room_id = %s",
+        (room_id,),
+    )
+    _insert_action(test_db, room_id, character_id)
+    action = test_db.execute("SELECT * FROM actions WHERE action_id = 'narrator-action'").fetchone()
+    character = test_db.execute(
+        "SELECT * FROM characters WHERE character_id = %s", (character_id,)
+    ).fetchone()
+    room = test_db.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
+
+    context = build_narrator_context(
+        test_db,
+        action,
+        character,
+        room,
+        ResolutionResult(
+            actionId="narrator-action",
+            roomId=room_id,
+            characterId=character_id,
+        ),
+    )
+
+    assert "雾港" in context["scene_brief"]
+    assert "潮湿的栈桥" in context["scene_brief"]
+    assert context["scene_brief"] != "harbor"
 
 
 class _FailingTurnPipeline:
@@ -278,6 +433,305 @@ def test_narration_result_requires_human_loop_fields():
         NarrationResultDTO(**_valid_narration(action_id="narrator-action", fact_refs={}))
 
 
+def test_narrator_rejects_vehicle_conflict_against_visible_scene():
+    narration = NarrationResultDTO(
+        **_valid_narration(
+            action_id="narrator-action",
+            narrative_text="阿达登上马车，沿着道路继续前行。",
+            fact_refs={
+                "narrative_text": ["fact:scene-brief"],
+                "environment_changes": ["fact:scene-brief"],
+                "interactable_objects": ["fact:scene-brief"],
+                "open_question": ["fact:scene-brief"],
+            },
+        )
+    )
+
+    violation = validate_narration_result(
+        narration,
+        {
+            "allowed_facts": [
+                {"fact_ref": "fact:scene-brief", "text": "司机发动长途车，车窗外的街道慢慢远去。"}
+            ]
+        },
+    )
+
+    assert violation == "narrator_scene_fact_conflict"
+
+
+def test_verified_solo_transition_narration_uses_visible_scene_fact_only():
+    narration = narrator_module.build_verified_narration(
+        {
+            "allowed_facts": [
+                {
+                    "fact_ref": "fact:scene-brief",
+                    "text": "长途车突突地响着，在乡间缓慢挪动。车里的气氛令人窒息。",
+                },
+                {"fact_ref": "fact:visible-change:1", "text": "你已抵达新的可见场景。"},
+            ],
+            "visible_state_changes": ["你已抵达新的可见场景。"],
+            "interactable_objects": [],
+            "context_version": 5,
+            "director_plan_digest": "solo:134",
+            "redacted_citations": [],
+            "runtime_package_style_pack": {"version": "default"},
+        },
+        action_id="solo-action",
+    )
+
+    assert narration.narrative_text == "长途车突突地响着，在乡间缓慢挪动。车里的气氛令人窒息。"
+    assert "马车" not in narration.narrative_text
+    assert narration.provider_source == "local_fallback"
+    assert narration.fact_refs["narrative_text"] == ["fact:scene-brief"]
+
+
+@pytest.mark.asyncio
+async def test_solo_transition_uses_verified_provider_narration_before_local_fallback(
+    test_db,
+    monkeypatch,
+):
+    context = {
+        "allowed_facts": [
+            {"fact_ref": "fact:scene-brief", "text": "长途车沿着山路驶向村庄。"},
+            {"fact_ref": "fact:visible-change:1", "text": "你已抵达新的可见场景。"},
+            {"fact_ref": "fact:bus", "text": "长途车"},
+        ],
+        "visible_state_changes": ["你已抵达新的可见场景。"],
+        "interactable_objects": ["长途车"],
+        "context_version": 4,
+        "director_plan_digest": "solo:1",
+        "redacted_citations": [],
+        "runtime_package_style_pack": {"version": "default"},
+    }
+    gateway = _NarratorGateway(
+        _valid_narration(
+            narrative_text="长途车沿着山路颠簸前行，窗外的村庄渐渐靠近。",
+            environment_changes=["你已抵达新的可见场景。"],
+            interactable_objects=["长途车"],
+            open_question="你想先观察车厢里的什么？",
+            fact_refs={
+                "narrative_text": ["fact:scene-brief"],
+                "environment_changes": ["fact:visible-change:1"],
+                "interactable_objects": ["fact:bus"],
+                "open_question": ["fact:bus"],
+            },
+        )
+    )
+    monkeypatch.setattr(
+        resolution_pipeline,
+        "build_narrator_context",
+        lambda *_args, **_kwargs: context,
+    )
+    resolution = ResolutionResult(
+        actionId="narrator-action",
+        roomId="solo-room",
+        characterId="solo-character",
+        mechanic="move",
+        metadata={
+            "solo_adventure_transition": {
+                "from_node_id": "1",
+                "target_node_id": "263",
+                "is_ending": False,
+            }
+        },
+    )
+
+    error = await ResolutionPipeline(test_db, gateway=gateway)._apply_narrator(
+        {"action_id": "narrator-action", "room_id": "solo-room"},
+        {"character_id": "solo-character"},
+        {"room_id": "solo-room"},
+        resolution,
+    )
+
+    assert error is None
+    assert len(gateway.contexts) == 1
+    assert resolution.narrative == "长途车沿着山路颠簸前行，窗外的村庄渐渐靠近。"
+    assert resolution.metadata["narration"]["provider_source"] == "fallback_provider"
+
+
+@pytest.mark.asyncio
+async def test_solo_transition_falls_back_when_provider_raises(test_db, monkeypatch):
+    context = {
+        "allowed_facts": [
+            {"fact_ref": "fact:scene-brief", "text": "长途车沿着山路驶向村庄。"},
+            {"fact_ref": "fact:visible-change:1", "text": "你已抵达新的可见场景。"},
+        ],
+        "visible_state_changes": ["你已抵达新的可见场景。"],
+        "interactable_objects": [],
+        "context_version": 4,
+        "director_plan_digest": "solo:1",
+        "redacted_citations": [],
+        "runtime_package_style_pack": {"version": "default"},
+    }
+    monkeypatch.setattr(
+        resolution_pipeline,
+        "build_narrator_context",
+        lambda *_args, **_kwargs: context,
+    )
+    resolution = ResolutionResult(
+        actionId="narrator-action",
+        roomId="solo-room",
+        characterId="solo-character",
+        mechanic="move",
+        metadata={
+            "solo_adventure_transition": {
+                "from_node_id": "1",
+                "target_node_id": "263",
+                "is_ending": False,
+            }
+        },
+    )
+
+    error = await ResolutionPipeline(
+        test_db,
+        gateway=_NarratorGateway(fail=True),
+    )._apply_narrator(
+        {"action_id": "narrator-action", "room_id": "solo-room"},
+        {"character_id": "solo-character"},
+        {"room_id": "solo-room"},
+        resolution,
+    )
+
+    assert error is None
+    assert resolution.metadata["narration"]["provider_source"] == "local_fallback"
+    assert resolution.metadata["narration"]["rejected_provider_reason"] == "narrator_provider_failed"
+
+
+def test_verified_solo_ending_narration_marks_adventure_complete():
+    narration = narrator_module.build_verified_narration(
+        {
+            "allowed_facts": [
+                {
+                    "fact_ref": "fact:scene-brief",
+                    "text": "你骑下山路，向文明与黎明而行。",
+                },
+                {"fact_ref": "fact:visible-change:1", "text": "本次冒险已结束。"},
+            ],
+            "visible_state_changes": ["本次冒险已结束。"],
+            "interactable_objects": ["本次冒险记录"],
+            "adventure_ended": True,
+            "context_version": 6,
+            "director_plan_digest": "solo:185",
+            "redacted_citations": [],
+            "runtime_package_style_pack": {"version": "default"},
+        },
+        action_id="solo-ending",
+    )
+
+    assert narration.environment_changes == ["本次冒险已结束。"]
+    assert narration.interactable_objects == ["本次冒险记录"]
+    assert narration.open_question == "本次冒险已经结束。你可以在历史记录中回顾这次旅程。"
+    assert narration.narrative_text.endswith("本次冒险已经结束。")
+
+
+def test_verified_solo_transition_narration_hides_import_source_marker():
+    narration = narrator_module.build_verified_narration(
+        {
+            "allowed_facts": [
+                {
+                    "fact_ref": "fact:scene-brief",
+                    "text": "七宫涟个人汉 你的行程重新开始了。司机转弯时变得更加小心。",
+                }
+            ],
+            "visible_state_changes": [],
+            "interactable_objects": [],
+            "context_version": 5,
+            "director_plan_digest": "solo:71",
+            "redacted_citations": [],
+            "runtime_package_style_pack": {"version": "default"},
+        },
+        action_id="solo-action",
+    )
+
+    assert "宫涟个人汉化" not in narration.narrative_text
+    assert "七宫" not in narration.narrative_text
+    assert "个人汉" not in narration.narrative_text
+    assert "你的行程重新开始了。" in narration.narrative_text
+
+
+def test_verified_solo_transition_narration_hides_inline_short_import_marker():
+    narration = narrator_module.build_verified_narration(
+        {
+            "allowed_facts": [
+                {"fact_ref": "fact:scene-brief", "text": "七宫 这些野兽逼近了。"}
+            ],
+            "visible_state_changes": [],
+            "interactable_objects": [],
+            "context_version": 5,
+            "director_plan_digest": "solo:5",
+            "redacted_citations": [],
+            "runtime_package_style_pack": {"version": "default"},
+        },
+        action_id="solo-inline-marker",
+    )
+
+    assert "七宫" not in narration.narrative_text
+    assert "这些野兽逼近了。" in narration.narrative_text
+
+
+def test_verified_solo_transition_narration_uses_visible_scene_question():
+    narration = narrator_module.build_verified_narration(
+        {
+            "allowed_facts": [
+                {
+                    "fact_ref": "fact:scene-brief",
+                    "text": "西拉斯看着你问道：你干哪行？",
+                }
+            ],
+            "visible_state_changes": [],
+            "interactable_objects": [],
+            "context_version": 5,
+            "director_plan_digest": "solo:71",
+            "redacted_citations": [],
+            "runtime_package_style_pack": {"version": "default"},
+        },
+        action_id="solo-action",
+    )
+
+    assert narration.open_question == "眼下的对话还没有结束。你想如何回应：“你干哪行？”"
+    assert narration.fact_refs["open_question"] == ["fact:scene-brief"]
+
+
+@pytest.mark.asyncio
+async def test_narrator_vehicle_conflict_requires_host_exception(client, test_db):
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    runtime_row = test_db.execute(
+        "SELECT runtime_package FROM runtime_package_versions WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (room_id,),
+    ).fetchone()
+    runtime_package = dict(runtime_row["runtime_package"])
+    runtime_package["scene_briefs"]["lobby"] = "司机发动长途车，车窗外的街道慢慢远去。"
+    test_db.execute(
+        "UPDATE runtime_package_versions SET runtime_package = %s WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (json.dumps(runtime_package, ensure_ascii=False), room_id),
+    )
+    _insert_action(test_db, room_id, character_id)
+    gateway = _NarratorGateway(
+        _valid_narration(
+            action_id="narrator-action",
+            narrative_text="阿达登上马车，沿着道路继续前行。",
+            fact_refs={
+                "narrative_text": ["fact:scene-brief"],
+                "environment_changes": ["fact:scene-brief"],
+                "interactable_objects": ["fact:scene-brief"],
+                "open_question": ["fact:scene-brief"],
+            },
+        )
+    )
+
+    result = await ResolutionPipeline(
+        test_db,
+        compiler=_StaticCompiler("auto_success"),
+        rule_executor=_StaticRuleExecutor(),
+        gateway=gateway,
+    ).resolve_action("narrator-action")
+
+    assert result["status"] == "awaiting_host_exception"
+    assert result["reason"] == "narrator_scene_fact_conflict"
+
+
 def _assert_no_denied_internal_payload(value):
     denied_keys = {
         "action_id",
@@ -350,7 +804,228 @@ async def test_non_dialogue_action_calls_narrator_with_redacted_context(client, 
 
 
 @pytest.mark.asyncio
-async def test_narrator_result_rejects_facts_outside_allowed_projection(client, test_db):
+async def test_validated_generic_scene_progression_updates_authoritative_state_without_map(
+    client,
+    test_db,
+):
+    from src.server.engine.state_service import StateService
+
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    runtime_row = test_db.execute(
+        "SELECT runtime_package FROM runtime_package_versions WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (room_id,),
+    ).fetchone()
+    runtime_package = dict(runtime_row["runtime_package"])
+    citation = {"source_part_id": "part-harbor", "page_number": 8}
+    runtime_package["semantic_progression_rules"] = {
+        "edges": [{
+            "from_scene_id": "study",
+            "to_scene_id": "harbor",
+            "relation_type": "transitions_to",
+            "conditions": [],
+            "citation": citation,
+        }],
+        "solo_adventure": {},
+    }
+    test_db.execute(
+        "UPDATE runtime_package_versions SET runtime_package = %s WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (json.dumps(runtime_package, ensure_ascii=False), room_id),
+    )
+    test_db.execute(
+        "UPDATE room_scene_state SET current_scene = 'study', visited_scenes = '[\"study\"]' "
+        "WHERE room_id = %s",
+        (room_id,),
+    )
+    _insert_action(test_db, room_id, character_id, intent_type="move")
+    action = test_db.execute(
+        "SELECT params FROM actions WHERE action_id = 'narrator-action'"
+    ).fetchone()
+    params = dict(action["params"])
+    params["fromNodeId"] = "study"
+    params["targetNodeId"] = "harbor"
+    params["analysis"] = {
+        "semantic_progression": {
+            "fromNodeId": "study",
+            "targetNodeId": "harbor",
+            "ruleCitation": citation,
+            "validated": True,
+        },
+    }
+    test_db.execute(
+        "UPDATE actions SET params = %s WHERE action_id = 'narrator-action'",
+        (json.dumps(params, ensure_ascii=False),),
+    )
+    test_db.commit()
+
+    result = await ResolutionPipeline(
+        test_db,
+        compiler=_StaticCompiler("move"),
+        state_service=StateService(test_db),
+    ).resolve_action("narrator-action")
+
+    assert result["status"] == "completed"
+    scene = test_db.execute(
+        "SELECT current_scene, visited_scenes FROM room_scene_state WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert scene["current_scene"] == "harbor"
+    assert scene["visited_scenes"] == ["study", "harbor"]
+    event_types = [
+        row["event_type"]
+        for row in test_db.execute(
+            "SELECT event_type FROM events WHERE room_id = %s", (room_id,)
+        ).fetchall()
+    ]
+    assert "s2c_scene_sync" in event_types
+    assert "s2c_player_moved" not in event_types
+    assert "s2c_map_updated" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_client_cannot_supply_generic_scene_progression_marker(client, test_db):
+    from src.server.models import PlayerIntent
+
+    room_id, _, _ = _setup_narrator_room(client, test_db)
+    intent = PlayerIntent(
+        intent_type="move",
+        declared_intent="I walk to the harbor.",
+        params={
+            "fromNodeId": "study",
+            "targetNodeId": "harbor",
+            "generic_scene_progression": {
+                "from_scene_id": "study",
+                "target_scene_id": "harbor",
+            },
+        },
+    )
+
+    error = await ResolutionPipeline(test_db)._validate_move(
+        {"room_id": room_id},
+        intent,
+    )
+
+    assert error == "no_map"
+    assert "generic_scene_progression" not in intent.params
+
+
+@pytest.mark.asyncio
+async def test_named_runtime_clue_is_persisted_and_can_complete_an_ending(client, test_db):
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    runtime_row = test_db.execute(
+        "SELECT runtime_package FROM runtime_package_versions WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (room_id,),
+    ).fetchone()
+    runtime_package = dict(runtime_row["runtime_package"])
+    runtime_package.update({
+        "semantic_scenes": [{
+            "scene_id": "orchid-hall",
+            "name": "兰花展厅",
+        }],
+        "clue_dependencies": [{
+            "clue_id": "g17-test-sheet",
+            "name": "G-17 test sheet",
+            "description": "A water-damaged experiment record.",
+            "location": "兰花展厅",
+            "citation": {"source_part_id": "part-g17"},
+        }],
+        "ending_conditions": [{
+            "ending_id": "g17-exit",
+            "type": "victory",
+            "citation": {"source_part_id": "part-g17"},
+            "completion_conditions": {"all_clues": ["g17-test-sheet"]},
+        }],
+    })
+    test_db.execute(
+        "UPDATE runtime_package_versions SET runtime_package = %s WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (json.dumps(runtime_package, ensure_ascii=False), room_id),
+    )
+    test_db.execute(
+        "UPDATE room_scene_state SET current_scene = 'orchid-hall' WHERE room_id = %s",
+        (room_id,),
+    )
+    _insert_action(test_db, room_id, character_id)
+    test_db.execute(
+        "UPDATE actions SET declared_intent = %s WHERE action_id = 'narrator-action'",
+        ("I inspect the G-17 test sheet.",),
+    )
+    test_db.commit()
+
+    result = await ResolutionPipeline(
+        test_db,
+        compiler=_StaticCompiler("auto_success"),
+        rule_executor=_StaticRuleExecutor(),
+    ).resolve_action("narrator-action")
+
+    assert result["status"] == "completed"
+    clue = test_db.execute(
+        "SELECT clue_id, source FROM clues WHERE room_id = %s AND character_id = %s",
+        (room_id, character_id),
+    ).fetchone()
+    assert clue["source"] == "runtime:g17-test-sheet"
+    assert clue["clue_id"] != "g17-test-sheet"
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = %s", (room_id,)
+    ).fetchone()["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_verified_generic_ending_completes_room_only_after_condition_match(client, test_db):
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    runtime_row = test_db.execute(
+        "SELECT runtime_package FROM runtime_package_versions WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (room_id,),
+    ).fetchone()
+    runtime_package = dict(runtime_row["runtime_package"])
+    runtime_package["ending_conditions"] = [{
+        "ending_id": "leave-lobby",
+        "type": "victory",
+        "citation": {"source_ref": "page:1", "page_number": 1},
+        "completion_conditions": {
+            "entered_scenes": ["lobby"],
+            "room_status": "active",
+        },
+    }]
+    test_db.execute(
+        "UPDATE runtime_package_versions SET runtime_package = %s WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (json.dumps(runtime_package, ensure_ascii=False), room_id),
+    )
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    _insert_action(test_db, room_id, character_id)
+
+    gateway = _NarratorGateway()
+    result = await ResolutionPipeline(
+        test_db,
+        compiler=_StaticCompiler("auto_success"),
+        rule_executor=_StaticRuleExecutor(),
+        gateway=gateway,
+    ).resolve_action("narrator-action")
+
+    assert result["status"] == "completed"
+    assert gateway.contexts[0]["adventure_ended"] is True
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = %s", (room_id,)
+    ).fetchone()["status"] == "completed"
+    event = test_db.execute(
+        "SELECT payload FROM events WHERE room_id = %s AND event_type = 's2c_campaign_ended'",
+        (room_id,),
+    ).fetchone()
+    assert event["payload"]["completion_source"] == "verified_runtime_ending"
+    archive = test_db.execute(
+        "SELECT ending_type, summary FROM campaign_archives WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert archive["ending_type"] == "victory"
+    assert archive["summary"]
+
+
+@pytest.mark.asyncio
+async def test_narrator_fact_violation_uses_verified_local_narration(client, test_db):
     room_id, character_id, _ = _setup_narrator_room(client, test_db)
     _insert_action(test_db, room_id, character_id)
     gateway = _NarratorGateway(
@@ -373,13 +1048,15 @@ async def test_narrator_result_rejects_facts_outside_allowed_projection(client, 
         gateway=gateway,
     ).resolve_action("narrator-action")
 
-    assert result["status"] == "awaiting_host_exception"
-    assert result["reason"] == "narrator_fact_violation"
+    assert result["status"] == "completed"
+    narration = result["result"]["metadata"]["narration"]
+    assert narration["provider_source"] == "local_fallback"
+    assert narration["rejected_provider_reason"] == "narrator_fact_violation"
     events = test_db.execute(
         "SELECT event_type, payload FROM events WHERE room_id = %s ORDER BY sequence",
         (room_id,),
     ).fetchall()
-    assert "s2c_ai_recovery_required" in [event["event_type"] for event in events]
+    assert "s2c_ai_recovery_required" not in [event["event_type"] for event in events]
     assert "周围暂时没有新的变化" not in json.dumps([event["payload"] for event in events], ensure_ascii=False)
 
 
@@ -398,6 +1075,55 @@ async def test_narrator_result_requires_fact_refs_for_all_player_visible_fields(
 
     assert result["status"] == "awaiting_host_exception"
     assert result["reason"] == "narrator_invalid_response"
+
+
+@pytest.mark.asyncio
+async def test_non_solo_timeout_uses_verified_local_narration(client, test_db, monkeypatch):
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    _insert_action(test_db, room_id, character_id)
+
+    async def timeout(awaitable, timeout):
+        awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(resolution_pipeline.asyncio, "wait_for", timeout)
+    result = await ResolutionPipeline(
+        test_db,
+        compiler=_StaticCompiler("auto_success"),
+        rule_executor=_StaticRuleExecutor(),
+        gateway=_NarratorGateway(fail=True),
+    ).resolve_action("narrator-action")
+
+    assert result["status"] == "completed"
+    narration = result["result"]["metadata"]["narration"]
+    assert narration["provider_source"] == "local_fallback"
+    assert narration["rejected_provider_reason"] == "narrator_timeout"
+    events = test_db.execute(
+        "SELECT event_type FROM events WHERE room_id = %s ORDER BY sequence",
+        (room_id,),
+    ).fetchall()
+    assert "s2c_ai_recovery_required" not in [event["event_type"] for event in events]
+
+
+def test_verified_narration_fallback_allows_post_resolution_state_version(client, test_db):
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    _insert_action(test_db, room_id, character_id)
+    test_db.execute(
+        "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+    action = test_db.execute(
+        "SELECT * FROM actions WHERE action_id = 'narrator-action'"
+    ).fetchone()
+    room = test_db.execute(
+        "SELECT * FROM rooms WHERE room_id = %s", (room_id,)
+    ).fetchone()
+
+    assert ResolutionPipeline(test_db)._can_use_verified_narration_fallback(
+        dict(action),
+        dict(room),
+    ) is True
 
 
 @pytest.mark.asyncio
@@ -454,7 +1180,7 @@ async def test_valid_narrator_output_replaces_numbered_solo_template_and_emits_e
 
 
 @pytest.mark.asyncio
-async def test_narrator_provider_failure_enters_recovery_without_fake_narrative(client, test_db):
+async def test_non_solo_provider_failure_uses_verified_local_narration(client, test_db):
     room_id, character_id, _ = _setup_narrator_room(client, test_db)
     _insert_action(test_db, room_id, character_id)
 
@@ -465,17 +1191,19 @@ async def test_narrator_provider_failure_enters_recovery_without_fake_narrative(
         gateway=_NarratorGateway(fail=True),
     ).resolve_action("narrator-action")
 
-    assert result["status"] == "awaiting_host_exception"
+    assert result["status"] == "completed"
     action = test_db.execute(
         "SELECT status, result FROM actions WHERE action_id = 'narrator-action'"
     ).fetchone()
-    assert action["status"] == "awaiting_host_exception"
-    assert "周围暂时没有新的变化" not in json.dumps(action["result"], ensure_ascii=False)
+    assert action["status"] == "completed"
+    narration = action["result"]["metadata"]["narration"]
+    assert narration["provider_source"] == "local_fallback"
+    assert narration["rejected_provider_reason"] == "narrator_provider_failed"
     events = test_db.execute(
         "SELECT event_type, payload FROM events WHERE room_id = %s ORDER BY sequence",
         (room_id,),
     ).fetchall()
-    assert "s2c_ai_recovery_required" in [event["event_type"] for event in events]
+    assert "s2c_ai_recovery_required" not in [event["event_type"] for event in events]
 
 
 def test_manual_action_hints_use_visible_context_only(client, test_db):

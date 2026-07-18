@@ -25,6 +25,7 @@ export type EngineEventType =
   // ── Encounter ──
   | 's2c_encounter_suggested' | 's2c_encounter_started'
   | 's2c_encounter_updated' | 's2c_encounter_resolved'
+  | 's2c_solo_combat_reaction_requested'
   // ── Team Chat ──
   | 's2c_team_message';
 
@@ -151,6 +152,32 @@ export interface ActionReceiptDTO {
   rule_explanation: RuleExplanationDTO | null;
 }
 
+export interface SoloCombatReactionDTO {
+  reactionId: string;
+  encounterId: string;
+  roundNumber: number;
+  attackIndex: number;
+  attackName: string;
+  choices: Array<'dodge' | 'counterattack'>;
+  status: 'pending' | 'resolved';
+}
+
+export interface SoloCombatReactionResolutionDTO {
+  reaction: SoloCombatReactionDTO;
+  result: {
+    playerWins?: boolean;
+    damageToPlayer?: number;
+    damageToBear?: number;
+  };
+  nextReaction: SoloCombatReactionDTO | null;
+  soloTransition?: {
+    target_node_id: string;
+    current_scene: string;
+    is_ending: boolean;
+  } | null;
+  idempotent: boolean;
+}
+
 export interface NarrationResultDTO {
   action_id: string;
   context_version: number;
@@ -217,11 +244,9 @@ export interface EvidenceCardDTO {
 export interface CampaignHomeDTO {
   room_id: string;
   current_scene: {
-    node_id: string;
     title: string;
     text_preview: string;
     citation: RedactedCitation;
-    choice_count: number;
     image_asset_id?: string | null;
   } | null;
   session: CampaignSessionDTO | null;

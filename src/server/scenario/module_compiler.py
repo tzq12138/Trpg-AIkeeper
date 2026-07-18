@@ -355,6 +355,25 @@ def _build_runtime_package(
         for binding in asset_bindings
         if binding.get("status") == "confirmed"
     ]
+    item_by_id = {
+        str(item.get("content_item_id") or ""): item
+        for item in items
+    }
+    progression_edges = []
+    for edge in edges:
+        payload = {
+            "from_content_item_id": edge["from_content_item_id"],
+            "to_content_item_id": edge["to_content_item_id"],
+            "relation_type": edge["relation_type"],
+            "conditions": edge["conditions"],
+            "citation": edge["citation"],
+        }
+        from_item = item_by_id.get(str(edge.get("from_content_item_id") or ""), {})
+        to_item = item_by_id.get(str(edge.get("to_content_item_id") or ""), {})
+        if from_item.get("item_type") == "scene" and to_item.get("item_type") == "scene":
+            payload["from_scene_id"] = str(from_item.get("logical_key") or "")
+            payload["to_scene_id"] = str(to_item.get("logical_key") or "")
+        progression_edges.append(payload)
     return {
         "package_kind": "aikeeper_runtime_package",
         "schema_version": "runtime_package.v1",
@@ -380,7 +399,9 @@ def _build_runtime_package(
             ],
             "locations": _list(graph.get("locations")),
         },
-        "ending_conditions": _collection(graph, "endings", items, "ending"),
+        "ending_conditions": _runtime_ending_conditions(
+            _collection(graph, "endings", items, "ending")
+        ),
         "style_pack": _json_object(graph.get("style_pack")),
         "story_evidence_nodes": [
             {
@@ -393,16 +414,7 @@ def _build_runtime_package(
             for item in items
         ],
         "semantic_progression_rules": {
-            "edges": [
-                {
-                    "from_content_item_id": edge["from_content_item_id"],
-                    "to_content_item_id": edge["to_content_item_id"],
-                    "relation_type": edge["relation_type"],
-                    "conditions": edge["conditions"],
-                    "citation": edge["citation"],
-                }
-                for edge in edges
-            ],
+            "edges": progression_edges,
             "solo_adventure": _json_object(graph.get("solo_adventure")),
         },
         "citations": citations,
@@ -452,6 +464,7 @@ def _quality_exceptions(
     issues.extend(_branch_issues_from_graph(graph, items))
     issues.extend(_projection_diagnostic_issues(projection_diagnostics))
     issues.extend(_runtime_citation_issues(graph))
+    issues.extend(_ending_condition_issues(graph))
     for edge in edges:
         if not edge.get("from_content_item_id") or not edge.get("to_content_item_id"):
             issues.append(_issue(
@@ -731,6 +744,52 @@ def _collection(
         for item in items
         if item["item_type"] == item_type
     ]
+
+
+def _runtime_ending_conditions(endings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [ending for ending in endings if _valid_ending_conditions(ending)]
+
+
+def _ending_condition_issues(graph: dict[str, Any]) -> list[dict[str, Any]]:
+    solo = _json_object(graph.get("solo_adventure"))
+    if _json_object(solo.get("integrity")).get("is_valid") is True:
+        return []
+    issues = []
+    for ordinal, ending in enumerate(_list(graph.get("endings"))):
+        if _valid_ending_conditions(ending):
+            continue
+        target_key = str(
+            ending.get("ending_id") or ending.get("id") or ending.get("name") or ordinal
+        )
+        issues.append(_issue(
+            "invalid_ending_conditions",
+            "Runtime endings require cited declarative completion conditions.",
+            target_type="ending",
+            target_key=target_key,
+            waivable=False,
+        ))
+    return issues
+
+
+def _valid_ending_conditions(ending: dict[str, Any]) -> bool:
+    if not _has_citation(ending.get("citation")):
+        return False
+    ending_id = str(ending.get("ending_id") or ending.get("id") or "").strip()
+    conditions = ending.get("completion_conditions")
+    allowed_keys = {"all_clues", "any_clues", "entered_scenes", "event_types", "room_status"}
+    if not ending_id or not isinstance(conditions, dict) or not conditions:
+        return False
+    if set(conditions) - allowed_keys:
+        return False
+    for key, expected in conditions.items():
+        if key == "room_status":
+            if not isinstance(expected, str) or not expected.strip():
+                return False
+        elif not isinstance(expected, list) or not expected or not all(
+            isinstance(item, str) and item.strip() for item in expected
+        ):
+            return False
+    return True
 
 
 def _collect_citations(

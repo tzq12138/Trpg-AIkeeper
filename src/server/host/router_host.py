@@ -170,7 +170,7 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
         }))
     except Exception:
         logger.exception("Failed to push initial HUD to host room=%s", room_id)
-        ws_manager.disconnect(room_id, "host")
+        ws_manager.disconnect(room_id, "host", websocket=websocket)
         return
 
     last_seq = 0
@@ -365,7 +365,7 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
     except Exception as e:
         logger.error("Host %s error: %s", room_id, e)
     finally:
-        ws_manager.disconnect(room_id, "host")
+        ws_manager.disconnect(room_id, "host", websocket=websocket)
 
 
 @router.post("/{room_id}/approve/{character_id}")

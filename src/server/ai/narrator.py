@@ -26,6 +26,20 @@ _DENIED_CONTEXT_KEYS = {
     "mutations",
 }
 
+_SOLO_NAVIGATION_INSTRUCTION = re.compile(
+    r"\s*(?:请|再|然后)?(?:转|翻|跳|前往|进入|见)\s*(?:到|至|去|向|往)?"
+    r"(?:条目|段落)?\s*(?:第)?\s*\d+\s*[。．.!！?？]*",
+    re.IGNORECASE,
+)
+_SCENE_FACT_CONFLICTS = (
+    (("长途车", "公共汽车", "公交车"), ("马车",)),
+    (("马车",), ("长途车", "公共汽车", "公交车")),
+)
+_PLAYER_SOURCE_MARKER_RE = re.compile(
+    r"(?:七宫涟(?:个人)?汉化?|七宫(?:涟)?个人汉化?|七宫(?=\s+)|火独行|向火|宫涟(?:个人)?汉化|宫涟|人汉化|个人汉|汉化)"
+)
+_PLAYER_SOURCE_LINE_RE = re.compile(r"(?m)^\s*七宫\s*(?:\n|$)")
+
 def build_narrator_context(
     conn,
     action: dict[str, Any],
@@ -43,10 +57,23 @@ def build_narrator_context(
         or current_scene.get("scene_id")
         or ""
     )
-    scene_brief = _scene_brief(runtime_package, current_scene, current_scene_key)
+    scene_brief = _resolved_scene_brief(
+        conn,
+        runtime_package,
+        current_scene,
+        current_scene_key,
+        room.get("room_id"),
+    )
+    solo_transition = _json_object((resolution.metadata or {}).get("solo_adventure_transition"))
+    verified_ending = _json_object((resolution.metadata or {}).get("verified_ending"))
+    adventure_ended = bool(solo_transition.get("is_ending") or verified_ending)
     visible_changes = _visible_state_changes(resolution)
     runtime_allowed_facts = _runtime_allowed_facts(runtime_package)
-    interactables = _interactable_names(runtime_package.get("interactable_objects"))
+    interactables = (
+        ["本次冒险记录"]
+        if adventure_ended
+        else _interactable_names(runtime_package.get("interactable_objects"))
+    )
     allowed_facts = _allowed_facts(
         conn,
         runtime_package,
@@ -73,6 +100,7 @@ def build_narrator_context(
         "runtime_package_style_pack": _json_object(runtime_package.get("style_pack")),
         "redacted_citations": _redacted_citations(director_plan, runtime_package),
         "interactable_objects": interactables,
+        "adventure_ended": adventure_ended,
         "context_version": int(room.get("state_version") or 0),
         "director_plan_digest": _director_plan_digest(director_plan),
     }
@@ -109,7 +137,128 @@ def validate_narration_result(
             return "narrator_fact_violation"
         if any(str(ref) not in allowed_refs for ref in refs):
             return "narrator_fact_violation"
+    if _has_scene_fact_conflict(text, context):
+        return "narrator_scene_fact_conflict"
     return None
+
+
+def _verified_scene_text(context: dict[str, Any]) -> str:
+    scene_text = " ".join(
+        str(item.get("text") or "")
+        for item in context.get("allowed_facts") or []
+        if isinstance(item, dict) and item.get("fact_ref") == "fact:scene-brief"
+    )
+    scene_text = _PLAYER_SOURCE_LINE_RE.sub("", scene_text)
+    scene_text = _PLAYER_SOURCE_MARKER_RE.sub("", scene_text)
+    scene_text = re.sub(r"\s+", " ", scene_text)
+    return scene_text.replace("看出 了", "看出了").replace("沮个丧", "沮丧").strip()
+
+
+def render_verified_narration(context: dict[str, Any]) -> str:
+    scene_text = _verified_scene_text(context)
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[。！？])", scene_text)
+        if sentence.strip()
+    ]
+    detail = "".join(sentences[:2])[:500]
+    if context.get("adventure_ended"):
+        ending = "本次冒险已经结束。"
+        if ending not in detail:
+            detail = f"{detail} {ending}".strip()
+    if detail:
+        return detail
+    return "你的行动已按当前可见事实结算。"
+
+
+def _verified_open_question(context: dict[str, Any]) -> str:
+    if context.get("adventure_ended"):
+        return "本次冒险已经结束。你可以在历史记录中回顾这次旅程。"
+    questions = re.findall(r"[^。！？!?]{1,120}[？?]", _verified_scene_text(context))
+    if not questions:
+        return "你想如何继续观察当前环境？"
+    question = questions[-1].strip()
+    if "：" in question:
+        question = question.rsplit("：", 1)[-1].strip()
+    elif ":" in question:
+        question = question.rsplit(":", 1)[-1].strip()
+    question = question.strip("“”\"'")
+    return f"眼下的对话还没有结束。你想如何回应：“{question}”"
+
+
+def build_verified_narration(
+    context: dict[str, Any],
+    *,
+    action_id: str,
+) -> NarrationResultDTO:
+    allowed_facts = [
+        item for item in context.get("allowed_facts") or [] if isinstance(item, dict)
+    ]
+    scene_ref = next(
+        (
+            str(item.get("fact_ref"))
+            for item in allowed_facts
+            if item.get("fact_ref") == "fact:scene-brief"
+        ),
+        "",
+    )
+    fallback_ref = scene_ref or str(allowed_facts[0].get("fact_ref") or "")
+    visible_ref = next(
+        (
+            str(item.get("fact_ref"))
+            for item in allowed_facts
+            if str(item.get("fact_ref") or "").startswith("fact:visible-change")
+        ),
+        fallback_ref,
+    )
+    environment_changes = _string_list(context.get("visible_state_changes"))[:1]
+    if not environment_changes:
+        environment_changes = [
+            "本次冒险已结束。"
+            if context.get("adventure_ended")
+            else "当前场景仍可互动。"
+        ]
+    interactables = _string_list(context.get("interactable_objects"))[:1]
+    if not interactables:
+        interactables = [
+            "本次冒险记录"
+            if context.get("adventure_ended")
+            else "当前环境"
+        ]
+    style_pack = _json_object(context.get("runtime_package_style_pack"))
+    return NarrationResultDTO(
+        action_id=action_id,
+        context_version=int(context.get("context_version") or 0),
+        director_plan_digest=str(context.get("director_plan_digest") or ""),
+        narrative_text=render_verified_narration(context),
+        environment_changes=environment_changes,
+        interactable_objects=interactables,
+        open_question=_verified_open_question(context),
+        fact_refs={
+            "narrative_text": [fallback_ref],
+            "environment_changes": [visible_ref],
+            "interactable_objects": [fallback_ref],
+            "open_question": [fallback_ref],
+        },
+        redacted_citations=context.get("redacted_citations") or [],
+        style_pack_version=str(style_pack.get("version") or "default"),
+        provider_source="local_fallback",
+        status="completed",
+    )
+
+
+def _has_scene_fact_conflict(text: str, context: dict[str, Any]) -> bool:
+    scene_text = " ".join(
+        str(item.get("text") or "")
+        for item in context.get("allowed_facts") or []
+        if isinstance(item, dict) and item.get("fact_ref") == "fact:scene-brief"
+    )
+    for scene_terms, conflicting_terms in _SCENE_FACT_CONFLICTS:
+        if any(term in scene_text for term in scene_terms) and any(
+            term in text for term in conflicting_terms
+        ):
+            return True
+    return False
 
 
 def build_manual_action_hints(conn, character: dict[str, Any]) -> dict[str, list[str]]:
@@ -123,7 +272,13 @@ def build_manual_action_hints(conn, character: dict[str, Any]) -> dict[str, list
     )
     current_scene = _current_scene(conn, character["room_id"])
     scene_key = str(current_scene.get("current_scene") or current_scene.get("node_id") or "")
-    scene_brief = _scene_brief(runtime_package, current_scene, scene_key)
+    scene_brief = _resolved_scene_brief(
+        conn,
+        runtime_package,
+        current_scene,
+        scene_key,
+        character["room_id"],
+    )
     interactables = _string_list(runtime_package.get("interactable_objects"))[:3]
     sheet = _json_object(character.get("xlsx_data"))
     abilities = _string_list(sheet.get("abilities"))[:2]
@@ -174,10 +329,64 @@ def _scene_brief(
     briefs = _json_object(runtime_package.get("scene_briefs"))
     if current_scene_key and briefs.get(current_scene_key):
         return str(briefs[current_scene_key])[:600]
+    if current_scene_key:
+        for scene in runtime_package.get("semantic_scenes") or []:
+            if not isinstance(scene, dict):
+                continue
+            payload = _json_object(scene.get("payload"))
+            scene_keys = {
+                str(scene.get("scene_id") or ""),
+                str(scene.get("id") or ""),
+                str(scene.get("logical_key") or ""),
+                str(payload.get("scene_id") or ""),
+                str(payload.get("id") or ""),
+            }
+            if current_scene_key not in scene_keys:
+                continue
+            title = str(
+                scene.get("name")
+                or scene.get("title")
+                or payload.get("name")
+                or payload.get("title")
+                or ""
+            ).strip()
+            description = str(
+                scene.get("description") or payload.get("description") or ""
+            ).strip()
+            if title and description:
+                return f"{title}。{description}"[:600]
+            if title or description:
+                return (title or description)[:600]
     if current_scene.get("title"):
         return str(current_scene.get("title"))[:300]
     value = current_scene.get("current_scene")
     return str(value or "")[:300]
+
+
+def _resolved_scene_brief(
+    conn,
+    runtime_package: dict[str, Any],
+    current_scene: dict[str, Any],
+    current_scene_key: str,
+    room_id: str | None,
+) -> str:
+    brief = _scene_brief(runtime_package, current_scene, current_scene_key)
+    if not current_scene_key.startswith("solo:") or brief != current_scene_key:
+        return brief
+    try:
+        from ..scenario.solo_runtime import SoloAdventureRuntime
+
+        solo_scene = SoloAdventureRuntime(conn).current(str(room_id or ""))
+    except Exception:
+        return brief
+    if not solo_scene:
+        return brief
+    return _solo_scene_brief(solo_scene.get("text")) or brief
+
+
+def _solo_scene_brief(text: Any) -> str:
+    brief = _SOLO_NAVIGATION_INSTRUCTION.sub("", str(text or ""))
+    return re.sub(r"\s+", " ", brief).strip()[:600]
 
 
 def _allowed_facts(
@@ -248,6 +457,16 @@ def _visible_state_changes(resolution: ResolutionResult) -> list[str]:
     visible = metadata.get("visible_state_changes")
     changes = _string_list(visible)
     changes.extend(_string_list(resolution.cascading_state_changes))
+    transition = _json_object(metadata.get("solo_adventure_transition"))
+    generic_transition = _json_object(metadata.get("generic_scene_transition"))
+    if transition and transition.get("is_ending") is False:
+        changes.append("你已抵达新的可见场景。")
+    if transition and transition.get("is_ending") is True:
+        changes.append("本次冒险已结束。")
+    if generic_transition:
+        changes.append("你已抵达新的可见场景。")
+    if _json_object(metadata.get("verified_ending")):
+        changes.append("本次冒险已按已验证条件结束。")
     return [item for item in dict.fromkeys(changes) if item]
 
 

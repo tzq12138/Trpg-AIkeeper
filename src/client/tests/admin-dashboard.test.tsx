@@ -320,7 +320,7 @@ describe('AdminDashboard scenario import management', () => {
 });
 
 describe('AdminDashboard AI provider management', () => {
-  test('renders API configuration tab and secure provider form', async () => {
+  test('renders the secure provider form from the system tools area', async () => {
     const {
       ADMIN_TABS,
       AI_PROVIDER_ENDPOINT,
@@ -346,7 +346,7 @@ describe('AdminDashboard AI provider management', () => {
     );
 
     expect(AI_PROVIDER_ENDPOINT).toBe('/api/admin/ai/providers');
-    expect(ADMIN_TABS.some((tab) => tab.key === 'apiProviders' && tab.label === 'API配置')).toBe(true);
+    expect(ADMIN_TABS.some((tab) => tab.key === 'systemTools' && tab.label === '系统工具')).toBe(true);
     expect(html).toContain('API Base URL');
     expect(html).toContain('type="password"');
     expect(html).toContain('value="gpt-5.4"');

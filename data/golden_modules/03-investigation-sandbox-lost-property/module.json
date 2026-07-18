@@ -284,21 +284,36 @@
     },
     "endings": [
       {
+        "ending_id": "lost-stop-machine",
         "name": "归还与停机",
         "description": "调查员先处理可归还项目，再关闭分拣机。受影响者逐步恢复姓名记忆，机器进入不可逆封存。",
         "type": "victory",
+        "completion_conditions": {
+          "entered_scenes": ["sorting-room"],
+          "all_clues": ["memory-ledger"]
+        },
         "citation_ids": ["cit-lost-ending-stop"]
       },
       {
+        "ending_id": "lost-rewrite-protocol",
         "name": "重写寄存协议",
         "description": "调查员在钟序协助下重写分类条件，机器继续运行但需要失物局和档案馆共同监督。",
         "type": "mixed",
+        "completion_conditions": {
+          "entered_scenes": ["sorting-room"],
+          "all_clues": ["founding-photo"]
+        },
         "citation_ids": ["cit-lost-ending-rewrite"]
       },
       {
+        "ending_id": "lost-take-token",
         "name": "带走寄存牌",
         "description": "调查员只取走 47 号牌，机器暂时沉默却未被解决；遗忘现象会在未来 Session 以新的失物形式回归。",
         "type": "mixed",
+        "completion_conditions": {
+          "entered_scenes": ["sorting-room"],
+          "all_clues": ["brass-token"]
+        },
         "citation_ids": ["cit-lost-ending-leave"]
       }
     ]

@@ -64,6 +64,23 @@ describe('player V2 API', () => {
     }));
   });
 
+  test('loads the current confirmation draft after a refresh', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      draft_id: 'draft-1',
+      status: 'awaiting_confirmation',
+      declared_intent: '我检查车尾的行李架',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const { getCurrentActionDraft } = await import('../src/shared/player-api');
+
+    await expect(getCurrentActionDraft()).resolves.toEqual(expect.objectContaining({
+      draft_id: 'draft-1',
+      status: 'awaiting_confirmation',
+    }));
+    expect(fetchMock).toHaveBeenCalledWith('/api/player/action-drafts/current', expect.objectContaining({
+      headers: expect.objectContaining({ 'X-Room-Token': 'player-token' }),
+    }));
+  });
+
   test('confirms a draft with a stable idempotency key', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       action_id: 'action-1',
@@ -136,6 +153,41 @@ describe('player V2 API', () => {
     });
     expect(fetchSpy).toHaveBeenCalledWith('/api/player/action-hints', expect.objectContaining({
       method: 'POST',
+    }));
+  });
+
+  test('loads and resolves a pending solo combat reaction through dedicated endpoints', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        reaction: {
+          reactionId: 'reaction-1',
+          encounterId: 'encounter-1',
+          roundNumber: 1,
+          attackIndex: 1,
+          attackName: '爪击',
+          choices: ['dodge', 'counterattack'],
+          status: 'pending',
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        reaction: { reactionId: 'reaction-1', status: 'resolved' },
+        result: { damageToPlayer: 0 },
+        nextReaction: null,
+        idempotent: false,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const { getPendingEncounterReaction, resolveEncounterReaction } = await import('../src/shared/player-api');
+
+    await expect(getPendingEncounterReaction()).resolves.toEqual(expect.objectContaining({
+      reaction: expect.objectContaining({ reactionId: 'reaction-1' }),
+    }));
+    await resolveEncounterReaction('reaction-1', 'dodge');
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, '/api/player/encounter-reactions/pending', expect.objectContaining({
+      headers: expect.objectContaining({ 'X-Room-Token': 'player-token' }),
+    }));
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, '/api/player/encounter-reactions/reaction-1/resolve', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ choice: 'dodge' }),
     }));
   });
 });

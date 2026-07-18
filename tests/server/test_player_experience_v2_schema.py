@@ -1,3 +1,5 @@
+import json
+
 from src.server.db_adapter import SCHEMA_SQL
 from src.server.db_pg import SCHEMA_SQL as SECONDARY_SCHEMA_SQL
 from tests.server.conftest import create_room, setup_auth_test_data
@@ -68,3 +70,45 @@ def test_schema_migration_keeps_existing_rooms_on_v1(test_db):
         "SELECT player_experience_version FROM rooms WHERE room_id = 'new-room'"
     ).fetchone()
     assert current["player_experience_version"] == "v2"
+
+
+def test_schema_migration_repairs_only_yhdx_reporter_size(test_db):
+    test_db.execute(
+        "INSERT INTO scenarios (scenario_id, title) VALUES ('yhdx', '向火独行')"
+    )
+    test_db.execute(
+        "INSERT INTO scenarios (scenario_id, title) VALUES ('other', '其他剧本')"
+    )
+    test_db.execute(
+        "INSERT INTO character_templates (template_id, scenario_id, name, attributes) "
+        "VALUES ('yhdx-reporter-v1', 'yhdx', '查尔斯·钱伯斯', %s)",
+        (json.dumps({"hp": 11, "con": 55, "pow": 50, "san": 50, "luck": 50}),),
+    )
+    test_db.execute(
+        "INSERT INTO character_templates (template_id, scenario_id, name, attributes) "
+        "VALUES ('other-reporter', 'other', '查尔斯·钱伯斯', %s)",
+        (json.dumps({"con": 55}),),
+    )
+
+    test_db.executescript(SCHEMA_SQL)
+
+    yhdx = test_db.execute(
+        "SELECT attributes FROM character_templates WHERE template_id = 'yhdx-reporter-v1'"
+    ).fetchone()
+    other = test_db.execute(
+        "SELECT attributes FROM character_templates WHERE template_id = 'other-reporter'"
+    ).fetchone()
+    assert yhdx["attributes"] == {
+        "str": 50,
+        "con": 50,
+        "pow": 50,
+        "dex": 60,
+        "app": 60,
+        "siz": 40,
+        "int": 70,
+        "edu": 80,
+        "hp": 9,
+        "san": 50,
+        "luck": 50,
+    }
+    assert other["attributes"] == {"con": 55}

@@ -265,3 +265,73 @@ def test_admin_can_install_a_golden_module_as_a_ready_to_play_scenario(client, t
     ]
     library = client.get("/api/library")
     assert payload["scenarioId"] in [item["scenario_id"] for item in library.json()["items"]]
+
+
+def test_golden_module_install_builds_a_ready_cited_runtime_package(client, test_db):
+    setup_auth_test_data(test_db)
+    test_db.execute(
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, license_type, created_by, status) "
+        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', 'open', 'test', 'published')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, created_by) "
+        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', 'test')"
+    )
+    test_db.commit()
+
+    installed = client.post(
+        "/api/admin/golden-modules/golden-team-glass-rain/install",
+        headers={"Authorization": f"Bearer {login(client, 'admin')}"},
+    )
+
+    assert installed.status_code == 201
+    payload = installed.json()
+    assert payload["runtimePackage"]["gate_status"] == "ready"
+    runtime_package = payload["runtimePackage"]["runtime_package"]
+    assert runtime_package["ending_conditions"]
+    assert all(
+        ending["citation"].get("source_part_id")
+        and ending["completion_conditions"]
+        for ending in runtime_package["ending_conditions"]
+    )
+    assert any(
+        edge["from_scene_id"] == "glass-gate"
+        and edge["to_scene_id"] == "orchid-hall"
+        and edge["citation"].get("source_part_id")
+        for edge in runtime_package["semantic_progression_rules"]["edges"]
+    )
+    content_items = test_db.execute(
+        "SELECT item_type, citation FROM content_items WHERE scenario_version_id = %s",
+        (payload["scenarioVersionId"],),
+    ).fetchall()
+    assert {item["item_type"] for item in content_items} >= {
+        "scene", "npc", "clue", "ending", "truth",
+    }
+    assert all(item["citation"].get("source_part_id") for item in content_items)
+
+
+def test_second_golden_playthrough_module_installs_with_a_ready_runtime_package(client, test_db):
+    setup_auth_test_data(test_db)
+    test_db.execute(
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, license_type, created_by, status) "
+        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', 'open', 'test', 'published')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, created_by) "
+        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', 'test')"
+    )
+    test_db.commit()
+
+    installed = client.post(
+        "/api/admin/golden-modules/golden-sandbox-lost-property/install",
+        headers={"Authorization": f"Bearer {login(client, 'admin')}"},
+    )
+
+    assert installed.status_code == 201
+    runtime_package = installed.json()["runtimePackage"]
+    assert runtime_package["gate_status"] == "ready"
+    assert any(
+        edge["from_scene_id"] == "lost-property-counter"
+        and edge["to_scene_id"] == "harbor-post"
+        for edge in runtime_package["runtime_package"]["semantic_progression_rules"]["edges"]
+    )

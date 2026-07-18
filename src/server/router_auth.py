@@ -19,6 +19,37 @@ PBKDF2_ITERATIONS = 100_000
 
 
 BOOTSTRAP_ADMIN_CODE = os.getenv("BOOTSTRAP_ADMIN_CODE", "")
+RESERVED_ADMIN_USERNAME = "admin"
+RESERVED_ADMIN_PASSWORD = "admin"
+
+
+def ensure_reserved_admin(conn) -> dict:
+    """Ensure the local reserved admin account always has administrator access."""
+    account = conn.execute(
+        "SELECT account_id, username FROM accounts WHERE username = %s",
+        (RESERVED_ADMIN_USERNAME,),
+    ).fetchone()
+    password_hash = _hash_password(RESERVED_ADMIN_PASSWORD)
+    if account:
+        conn.execute(
+            "UPDATE accounts SET role = 'admin', password_hash = %s WHERE account_id = %s",
+            (password_hash, account["account_id"]),
+        )
+        account_id = account["account_id"]
+    else:
+        account_id = str(uuid.uuid4())[:8]
+        conn.execute(
+            "INSERT INTO accounts (account_id, username, password_hash, display_name, role) "
+            "VALUES (%s, %s, %s, %s, 'admin')",
+            (account_id, RESERVED_ADMIN_USERNAME, password_hash, "管理员"),
+        )
+    conn.commit()
+    logger.info("reserved admin account ensured account_id=%s", account_id)
+    return {
+        "account_id": account_id,
+        "username": RESERVED_ADMIN_USERNAME,
+        "role": "admin",
+    }
 
 
 class RegisterRequest(BaseModel):

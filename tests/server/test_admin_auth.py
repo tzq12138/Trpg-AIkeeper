@@ -38,6 +38,27 @@ def _login(client, username: str, password: str = "test123") -> str:
 
 
 class TestAdminAccounts:
+    def test_acceptance_center_requires_admin_and_returns_safe_fixtures(self, client_with_data):
+        assert client_with_data.get("/api/admin/acceptance").status_code == 401
+
+        player_token = _login(client_with_data, "player1")
+        denied = client_with_data.get(
+            "/api/admin/acceptance",
+            headers={"Authorization": f"Bearer {player_token}"},
+        )
+        assert denied.status_code == 403
+
+        admin_token = _login(client_with_data, "admin")
+        accepted = client_with_data.get(
+            "/api/admin/acceptance",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert accepted.status_code == 200
+        data = accepted.json()
+        assert data["retention_days"] == 90
+        assert data["fixtures"]
+        assert all(set(fixture) == {"label", "description", "href"} for fixture in data["fixtures"])
+
     def test_list_accounts_requires_admin(self, client_with_data):
         res = client_with_data.get("/api/admin/accounts")
         assert res.status_code == 401
@@ -87,6 +108,19 @@ class TestAdminAccounts:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert res.status_code == 400
+
+    def test_reserved_admin_cannot_be_demoted(self, client_with_data, test_db):
+        token = _login(client_with_data, "admin")
+        res = client_with_data.patch(
+            "/api/admin/accounts/acc-admin",
+            json={"role": "player"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 409
+        account = test_db.execute(
+            "SELECT role FROM accounts WHERE account_id = 'acc-admin'"
+        ).fetchone()
+        assert account["role"] == "admin"
 
     def test_player_cannot_access_admin(self, client_with_data):
         token = _login(client_with_data, "player1")

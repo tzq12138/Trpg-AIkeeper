@@ -14,11 +14,11 @@ from ..events.events_registry import event_type
 
 
 _ATTACK_WORDS = ("攻击", "射击", "开枪", "砍", "刺", "殴打", "战斗")
-_MOVE_WORDS = ("移动", "前往", "走到", "跑到", "进入", "离开")
+_MOVE_WORDS = ("移动", "前往", "走到", "走向", "跑到", "前去", "赶往", "进入", "离开")
 _RESOURCE_WORDS = ("使用", "消耗", "喝下", "点燃", "丢弃")
 _ROLL_WORDS = ("检定", "掷骰", "投骰", "判定")
 _SECRET_WORDS = ("秘密", "偷偷", "瞒着", "私下")
-_LOOK_WORDS = ("看看", "观察", "环顾", "阅读", "询问", "交谈", "搜索")
+_LOOK_WORDS = ("看看", "观察", "环顾", "阅读", "查阅", "翻查", "检查", "询问", "交谈", "搜索")
 _LUCK_SPEND_WORDS = ("花幸运", "消耗幸运", "使用幸运", "幸运改")
 _PUSHED_ROLL_WORDS = ("孤注一掷", "重投", "重新检定", "再掷一次")
 _AI_INTENT_TYPES = {
@@ -61,6 +61,28 @@ _ALLOWED_INTENT_PARAMS = {
     "claimedItemName",
     "justificationText",
 }
+_BACKSTAGE_LINK_PATTERN = re.compile(
+    r"[\"“”']?(?:转到|跳转到|前往)\s*(?:(?:条目|节点)\s*)?[（(]?\s*\d+\s*[）)]?[\"“”']?"
+)
+_BACKSTAGE_PARENTHETICAL_PATTERN = re.compile(
+    r"[（(]\s*(?:条目|节点)\s*\d+\s*[）)]"
+)
+_BACKSTAGE_PREFIXED_REFERENCE_PATTERN = re.compile(r"(?:条目|节点)\s*\d+")
+_BACKSTAGE_SUFFIXED_REFERENCE_PATTERN = re.compile(r"(?<!\d)\d+\s*(?:条目|节点)")
+
+
+def _semantic_intent_type(requested_type: str | None, inferred_type: str) -> str:
+    """Treat the player's free-text intent as authoritative over the UI default."""
+    return inferred_type if requested_type in (None, "", "dialogue") else requested_type
+
+
+def redact_backstage_references(value: str) -> str:
+    """Keep compiler entry identifiers out of player-facing AI summaries."""
+    text = str(value or "")
+    text = _BACKSTAGE_LINK_PATTERN.sub("继续前进", text)
+    text = _BACKSTAGE_PARENTHETICAL_PATTERN.sub("", text)
+    text = _BACKSTAGE_SUFFIXED_REFERENCE_PATTERN.sub("场景", text)
+    return _BACKSTAGE_PREFIXED_REFERENCE_PATTERN.sub("场景", text)
 
 
 def analyze_action_draft(body: ActionDraftAnalyzeRequest) -> ActionDraftDTO:
@@ -86,7 +108,7 @@ def analyze_action_draft(body: ActionDraftAnalyzeRequest) -> ActionDraftDTO:
         confidence = 0.7
         summary_prefix = "你想根据角色背景主张一件物品"
     elif any(word in text for word in _LUCK_SPEND_WORDS):
-        intent_type = body.intent_type or "skill_check"
+        intent_type = _semantic_intent_type(body.intent_type, "skill_check")
         risk = "high"
         requirements = ["luck_spend", "state_change"]
         resource_impacts = [
@@ -95,13 +117,13 @@ def analyze_action_draft(body: ActionDraftAnalyzeRequest) -> ActionDraftDTO:
         confidence = 0.92
         summary_prefix = "你想消耗幸运改变一次失败判定"
     elif any(word in text for word in _PUSHED_ROLL_WORDS):
-        intent_type = body.intent_type or "skill_check"
+        intent_type = _semantic_intent_type(body.intent_type, "skill_check")
         risk = "high"
         requirements = ["pushed_roll", "irreversible_consequence"]
         confidence = 0.92
         summary_prefix = "你想孤注一掷重新进行失败判定"
     elif any(word in text for word in _ATTACK_WORDS):
-        intent_type = body.intent_type or "combat_action"
+        intent_type = _semantic_intent_type(body.intent_type, "combat_action")
         risk = "high"
         requirements = ["attack", "state_change"]
         suggested_skill = "射击" if any(word in text for word in ("射击", "开枪", "手枪", "步枪")) else "格斗"
@@ -110,7 +132,10 @@ def analyze_action_draft(body: ActionDraftAnalyzeRequest) -> ActionDraftDTO:
         summary_prefix = "你想发起战斗行动"
     elif any(word in text for word in _SECRET_WORDS):
         is_secret_move = any(word in text for word in _MOVE_WORDS)
-        intent_type = body.intent_type or ("move" if is_secret_move else "dialogue")
+        intent_type = _semantic_intent_type(
+            body.intent_type,
+            "move" if is_secret_move else "dialogue",
+        )
         risk = "high"
         requirements = (
             ["movement", "secret_action", "state_change"]
@@ -121,21 +146,21 @@ def analyze_action_draft(body: ActionDraftAnalyzeRequest) -> ActionDraftDTO:
         confidence = 0.86
         summary_prefix = "你想秘密移动角色" if is_secret_move else "你想执行仅自己可见的秘密行动"
     elif any(word in text for word in _MOVE_WORDS):
-        intent_type = body.intent_type or "move"
+        intent_type = _semantic_intent_type(body.intent_type, "move")
         risk = "medium"
         requirements = ["movement", "state_change"]
         movement_target = _extract_movement_target(text)
         confidence = 0.82
         summary_prefix = "你想移动角色"
     elif any(word in text for word in _RESOURCE_WORDS):
-        intent_type = body.intent_type or "use_item"
+        intent_type = _semantic_intent_type(body.intent_type, "use_item")
         risk = "medium"
         requirements = ["resource_change", "state_change"]
         resource_impacts = [{"kind": "resource", "direction": "decrease", "amount": "pending_rule"}]
         confidence = 0.78
         summary_prefix = "你想使用或消耗资源"
     elif any(word in text for word in _ROLL_WORDS):
-        intent_type = body.intent_type or "skill_check"
+        intent_type = _semantic_intent_type(body.intent_type, "skill_check")
         risk = "medium"
         requirements = ["dice_roll"]
         difficulty = "regular"
@@ -226,7 +251,9 @@ def apply_ai_action_analysis(local: ActionDraftDTO, raw: dict) -> ActionDraftDTO
         citations = local.citations
     else:
         citations = [_sanitize_citation(item) for item in citations if isinstance(item, dict)][:10]
-    summary = str(raw.get("understanding_summary") or local.understanding_summary)[:500]
+    summary = redact_backstage_references(
+        str(raw.get("understanding_summary") or local.understanding_summary)[:500]
+    )
     suggested_skill = raw.get("suggested_skill")
     if suggested_skill is None:
         suggested_skill = local.suggested_skill
@@ -311,6 +338,36 @@ def persist_action_draft(conn, character: dict, draft: ActionDraftDTO) -> Action
             (revision_id, draft_id, draft.declared_intent, json.dumps(payload, ensure_ascii=False)),
         )
     return draft.model_copy(update={"draft_id": draft_id})
+
+
+def get_current_action_draft(conn, character: dict) -> ActionDraftDTO | None:
+    row = conn.execute(
+        "SELECT action_drafts.* FROM action_drafts "
+        "JOIN rooms ON rooms.room_id = action_drafts.room_id "
+        "WHERE action_drafts.character_id = %s "
+        "AND action_drafts.status = 'awaiting_confirmation' "
+        "AND action_drafts.base_state_version = rooms.state_version "
+        "AND action_drafts.expires_at > NOW() "
+        "ORDER BY action_drafts.updated_at DESC LIMIT 1",
+        (character["character_id"],),
+    ).fetchone()
+    if not row:
+        return None
+    analysis = _json_value(row.get("analysis")) or {}
+    if not isinstance(analysis, dict):
+        return None
+    return ActionDraftDTO.model_validate({
+        **analysis,
+        "draft_id": row["draft_id"],
+        "revision": int(row.get("current_revision") or 1),
+        "base_state_version": int(row.get("base_state_version") or 0),
+        "status": row["status"],
+        "intent_type": row["intent_type"],
+        "declared_intent": row["declared_intent"],
+        "params": _json_value(row.get("params")) or {},
+        "risk": row["risk_level"],
+        "ephemeral": False,
+    })
 
 
 def revise_action_draft(conn, character: dict, draft_id: str, body: ActionDraftUpdateRequest) -> ActionDraftDTO:
@@ -562,19 +619,19 @@ def confirm_action_draft(
 
 def cancel_action(conn, character_id: str, action_id: str) -> ActionReceiptV2:
     with conn.transaction() as tx:
-        cursor = tx.execute(
-            "UPDATE actions SET status = 'canceled', canceled_at = NOW() "
-            "WHERE action_id = %s AND character_id = %s AND status IN ('queued', 'batched')",
+        action = tx.execute(
+            "SELECT action_id, status, params FROM actions "
+            "WHERE action_id = %s AND character_id = %s FOR UPDATE",
             (action_id, character_id),
-        )
-        if cursor.rowcount == 0:
-            existing = tx.execute(
-                "SELECT action_id FROM actions WHERE action_id = %s AND character_id = %s",
-                (action_id, character_id),
-            ).fetchone()
-            if not existing:
-                raise ActionDraftError(404, {"code": "action_not_found"})
+        ).fetchone()
+        if not action:
+            raise ActionDraftError(404, {"code": "action_not_found"})
+        if not _can_cancel_action_record(action):
             raise ActionDraftError(409, {"code": "action_not_cancelable"})
+        tx.execute(
+            "UPDATE actions SET status = 'canceled', canceled_at = NOW() WHERE action_id = %s",
+            (action_id,),
+        )
         tx.execute(
             "INSERT INTO action_status_events (action_id, status, metadata) VALUES (%s, 'canceled', '{}')",
             (action_id,),
@@ -584,7 +641,7 @@ def cancel_action(conn, character_id: str, action_id: str) -> ActionReceiptV2:
 
 def build_action_receipt(conn, character_id: str, action_id: str) -> ActionReceiptV2:
     action = conn.execute(
-        "SELECT action_id, draft_id, revision_number, declared_intent, status, result, receipt "
+        "SELECT action_id, draft_id, revision_number, declared_intent, status, params, result, receipt "
         "FROM actions WHERE action_id = %s AND character_id = %s",
         (action_id, character_id),
     ).fetchone()
@@ -612,7 +669,7 @@ def build_action_receipt(conn, character_id: str, action_id: str) -> ActionRecei
         revision=action.get("revision_number") or 1,
         result=_sanitize_player_action_result(_json_value(action.get("result"))),
         timeline=timeline,
-        can_cancel=status in ("queued", "batched"),
+        can_cancel=_can_cancel_action_record(action),
         can_review=status in (
             "resolving",
             "awaiting_player_choice",
@@ -625,6 +682,17 @@ def build_action_receipt(conn, character_id: str, action_id: str) -> ActionRecei
         ),
         rule_explanation=_json_value(action.get("receipt")),
     )
+
+
+def _can_cancel_action_record(action: dict) -> bool:
+    if action.get("status") in ("queued", "batched"):
+        return True
+    if action.get("status") != "awaiting_host_exception":
+        return False
+    params = _json_value(action.get("params")) or {}
+    analysis = _json_value(params.get("analysis")) or {}
+    progression = analysis.get("semantic_progression") or {}
+    return progression.get("reason") == "semantic_progression_evidence_required"
 
 
 class ActionDraftError(Exception):
@@ -680,10 +748,20 @@ def _ensure_collecting_turn(conn, room_id: str) -> str:
         "SELECT COALESCE(MAX(turn_index), 0) AS max_idx FROM room_turns WHERE room_id = %s",
         (room_id,),
     ).fetchone()
+    room = conn.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
     turn_id = str(uuid.uuid4())[:8]
     conn.execute(
-        "INSERT INTO room_turns (turn_id, room_id, turn_index, status) VALUES (%s, %s, %s, 'collecting')",
-        (turn_id, room_id, max_row["max_idx"] + 1),
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, base_state_version) "
+        "VALUES (%s, %s, %s, 'collecting', %s)",
+        (
+            turn_id,
+            room_id,
+            max_row["max_idx"] + 1,
+            int(room["state_version"]) if room else 0,
+        ),
     )
     return turn_id
 
@@ -700,7 +778,7 @@ def _json_value(value):
 
 
 def _extract_movement_target(text: str) -> str | None:
-    match = re.search(r"(?:移动到|前往|走到|跑到|进入)\s*([^，。！？]+)", text)
+    match = re.search(r"(?:移动到|前往|走到|走向|跑到|前去|赶往|进入)\s*([^，。！？]+)", text)
     if not match:
         return None
     target = match.group(1).strip()

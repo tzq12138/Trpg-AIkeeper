@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import uuid
@@ -10,7 +11,11 @@ from ..ai.contracts import KpResponse, NarrativePayload
 from ..ai.mechanic_compiler import MechanicCompiler
 from ..models import MechanicCompileResult, NarrationResultDTO, PlayerIntent, ResolutionResult
 from ..models import RuleExplanationDTO
-from ..ai.narrator import build_narrator_context, validate_narration_result
+from ..ai.narrator import (
+    build_verified_narration,
+    build_narrator_context,
+    validate_narration_result,
+)
 from .action_lifecycle import complete_action, transition_action
 from .fallback_narrative import render_action_aware_fallback
 from .projection import ProjectionDispatcher
@@ -19,6 +24,8 @@ from .roll_receipt import create_roll_receipt
 from .rule_executor import RuleExecutor
 
 logger = logging.getLogger(__name__)
+
+_NARRATOR_TIMEOUT_SECONDS = 30
 
 
 def _rule_policy_from_metadata(value: Any) -> dict[str, Any]:
@@ -170,6 +177,22 @@ class ResolutionPipeline:
             declared_intent=action.get("declared_intent") or "",
             params=self._json_value(action.get("params")) or {},
         )
+        solo_skill_check, solo_skill_check_error = self._validated_solo_skill_check(
+            action["room_id"], intent.params, intent.declared_intent
+        )
+        if solo_skill_check_error:
+            await self._reject(action, solo_skill_check_error)
+            return {
+                "status": "rejected",
+                "action_id": action_id,
+                "reason": solo_skill_check_error,
+            }
+        solo_fixed_healing = None
+        solo_fixed_damage = None
+        solo_fixed_sanity_loss = None
+        solo_daily_penalty_die = None
+        solo_damage_transition = None
+        solo_item_purchase = None
         if is_v2:
             await self._emit_ai_stage(action, "directing")
             director_err = self._validate_director_plan(action, intent, dict(room))
@@ -198,10 +221,80 @@ class ResolutionPipeline:
 
         # ── Pre-resolution validation for move intent ──
         if action["intent_type"] == "move":
-            move_err = await self._validate_move(action, intent)
-            if move_err:
-                await self._reject(action, move_err)
-                return {"status": "rejected", "action_id": action_id, "reason": move_err}
+            if is_v2 and intent.params.get("solo_adventure_damage"):
+                from ..scenario.solo_runtime import (
+                    SoloAdventureRuntime,
+                    extract_solo_damage_transition,
+                )
+
+                current_solo_scene = SoloAdventureRuntime(self.conn).current(
+                    action["room_id"]
+                )
+                damage_transition = extract_solo_damage_transition(
+                    current_solo_scene or {}
+                )
+                if (
+                    not damage_transition
+                    or damage_transition["from_node_id"]
+                    != str(intent.params.get("fromNodeId") or "")
+                ):
+                    await self._reject(action, "solo_damage_transition_invalid")
+                    return {
+                        "status": "rejected",
+                        "action_id": action_id,
+                        "reason": "solo_damage_transition_invalid",
+                    }
+                solo_damage_transition = damage_transition
+                intent.params["solo_adventure"] = True
+            else:
+                move_err = await self._validate_move(action, intent)
+                if move_err:
+                    await self._reject(action, move_err)
+                    return {"status": "rejected", "action_id": action_id, "reason": move_err}
+            if is_v2 and intent.params.get("solo_adventure"):
+                from ..scenario.solo_runtime import (
+                    SoloAdventureRuntime,
+                    extract_solo_fixed_damage,
+                    extract_solo_fixed_healing,
+                    extract_solo_fixed_sanity_loss,
+                    extract_solo_daily_penalty_die,
+                    extract_solo_item_purchase,
+                )
+
+                current_solo_scene = SoloAdventureRuntime(self.conn).current(action["room_id"])
+                fixed_damage = extract_solo_fixed_damage(current_solo_scene or {})
+                healing = extract_solo_fixed_healing(current_solo_scene or {})
+                sanity_loss = extract_solo_fixed_sanity_loss(current_solo_scene or {})
+                daily_penalty_die = extract_solo_daily_penalty_die(current_solo_scene or {})
+                if (
+                    fixed_damage
+                    and fixed_damage["from_node_id"] == str(intent.params.get("fromNodeId") or "")
+                    and fixed_damage["target_node_id"] == str(intent.params.get("targetNodeId") or "")
+                ):
+                    solo_fixed_damage = fixed_damage
+                if (
+                    healing
+                    and healing["from_node_id"] == str(intent.params.get("fromNodeId") or "")
+                    and healing["target_node_id"] == str(intent.params.get("targetNodeId") or "")
+                ):
+                    solo_fixed_healing = healing
+                if sanity_loss and sanity_loss["from_node_id"] == str(intent.params.get("fromNodeId") or "") and sanity_loss["target_node_id"] == str(intent.params.get("targetNodeId") or ""):
+                    solo_fixed_sanity_loss = sanity_loss
+                if (
+                    daily_penalty_die
+                    and daily_penalty_die["from_node_id"] == str(intent.params.get("fromNodeId") or "")
+                    and daily_penalty_die["target_node_id"] == str(intent.params.get("targetNodeId") or "")
+                ):
+                    solo_daily_penalty_die = daily_penalty_die
+                purchase = extract_solo_item_purchase(
+                    current_solo_scene or {}, intent.declared_intent
+                )
+                if (
+                    purchase
+                    and purchase["from_node_id"] == str(intent.params.get("fromNodeId") or "")
+                    and purchase["target_node_id"] == str(intent.params.get("targetNodeId") or "")
+                ):
+                    solo_item_purchase = purchase
 
         # ── Pre-resolution validation for encounter actions ──
         if action["intent_type"] in ("combat_action", "chase_action", "system_skip"):
@@ -212,7 +305,25 @@ class ResolutionPipeline:
 
         try:
             await self._emit_ai_stage(action, "validating_rules")
-            compiled = await self.compiler.compile(intent, scenario or {}, character_data)
+            if solo_skill_check:
+                if solo_skill_check.get("mechanic") == "sanity_check":
+                    compiled = MechanicCompileResult(
+                        triggeredMechanic="sanity_check",
+                        consequence={
+                            "success_loss": solo_skill_check["success_loss"],
+                            "failure_loss": solo_skill_check["failure_loss"],
+                        },
+                    )
+                else:
+                    compiled = MechanicCompileResult(
+                        triggeredMechanic="skill_check",
+                        skillName=solo_skill_check["skill_name"],
+                        difficulty=solo_skill_check["difficulty"],
+                    )
+            elif intent.params.get("solo_adventure"):
+                compiled = MechanicCompileResult(triggeredMechanic="move")
+            else:
+                compiled = await self.compiler.compile(intent, scenario or {}, character_data)
             if retroactive_decision and retroactive_decision.branch == "roll_required":
                 compiled = MechanicCompileResult(triggeredMechanic="luck_check")
             resolution = await self.rule_executor.execute(
@@ -222,12 +333,38 @@ class ResolutionPipeline:
                 [dict(i) for i in inventory],
                 scenario_assets,
             )
+            if solo_skill_check and solo_skill_check.get("damage_dice"):
+                self._apply_solo_damage(
+                    resolution,
+                    character_data,
+                    solo_skill_check["damage_dice"],
+                )
+            if solo_fixed_damage and resolution.is_success:
+                self._apply_solo_fixed_damage(
+                    resolution,
+                    character_data,
+                    int(solo_fixed_damage["amount"]),
+                )
+            if solo_fixed_healing and resolution.is_success:
+                self._apply_solo_fixed_healing(
+                    resolution,
+                    character_data,
+                    int(solo_fixed_healing["amount"]),
+                )
+            if solo_fixed_sanity_loss and resolution.is_success:
+                self._apply_solo_fixed_sanity_loss(resolution, character_data, solo_fixed_sanity_loss["loss_dice"])
+            if solo_damage_transition and resolution.is_success:
+                self._apply_solo_damage(
+                    resolution,
+                    character_data,
+                    solo_damage_transition["damage_dice"],
+                )
         except Exception as exc:
             await self._reject(action, f"resolution failed: {exc}")
             return {"status": "rejected", "action_id": action_id, "reason": str(exc)}
         resolution.narrative = self._render_fallback_narrative(intent, compiled, resolution, character_data)
 
-        inventory_changes = None
+        inventory_changes = []
         if retroactive_decision:
             resolution.metadata["retroactive_item_claim"] = {
                 "branch": retroactive_decision.branch,
@@ -236,7 +373,7 @@ class ResolutionPipeline:
             if resolution.is_success:
                 item = retroactive_decision.item
                 narrative = item.get("narrative") or {}
-                inventory_changes = [
+                inventory_changes.append(
                     {
                         "characterId": action["character_id"],
                         "itemAdd": {
@@ -249,7 +386,50 @@ class ResolutionPipeline:
                             "source": "backstory",
                         },
                     }
-                ]
+                )
+        if solo_item_purchase:
+            resolution.metadata["solo_item_purchase"] = {
+                "name": solo_item_purchase["name"],
+                "source": solo_item_purchase["source"],
+                "citation": solo_item_purchase["citation"],
+            }
+            existing_purchase = self.conn.execute(
+                "SELECT 1 FROM inventory WHERE character_id = %s AND source = %s LIMIT 1",
+                (action["character_id"], solo_item_purchase["source"]),
+            ).fetchone()
+            if resolution.is_success and not existing_purchase:
+                inventory_changes.append(
+                    {
+                        "characterId": action["character_id"],
+                        "itemAdd": {
+                            "name": solo_item_purchase["name"],
+                            "description": solo_item_purchase["description"],
+                            "quantity": 1,
+                            "isSecret": False,
+                            "source": solo_item_purchase["source"],
+                        },
+                    }
+                )
+        if not inventory_changes:
+            inventory_changes = None
+
+        generic_scene_transition = intent.params.get("generic_scene_progression")
+        scene_change = None
+        if (
+            is_v2
+            and resolution.is_success
+            and isinstance(generic_scene_transition, dict)
+            and not generic_scene_transition.get("already_applied")
+        ):
+            target_scene_id = str(generic_scene_transition.get("target_scene_id") or "")
+            if target_scene_id:
+                from ..models import SceneChange
+
+                scene_change = SceneChange(currentScene=target_scene_id)
+                resolution.metadata = {
+                    **(resolution.metadata or {}),
+                    "generic_scene_transition": generic_scene_transition,
+                }
 
         result_payload = resolution.model_dump(by_alias=True)
         completion_status = "completed" if is_v2 else "resolved"
@@ -294,7 +474,7 @@ class ResolutionPipeline:
                 "action_id": action_id,
                 "reason": reason_code,
             }
-        if resolution.mutations or inventory_changes:
+        if resolution.mutations or inventory_changes or scene_change:
             if not self.state_service:
                 if is_v2:
                     await self._await_host_exception(action, "state_service_unavailable")
@@ -313,6 +493,7 @@ class ResolutionPipeline:
                                 mutations=resolution.mutations,
                             )
                         ] if resolution.mutations else [],
+                        sceneChanges=scene_change,
                         inventoryChanges=inventory_changes,
                     )
                     if is_v2:
@@ -360,14 +541,74 @@ class ResolutionPipeline:
                         }
 
         solo_transition = None
-        if is_v2 and intent.params.get("solo_adventure") and resolution.is_success:
+        solo_target_node_id = ""
+        solo_from_node_id = ""
+        solo_damage_terminal = False
+        verified_ending = None
+        if is_v2 and solo_damage_transition and resolution.is_success:
+            damage_metadata = resolution.metadata or {}
+            if solo_damage_transition.get("target_node_id"):
+                solo_damage_terminal = bool(
+                    solo_damage_transition.get("damage_ends_on_zero")
+                    and int(damage_metadata.get("hp_after", 0) or 0) <= 0
+                )
+                if not solo_damage_terminal:
+                    solo_target_node_id = solo_damage_transition["target_node_id"]
+            else:
+                sheet = character_data.get("xlsx_data")
+                if not isinstance(sheet, dict):
+                    sheet = {}
+                hp_max = max(1, int(sheet.get("hp_max", sheet.get("max_hp", 1)) or 1))
+                damage = int(damage_metadata.get("damage", 0) or 0)
+                solo_target_node_id = (
+                    solo_damage_transition["high_damage_target_node_id"]
+                    if damage >= (hp_max + 1) // 2
+                    else solo_damage_transition["low_damage_target_node_id"]
+                )
+            solo_from_node_id = solo_damage_transition["from_node_id"]
+        elif is_v2 and intent.params.get("solo_adventure") and resolution.is_success:
+            solo_target_node_id = str(intent.params.get("targetNodeId") or "")
+            solo_from_node_id = str(intent.params.get("fromNodeId") or "")
+        elif is_v2 and solo_skill_check:
+            if solo_skill_check.get("mechanic") == "sanity_check":
+                if solo_skill_check.get("target_node_id"):
+                    solo_target_node_id = str(solo_skill_check["target_node_id"])
+                else:
+                    solo_target_node_id = str(
+                        solo_skill_check[
+                            "success_target_node_id"
+                            if resolution.is_success
+                            else "failure_target_node_id"
+                        ]
+                    )
+            else:
+                solo_target_node_id = str(
+                    solo_skill_check[
+                        "success_target_node_id"
+                        if resolution.is_success
+                        else "failure_target_node_id"
+                    ]
+                )
+            solo_from_node_id = solo_skill_check["from_node_id"]
+        if solo_target_node_id:
             try:
                 from ..scenario.solo_runtime import SoloAdventureRuntime
                 with self.conn.transaction() as tx:
+                    if solo_daily_penalty_die:
+                        resolution.metadata = {
+                            **dict(resolution.metadata or {}),
+                            "solo_skill_bonus_dice": int(solo_daily_penalty_die["bonus_dice"]),
+                            "solo_skill_bonus_dice_citation": solo_daily_penalty_die["citation"],
+                        }
                     solo_transition = SoloAdventureRuntime(self.conn).transition(
                         action["room_id"],
-                        from_node_id=str(intent.params.get("fromNodeId") or ""),
-                        target_node_id=str(intent.params.get("targetNodeId") or ""),
+                        from_node_id=solo_from_node_id,
+                        target_node_id=solo_target_node_id,
+                        scene_variables=(
+                            {"solo_skill_bonus_dice": int(solo_daily_penalty_die["bonus_dice"])}
+                            if solo_daily_penalty_die
+                            else None
+                        ),
                         transaction=tx,
                     )
                     current_solo_scene = SoloAdventureRuntime(self.conn).current(
@@ -381,14 +622,55 @@ class ResolutionPipeline:
                     result_payload = resolution.model_dump(by_alias=True)
                     rule_explanation = self._build_rule_explanation(
                         action, character_data, resolution,
-                        state_before=state_before, state_after=state_before,
+                        state_before=state_before,
+                        state_after=self._runtime_snapshot(
+                            tx,
+                            action["character_id"],
+                            action["room_id"],
+                        ),
                     )
                     rule_explanation_for_completion = rule_explanation
             except Exception as exc:
                 await self._reject(action, f"solo_transition_failed:{exc}")
                 return {"status": "rejected", "action_id": action_id, "reason": str(exc)}
+        elif solo_damage_terminal:
+            with self.conn.transaction() as tx:
+                tx.execute(
+                    "UPDATE rooms SET status = 'completed', state_version = state_version + 1 "
+                    "WHERE room_id = %s AND status IN ('suggested', 'active')",
+                    (action["room_id"],),
+                )
+            resolution.metadata["solo_adventure_terminal"] = {
+                "reason": "hp_zero",
+                "citation": solo_damage_transition.get("citation") or {},
+            }
+            resolution.narrative = "火焰带走了你最后的力气。你的冒险到此结束。"
+            result_payload = resolution.model_dump(by_alias=True)
 
-        if self.gateway and hasattr(self.gateway, "narrate_action"):
+        if is_v2 and resolution.is_success and not solo_damage_terminal:
+            discovered_runtime_clues = await self._persist_named_runtime_clues(
+                action,
+                intent,
+            )
+            if discovered_runtime_clues:
+                resolution.metadata = {
+                    **(resolution.metadata or {}),
+                    "runtime_clue_discoveries": discovered_runtime_clues,
+                }
+                result_payload = resolution.model_dump(by_alias=True)
+            verified_ending = self._evaluate_verified_runtime_ending(action["room_id"])
+            if verified_ending:
+                resolution.metadata = {
+                    **(resolution.metadata or {}),
+                    "verified_ending": {
+                        "ending_id": verified_ending.ending_id,
+                        "ending_type": verified_ending.ending_type,
+                        "citation": verified_ending.citation,
+                    },
+                }
+                result_payload = resolution.model_dump(by_alias=True)
+
+        if not solo_damage_terminal and self.gateway and hasattr(self.gateway, "narrate_action"):
             await self._emit_ai_stage(action, "narrating")
             narration_error = await self._apply_narrator(
                 action,
@@ -410,6 +692,15 @@ class ResolutionPipeline:
                     "reason": narration_error,
                 }
             result_payload = resolution.model_dump(by_alias=True)
+
+        ending_committed = False
+        if verified_ending:
+            ending_committed = self._commit_verified_runtime_ending(
+                action["room_id"],
+                verified_ending,
+            )
+            if ending_committed:
+                result_payload = resolution.model_dump(by_alias=True)
 
         if is_v2:
             if not completed_with_state:
@@ -442,6 +733,18 @@ class ResolutionPipeline:
             self.conn.commit()
 
         await self._project(action, resolution)
+        if ending_committed:
+            await self.dispatcher.emit(
+                action["room_id"],
+                "s2c_campaign_ended",
+                "party",
+                {
+                    "ending_id": verified_ending.ending_id,
+                    "ending_type": verified_ending.ending_type,
+                    "citation": verified_ending.citation,
+                    "completion_source": "verified_runtime_ending",
+                },
+            )
         await self._emit_ai_stage(action, "completed")
 
         if solo_transition:
@@ -460,7 +763,7 @@ class ResolutionPipeline:
             await self._apply_move_result(action, resolution)
 
         # ── Post-resolution encounter updates ──
-        if action["intent_type"] in ("combat_action", "chase_action", "system_skip") and resolution.is_success:
+        if action["intent_type"] in ("combat_action", "chase_action", "system_skip"):
             await self._apply_encounter_result(action, intent, resolution)
 
         return {"status": completion_status, "action_id": action_id, "result": result_payload}
@@ -476,6 +779,8 @@ class ResolutionPipeline:
     ) -> dict[str, Any]:
         metadata = resolution.metadata or {}
         target = metadata.get("target")
+        if target is None:
+            target = metadata.get("skill_value", metadata.get("skillValue"))
         raw_rolls = self._raw_rolls(resolution)
         rolled_at = datetime.now(timezone.utc).isoformat()
         rule_set_version = action.get("rule_set_version_id") or "unversioned"
@@ -515,6 +820,7 @@ class ResolutionPipeline:
                 "skill_value": metadata.get("skill_value", metadata.get("skillValue")),
                 "target": target,
                 "raw_rolls": raw_rolls,
+                "success_level": metadata.get("success_level") or metadata.get("level"),
             },
             modifiers={
                 "difficulty": metadata.get("difficulty"),
@@ -542,9 +848,19 @@ class ResolutionPipeline:
         if plan.get("state_patch_authority") != "advisory_only":
             return "director_plan_unverified"
         context_version = plan.get("context_version")
+        uses_turn_snapshot = False
         if context_version is not None:
             try:
-                if int(context_version) != int(room.get("state_version") or 0):
+                expected_context_version = int(context_version)
+                current_state_version = int(room.get("state_version") or 0)
+                uses_turn_snapshot = self._uses_current_turn_snapshot(
+                    action,
+                    expected_context_version,
+                )
+                if (
+                    expected_context_version != current_state_version
+                    and not uses_turn_snapshot
+                ):
                     return "director_context_stale"
             except (TypeError, ValueError):
                 return "director_context_invalid"
@@ -572,7 +888,11 @@ class ResolutionPipeline:
             elif kind == "state_version":
                 expected = precondition.get("expected")
                 try:
-                    if expected is not None and int(expected) != int(room.get("state_version") or 0):
+                    if (
+                        expected is not None
+                        and int(expected) != int(room.get("state_version") or 0)
+                        and not uses_turn_snapshot
+                    ):
                         return "director_precondition_failed"
                 except (TypeError, ValueError):
                     return "director_preconditions_invalid"
@@ -581,6 +901,182 @@ class ResolutionPipeline:
             else:
                 return "director_precondition_unsupported"
         return None
+
+    def _uses_current_turn_snapshot(
+        self,
+        action: dict[str, Any],
+        context_version: int,
+    ) -> bool:
+        turn_id = str(action.get("turn_id") or "")
+        if not turn_id:
+            return False
+        turn = self.conn.execute(
+            "SELECT room_id, status, base_state_version FROM room_turns WHERE turn_id = %s",
+            (turn_id,),
+        ).fetchone()
+        if not turn or turn.get("room_id") != action.get("room_id"):
+            return False
+        if turn.get("status") != "resolving":
+            return False
+        try:
+            return int(turn.get("base_state_version") or 0) == context_version
+        except (TypeError, ValueError):
+            return False
+
+    def _validated_solo_skill_check(
+        self,
+        room_id: str,
+        params: dict[str, Any],
+        declared_intent: str,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        raw = params.get("solo_adventure_check")
+        if raw is None:
+            return None, None
+        if not isinstance(raw, dict):
+            return None, "solo_skill_check_invalid"
+        from ..scenario.solo_runtime import SoloAdventureRuntime, extract_solo_skill_check
+
+        scene = SoloAdventureRuntime(self.conn).current(room_id)
+        rule = extract_solo_skill_check(scene or {}, declared_intent)
+        if not rule:
+            return None, "solo_skill_check_invalid"
+        if rule.get("mechanic") == "sanity_check":
+            expected = {
+                "mechanic": "sanity_check",
+                "fromNodeId": rule["from_node_id"],
+                "successLoss": rule["success_loss"],
+                "failureLoss": rule["failure_loss"],
+            }
+            if rule.get("target_node_id"):
+                expected["targetNodeId"] = rule["target_node_id"]
+            else:
+                expected["successTargetNodeId"] = rule["success_target_node_id"]
+                expected["failureTargetNodeId"] = rule["failure_target_node_id"]
+        else:
+            expected = {
+                "fromNodeId": rule["from_node_id"],
+                "successTargetNodeId": rule["success_target_node_id"],
+                "failureTargetNodeId": rule["failure_target_node_id"],
+            }
+            if rule.get("damage_dice"):
+                expected["damageDice"] = rule["damage_dice"]
+                expected["damageEndsOnZero"] = bool(rule.get("damage_ends_on_zero"))
+        if any(str(raw.get(key) or "") != str(value) for key, value in expected.items()):
+            return None, "solo_skill_check_invalid"
+        if (
+            str(params.get("skillName") or "") != rule["skill_name"]
+            or str(params.get("difficulty") or "") != rule["difficulty"]
+        ):
+            return None, "solo_skill_check_invalid"
+        return rule, None
+
+    @staticmethod
+    def _apply_solo_damage(
+        resolution: ResolutionResult,
+        character: dict[str, Any],
+        damage_dice: str,
+    ) -> dict[str, int]:
+        from ..rules.coc_handlers import roll_dice
+
+        sheet = character.get("xlsx_data")
+        if not isinstance(sheet, dict):
+            sheet = {}
+        hp_before = max(0, int(sheet.get("hp", 0) or 0))
+        damage, draws, modifier = roll_dice(damage_dice)
+        hp_after = max(0, hp_before - damage)
+        metadata = dict(resolution.metadata or {})
+        metadata["damage"] = damage
+        metadata["damage_dice"] = damage_dice
+        metadata["hp_before"] = hp_before
+        metadata["hp_after"] = hp_after
+        resolution.metadata = metadata
+        resolution.mutations = [
+            {"op": "replace", "path": "/character/hp", "value": hp_after},
+            *resolution.mutations,
+        ]
+        resolution.reveal_steps = [
+            {
+                "kind": "damage",
+                "dice": damage_dice,
+                "result": damage,
+                "rollTrace": {"draws": draws, "modifier": modifier},
+            },
+            *resolution.reveal_steps,
+        ]
+        return {"damage": damage, "hp_before": hp_before, "hp_after": hp_after}
+
+    @staticmethod
+    def _apply_solo_fixed_damage(
+        resolution: ResolutionResult,
+        character: dict[str, Any],
+        amount: int,
+    ) -> dict[str, int]:
+        sheet = character.get("xlsx_data")
+        if not isinstance(sheet, dict):
+            sheet = {}
+        hp_before = max(0, int(sheet.get("hp", 0) or 0))
+        damage = max(0, amount)
+        hp_after = max(0, hp_before - damage)
+        metadata = dict(resolution.metadata or {})
+        metadata["fixed_damage"] = damage
+        metadata["hp_before"] = hp_before
+        metadata["hp_after"] = hp_after
+        resolution.metadata = metadata
+        resolution.mutations = [
+            {"op": "replace", "path": "/character/hp", "value": hp_after},
+            *resolution.mutations,
+        ]
+        resolution.reveal_steps = [
+            {"kind": "damage", "amount": damage},
+            *resolution.reveal_steps,
+        ]
+        return {"damage": damage, "hp_before": hp_before, "hp_after": hp_after}
+
+    @staticmethod
+    def _apply_solo_fixed_healing(
+        resolution: ResolutionResult,
+        character: dict[str, Any],
+        amount: int,
+    ) -> dict[str, int]:
+        sheet = character.get("xlsx_data")
+        if not isinstance(sheet, dict):
+            sheet = {}
+        hp_before = max(0, int(sheet.get("hp", 0) or 0))
+        hp_max = max(
+            hp_before,
+            int(sheet.get("hp_max", sheet.get("max_hp", hp_before)) or hp_before),
+        )
+        hp_after = min(hp_max, hp_before + max(0, amount))
+        metadata = dict(resolution.metadata or {})
+        metadata["fixed_healing"] = hp_after - hp_before
+        metadata["hp_before"] = hp_before
+        metadata["hp_after"] = hp_after
+        resolution.metadata = metadata
+        resolution.mutations = [
+            {"op": "replace", "path": "/character/hp", "value": hp_after},
+            *resolution.mutations,
+        ]
+        resolution.reveal_steps = [
+            {"kind": "healing", "amount": hp_after - hp_before},
+            *resolution.reveal_steps,
+        ]
+        return {
+            "healing": hp_after - hp_before,
+            "hp_before": hp_before,
+            "hp_after": hp_after,
+        }
+
+    @staticmethod
+    def _apply_solo_fixed_sanity_loss(resolution: ResolutionResult, character: dict[str, Any], loss_dice: str) -> None:
+        from ..rules.coc_handlers import roll_dice
+
+        sheet = character.get("xlsx_data") if isinstance(character.get("xlsx_data"), dict) else {}
+        before = max(0, int(sheet.get("san", 0) or 0))
+        loss, draws, modifier = roll_dice(loss_dice)
+        after = max(0, before - loss)
+        resolution.metadata = {**dict(resolution.metadata or {}), "fixed_sanity_loss": loss, "san_before": before, "san_after": after}
+        resolution.mutations = [{"op": "replace", "path": "/character/san", "value": after}, *resolution.mutations]
+        resolution.reveal_steps = [{"kind": "san_loss", "loss": loss, "dice": loss_dice, "rollTrace": {"draws": draws, "modifier": modifier}}, *resolution.reveal_steps]
 
     @staticmethod
     def _runtime_snapshot(executor, character_id: str, room_id: str) -> dict[str, Any]:
@@ -599,6 +1095,8 @@ class ResolutionPipeline:
         rolls = []
         for step in resolution.reveal_steps:
             if not isinstance(step, dict) or step.get("kind") not in ("roll", "damage"):
+                continue
+            if step.get("kind") == "damage" and not step.get("dice"):
                 continue
             trace = step.get("rollTrace") or step.get("roll_trace") or {}
             rolls.append({
@@ -800,6 +1298,25 @@ class ResolutionPipeline:
         )
         self.conn.commit()
 
+    def _apply_verified_narration_fallback(
+        self,
+        context: dict[str, Any],
+        action: dict[str, Any],
+        resolution: ResolutionResult,
+        *,
+        rejected_provider_reason: str | None = None,
+    ) -> None:
+        narration = build_verified_narration(
+            context,
+            action_id=action["action_id"],
+        )
+        resolution.narrative = narration.narrative_text
+        metadata = dict(resolution.metadata or {})
+        metadata["narration"] = narration.model_dump(mode="json")
+        if rejected_provider_reason:
+            metadata["narration"]["rejected_provider_reason"] = rejected_provider_reason
+        resolution.metadata = metadata
+
     async def _apply_narrator(
         self,
         action: dict[str, Any],
@@ -807,6 +1324,8 @@ class ResolutionPipeline:
         room: dict[str, Any],
         resolution: ResolutionResult,
     ) -> str | None:
+        context: dict[str, Any] | None = None
+        is_solo_transition = False
         try:
             context = build_narrator_context(
                 self.conn,
@@ -815,17 +1334,65 @@ class ResolutionPipeline:
                 room,
                 resolution,
             )
-            payload = dict(context)
-            raw = await self.gateway.narrate_action(
-                payload,
-                action["room_id"],
-                action_id=action["action_id"],
+            is_solo_transition = isinstance(
+                (resolution.metadata or {}).get("solo_adventure_transition"),
+                dict,
             )
+            payload = dict(context)
+            try:
+                raw = await asyncio.wait_for(
+                    self.gateway.narrate_action(
+                        payload,
+                        action["room_id"],
+                        action_id=action["action_id"],
+                    ),
+                    timeout=_NARRATOR_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                if is_solo_transition or self._can_use_verified_narration_fallback(action, room):
+                    self._apply_verified_narration_fallback(
+                        context,
+                        action,
+                        resolution,
+                        rejected_provider_reason="narrator_timeout",
+                    )
+                    return None
+                return "narrator_timeout"
             if not isinstance(raw, dict):
+                if is_solo_transition:
+                    self._apply_verified_narration_fallback(
+                        context,
+                        action,
+                        resolution,
+                        rejected_provider_reason="narrator_invalid_response",
+                    )
+                    return None
                 return "narrator_invalid_response"
-            narration = NarrationResultDTO(**raw)
+            try:
+                narration = NarrationResultDTO(**raw)
+            except Exception:
+                if is_solo_transition:
+                    self._apply_verified_narration_fallback(
+                        context,
+                        action,
+                        resolution,
+                        rejected_provider_reason="narrator_invalid_response",
+                    )
+                    return None
+                return "narrator_invalid_response"
             violation = validate_narration_result(narration, context)
             if violation:
+                if violation == "narrator_fact_violation" and (
+                    is_solo_transition
+                    or self._can_use_verified_narration_fallback(action, room)
+                ):
+                    self._apply_verified_narration_fallback(
+                        context,
+                        action,
+                        resolution,
+                        rejected_provider_reason=violation,
+                    )
+                    return None
                 return violation
             resolution.narrative = narration.narrative_text
             metadata = dict(resolution.metadata or {})
@@ -833,12 +1400,49 @@ class ResolutionPipeline:
             resolution.metadata = metadata
             return None
         except Exception as exc:
+            if (
+                context is not None
+                and (
+                    is_solo_transition
+                    or self._can_use_verified_narration_fallback(action, room)
+                )
+            ):
+                self._apply_verified_narration_fallback(
+                    context,
+                    action,
+                    resolution,
+                    rejected_provider_reason="narrator_provider_failed",
+                )
+                return None
             logger.warning(
                 "Narrator failed for action %s: %s",
                 action.get("action_id"),
                 type(exc).__name__,
             )
             return "narrator_invalid_response"
+
+    def _can_use_verified_narration_fallback(
+        self,
+        action: dict[str, Any],
+        room: dict[str, Any],
+    ) -> bool:
+        if str(room.get("player_experience_version") or "") != "v2":
+            return False
+        params = self._json_value(action.get("params")) or {}
+        plan = params.get("director_plan")
+        if not isinstance(plan, dict):
+            return False
+        if plan.get("state_patch_authority") != "advisory_only":
+            return False
+        permissions = plan.get("permissions")
+        if not isinstance(permissions, list):
+            return False
+        return all(
+            isinstance(permission, dict)
+            and permission.get("allowed") is not False
+            and "allowed" in permission
+            for permission in permissions
+        )
 
     async def _project(self, action: dict[str, Any], resolution: ResolutionResult):
         host_steps = []
@@ -1058,19 +1662,9 @@ class ResolutionPipeline:
 
     @staticmethod
     def _render_solo_scene_narrative(scene: dict[str, Any]) -> str:
-        title = str(scene.get("title") or f"条目 {scene.get('node_id', '')}").strip()
-        text = str(scene.get("text") or "").strip()
-        choices = [
-            f"转到条目 {node_id}"
-            for node_id in scene.get("target_node_ids") or []
-            if str(node_id).strip()
-        ]
-        direction = (
-            f"接下来可选方向：{'、'.join(choices)}。你准备怎么做？"
-            if choices
-            else "当前条目没有新的编号方向；你可以描述调查、交谈或其他行动。"
-        )
-        return "\n\n".join(part for part in (title, text, direction) if part)
+        from ..scenario.solo_runtime import render_player_safe_solo_narrative
+
+        return render_player_safe_solo_narrative(scene)
 
     async def _enrich_dialogue_narrative(
         self, action: dict, character: dict, room: dict, scenario: dict | None,
@@ -1117,6 +1711,7 @@ class ResolutionPipeline:
     async def _validate_move(self, action: dict[str, Any], intent: PlayerIntent) -> str | None:
         """Validate move pre-conditions. Returns error string or None if valid."""
         params = intent.params or {}
+        params.pop("generic_scene_progression", None)
         target = params.get("targetNodeId", "")
         from_node = params.get("fromNodeId", "")
         room_id = action["room_id"]
@@ -1134,6 +1729,17 @@ class ResolutionPipeline:
             if solo_validation:
                 return solo_validation
             intent.params["solo_adventure"] = True
+            return None
+
+        generic_transition, generic_error = self._validated_generic_scene_transition(
+            action,
+            intent,
+        )
+        if generic_error:
+            return generic_error
+        if generic_transition:
+            intent.params["generic_scene_progression"] = generic_transition
+            action["params"] = intent.params
             return None
 
         # Check room has initialized map
@@ -1168,12 +1774,308 @@ class ResolutionPipeline:
 
         return None
 
+    def _validated_generic_scene_transition(
+        self,
+        action: dict[str, Any],
+        intent: PlayerIntent,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        params = intent.params or {}
+        analysis = params.get("analysis")
+        if not isinstance(analysis, dict):
+            return None, None
+        progression = analysis.get("semantic_progression")
+        if not isinstance(progression, dict) or not progression:
+            return None, None
+        if progression.get("validated") is not True:
+            return None, "generic_scene_progression_unverified"
+        from_scene_id = str(
+            progression.get("fromNodeId") or progression.get("from_node_id") or ""
+        )
+        target_scene_id = str(
+            progression.get("targetNodeId") or progression.get("target_node_id") or ""
+        )
+        if (
+            not from_scene_id
+            or not target_scene_id
+            or str(params.get("fromNodeId") or "") != from_scene_id
+            or str(params.get("targetNodeId") or "") != target_scene_id
+        ):
+            return None, "generic_scene_progression_invalid"
+        state = self.conn.execute(
+            "SELECT current_scene FROM room_scene_state WHERE room_id = %s",
+            (action["room_id"],),
+        ).fetchone()
+        current_scene_id = str(state.get("current_scene") or "") if state else ""
+        director_plan = params.get("director_plan")
+        shared_turn_arrival = False
+        if current_scene_id == target_scene_id and isinstance(director_plan, dict):
+            try:
+                shared_turn_arrival = self._uses_current_turn_snapshot(
+                    action,
+                    int(director_plan.get("context_version")),
+                )
+            except (TypeError, ValueError):
+                shared_turn_arrival = False
+        if not state or (
+            current_scene_id != from_scene_id and not shared_turn_arrival
+        ):
+            return None, "generic_scene_transition_stale"
+        package_row = self.conn.execute(
+            """
+            SELECT runtime_package
+            FROM runtime_package_versions
+            WHERE scenario_version_id = (
+                SELECT scenario_version_id FROM rooms WHERE room_id = %s
+            ) AND gate_status = 'ready'
+            ORDER BY package_version_number DESC
+            LIMIT 1
+            """,
+            (action["room_id"],),
+        ).fetchone()
+        runtime_package = self._json_value(
+            package_row.get("runtime_package") if package_row else None
+        ) or {}
+        rules = runtime_package.get("semantic_progression_rules")
+        edges = rules.get("edges") if isinstance(rules, dict) else []
+        if not isinstance(edges, list):
+            return None, "generic_scene_progression_invalid"
+        from ..ai.director import _citation_matches, _generic_edge_conditions_are_met
+
+        rule_citation = progression.get("ruleCitation") or progression.get("rule_citation")
+        if not isinstance(rule_citation, dict):
+            return None, "generic_scene_progression_invalid"
+        for edge in edges:
+            if not isinstance(edge, dict) or edge.get("relation_type") != "transitions_to":
+                continue
+            if (
+                str(edge.get("from_scene_id") or "") != from_scene_id
+                or str(edge.get("to_scene_id") or "") != target_scene_id
+            ):
+                continue
+            edge_citation = edge.get("citation") if isinstance(edge.get("citation"), dict) else {}
+            if not _citation_matches(rule_citation, [edge_citation]):
+                continue
+            if not _generic_edge_conditions_are_met(
+                self.conn,
+                action["room_id"],
+                edge.get("conditions"),
+            ):
+                return None, "generic_scene_conditions_unmet"
+            return {
+                "from_scene_id": from_scene_id,
+                "target_scene_id": target_scene_id,
+                "citation": edge_citation,
+                "already_applied": shared_turn_arrival,
+            }, None
+        return None, "generic_scene_progression_invalid"
+
+    def _evaluate_verified_runtime_ending(self, room_id: str):
+        from .ending_conditions import evaluate_ending_conditions
+
+        package_row = self.conn.execute(
+            """
+            SELECT runtime_package
+            FROM runtime_package_versions
+            WHERE scenario_version_id = (
+                SELECT scenario_version_id FROM rooms WHERE room_id = %s
+            ) AND gate_status = 'ready'
+            ORDER BY package_version_number DESC
+            LIMIT 1
+            """,
+            (room_id,),
+        ).fetchone()
+        runtime_package = self._json_value(
+            package_row.get("runtime_package") if package_row else None
+        ) or {}
+        return evaluate_ending_conditions(
+            self.conn,
+            room_id,
+            runtime_package.get("ending_conditions"),
+        )
+
+    async def _persist_named_runtime_clues(
+        self,
+        action: dict[str, Any],
+        intent: PlayerIntent,
+    ) -> list[dict[str, Any]]:
+        declared = self._normalize_runtime_text(intent.declared_intent)
+        if not declared:
+            return []
+        current_scene_row = self.conn.execute(
+            "SELECT current_scene FROM room_scene_state WHERE room_id = %s",
+            (action["room_id"],),
+        ).fetchone()
+        current_scene_id = str(
+            current_scene_row.get("current_scene") if current_scene_row else ""
+        ).strip()
+        if not current_scene_id:
+            return []
+        package_row = self.conn.execute(
+            """
+            SELECT runtime_package
+            FROM runtime_package_versions
+            WHERE scenario_version_id = (
+                SELECT scenario_version_id FROM rooms WHERE room_id = %s
+            ) AND gate_status = 'ready'
+            ORDER BY package_version_number DESC
+            LIMIT 1
+            """,
+            (action["room_id"],),
+        ).fetchone()
+        runtime_package = self._json_value(
+            package_row.get("runtime_package") if package_row else None
+        ) or {}
+        dependencies = runtime_package.get("clue_dependencies")
+        if not isinstance(dependencies, list):
+            return []
+        scene_names = self._runtime_scene_names(runtime_package, current_scene_id)
+        discovered: list[dict[str, Any]] = []
+        for dependency in dependencies:
+            if not isinstance(dependency, dict):
+                continue
+            canonical_id = str(dependency.get("clue_id") or "").strip()
+            name = str(dependency.get("name") or "").strip()
+            normalized_name = self._normalize_runtime_text(name)
+            if (
+                not canonical_id
+                or not normalized_name
+                or normalized_name not in declared
+                or not self._runtime_clue_matches_scene(
+                    dependency,
+                    current_scene_id,
+                    scene_names,
+                )
+            ):
+                continue
+            source = f"runtime:{canonical_id}"
+            clue_id = "runtime-" + uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"{action['room_id']}:{action['character_id']}:{canonical_id}",
+            ).hex[:20]
+            description = str(dependency.get("description") or "").strip()
+            text = f"{name}：{description}" if description else name
+            created = self.conn.execute(
+                """
+                INSERT INTO clues (clue_id, room_id, character_id, text, source, is_private)
+                VALUES (%s, %s, %s, %s, %s, TRUE)
+                ON CONFLICT (clue_id) DO NOTHING
+                RETURNING clue_id
+                """,
+                (
+                    clue_id,
+                    action["room_id"],
+                    action["character_id"],
+                    text,
+                    source,
+                ),
+            ).fetchone()
+            if not created:
+                continue
+            await self.dispatcher.emit(
+                action["room_id"],
+                "s2c_clue_discovered",
+                "player",
+                {
+                    "clueId": clue_id,
+                    "name": name,
+                    "source": source,
+                    "visibility": "self",
+                },
+                character_id=action["character_id"],
+            )
+            discovered.append({
+                "canonicalId": canonical_id,
+                "clueId": clue_id,
+                "name": name,
+            })
+        return discovered
+
+    @staticmethod
+    def _normalize_runtime_text(value: Any) -> str:
+        return "".join(char.casefold() for char in str(value or "") if char.isalnum())
+
+    def _runtime_scene_names(
+        self,
+        runtime_package: dict[str, Any],
+        current_scene_id: str,
+    ) -> set[str]:
+        names = {self._normalize_runtime_text(current_scene_id)}
+        for scene in runtime_package.get("semantic_scenes") or []:
+            if not isinstance(scene, dict):
+                continue
+            payload = self._json_value(scene.get("payload")) or {}
+            identifiers = {
+                str(scene.get("logical_key") or ""),
+                str(scene.get("scene_id") or ""),
+                str(payload.get("scene_id") or ""),
+                str(payload.get("id") or ""),
+            }
+            if current_scene_id not in identifiers:
+                continue
+            names.update(
+                self._normalize_runtime_text(value)
+                for value in (
+                    scene.get("name"),
+                    scene.get("title"),
+                    payload.get("name"),
+                    payload.get("title"),
+                )
+                if value
+            )
+        names.discard("")
+        return names
+
+    def _runtime_clue_matches_scene(
+        self,
+        dependency: dict[str, Any],
+        current_scene_id: str,
+        scene_names: set[str],
+    ) -> bool:
+        dependency_scene_id = str(dependency.get("scene_id") or "").strip()
+        if dependency_scene_id:
+            return dependency_scene_id == current_scene_id
+        location = self._normalize_runtime_text(dependency.get("location"))
+        return bool(location and location in scene_names)
+
+    def _commit_verified_runtime_ending(self, room_id: str, ending) -> bool:
+        with self.conn.transaction() as tx:
+            row = tx.execute(
+                """
+                UPDATE rooms
+                SET status = 'completed', state_version = state_version + 1
+                WHERE room_id = %s
+                  AND status = %s
+                RETURNING room_id
+                """,
+                (room_id, ending.room_status),
+            ).fetchone()
+            if row:
+                tx.execute(
+                    """
+                    INSERT INTO campaign_archives
+                    (archive_id, room_id, ending_type, summary, highlights, character_arcs)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        str(uuid.uuid4())[:8],
+                        room_id,
+                        ending.ending_type,
+                        "本次冒险已按已验证条件结束。",
+                        json.dumps(["已完成已验证的结局条件。"], ensure_ascii=False),
+                        json.dumps([], ensure_ascii=False),
+                    ),
+                )
+        return bool(row)
+
     async def _apply_move_result(self, action: dict[str, Any], resolution: ResolutionResult):
         """Post-resolution: update character position, mark node explored, emit map events."""
         params = (self._json_value(action.get("params")) or {}) if isinstance(action.get("params"), str) else (action.get("params") or {})
         target = params.get("targetNodeId", "")
         room_id = action["room_id"]
         character_id = action["character_id"]
+
+        if isinstance(params.get("generic_scene_progression"), dict):
+            return
 
         from ..scenario.solo_runtime import SoloAdventureRuntime
         if SoloAdventureRuntime(self.conn).current(room_id) is not None:
@@ -1383,7 +2285,11 @@ class ResolutionPipeline:
             weapon_name="爪击",
             damage_expression="2d6",
             main_skill="爪击",
-            notes="厚皮每轮吸收前3点伤害；第一轮双爪，第二轮爪击与啃咬，第三轮双爪。",
+            notes=(
+                "厚皮每轮吸收前3点伤害；"
+                "爪击35%/2d6，啃咬25%/1d8；"
+                "第一轮双爪，第二轮爪击与啃咬，第三轮双爪。"
+            ),
             display_name="黑熊",
         )
         return get_encounter(self.conn, encounter_id) or encounter
@@ -1470,6 +2376,26 @@ class ResolutionPipeline:
                     resolve_reason = f"{p.get('character_id')} 已逃脱"
                     break
 
+        pending_reaction = None
+        if (
+            not should_resolve
+            and intent.intent_type == "combat_action"
+            and enc
+            and enc.get("type") == "combat"
+        ):
+            from .solo_combat_reactions import (
+                queue_black_bear_reaction,
+                reaction_projection,
+            )
+
+            pending_reaction = queue_black_bear_reaction(
+                self.conn,
+                room_id=room_id,
+                encounter_id=encounter_id,
+                character_id=character_id,
+                source_action_id=str(action.get("action_id") or resolution.action_id),
+            )
+
         if should_resolve:
             update_encounter_status(self.conn, encounter_id, "resolved", resolve_reason)
 
@@ -1486,6 +2412,15 @@ class ResolutionPipeline:
                 "participants": [self._event_safe_record(p) for p in updated_parts],
             },
         )
+
+        if pending_reaction:
+            await self.dispatcher.emit(
+                room_id,
+                "s2c_solo_combat_reaction_requested",
+                "player",
+                {"reaction": reaction_projection(pending_reaction)},
+                character_id=character_id,
+            )
 
         if should_resolve:
             await self.dispatcher.emit(

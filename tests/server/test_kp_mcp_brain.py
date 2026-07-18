@@ -61,6 +61,43 @@ async def test_generate_narrative_default_prompt_requires_simplified_chinese():
     assert "不得自行引入未提及的地点" in kwargs["system_prompt"]
 
 
+@pytest.mark.asyncio
+async def test_analyze_director_action_uses_structured_plan_prompt_without_state_writes():
+    brain = KpBrain(Config(provider="deepseek", api_key="sk-deepseek"))
+    brain._call_llm = AsyncMock(return_value={"interpreted_intent": "观察门缝"})
+    context = {
+        "declared_intent": "我贴近门边，听听里面的动静",
+        "context_version": 4,
+        "user_message": '{"declared_intent":"我贴近门边，听听里面的动静"}',
+    }
+
+    result = await brain.analyze_director_action(context)
+
+    assert result == {"interpreted_intent": "观察门缝"}
+    args, kwargs = brain._call_llm.await_args
+    assert args[0] == context["user_message"]
+    assert "Director" in kwargs["system_prompt"]
+    assert "must not mutate authoritative game state" in kwargs["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_narrate_action_uses_verified_context_and_forbids_new_state():
+    brain = KpBrain(Config(provider="deepseek", api_key="sk-deepseek"))
+    brain._call_llm = AsyncMock(return_value={"narrative_text": "门后传来脚步声。"})
+    context = {
+        "context_version": 4,
+        "user_message": '{"allowed_facts":["门后有脚步声"]}',
+    }
+
+    result = await brain.narrate_action(context)
+
+    assert result == {"narrative_text": "门后传来脚步声。"}
+    args, kwargs = brain._call_llm.await_args
+    assert args[0] == context["user_message"]
+    assert "Narrator" in kwargs["system_prompt"]
+    assert "must not create state mutations" in kwargs["system_prompt"]
+
+
 def _make_content_package(
     *,
     canonical_text: str = "Canonical text for structure_scenario.",
@@ -222,6 +259,7 @@ async def test_structure_scenario_mock_mode_returns_valid_kg():
         "scenes": [],
         "npcs": [],
         "clues": [],
+        "branches": [],
         "truth": {},
         "endings": [],
         "triggerMechanics": [],
@@ -246,6 +284,33 @@ async def test_kp_structure_scenario_tool_accepts_optional_content_package():
     passed_args = brain.structure_scenario.await_args.args[0]
     assert passed_args["contentPackage"]["canonical_text"] == "Scene summary here."
     assert passed_args["rawText"] == ""
+
+
+@pytest.mark.asyncio
+async def test_minimal_mcp_runtime_tools_forward_director_and_narrator_context():
+    config = Config(provider="deepseek", api_key="sk-deepseek", model="deepseek-v4-pro")
+    with patch("kp_mcp_server.server.KpBrain") as mock_brain_cls:
+        brain = MagicMock()
+        brain.analyze_director_action = AsyncMock(return_value={"interpreted_intent": "倾听"})
+        brain.narrate_action = AsyncMock(return_value={"narrative_text": "木门微微颤动。"})
+        mock_brain_cls.return_value = brain
+
+        mcp = build_server(config)
+        await mcp.call_tool(
+            "kp_analyze_director_action",
+            {"context": {"declared_intent": "我听门后的声音"}},
+        )
+        await mcp.call_tool(
+            "kp_narrate_action",
+            {"context": {"allowed_facts": ["门后有人"]}},
+        )
+
+    brain.analyze_director_action.assert_awaited_once_with(
+        {"declared_intent": "我听门后的声音"}
+    )
+    brain.narrate_action.assert_awaited_once_with(
+        {"allowed_facts": ["门后有人"]}
+    )
 
 
 @pytest.mark.asyncio

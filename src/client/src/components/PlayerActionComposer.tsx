@@ -22,6 +22,23 @@ const RISK_LABELS = {
   high: '高风险',
 } as const;
 
+function formatRolls(rawRolls: unknown): string {
+  if (!Array.isArray(rawRolls)) {
+    return '—';
+  }
+  const rolls = rawRolls
+    .filter((roll): roll is Record<string, unknown> => Boolean(roll) && typeof roll === 'object')
+    .map((roll) => `${String(roll.dice ?? 'd100')} ${String(roll.result ?? '—')}`);
+  return rolls.join(' · ') || '—';
+}
+
+function formatState(snapshot: Record<string, unknown>): string {
+  const values = Object.entries(snapshot)
+    .filter(([, value]) => typeof value !== 'object')
+    .map(([key, value]) => `${key.toUpperCase()} ${String(value)}`);
+  return values.join(' · ') || '无变化';
+}
+
 
 export default function PlayerActionComposer({
   inputText,
@@ -37,6 +54,8 @@ export default function PlayerActionComposer({
   onCancelAction,
 }: PlayerActionComposerProps) {
   const preview = draft || ephemeralPreview;
+  const ruleExplanation = receipt?.rule_explanation;
+  const authoritativeInputs = ruleExplanation?.authoritative_inputs ?? {};
   const editingDisabled = phase === 'analyzing' || Boolean(draft) || Boolean(
     receipt && !['completed', 'resolved', 'rejected', 'canceled', 'timeout'].includes(receipt.status),
   );
@@ -78,6 +97,19 @@ export default function PlayerActionComposer({
           <dl className="bh-action-preview__facts">
             <div><dt>技能</dt><dd>{preview.suggested_skill || '无需技能'}</dd></div>
             <div><dt>难度</dt><dd>{preview.difficulty || '无'}</dd></div>
+            {preview.resource_impacts.length > 0 && (
+              <div>
+                <dt>资源影响</dt>
+                <dd>
+                  {preview.resource_impacts.map((impact, index) => (
+                    <span key={`${String(impact.resource || impact.label || 'resource')}-${index}`}>
+                      {String(impact.label || impact.resource || '资源')}
+                      {impact.dice ? ` -${String(impact.dice)}` : ''}
+                    </span>
+                  ))}
+                </dd>
+              </div>
+            )}
             <div><dt>可见性</dt><dd>{preview.visibility}</dd></div>
             <div><dt>置信度</dt><dd>{Math.round(preview.confidence * 100)}%</dd></div>
           </dl>
@@ -91,9 +123,11 @@ export default function PlayerActionComposer({
           <RedactedCitationDisclosure citations={preview.citations || []} />
           {draft && (
             <div className="bh-action-row bh-action-row--responsive">
-              <button className="bh-button bh-button--yellow" type="button" onClick={onConfirm}>
-                确认并提交
-              </button>
+              {draft.status === 'awaiting_confirmation' && (
+                <button className="bh-button bh-button--yellow" type="button" onClick={onConfirm}>
+                  确认并提交
+                </button>
+              )}
               <button className="bh-button" type="button" onClick={onDiscard}>
                 放弃草稿
               </button>
@@ -121,17 +155,28 @@ export default function PlayerActionComposer({
               撤回行动
             </button>
           )}
-          {receipt.rule_explanation && (
+          {ruleExplanation && (
+            <dl className="bh-action-preview__facts">
+              <div><dt>技能</dt><dd>{String(authoritativeInputs.skill_name ?? '无需技能')}</dd></div>
+              <div><dt>目标值</dt><dd>{String(authoritativeInputs.target ?? '—')}</dd></div>
+              <div><dt>难度</dt><dd>{String(ruleExplanation.modifiers.difficulty ?? 'regular')}</dd></div>
+              <div><dt>骰点</dt><dd>{formatRolls(authoritativeInputs.raw_rolls)}</dd></div>
+              <div><dt>成功等级</dt><dd>{String(authoritativeInputs.success_level ?? '—')}</dd></div>
+            </dl>
+          )}
+          {ruleExplanation && (
             <details className="bh-rule-explanation">
               <summary>展开判定依据</summary>
               <dl className="bh-action-preview__facts">
-                <div><dt>公式</dt><dd>{receipt.rule_explanation.formula}</dd></div>
-                <div><dt>规则版本</dt><dd>{receipt.rule_explanation.rule_set_version}</dd></div>
+                <div><dt>公式</dt><dd>{ruleExplanation.formula}</dd></div>
+                <div><dt>状态前</dt><dd>{formatState(ruleExplanation.state_before)}</dd></div>
+                <div><dt>状态后</dt><dd>{formatState(ruleExplanation.state_after)}</dd></div>
+                <div><dt>规则版本</dt><dd>{ruleExplanation.rule_set_version}</dd></div>
               </dl>
-              {receipt.rule_explanation.hidden_sources.map((item, index) => (
+              {ruleExplanation.hidden_sources.map((item, index) => (
                 <p key={index}>隐藏来源：{String(item.effect ?? '已应用隐藏机械影响')}</p>
               ))}
-              <RedactedCitationDisclosure citations={receipt.rule_explanation.citations || []} />
+              <RedactedCitationDisclosure citations={ruleExplanation.citations || []} />
             </details>
           )}
         </article>

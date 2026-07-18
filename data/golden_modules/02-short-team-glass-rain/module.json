@@ -204,21 +204,36 @@
     },
     "endings": [
       {
+        "ending_id": "glass-rescue",
         "name": "协作停机与救援",
         "description": "队伍按正确顺序关闭阀门并断电，救出梅冬，保留测试表作为后续调查证据。",
         "type": "victory",
+        "completion_conditions": {
+          "entered_scenes": ["cistern"],
+          "all_clues": ["maintenance-radio"]
+        },
         "citation_ids": ["cit-glass-ending-rescue"]
       },
       {
+        "ending_id": "glass-power-first",
         "name": "先断电的代价",
         "description": "系统停下但回灌压力造成局部水管破裂；梅冬获救，温室需长期修复。",
         "type": "mixed",
+        "completion_conditions": {
+          "entered_scenes": ["cistern"],
+          "all_clues": ["restart-log"]
+        },
         "citation_ids": ["cit-glass-ending-power"]
       },
       {
+        "ending_id": "glass-timeout",
         "name": "错过倒计时",
         "description": "G-17 重启，蓄水池被淹并毁坏部分证据；队伍仍可疏散人员并留下失败后的调查线索。",
         "type": "defeat",
+        "completion_conditions": {
+          "entered_scenes": ["cistern"],
+          "all_clues": ["g17-test-sheet"]
+        },
         "citation_ids": ["cit-glass-ending-timeout"]
       }
     ]

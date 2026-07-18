@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
 import { getSlotValue } from '../shared/identity';
+import {
+  evaluateGoldenRagQuestion,
+  RAG_GOLDEN_QUESTIONS,
+  type GoldenRagQuestion,
+} from '../shared/rag-acceptance';
 
 type RuleDoc = {
   doc_id: string;
@@ -13,17 +18,11 @@ type RagResult = {
   source_id: string;
   source_type: string;
   content: string;
-  metadata?: { title?: string; index?: number; total?: number } | string;
+  metadata?: { title?: string; index?: number; total?: number; page?: number } | string;
   similarity?: number;
 };
 
-const SAMPLE_QUERIES = [
-  '困难成功和极难成功怎么判定',
-  '理智检定失败会怎样',
-  '幸运值如何回复',
-  '技能检定常规困难极难',
-  '孤注一掷失败会发生什么',
-];
+const SAMPLE_QUERIES = RAG_GOLDEN_QUESTIONS.map((question) => question.query);
 
 function authHeaders(): Record<string, string> {
   const token = getSlotValue('account_token') || '';
@@ -48,6 +47,7 @@ export default function RagTestPage() {
   const [results, setResults] = useState<RagResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [goldenResults, setGoldenResults] = useState<Record<string, { passed: boolean; citation_found: boolean; result_count: number }>>({});
 
   const loadDocs = async () => {
     try {
@@ -61,7 +61,7 @@ export default function RagTestPage() {
     loadDocs();
   }, []);
 
-  const search = async (nextQuery = query) => {
+  const search = async (nextQuery = query, goldenQuestion?: GoldenRagQuestion) => {
     if (!nextQuery.trim()) return;
     setQuery(nextQuery);
     setLoading(true);
@@ -76,6 +76,10 @@ export default function RagTestPage() {
         }),
       });
       setResults(data);
+      if (goldenQuestion) {
+        const evaluation = evaluateGoldenRagQuestion(goldenQuestion, data);
+        setGoldenResults((current) => ({ ...current, [goldenQuestion.id]: evaluation }));
+      }
     } catch {
       setError('检索失败，请确认 RAG 后端可用。');
     } finally {
@@ -83,15 +87,43 @@ export default function RagTestPage() {
     }
   };
 
+  const completedGoldenCount = Object.keys(goldenResults).length;
+  const passedGoldenCount = Object.values(goldenResults).filter((result) => result.passed).length;
+
   return (
     <div style={page}>
       <header style={header}>
         <div>
           <h1 style={title}>规则书 RAG 测试台</h1>
-          <div style={subtitle}>用于验证 COC 规则书导入后的检索命中效果</div>
+          <div style={subtitle}>黄金问题必须同时命中预期规则要点，并返回可定位的 citation。</div>
+          <div style={{ ...subtitle, color: '#f5c542', fontWeight: 700 }}>
+            黄金通过率：{passedGoldenCount} / {RAG_GOLDEN_QUESTIONS.length}（已执行 {completedGoldenCount}）
+          </div>
         </div>
-        <a href="/" style={backLink}>返回首页</a>
+        <a href="/admin" style={backLink}>返回系统工具</a>
       </header>
+
+      <section style={section}>
+        <h2 style={sectionTitle}>黄金问题验收</h2>
+        <div style={docGrid}>
+          {RAG_GOLDEN_QUESTIONS.map((question) => {
+            const outcome = goldenResults[question.id];
+            return (
+              <article key={question.id} style={{ ...docCard, borderColor: outcome?.passed ? '#4caf50' : outcome ? '#ef5350' : '#262626' }}>
+                <div style={docTitle}>{question.query}</div>
+                <div style={docMeta}>期望：{question.expected}</div>
+                <div style={docStats}>
+                  <span>{outcome ? (outcome.passed ? '通过' : '未通过') : '未执行'}</span>
+                  <span>{outcome?.citation_found ? 'citation 已定位' : '待 citation'}</span>
+                </div>
+                <button onClick={() => search(question.query, question)} disabled={loading} style={{ ...sampleButton, marginTop: 10 }}>
+                  执行此题
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      </section>
 
       <section style={section}>
         <h2 style={sectionTitle}>已导入规则书</h2>
@@ -117,7 +149,7 @@ export default function RagTestPage() {
         <h2 style={sectionTitle}>提问测试</h2>
         <div style={sampleRow}>
           {SAMPLE_QUERIES.map((sample) => (
-            <button key={sample} onClick={() => search(sample)} style={sampleButton}>
+            <button key={sample} onClick={() => search(sample, RAG_GOLDEN_QUESTIONS.find((question) => question.query === sample))} style={sampleButton}>
               {sample}
             </button>
           ))}
@@ -150,7 +182,7 @@ export default function RagTestPage() {
                   <div style={resultHead}>
                     <strong>#{index + 1}</strong>
                     <span>{metadata.title || result.source_id}</span>
-                    <span>chunk {metadata.index ?? '-'} / {metadata.total ?? '-'}</span>
+                    <span>citation：{metadata.page ? `第 ${metadata.page} 页` : `chunk ${metadata.index ?? '-'} / ${metadata.total ?? '-'}`}</span>
                     <span>sim {typeof result.similarity === 'number' ? result.similarity.toFixed(4) : '-'}</span>
                   </div>
                   <p style={snippet}>{result.content}</p>

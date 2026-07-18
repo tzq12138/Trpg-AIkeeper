@@ -165,7 +165,7 @@ def test_campaign_home_projects_only_the_current_solo_entry(client, test_db):
                 {
                     "node_id": "1",
                     "title": "条目 1",
-                    "text": "太阳高悬，你正在奥斯本药店门口等车。",
+                    "text": "宫涟个人汉化 太阳高悬，你正在奥斯本药店门口等车。请转到 263。",
                     "target_node_ids": ["263"],
                     "citation": {"source_ref": "向火独行.pdf#page=4"},
                 },
@@ -210,8 +210,7 @@ def test_campaign_home_projects_only_the_current_solo_entry(client, test_db):
     assert response.status_code == 200
     scene = response.json()["current_scene"]
     assert scene == {
-        "node_id": "1",
-        "title": "条目 1",
+        "title": "当前场景",
         "text_preview": "太阳高悬，你正在奥斯本药店门口等车。",
         "citation": {
             "label": "已校验依据",
@@ -219,12 +218,39 @@ def test_campaign_home_projects_only_the_current_solo_entry(client, test_db):
             "scene": None,
             "verified": True,
         },
-        "choice_count": 1,
         "image_asset_id": "opening-image",
     }
     assert "source_ref" not in response.text
     assert "向火独行.pdf" not in response.text
     assert "下一条隐藏正文" not in response.text
+    assert "条目" not in response.text
+    assert "转到 263" not in response.text
+
+
+def test_player_safe_solo_preview_removes_split_import_markers():
+    from src.server.player.router_campaign_v2 import _player_safe_solo_preview
+
+    preview = _player_safe_solo_preview(
+        "七宫\n火独行 西拉斯看出 宫涟\n了你的沮个丧。 人汉化 汉化 向火"
+    )
+
+    assert preview == "西拉斯看出了你的沮丧。"
+
+
+def test_player_safe_solo_preview_removes_inline_import_marker():
+    from src.server.player.router_campaign_v2 import _player_safe_solo_preview
+
+    preview = _player_safe_solo_preview("七宫涟个人汉 你在村道上看见梅正朝你走来。")
+
+    assert preview == "你在村道上看见梅正朝你走来。"
+
+
+def test_player_safe_solo_preview_removes_inline_short_import_marker():
+    from src.server.player.router_campaign_v2 import _player_safe_solo_preview
+
+    preview = _player_safe_solo_preview("七宫 你在村道上看见梅正朝你走来。")
+
+    assert preview == "你在村道上看见梅正朝你走来。"
 
 
 def test_campaign_home_ends_session_after_offline_quiet_window(client, test_db):

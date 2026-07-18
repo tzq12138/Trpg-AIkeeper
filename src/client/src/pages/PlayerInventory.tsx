@@ -1,12 +1,20 @@
 import { useState, useEffect } from 'react';
 import { apiFetch, authHeaders } from '../api';
 import type { InventoryItem, Clue } from '../types';
+import { describeClueShare, describeItemUse } from '../shared/player-inventory-intents';
 
-export default function PlayerInventory() {
+export default function PlayerInventory({
+  onDescribeInNarration,
+  onOpenCampaignHome,
+}: {
+  onDescribeInNarration: (text: string) => void;
+  onOpenCampaignHome: () => void;
+}) {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [clues, setClues] = useState<Clue[]>([]);
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
   const [selectedClue, setSelectedClue] = useState<Clue | null>(null);
+  const [activeSection, setActiveSection] = useState<'items' | 'clues' | 'evidence'>('items');
 
   useEffect(() => {
     apiFetch<{ clues: Clue[] }>('/api/player/clues', { headers: authHeaders() })
@@ -16,22 +24,6 @@ export default function PlayerInventory() {
       .then(setItems)
       .catch(() => {});
   }, []);
-
-  const shareClue = async (clueId: string) => {
-    try {
-      await apiFetch(`/api/player/clues/${clueId}/share`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify({}),
-      });
-      setClues((prev) =>
-        prev.map((c) => (c.id === clueId ? { ...c, is_private: false } : c))
-      );
-      setSelectedClue(null);
-    } catch {
-      // ignore
-    }
-  };
 
   const cluePosition = (id: string, index: number) => {
     let hash = 0;
@@ -45,6 +37,17 @@ export default function PlayerInventory() {
 
   return (
     <div>
+      <section className="bh-panel" style={{ marginBottom: 16 }}>
+        <span className="bh-eyebrow">PLAYER MATERIALS</span>
+        <h2 className="bh-panel-title">物品、线索与证据</h2>
+        <div className="bh-source-toggle" style={{ marginTop: 12 }}>
+          <button className={`bh-button ${activeSection === 'items' ? 'bh-button--yellow' : ''}`} type="button" onClick={() => setActiveSection('items')}>背包</button>
+          <button className={`bh-button ${activeSection === 'clues' ? 'bh-button--yellow' : ''}`} type="button" onClick={() => setActiveSection('clues')}>个人线索</button>
+          <button className={`bh-button ${activeSection === 'evidence' ? 'bh-button--yellow' : ''}`} type="button" onClick={() => setActiveSection('evidence')}>队伍证据</button>
+        </div>
+      </section>
+
+      {activeSection === 'items' && <section className="bh-panel">
       <h3 style={{ marginBottom: 12 }}>背包</h3>
       {items.length === 0 ? (
         <p style={{ color: '#666', fontSize: 13 }}>暂无物品</p>
@@ -77,8 +80,10 @@ export default function PlayerInventory() {
           ))}
         </div>
       )}
+      </section>}
 
-      <h3 style={{ marginBottom: 12 }}>线索板</h3>
+      {activeSection === 'clues' && <section className="bh-panel">
+      <h3 style={{ marginBottom: 12 }}>个人线索</h3>
       {clues.length === 0 ? (
         <p style={{ color: '#666', fontSize: 13 }}>暂无线索</p>
       ) : (
@@ -122,6 +127,18 @@ export default function PlayerInventory() {
           })}
         </div>
       )}
+      </section>}
+
+      {activeSection === 'evidence' && (
+        <section className="bh-panel">
+          <span className="bh-eyebrow">TEAM EVIDENCE</span>
+          <h3 style={{ marginBottom: 8 }}>队伍证据板</h3>
+          <p style={{ color: 'var(--bh-dim)', fontSize: 13 }}>
+            这里仅展示所有玩家已公开的证据、关系与已确认事实；私人线索不会自动公开。
+          </p>
+          <button className="bh-button bh-button--yellow" type="button" onClick={onOpenCampaignHome}>打开队伍证据板</button>
+        </section>
+      )}
 
       {selectedItem && (
         <div
@@ -143,24 +160,16 @@ export default function PlayerInventory() {
             <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
               <button
                 onClick={() => {
-                  apiFetch('/api/player/intent', {
-                    method: 'POST',
-                    headers: authHeaders(),
-                    body: JSON.stringify({ intent_type: 'use_item', params: { itemId: selectedItem.id } }),
-                  });
+                  onDescribeInNarration(describeItemUse(selectedItem.name));
                   setSelectedItem(null);
                 }}
                 style={{ flex: 1, padding: 10, borderRadius: 8, border: 'none', background: '#3f51b5', color: '#fff', fontSize: 14 }}
               >
-                尝试使用
+                在叙事中使用
               </button>
               <button
                 onClick={() => {
-                  apiFetch('/api/player/intent', {
-                    method: 'POST',
-                    headers: authHeaders(),
-                    body: JSON.stringify({ intent_type: 'dialogue', params: { itemId: selectedItem.id, action: 'show_item' } }),
-                  });
+                  onDescribeInNarration(`我想把${selectedItem.name}展示给队友。`);
                   setSelectedItem(null);
                 }}
                 style={{ flex: 1, padding: 10, borderRadius: 8, border: 'none', background: '#4caf50', color: '#fff', fontSize: 14 }}
@@ -197,13 +206,16 @@ export default function PlayerInventory() {
             </div>
             {selectedClue.is_private && (
               <button
-                onClick={() => shareClue(selectedClue.id)}
+                onClick={() => {
+                  onDescribeInNarration(describeClueShare(selectedClue.text));
+                  setSelectedClue(null);
+                }}
                 style={{
                   marginTop: 12, width: '100%', padding: 10, borderRadius: 8,
                   border: 'none', background: '#ff9800', color: '#fff', fontSize: 14,
                 }}
               >
-                分享给队伍
+                在叙事中分享
               </button>
             )}
             <button

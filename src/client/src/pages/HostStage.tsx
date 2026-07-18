@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BrutalProgress } from '../components/BauhausShell';
 import HostSkeletonPanels from '../components/HostSkeletonPanels';
 import { hostTabs, type HostTabKey } from '../navigation';
+import { buildHostHeaders } from '../shared/host-auth';
 import { getSlotValue } from '../shared/identity';
 import { buildRoomWsUrl } from '../shared/ws-url';
 import { normalizeHud as normalizeHostStageHud } from './hostStageModel';
@@ -35,6 +36,17 @@ interface ChatMessage {
   speaker?: string;
   content?: string;
 }
+
+interface ActionException {
+  action_id: string;
+  character_id: string;
+  intent_type: string;
+  declared_intent: string;
+  status: 'awaiting_host_exception';
+  created_at: string;
+}
+
+type ActionExceptionDecision = 'request_player_choice' | 'rejected';
 
 function useHostWS(roomId: string, onEvent: (event: Record<string, unknown>) => void) {
   const wsRef = useRef<WebSocket | null>(null);
@@ -215,6 +227,73 @@ function ReadOnlyList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
+export function HostExceptionQueue({
+  items,
+  resolvingActionId,
+  onResolve,
+}: {
+  items: ActionException[];
+  resolvingActionId: string | null;
+  onResolve: (actionId: string, decision: ActionExceptionDecision, reason: string) => void;
+}) {
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+
+  if (items.length === 0) return null;
+
+  return (
+    <section className="bh-panel" aria-label="异常行动队列">
+      <span className="bh-eyebrow">EXCEPTION ONLY</span>
+      <h2 className="bh-panel-title">异常行动队列</h2>
+      <p className="bh-subtitle">仅处理无法安全裁决的行动；普通行动仍由 AI 与规则引擎完成。</p>
+      {items.map((item) => {
+        const reason = reasons[item.action_id] || '';
+        const isResolving = resolvingActionId === item.action_id;
+        return (
+          <article className="bh-muted-box" key={item.action_id}>
+            <strong>{item.intent_type}</strong>
+            <p>{item.declared_intent}</p>
+            <textarea
+              aria-label={`处理原因 ${item.action_id}`}
+              placeholder="处理原因"
+              value={reason}
+              onChange={(event) => setReasons((previous) => ({
+                ...previous,
+                [item.action_id]: event.target.value,
+              }))}
+            />
+            <div className="bh-action-row bh-action-row--responsive">
+              <button
+                className="bh-button bh-button--yellow"
+                disabled={isResolving}
+                onClick={() => onResolve(
+                  item.action_id,
+                  'request_player_choice',
+                  reason.trim() || '请补充具体行动方式。',
+                )}
+                type="button"
+              >
+                请求玩家澄清
+              </button>
+              <button
+                className="bh-button"
+                disabled={isResolving}
+                onClick={() => onResolve(
+                  item.action_id,
+                  'rejected',
+                  reason.trim() || '当前行动无法安全裁决。',
+                )}
+                type="button"
+              >
+                拒绝行动
+              </button>
+            </div>
+          </article>
+        );
+      })}
+    </section>
+  );
+}
+
 export default function HostStage({
   roomId,
   initialTab = 'narrative',
@@ -232,6 +311,8 @@ export default function HostStage({
   const [encounterSuggestion, setEncounterSuggestion] = useState<any>(null);
   const [mapRefresh, setMapRefresh] = useState(0);
   const [hudError, setHudError] = useState('');
+  const [actionExceptions, setActionExceptions] = useState<ActionException[]>([]);
+  const [resolvingActionId, setResolvingActionId] = useState<string | null>(null);
 
   const handleEvent = useCallback((data: Record<string, unknown>) => {
     if (data.type === 'host_state_update' && data.hud) {
@@ -289,8 +370,7 @@ export default function HostStage({
       try {
         const ownerToken = getSlotValue('owner_token') || '';
         const accountToken = getSlotValue('account_token') || '';
-        const headers: Record<string, string> = { 'X-Owner-Token': ownerToken };
-        if (accountToken) headers['Authorization'] = `Bearer ${accountToken}`;
+        const headers = buildHostHeaders(ownerToken, accountToken);
         const res = await fetch(`/api/host/${roomId}/hud`, { headers });
         if (res.ok) {
           const data = await res.json();
@@ -303,6 +383,26 @@ export default function HostStage({
     fetchHud();
   }, [roomId]);
 
+  const loadActionExceptions = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/host/${roomId}/action-exceptions`, {
+        headers: buildHostHeaders(
+          getSlotValue('owner_token') || '',
+          getSlotValue('account_token') || '',
+        ),
+      });
+      if (!response.ok) return;
+      const payload = await response.json() as { items?: ActionException[] };
+      setActionExceptions(payload.items || []);
+    } catch {
+      return;
+    }
+  }, [roomId]);
+
+  useEffect(() => {
+    void loadActionExceptions();
+  }, [loadActionExceptions]);
+
   const handleDiceSettled = useCallback(() => {
     setRollEvent(null);
   }, []);
@@ -313,6 +413,34 @@ export default function HostStage({
       headers: { 'X-Owner-Token': getSlotValue('owner_token') || '' },
     });
   };
+
+  const handleResolveException = useCallback(async (
+    actionId: string,
+    decision: ActionExceptionDecision,
+    reason: string,
+  ) => {
+    setResolvingActionId(actionId);
+    try {
+      const response = await fetch(`/api/host/${roomId}/action-exceptions/${actionId}/resolve`, {
+        method: 'POST',
+        headers: buildHostHeaders(
+          getSlotValue('owner_token') || '',
+          getSlotValue('account_token') || '',
+          true,
+        ),
+        body: JSON.stringify({ decision, reason }),
+      });
+      if (!response.ok) {
+        setHudError('异常行动处理失败——请刷新后重试。');
+        return;
+      }
+      setActionExceptions((previous) => previous.filter((item) => item.action_id !== actionId));
+    } catch {
+      setHudError('网络错误——无法处理异常行动。');
+    } finally {
+      setResolvingActionId(null);
+    }
+  }, [roomId]);
 
   const unlockAudio = () => {
     const ctx = new AudioContext();
@@ -330,7 +458,7 @@ export default function HostStage({
     aiEvidence: [],
     stage: hud?.engine_state === 'thinking' ? 'directing' : hud?.engine_state === 'busy' ? 'narrating' : 'completed',
     risks: encounterSuggestion ? ['遭遇建议待确认'] : [],
-    exceptionQueue: hud?.queue_status?.urgent ? [`${hud.queue_status.urgent} 个紧急事项`] : [],
+    exceptionQueue: actionExceptions.map((item) => item.declared_intent),
   };
 
   return (
@@ -429,6 +557,11 @@ export default function HostStage({
             snapshot={directorSnapshot}
             onPause={() => void handlePause()}
             onTakeOverException={() => setActiveTab('logs')}
+          />
+          <HostExceptionQueue
+            items={actionExceptions}
+            resolvingActionId={resolvingActionId}
+            onResolve={(actionId, decision, reason) => void handleResolveException(actionId, decision, reason)}
           />
           <div className="bh-player-monitor-list">
             {players.length === 0 && (

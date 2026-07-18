@@ -5,6 +5,7 @@ import hashlib
 import io
 import mimetypes
 import re
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,7 @@ MAX_ZIP_ENTRIES = 1000
 MAX_ZIP_UNCOMPRESSED_BYTES = 25 * 1024 * 1024
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_DOC_MIME = "application/msword"
 _PDF_MIME = "application/pdf"
 _SUPPORTED_IMAGE_MIMES = {"image/png", "image/jpeg", "image/webp"}
 
@@ -86,8 +88,53 @@ def build_content_package(filename: str, content: bytes, declared_mime: str = ""
         return _build_image_package(source_filename, source_sha256, content, mime_type)
     if mime_type == _DOCX_MIME:
         return _build_docx_package(source_filename, source_sha256, content)
+    if mime_type == _DOC_MIME:
+        converted_pdf = _convert_legacy_doc_to_pdf(source_filename, content)
+        package = _build_pdf_package(source_filename, source_sha256, converted_pdf)
+        package.mime_type = _DOC_MIME
+        package.metadata["conversion"] = "legacy_doc_to_pdf"
+        package.metadata["converted_mime_type"] = _PDF_MIME
+        return package
 
     raise ContentPackageError(f"Unsupported content type: {mime_type or filename}")
+
+
+def _convert_legacy_doc_to_pdf(filename: str, content: bytes) -> bytes:
+    try:
+        import win32com.client
+    except ImportError as exc:
+        raise ContentPackageError("旧 DOC 转换器不可用") from exc
+
+    with tempfile.TemporaryDirectory(prefix="aikeeper-doc-") as directory:
+        source_path = Path(directory) / Path(filename).with_suffix(".doc").name
+        output_path = Path(directory) / "converted.pdf"
+        source_path.write_bytes(content)
+        application = None
+        document = None
+        try:
+            application = win32com.client.DispatchEx("Word.Application")
+            application.Visible = False
+            application.DisplayAlerts = 0
+            document = application.Documents.Open(str(source_path))
+            document.SaveAs(str(output_path), FileFormat=17)
+            if not output_path.is_file() or not output_path.stat().st_size:
+                raise ContentPackageError("旧 DOC 转换未生成 PDF")
+            return output_path.read_bytes()
+        except ContentPackageError:
+            raise
+        except Exception as exc:
+            raise ContentPackageError("旧 DOC 转换失败") from exc
+        finally:
+            if document is not None:
+                try:
+                    document.Close(False)
+                except Exception:
+                    pass
+            if application is not None:
+                try:
+                    application.Quit()
+                except Exception:
+                    pass
 
 
 def _build_pdf_package(source_filename: str, source_sha256: str, content: bytes) -> ContentPackage:
@@ -300,7 +347,7 @@ def _validate_zip_limits(archive: zipfile.ZipFile) -> None:
 def _resolve_mime_type(filename: str, declared_mime: str) -> str:
     normalized_declared = (declared_mime or "").strip().lower()
     if normalized_declared:
-        if normalized_declared in {_PDF_MIME, _DOCX_MIME, *_SUPPORTED_IMAGE_MIMES}:
+        if normalized_declared in {_PDF_MIME, _DOCX_MIME, _DOC_MIME, *_SUPPORTED_IMAGE_MIMES}:
             return normalized_declared
         if normalized_declared.startswith("image/"):
             return normalized_declared
@@ -310,6 +357,8 @@ def _resolve_mime_type(filename: str, declared_mime: str) -> str:
         return _PDF_MIME
     if extension == ".docx":
         return _DOCX_MIME
+    if extension == ".doc":
+        return _DOC_MIME
     if extension in {".png"}:
         return "image/png"
     if extension in {".jpg", ".jpeg"}:

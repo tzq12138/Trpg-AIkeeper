@@ -209,6 +209,45 @@ CREATE TABLE IF NOT EXISTS scenario_version_sources (
 CREATE INDEX IF NOT EXISTS idx_scenario_version_sources_document
     ON scenario_version_sources(source_document_id);
 
+CREATE TABLE IF NOT EXISTS scenario_review_drafts (
+    scenario_version_id TEXT PRIMARY KEY REFERENCES scenario_versions(scenario_version_id) ON DELETE CASCADE,
+    parent_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id),
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenario_review_drafts_parent
+    ON scenario_review_drafts(parent_version_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS scenario_review_patches (
+    review_patch_id TEXT PRIMARY KEY,
+    scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id) ON DELETE CASCADE,
+    target_type TEXT NOT NULL,
+    target_key TEXT NOT NULL,
+    operation TEXT NOT NULL DEFAULT 'upsert',
+    payload JSONB NOT NULL DEFAULT '{}',
+    provenance TEXT NOT NULL,
+    citation JSONB NOT NULL DEFAULT '{}',
+    rationale TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'accepted',
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenario_review_patches_version
+    ON scenario_review_patches(scenario_version_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS scenario_review_issue_resolutions (
+    scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id) ON DELETE CASCADE,
+    issue_code TEXT NOT NULL,
+    status TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    resolved_by TEXT NOT NULL,
+    resolved_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (scenario_version_id, issue_code)
+);
+
 CREATE TABLE IF NOT EXISTS content_items (
     content_item_id TEXT PRIMARY KEY,
     scenario_version_id TEXT NOT NULL REFERENCES scenario_versions(scenario_version_id) ON DELETE CASCADE,
@@ -754,12 +793,14 @@ CREATE TABLE IF NOT EXISTS room_turns (
     room_id TEXT NOT NULL REFERENCES rooms(room_id),
     turn_index INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'collecting',
+    base_state_version INTEGER NOT NULL DEFAULT 0,
     started_at TIMESTAMP NOT NULL DEFAULT NOW(),
     resolved_at TIMESTAMP,
     summary TEXT
 );
 
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS turn_id TEXT;
+ALTER TABLE room_turns ADD COLUMN IF NOT EXISTS base_state_version INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS rule_documents (
     doc_id TEXT PRIMARY KEY,
@@ -992,6 +1033,28 @@ CREATE TABLE IF NOT EXISTS encounter_participants (
     PRIMARY KEY (encounter_id, character_id)
 );
 
+CREATE TABLE IF NOT EXISTS encounter_pending_reactions (
+    reaction_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id),
+    encounter_id TEXT NOT NULL REFERENCES encounters(encounter_id),
+    source_action_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    attacker_id TEXT NOT NULL,
+    round_number INTEGER NOT NULL,
+    attack_index INTEGER NOT NULL,
+    attack_name TEXT NOT NULL,
+    damage_expression TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    choice TEXT,
+    result JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMP,
+    UNIQUE (encounter_id, character_id, round_number, attack_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_encounter_pending_reactions_character
+    ON encounter_pending_reactions (room_id, character_id, status, created_at);
+
 CREATE TABLE IF NOT EXISTS ai_call_logs (
     id BIGSERIAL PRIMARY KEY,
     room_id VARCHAR(64),
@@ -1135,6 +1198,19 @@ ALTER TABLE inventory ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_events_room ON events(room_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+
+UPDATE character_templates AS template
+SET attributes = COALESCE(template.attributes, '{}'::jsonb) ||
+    '{"str": 50, "con": 50, "pow": 50, "dex": 60, "app": 60, "siz": 40, "int": 70, "edu": 80, "hp": 9, "san": 50, "luck": 50}'::jsonb
+FROM scenarios AS scenario
+WHERE template.scenario_id = scenario.scenario_id
+  AND template.template_id = 'yhdx-reporter-v1'
+  AND scenario.title = '向火独行'
+  AND COALESCE(template.attributes, '{}'::jsonb) @> '{"hp": 11, "con": 55, "pow": 50, "san": 50, "luck": 50}'::jsonb
+  AND NOT (
+      COALESCE(template.attributes, '{}'::jsonb) ? 'str'
+      OR COALESCE(template.attributes, '{}'::jsonb) ? 'STR'
+  );
 """
 
 

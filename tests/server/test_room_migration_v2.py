@@ -193,3 +193,64 @@ def test_preview_rejects_hash_tampering_and_requires_host_or_admin(client, test_
     )
     assert rejected.status_code == 422
     assert test_db.execute("SELECT COUNT(*) AS count FROM rooms").fetchone()["count"] == before
+
+
+def test_admin_global_reset_requires_verified_download_before_deleting_room_data(
+    client,
+    test_db,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIKEEPER_MIGRATION_BACKUP_DIR", str(tmp_path))
+    room, _ = _setup_migratable_room(client, test_db)
+    admin_token = login(client, "admin")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    preflight = client.get("/api/admin/reset/preflight", headers=headers)
+    assert preflight.status_code == 200, preflight.text
+    assert preflight.json()["counts"]["rooms"] >= 1
+    assert preflight.json()["counts"]["characters"] >= 1
+
+    backup = client.post("/api/admin/reset/backups", headers=headers)
+    assert backup.status_code == 201, backup.text
+    backup_data = backup.json()
+    backup_id = backup_data["backup_id"]
+    assert len(backup_data["sha256"]) == 64
+    assert backup_data["counts"]["rooms"] >= 1
+
+    blocked = client.post(
+        "/api/admin/reset/execute",
+        headers=headers,
+        json={"backup_id": backup_id, "confirm_download": True},
+    )
+    assert blocked.status_code == 409
+
+    downloaded = client.get(f"/api/admin/reset/backups/{backup_id}/download", headers=headers)
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"].startswith("application/zip")
+    assert hashlib.sha256(downloaded.content).hexdigest() == backup_data["sha256"]
+
+    invalid_confirmation = client.post(
+        "/api/admin/reset/execute",
+        headers=headers,
+        json={"backup_id": backup_id, "confirm_download": False},
+    )
+    assert invalid_confirmation.status_code == 400
+
+    verified = client.get(f"/api/admin/reset/backups/{backup_id}/verify", headers=headers)
+    assert verified.status_code == 200, verified.text
+    assert verified.json()["valid"] is True
+    assert verified.json()["counts"]["rooms"] >= 1
+
+    executed = client.post(
+        "/api/admin/reset/execute",
+        headers=headers,
+        json={"backup_id": backup_id, "confirm_download": True},
+    )
+    assert executed.status_code == 200, executed.text
+    assert executed.json()["deleted"]["rooms"] >= 1
+    assert test_db.execute("SELECT COUNT(*) AS count FROM rooms").fetchone()["count"] == 0
+    assert test_db.execute("SELECT COUNT(*) AS count FROM characters").fetchone()["count"] == 0
+    assert test_db.execute("SELECT COUNT(*) AS count FROM accounts").fetchone()["count"] >= 3
+    assert test_db.execute("SELECT COUNT(*) AS count FROM scenarios WHERE scenario_id = 'sc-test'").fetchone()["count"] == 1
+    assert test_db.execute("SELECT COUNT(*) AS count FROM events WHERE room_id = %s", (room["room_id"],)).fetchone()["count"] == 0

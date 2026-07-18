@@ -2,6 +2,10 @@ export const PLAYER_JOIN_SOURCE_ORDER = ['account', 'preset', 'builder', 'upload
 
 export type PlayerJoinSourceMode = typeof PLAYER_JOIN_SOURCE_ORDER[number];
 
+export function getPrimaryJoinSource(hasRecoverableCharacter: boolean): PlayerJoinSourceMode {
+  return hasRecoverableCharacter ? 'account' : 'preset';
+}
+
 export function buildPlayerJoinReturnPath(roomCode: string): string {
   const normalized = roomCode.trim();
   return normalized

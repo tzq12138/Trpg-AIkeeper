@@ -32,6 +32,32 @@ def _safe_player_scene_name(value: str) -> str:
     return name or "当前场景"
 
 
+def _is_player_visible_map_asset(conn, room_id: str, asset_id: str) -> bool:
+    if not asset_id:
+        return False
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM rooms r
+        JOIN scenario_maps sm ON sm.scenario_id = r.scenario_id
+        JOIN scenario_assets a ON a.asset_id = %s AND a.scenario_id = r.scenario_id
+        LEFT JOIN scenario_asset_bindings sab
+          ON sab.asset_id = a.asset_id
+         AND sab.scenario_version_id = r.scenario_version_id
+         AND sab.target_type = 'map'
+         AND sab.target_key = 'map'
+         AND sab.status = 'confirmed'
+        WHERE r.room_id = %s
+          AND sm.status = 'confirmed'
+          AND sm.base_asset->>'assetId' = a.asset_id
+          AND (a.visibility IN ('player', 'party', 'public') OR sab.binding_id IS NOT NULL)
+        LIMIT 1
+        """,
+        (asset_id, room_id),
+    ).fetchone()
+    return row is not None
+
+
 def _safe_text_scene_view(conn, room_id: str) -> dict:
     try:
         from .scenario.solo_runtime import SoloAdventureRuntime
@@ -39,7 +65,7 @@ def _safe_text_scene_view(conn, room_id: str) -> dict:
         if solo_scene:
             return {
                 "name": _safe_player_scene_name(solo_scene["title"]),
-                "description": _sanitize_player_scene_text(solo_scene["text"]),
+                "description": "请根据 AI KP 的叙事、当前目标与已公开线索行动。",
                 "visibleExits": [],
             }
     except Exception:
@@ -183,6 +209,10 @@ async def get_map_view(request: Request, room_id: str):
     for node in view.get("nodes", []):
         node.pop("cluesAvailable", None)
 
+    base_asset = view.get("baseAsset") if isinstance(view.get("baseAsset"), dict) else {}
+    if not _is_player_visible_map_asset(conn, room_id, str(base_asset.get("assetId") or "")):
+        view["baseAsset"] = {}
+
     view["textScene"] = _safe_text_scene_view(conn, room_id)
 
     return view
@@ -199,12 +229,11 @@ async def get_player_map_asset(request: Request, room_id: str, asset_id: str):
     if char.get("room_id") != room_id:
         raise HTTPException(403, "无权访问此房间的地图素材")
     conn = request.app.state.db
+    if not _is_player_visible_map_asset(conn, room_id, asset_id):
+        raise HTTPException(404, "地图素材不存在或未公开")
     asset = conn.execute(
-        "SELECT a.mime_type, a.relative_path FROM scenario_assets a "
-        "JOIN rooms r ON r.scenario_id = a.scenario_id "
-        "WHERE r.room_id = %s AND a.asset_id = %s "
-        "AND a.visibility IN ('player', 'party', 'public')",
-        (room_id, asset_id),
+        "SELECT mime_type, relative_path FROM scenario_assets WHERE asset_id = %s",
+        (asset_id,),
     ).fetchone()
     if not asset:
         raise HTTPException(404, "地图素材不存在或未公开")

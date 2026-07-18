@@ -25,7 +25,7 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, room_id: str, connection_id: str):
         await websocket.accept()
-        self._connections.setdefault(room_id, {})[connection_id] = websocket
+        self.register_accepted(websocket, room_id, connection_id)
         logger.info("WS connect: room=%s conn=%s total_rooms=%s",
                     room_id, connection_id, len(self._connections))
 
@@ -41,7 +41,15 @@ class ConnectionManager:
                 pass
         self._connections.setdefault(room_id, {})[connection_id] = websocket
 
-    def disconnect(self, room_id: str, connection_id: str):
+    def disconnect(
+        self,
+        room_id: str,
+        connection_id: str,
+        websocket: WebSocket | None = None,
+    ):
+        current = self._connections.get(room_id, {}).get(connection_id)
+        if websocket is not None and current is not websocket:
+            return
         if room_id in self._connections:
             self._connections[room_id].pop(connection_id, None)
         logger.info("WS disconnect: room=%s conn=%s", room_id, connection_id)
@@ -51,7 +59,7 @@ class ConnectionManager:
         if ws:
             sent = await self._send_text(ws, event.model_dump_json(by_alias=True))
             if not sent:
-                self.disconnect(room_id, connection_id)
+                self.disconnect(room_id, connection_id, websocket=ws)
 
     async def broadcast_to_room(self, room_id: str, event: EngineEvent):
         targets = []
@@ -68,9 +76,9 @@ class ConnectionManager:
         results = await asyncio.gather(
             *(self._send_text(ws, payload) for _, ws in targets)
         )
-        for (connection_id, _), sent in zip(targets, results):
+        for (connection_id, socket), sent in zip(targets, results):
             if not sent:
-                self.disconnect(room_id, connection_id)
+                self.disconnect(room_id, connection_id, websocket=socket)
 
     @staticmethod
     async def _send_text(ws: WebSocket, payload: str) -> bool:

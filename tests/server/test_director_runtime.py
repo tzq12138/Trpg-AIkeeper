@@ -1,8 +1,10 @@
+import asyncio
 import json
 
 import pytest
 from pydantic import ValidationError
 
+from src.server.ai.director import _validate_semantic_progression, resolve_conditional_solo_target
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.models import ActionDraftDTO, DirectorPlanDTO, MechanicCompileResult, ResolutionResult
 from tests.server.conftest import create_room, setup_auth_test_data
@@ -29,6 +31,26 @@ class _RecordingDirectorGateway:
 class _FailingDirectorGateway:
     async def analyze_director_action(self, context: dict, room_id: str | None = None):
         raise RuntimeError("provider failed with prompt: SECRET_KEEPER_PROMPT")
+
+
+class _SlowDirectorGateway:
+    def __init__(self):
+        self.cancelled = False
+
+    async def analyze_director_action(self, context: dict, room_id: str | None = None):
+        try:
+            await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return {
+            "interpreted_intent": "look around the station",
+            "intent_type": "dialogue",
+            "confidence": 0.9,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+        }
 
 
 class _AutoSuccessCompiler:
@@ -138,6 +160,166 @@ def test_action_analyze_sends_full_director_context_with_display_name(client, te
     assert set(context) > {"declared_intent"}
 
 
+def test_director_empty_clarification_options_keeps_draft_confirmable(client, test_db):
+    _, _, player_token = _setup_player(client, test_db)
+    gateway = _RecordingDirectorGateway(
+        {
+            "interpreted_intent": "inspect the visible label",
+            "intent_type": "dialogue",
+            "confidence": 0.68,
+            "requires_player_clarification": True,
+            "clarification_options": [],
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+            "analysis_source": "fallback_provider",
+        }
+    )
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = gateway
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "I inspect the visible label."},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    draft = response.json()
+    assert draft["status"] == "awaiting_confirmation"
+    assert draft["adjudication_stage"] == "director_plan_validated"
+    assert draft["confirmation_requirements"] == ["stateful_action"]
+
+
+def test_local_fallback_accepts_chinese_inventory_search_after_provider_timeout(
+    client,
+    test_db,
+):
+    _, _, player_token = _setup_player(client, test_db)
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = _FailingDirectorGateway()
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "我翻查未登记行李，寻找地下通道钥匙。"},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    draft = response.json()
+    assert draft["status"] == "awaiting_confirmation"
+    assert draft["risk"] == "low"
+    assert draft["resolution_route"] == "local"
+    assert draft["analysis_source"] == "local_fallback"
+
+
+def test_low_risk_chinese_inspection_ignores_invalid_ai_scene_target(client, test_db):
+    _, _, player_token = _setup_player(client, test_db)
+    gateway = _RecordingDirectorGateway(
+        {
+            "interpreted_intent": "inspect the visible return-route clue",
+            "intent_type": "skill_check",
+            "confidence": 0.9,
+            "semantic_progression": {
+                "targetNodeId": "return-route",
+                "citation": {"source_part_id": "part-clue"},
+            },
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+            "analysis_source": "fallback_provider",
+        }
+    )
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = gateway
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "我检查并记录午夜退件路线。"},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    draft = response.json()
+    assert draft["risk"] == "low"
+    assert draft["intent_type"] == "dialogue"
+    assert draft["resolution_route"] == "local"
+    assert draft["params"].get("targetNodeId") is None
+
+
+def test_director_analysis_cancels_a_slow_provider_at_the_action_deadline(
+    client,
+    test_db,
+    monkeypatch,
+):
+    from src.server.player import router_actions_v2
+
+    _, _, player_token = _setup_player(client, test_db)
+    gateway = _SlowDirectorGateway()
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    monkeypatch.setattr(
+        router_actions_v2,
+        "_DIRECTOR_ANALYSIS_TIMEOUT_SECONDS",
+        0.001,
+        raising=False,
+    )
+    client.app.state.gateway = gateway
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "I try something impossible."},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    assert gateway.cancelled is True
+    assert response.json()["adjudication_stage"] == "host_exception_required"
+
+
+def test_director_analysis_redacts_backstage_entry_references_from_player_summary(
+    client,
+    test_db,
+):
+    _, _, player_token = _setup_player(client, test_db)
+    gateway = _RecordingDirectorGateway(
+        {
+            "interpreted_intent": (
+                "玩家想登上长途车。这对应场景文本中“转到263”的指令，"
+                "并从当前场景（条目1）移动到条目263。"
+            ),
+            "intent_type": "move",
+            "confidence": 0.92,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "summarize",
+        }
+    )
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = gateway
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "我登上刚到的长途车", "ephemeral": True},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    summary = response.json()["understanding_summary"]
+    assert "条目" not in summary
+    assert "节点" not in summary
+    assert "263" not in summary
+    assert "转到" not in summary
+
+
 def test_director_context_limits_runtime_package_to_current_solo_branch(test_db):
     from src.server.ai.director import build_director_context
 
@@ -196,6 +378,71 @@ def test_director_context_limits_runtime_package_to_current_solo_branch(test_db)
     assert len(json.dumps(context, ensure_ascii=False)) < 20_000
 
 
+def test_director_context_limits_generic_edges_to_current_scene(client, test_db):
+    from src.server.ai.director import build_director_context
+
+    room_id, character_id, _ = _setup_player(client, test_db)
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s", (room_id,)
+    ).fetchone()["scenario_version_id"]
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, input_checksum, runtime_package, created_by) "
+        "VALUES ('generic-edges-package', %s, 1, 'ready', 'sha', %s, 'test')",
+        (
+            scenario_version_id,
+            json.dumps({
+                "semantic_progression_rules": {
+                    "edges": [
+                        {
+                            "from_scene_id": "study",
+                            "to_scene_id": "harbor",
+                            "relation_type": "transitions_to",
+                            "conditions": [],
+                            "citation": {"page_number": 8},
+                        },
+                        {
+                            "from_scene_id": "harbor",
+                            "to_scene_id": "warehouse",
+                            "relation_type": "transitions_to",
+                            "conditions": [],
+                            "citation": {"page_number": 9},
+                        },
+                    ],
+                    "solo_adventure": {},
+                },
+            }),
+        ),
+    )
+    test_db.execute(
+        "INSERT INTO room_scene_state (room_id, current_scene, visited_scenes, version) "
+        "VALUES (%s, 'study', '[\"study\"]', 1)",
+        (room_id,),
+    )
+    test_db.commit()
+    character = dict(test_db.execute(
+        "SELECT * FROM characters WHERE character_id = %s", (character_id,)
+    ).fetchone())
+    draft = ActionDraftDTO(
+        intent_type="dialogue",
+        declared_intent="I examine the study.",
+        understanding_summary="examine the study",
+        risk="low",
+        confidence=0.8,
+        analysis_source="local_fallback",
+    )
+
+    context = build_director_context(test_db, character, draft)
+
+    assert context["runtime_package"]["semantic_progression_rules"]["edges"] == [{
+        "from_scene_id": "study",
+        "to_scene_id": "harbor",
+        "relation_type": "transitions_to",
+        "conditions": [],
+        "citation": {"page_number": 8},
+    }]
+
+
 def test_low_confidence_director_returns_clarification_options_and_cannot_confirm(client, test_db):
     _, _, player_token = _setup_player(client, test_db)
     gateway = _RecordingDirectorGateway(
@@ -240,6 +487,47 @@ def test_low_confidence_director_returns_clarification_options_and_cannot_confir
     assert confirm.json()["detail"]["code"] == "draft_not_confirmable"
 
 
+def test_single_visible_solo_target_recovers_after_clarifying_provider(
+    client,
+    test_db,
+):
+    room_id, _ = _setup_solo_room(test_db)
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token, xlsx_data) "
+        "VALUES ('director-local-target-character', %s, 'Ada', 'director-local-target-token', %s)",
+        (room_id, json.dumps({})),
+    )
+    test_db.commit()
+    gateway = _RecordingDirectorGateway(
+        {
+            "interpreted_intent": "Please clarify your next move.",
+            "intent_type": "dialogue",
+            "confidence": 0.7,
+            "requires_player_clarification": True,
+            "requires_host_exception": False,
+            "narration_mode": "clarify",
+        }
+    )
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = gateway
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": "director-local-target-token"},
+            json={"declared_intent": "I search the road for the missing bus."},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    draft = response.json()
+    assert len(gateway.contexts) == 1
+    assert draft["status"] == "awaiting_confirmation"
+    assert draft["adjudication_stage"] == "director_plan_validated"
+    assert draft["params"]["fromNodeId"] == "1"
+    assert draft["params"]["targetNodeId"] == "2"
+
+
 def test_host_exception_director_plan_emits_recovery_event_on_confirm(client, test_db):
     room_id, _, player_token = _setup_player(client, test_db)
     gateway = _RecordingDirectorGateway(
@@ -280,6 +568,39 @@ def test_host_exception_director_plan_emits_recovery_event_on_confirm(client, te
     assert "s2c_ai_recovery_required" in [event["event_type"] for event in events]
 
 
+def test_director_host_exception_without_reason_does_not_block_low_risk_action(
+    client,
+    test_db,
+):
+    _, _, player_token = _setup_player(client, test_db)
+    gateway = _RecordingDirectorGateway(
+        {
+            "interpreted_intent": "把行李放好并坐稳",
+            "intent_type": "action",
+            "confidence": 0.95,
+            "requires_player_clarification": False,
+            "requires_host_exception": True,
+            "exception_reason": None,
+            "narration_mode": "descriptive",
+        }
+    )
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = gateway
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "我把行李放好后坐稳", "ephemeral": True},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    draft = response.json()
+    assert draft["adjudication_stage"] == "director_plan_validated"
+    assert draft["resolution_route"] == "ai"
+
+
 def test_director_gateway_exception_records_recovery_without_prompt_leak(client, test_db):
     room_id, _, player_token = _setup_player(client, test_db)
     previous_gateway = getattr(client.app.state, "gateway", None)
@@ -304,6 +625,27 @@ def test_director_gateway_exception_records_recovery_without_prompt_leak(client,
     ).fetchall()
     assert "s2c_ai_recovery_required" in [event["event_type"] for event in events]
     assert "SECRET_KEEPER_PROMPT" not in json.dumps([event["payload"] for event in events])
+
+
+def test_safe_local_action_uses_local_director_plan_when_provider_fails(client, test_db):
+    _, _, player_token = _setup_player(client, test_db)
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = _FailingDirectorGateway()
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "我看看桌上的旧报纸", "ephemeral": True},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    draft = response.json()
+    assert draft["analysis_source"] == "local_fallback"
+    assert draft["adjudication_stage"] == "director_plan_validated"
+    assert draft["resolution_route"] == "local"
+    assert draft["params"]["director_plan"]["state_patch_authority"] == "advisory_only"
 
 
 @pytest.mark.asyncio
@@ -460,6 +802,12 @@ def test_director_semantic_progression_maps_target_with_valid_citation(client, t
     assert draft["params"]["fromNodeId"] == "1"
     assert draft["params"]["targetNodeId"] == "2"
     assert draft["semantic_progression"]["targetNodeId"] == "2"
+    assert draft["citations"] == [{
+        "label": "已校验依据",
+        "page": 1,
+        "scene": None,
+        "verified": True,
+    }]
     assert "entry 2" not in json.dumps(draft).lower()
 
 
@@ -500,7 +848,224 @@ def test_director_semantic_progression_without_evidence_is_rejected(client, test
     assert draft["semantic_progression"]["rejected"] is True
 
 
-def test_director_progression_citation_must_match_the_rule_edge(client, test_db):
+def test_director_validates_current_generic_scene_edge_with_matching_citation(test_db):
+    plan = DirectorPlanDTO(
+        interpreted_intent="I take the marked path to the harbor.",
+        intent_type="move",
+        confidence=0.9,
+        semantic_progression={
+            "targetNodeId": "harbor",
+            "citation": {"source_part_id": "part-harbor", "page_number": 8},
+        },
+    )
+    context = {
+        "current_scene": {"current_scene": "study"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "edges": [{
+                    "from_scene_id": "study",
+                    "to_scene_id": "harbor",
+                    "relation_type": "transitions_to",
+                    "conditions": [],
+                    "citation": {"source_part_id": "part-harbor", "page_number": 8},
+                }],
+            },
+        },
+    }
+
+    result = _validate_semantic_progression(test_db, {"xlsx_data": "{}"}, plan, context)
+
+    assert result == {
+        "targetNodeId": "harbor",
+        "fromNodeId": "study",
+        "citation": {"source_part_id": "part-harbor", "page_number": 8},
+        "ruleCitation": {"source_part_id": "part-harbor", "page_number": 8},
+        "validated": True,
+    }
+
+
+def test_local_fallback_resolves_a_named_generic_scene_target(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    citation = {
+        "source_part_id": "part-cistern",
+        "label": "地下蓄水池",
+        "source_ref": "module.json#/knowledge_graph/scenes/3",
+        "citation_id": "cit-cistern",
+    }
+    test_db.execute(
+        """
+        INSERT INTO runtime_package_versions
+        (runtime_package_version_id, scenario_version_id, package_version_number,
+         gate_status, input_checksum, runtime_package, created_by)
+        VALUES (%s, %s, 99, 'ready', 'generic-fallback', %s, 'test')
+        """,
+        (
+            f"generic-fallback-{room_id}",
+            scenario_version_id,
+            json.dumps({
+                "semantic_scenes": [
+                    {"scene_id": "orchid-hall", "name": "兰花展厅"},
+                    {"scene_id": "cistern", "name": "地下蓄水池"},
+                ],
+                "semantic_progression_rules": {
+                    "edges": [{
+                        "from_scene_id": "orchid-hall",
+                        "to_scene_id": "cistern",
+                        "relation_type": "transitions_to",
+                        "conditions": [],
+                        "citation": citation,
+                    }],
+                },
+            }, ensure_ascii=False),
+        ),
+    )
+    test_db.execute(
+        "INSERT INTO room_scene_state (room_id, current_scene, visited_scenes, version) "
+        "VALUES (%s, 'orchid-hall', '[\"orchid-hall\"]', 1)",
+        (room_id,),
+    )
+    test_db.commit()
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = _FailingDirectorGateway()
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={
+                "declared_intent": "我走向地下蓄水池，查看阀门平台。",
+                "intent_type": "dialogue",
+                "ephemeral": True,
+            },
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    draft = response.json()
+    assert draft["intent_type"] == "move"
+    assert draft["params"]["fromNodeId"] == "orchid-hall"
+    assert draft["params"]["targetNodeId"] == "cistern"
+    assert draft["semantic_progression"]["validated"] is True
+    assert draft["resolution_route"] == "local"
+
+
+def test_director_uses_runtime_evidence_for_an_uncited_generic_scene_target(test_db):
+    plan = DirectorPlanDTO(
+        interpreted_intent="I take the marked path to the harbor.",
+        intent_type="move",
+        confidence=0.9,
+        semantic_progression={"targetNodeId": "harbor"},
+    )
+    context = {
+        "current_scene": {"current_scene": "study"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "edges": [{
+                    "from_scene_id": "study",
+                    "to_scene_id": "harbor",
+                    "relation_type": "transitions_to",
+                    "conditions": [],
+                    "citation": {"source_part_id": "part-harbor", "page_number": 8},
+                }],
+            },
+        },
+    }
+
+    result = _validate_semantic_progression(test_db, {"xlsx_data": "{}"}, plan, context)
+
+    assert result == {
+        "targetNodeId": "harbor",
+        "fromNodeId": "study",
+        "citation": {"source_part_id": "part-harbor", "page_number": 8},
+        "ruleCitation": {"source_part_id": "part-harbor", "page_number": 8},
+        "providerCitationMissing": True,
+        "validated": True,
+    }
+
+
+def test_director_rejects_generic_scene_edge_when_required_clue_is_missing(test_db):
+    plan = DirectorPlanDTO(
+        interpreted_intent="I take the marked path to the harbor.",
+        intent_type="move",
+        confidence=0.9,
+        semantic_progression={
+            "targetNodeId": "harbor",
+            "citation": {"source_part_id": "part-harbor", "page_number": 8},
+        },
+    )
+    context = {
+        "current_scene": {"current_scene": "study"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "edges": [{
+                    "from_scene_id": "study",
+                    "to_scene_id": "harbor",
+                    "relation_type": "transitions_to",
+                    "conditions": [{"kind": "clue", "id": "ticket"}],
+                    "citation": {"source_part_id": "part-harbor", "page_number": 8},
+                }],
+            },
+        },
+    }
+
+    result = _validate_semantic_progression(
+        test_db,
+        {"room_id": "generic-condition-room", "xlsx_data": "{}"},
+        plan,
+        context,
+    )
+
+    assert result["validated"] is False
+    assert result["rejected"] is True
+
+
+def test_director_validates_generic_scene_edge_when_required_scene_was_visited(client, test_db):
+    room_id, _, _ = _setup_player(client, test_db)
+    test_db.execute(
+        "INSERT INTO room_scene_state (room_id, current_scene, visited_scenes, version) "
+        "VALUES (%s, 'study', '[\"archive\", \"study\"]', 1)",
+        (room_id,),
+    )
+    test_db.commit()
+    plan = DirectorPlanDTO(
+        interpreted_intent="I follow the archive notes to the harbor.",
+        intent_type="move",
+        confidence=0.9,
+        semantic_progression={
+            "targetNodeId": "harbor",
+            "citation": {"source_part_id": "part-harbor", "page_number": 8},
+        },
+    )
+    context = {
+        "current_scene": {"current_scene": "study"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "edges": [{
+                    "from_scene_id": "study",
+                    "to_scene_id": "harbor",
+                    "relation_type": "transitions_to",
+                    "conditions": [{"kind": "scene", "id": "archive"}],
+                    "citation": {"source_part_id": "part-harbor", "page_number": 8},
+                }],
+            },
+        },
+    }
+
+    result = _validate_semantic_progression(
+        test_db,
+        {"room_id": room_id, "xlsx_data": "{}"},
+        plan,
+        context,
+    )
+
+    assert result["validated"] is True
+
+
+def test_director_single_target_progression_replaces_mismatched_provider_citation(client, test_db):
     room_id, _ = _setup_solo_room(test_db)
     test_db.execute(
         "INSERT INTO characters (character_id, room_id, player_name, player_token, xlsx_data) "
@@ -560,9 +1125,332 @@ def test_director_progression_citation_must_match_the_rule_edge(client, test_db)
 
     assert response.status_code == 200
     draft = response.json()
-    assert draft["adjudication_stage"] == "host_exception_required"
-    assert draft["params"].get("targetNodeId") is None
-    assert draft["semantic_progression"]["rejected"] is True
+    assert draft["adjudication_stage"] == "director_plan_validated"
+    assert draft["params"]["fromNodeId"] == "1"
+    assert draft["params"]["targetNodeId"] == "2"
+    assert draft["semantic_progression"]["citation"] == {"page_number": 2}
+    assert draft["semantic_progression"]["providerCitationReplaced"] is True
+
+
+def test_director_uses_character_stat_to_validate_conditional_solo_branch(client, test_db):
+    plan = DirectorPlanDTO(
+        semantic_progression={
+            "targetNodeId": "2",
+            "citation": {"source_part_id": "wrong-part", "page_number": 9},
+        }
+    )
+    context = {
+        "current_scene": {"node_id": "1"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "solo_adventure": {
+                    "nodes": [
+                        {
+                            "node_id": "1",
+                            "text": "如果你的“体型”是40，转到2。如果你的“体型”高于40，转到3。",
+                            "target_node_ids": ["2", "3"],
+                            "citation": {
+                                "source_part_id": "part-size",
+                                "page_number": 5,
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+    }
+
+    result = _validate_semantic_progression(
+        test_db,
+        {"xlsx_data": json.dumps({"attributes": {"siz": 40}})},
+        plan,
+        context,
+    )
+
+    assert result["validated"] is True
+    assert result["targetNodeId"] == "2"
+    assert result["citation"] == {
+        "source_part_id": "part-size",
+        "page_number": 5,
+    }
+    assert result["conditionValidated"] is True
+
+
+def test_director_resolves_comparative_attribute_branch_without_roll():
+    target = resolve_conditional_solo_target(
+        {"xlsx_data": json.dumps({"attributes": {"dex": 60, "siz": 40}})},
+        {
+            "text": (
+                "比较你的“体型”和“敏捷”。"
+                "如果你的“敏捷”较高，转到42。"
+                "如果你的“体型”较高，进行一次“敏捷”检定。"
+            ),
+            "target_node_ids": ["42", "36"],
+        },
+    )
+
+    assert target == "42"
+
+
+def test_director_resolves_wrapped_comparative_attribute_branch_without_roll():
+    target = resolve_conditional_solo_target(
+        {"xlsx_data": json.dumps({"attributes": {"dex": 60, "siz": 40}})},
+        {
+            "text": (
+                "比较你的“体型”和“敏\n捷”。如果你的“敏\n捷”较高，转到42。"
+                "如果你的“体型”较高，进行一次“敏捷”检定。"
+            ),
+            "target_node_ids": ["42", "36"],
+        },
+    )
+
+    assert target == "42"
+
+
+def test_visible_solo_transition_resolves_character_condition_before_ai(test_db):
+    from src.server.player.router_actions_v2 import _apply_visible_solo_transition
+    from src.server.scenario.content_projection import ContentProjectionService
+
+    room_id, scenario_version_id = _setup_solo_room(test_db)
+    graph = {
+        "solo_adventure": {
+            "root_node_id": "1",
+            "integrity": {"is_valid": True},
+            "nodes": [
+                {
+                    "node_id": "1",
+                    "title": "车顶行李架",
+                    "text": "如果你的“体型”是40，转到2。如果你的“体型”高于40，转到3。",
+                    "target_node_ids": ["2", "3"],
+                    "citation": {"page_number": 5},
+                },
+                {
+                    "node_id": "2",
+                    "title": "司机搭手",
+                    "text": "司机帮你放好行李。",
+                    "target_node_ids": [],
+                    "citation": {"page_number": 6},
+                },
+                {
+                    "node_id": "3",
+                    "title": "独自搬运",
+                    "text": "你独自把行李抬上去。",
+                    "target_node_ids": [],
+                    "citation": {"page_number": 7},
+                },
+            ],
+        }
+    }
+    test_db.execute(
+        "UPDATE scenario_versions SET knowledge_graph = %s WHERE scenario_version_id = %s",
+        (json.dumps(graph), scenario_version_id),
+    )
+    ContentProjectionService(test_db).rebuild(
+        scenario_version_id, graph, requested_by="test-admin"
+    )
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token, xlsx_data) "
+        "VALUES ('conditional-solo-character', %s, 'Ada', 'conditional-token', %s)",
+        (room_id, json.dumps({"attributes": {"siz": 40}})),
+    )
+    test_db.commit()
+    character = dict(test_db.execute(
+        "SELECT * FROM characters WHERE character_id = 'conditional-solo-character'"
+    ).fetchone())
+    draft = ActionDraftDTO(
+        intent_type="move",
+        declared_intent="我把行李固定好，准备登车。",
+        understanding_summary="继续旅程",
+        risk="medium",
+        confidence=0.9,
+        analysis_source="local_fallback",
+    )
+
+    resolved = _apply_visible_solo_transition(test_db, character, draft)
+
+    assert resolved.params["fromNodeId"] == "1"
+    assert resolved.params["targetNodeId"] == "2"
+    assert resolved.resolution_route == "local"
+
+
+def test_director_uses_current_node_citation_for_confident_multichoice_without_citation(test_db):
+    plan = DirectorPlanDTO(
+        interpreted_intent="I leave through the road on the left.",
+        intent_type="move",
+        confidence=0.9,
+        semantic_progression={"targetNodeId": "2"},
+    )
+    context = {
+        "current_scene": {"node_id": "1"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "solo_adventure": {
+                    "nodes": [
+                        {
+                            "node_id": "1",
+                            "text": "向左走，转到2。向右走，转到3。",
+                            "target_node_ids": ["2", "3"],
+                            "citation": {"source_part_id": "part-road", "page_number": 7},
+                        }
+                    ]
+                }
+            }
+        },
+    }
+
+    result = _validate_semantic_progression(test_db, {"xlsx_data": "{}"}, plan, context)
+
+    assert result["validated"] is True
+    assert result["targetNodeId"] == "2"
+    assert result["citation"] == {"source_part_id": "part-road", "page_number": 7}
+    assert result["providerCitationMissing"] is True
+
+
+def test_director_uses_current_node_citation_for_medium_confidence_multichoice_without_citation(test_db):
+    plan = DirectorPlanDTO(
+        interpreted_intent="I have investigated enough and wait for the afternoon.",
+        intent_type="move",
+        confidence=0.75,
+        semantic_progression={"targetNodeId": "3"},
+    )
+    context = {
+        "current_scene": {"node_id": "1"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "solo_adventure": {
+                    "nodes": [
+                        {
+                            "node_id": "1",
+                            "text": "继续调查，或推进时间，转到3。",
+                            "target_node_ids": ["2", "3"],
+                            "citation": {"source_part_id": "part-wait", "page_number": 9},
+                        }
+                    ]
+                }
+            }
+        },
+    }
+
+    result = _validate_semantic_progression(test_db, {"xlsx_data": "{}"}, plan, context)
+
+    assert result["validated"] is True
+    assert result["targetNodeId"] == "3"
+    assert result["citation"] == {"source_part_id": "part-wait", "page_number": 9}
+    assert result["providerCitationMissing"] is True
+
+
+def test_director_uses_current_node_citation_for_single_target_without_citation(test_db):
+    plan = DirectorPlanDTO(
+        interpreted_intent="I answer the driver's question and continue the journey.",
+        intent_type="dialogue",
+        confidence=0.68,
+        semantic_progression={"targetNodeId": "2"},
+    )
+    context = {
+        "current_scene": {"node_id": "1"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "solo_adventure": {
+                    "nodes": [
+                        {
+                            "node_id": "1",
+                            "text": "司机等你回答。转到2。",
+                            "target_node_ids": ["2"],
+                            "citation": {"source_part_id": "part-driver", "page_number": 8},
+                        }
+                    ]
+                }
+            }
+        },
+    }
+
+    result = _validate_semantic_progression(test_db, {"xlsx_data": "{}"}, plan, context)
+
+    assert result["validated"] is True
+    assert result["targetNodeId"] == "2"
+    assert result["citation"] == {"source_part_id": "part-driver", "page_number": 8}
+    assert result["providerCitationMissing"] is True
+
+
+def test_director_defers_provider_target_after_forced_single_transition(test_db):
+    plan = DirectorPlanDTO(
+        interpreted_intent="I go to the grocery store to ask about a carriage.",
+        intent_type="move",
+        confidence=0.95,
+        semantic_progression={
+            "targetNodeId": "3",
+            "citation": {"source_part_id": "part-grocery", "page_number": 5},
+        },
+    )
+    context = {
+        "current_scene": {"node_id": "1"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "solo_adventure": {
+                    "nodes": [
+                        {
+                            "node_id": "1",
+                            "text": "You return to the village. Turn to 2.",
+                            "target_node_ids": ["2"],
+                            "citation": {"source_part_id": "part-return", "page_number": 4},
+                        },
+                        {
+                            "node_id": "2",
+                            "text": "You may visit the grocery store. Turn to 3.",
+                            "target_node_ids": ["3"],
+                            "citation": {"source_part_id": "part-grocery", "page_number": 5},
+                        },
+                    ]
+                }
+            }
+        },
+    }
+
+    result = _validate_semantic_progression(test_db, {"xlsx_data": "{}"}, plan, context)
+
+    assert result["validated"] is True
+    assert result["targetNodeId"] == "2"
+    assert result["citation"] == {"source_part_id": "part-return", "page_number": 4}
+    assert result["providerTargetDeferred"] is True
+
+
+def test_director_accepts_selected_target_citation_for_multichoice_progression(test_db):
+    plan = DirectorPlanDTO(
+        interpreted_intent="I ask the driver where he will spend the night.",
+        intent_type="dialogue",
+        confidence=0.9,
+        semantic_progression={
+            "targetNodeId": "2",
+            "citation": {"source_part_id": "part-destination-approximate", "page_number": 8},
+        },
+    )
+    context = {
+        "current_scene": {"node_id": "1"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "solo_adventure": {
+                    "nodes": [
+                        {
+                            "node_id": "1",
+                            "target_node_ids": ["2", "3"],
+                            "citation": {"source_part_id": "part-choice", "page_number": 7},
+                        },
+                        {
+                            "node_id": "2",
+                            "target_node_ids": [],
+                            "citation": {"source_part_id": "part-destination", "page_number": 8},
+                        },
+                    ]
+                }
+            }
+        },
+    }
+
+    result = _validate_semantic_progression(test_db, {"xlsx_data": "{}"}, plan, context)
+
+    assert result["validated"] is True
+    assert result["citation"] == {"source_part_id": "part-choice", "page_number": 7}
+    assert result["providerCitationTargetPageMatched"] is True
 
 
 def test_director_progression_rejects_citation_with_only_empty_values(client, test_db):

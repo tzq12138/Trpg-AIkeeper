@@ -3,6 +3,7 @@ import json
 import logging
 from pathlib import Path
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from .quality import QualityReportGenerator
 from .import_service import (
     ScenarioImportFailure,
@@ -12,6 +13,7 @@ from .import_service import (
     _json_value,
 )
 from .module_compiler import ModuleCompiler, ModuleCompilerError
+from .review_service import ScenarioReviewError, ScenarioReviewService
 
 logger = logging.getLogger(__name__)
 
@@ -39,17 +41,36 @@ def _require_admin_account(request: Request) -> dict:
 def _import_service(request: Request) -> ScenarioImportService:
     storage_root = getattr(request.app.state, "scenario_storage_root", None)
     asset_root = getattr(request.app.state, "scenario_asset_root", None)
+    configured_limits = getattr(request.app.state, "scenario_import_limits", {})
+    if not isinstance(configured_limits, dict):
+        configured_limits = {}
+    limit_kwargs = {
+        key: value
+        for key, value in configured_limits.items()
+        if key in {"max_source_files", "max_file_bytes", "max_total_bytes"}
+        and isinstance(value, int)
+        and value > 0
+    }
     return ScenarioImportService(
         request.app.state.db,
         gateway=getattr(request.app.state, "gateway", None),
         rag=getattr(request.app.state, "rag", None),
         storage_root=Path(storage_root) if storage_root else None,
         asset_root=Path(asset_root) if asset_root else None,
+        **limit_kwargs,
     )
 
 
 def _module_compiler(request: Request) -> ModuleCompiler:
     return ModuleCompiler(request.app.state.db)
+
+
+def _review_service(request: Request) -> ScenarioReviewService:
+    return ScenarioReviewService(
+        request.app.state.db,
+        gateway=getattr(request.app.state, "gateway", None),
+        rag=getattr(request.app.state, "rag", None),
+    )
 
 
 def _verify_scenario_version(conn, scenario_id: str, scenario_version_id: str) -> None:
@@ -69,6 +90,15 @@ def _module_compiler_error(exc: ModuleCompilerError) -> HTTPException:
         "quality_exception_not_found",
     } else 409
     return HTTPException(status_code, code)
+
+
+def _review_error(exc: ScenarioReviewError) -> HTTPException:
+    code = str(exc)
+    if code in {"scenario_version_not_found", "scenario_review_draft_not_found"}:
+        return HTTPException(404, code)
+    if code.startswith("review_patch_"):
+        return HTTPException(400, code)
+    return HTTPException(409, code)
 
 
 async def _run_import(
@@ -351,6 +381,150 @@ async def get_prep_package(
     }
 
 
+@router.get("/{scenario_id}/versions/{scenario_version_id}/review-workbench")
+async def get_review_workbench(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    _require_admin_account(request)
+    try:
+        return _review_service(request).get_workbench(scenario_id, scenario_version_id)
+    except ScenarioReviewError as exc:
+        raise _review_error(exc) from exc
+
+
+@router.get("/{scenario_id}/versions/{scenario_version_id}/review-sources/{source_document_id}")
+async def get_review_source_document(
+    request: Request,
+    scenario_id: str,
+    scenario_version_id: str,
+    source_document_id: str,
+):
+    _require_admin_account(request)
+    row = request.app.state.db.execute(
+        """
+        SELECT sd.source_filename, sd.mime_type, sd.storage_path
+        FROM scenario_version_sources svs
+        JOIN source_documents sd ON sd.source_document_id = svs.source_document_id
+        WHERE svs.scenario_version_id = %s
+          AND svs.source_document_id = %s
+          AND sd.scenario_id = %s
+        """,
+        (scenario_version_id, source_document_id, scenario_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "review source not found")
+    storage_root = _import_service(request).storage_root.resolve()
+    source_path = (storage_root / Path(str(row.get("storage_path") or ""))).resolve()
+    if not source_path.is_relative_to(storage_root) or not source_path.is_file():
+        raise HTTPException(404, "review source unavailable")
+    return FileResponse(
+        source_path,
+        media_type=str(row.get("mime_type") or "application/octet-stream"),
+        filename=str(row.get("source_filename") or "source"),
+    )
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/review-drafts")
+async def create_review_draft(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    account = _require_admin_account(request)
+    try:
+        return _review_service(request).create_review_draft(
+            scenario_id,
+            scenario_version_id,
+            created_by=account.get("account_id", "unknown"),
+        )
+    except ScenarioReviewError as exc:
+        raise _review_error(exc) from exc
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/review-patches")
+async def create_review_patch(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    account = _require_admin_account(request)
+    _verify_scenario_version(request.app.state.db, scenario_id, scenario_version_id)
+    body = await request.json()
+    try:
+        return _review_service(request).add_patch(
+            scenario_version_id,
+            target_type=str(body.get("target_type") or ""),
+            target_key=str(body.get("target_key") or ""),
+            payload=body.get("payload") if isinstance(body.get("payload"), dict) else {},
+            provenance=str(body.get("provenance") or ""),
+            citation=body.get("citation") if isinstance(body.get("citation"), dict) else {},
+            rationale=str(body.get("rationale") or ""),
+            created_by=account.get("account_id", "unknown"),
+        )
+    except ScenarioReviewError as exc:
+        raise _review_error(exc) from exc
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/review-issues/resolve")
+async def resolve_review_issue(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    account = _require_admin_account(request)
+    _verify_scenario_version(request.app.state.db, scenario_id, scenario_version_id)
+    body = await request.json()
+    try:
+        return _review_service(request).resolve_issue(
+            scenario_version_id,
+            issue_id=str(body.get("issue_id") or ""),
+            resolution=str(body.get("resolution") or ""),
+            rationale=str(body.get("rationale") or ""),
+            created_by=account.get("account_id", "unknown"),
+        )
+    except ScenarioReviewError as exc:
+        raise _review_error(exc) from exc
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/review-rebuild")
+async def rebuild_review_draft(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    account = _require_admin_account(request)
+    _verify_scenario_version(request.app.state.db, scenario_id, scenario_version_id)
+    try:
+        return _review_service(request).rebuild_review_draft(
+            scenario_version_id,
+            requested_by=account.get("account_id", "unknown"),
+        )
+    except ScenarioReviewError as exc:
+        raise _review_error(exc) from exc
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/review-ai/issue")
+async def suggest_review_issue_drafts(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    _require_admin_account(request)
+    body = await request.json()
+    try:
+        return await _review_service(request).suggest_issue_drafts(
+            scenario_id,
+            scenario_version_id,
+            issue_id=str(body.get("issue_id") or ""),
+        )
+    except ScenarioReviewError as exc:
+        raise _review_error(exc) from exc
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/review-ai/reread")
+async def reread_review_drafts(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    _require_admin_account(request)
+    try:
+        return await _review_service(request).reread_drafts(
+            scenario_id,
+            scenario_version_id,
+        )
+    except ScenarioReviewError as exc:
+        raise _review_error(exc) from exc
+
+
 @router.get("/{scenario_id}/versions/{scenario_version_id}/runtime-package")
 async def get_runtime_package(
     request: Request, scenario_id: str, scenario_version_id: str
@@ -376,6 +550,21 @@ async def recompile_runtime_package(
         )
     except ModuleCompilerError as exc:
         raise _module_compiler_error(exc) from exc
+
+
+@router.post("/{scenario_id}/versions/{scenario_version_id}/rebuild-from-sources")
+async def rebuild_scenario_draft_from_sources(
+    request: Request, scenario_id: str, scenario_version_id: str
+):
+    account = _require_admin_account(request)
+    try:
+        return await _import_service(request).rebuild_draft_from_sources(
+            scenario_id,
+            scenario_version_id,
+            requested_by=account.get("account_id", "unknown"),
+        )
+    except ScenarioImportFailure as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
 
 
 @router.post("/{scenario_id}/versions/{scenario_version_id}/runtime-package/exceptions/confirm")

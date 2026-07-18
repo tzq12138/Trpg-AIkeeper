@@ -1,9 +1,18 @@
 import { useState, useEffect } from 'react';
 import { getSlotValue, setSlotValue } from '../shared/identity';
+import { getScenarioLaunchBadge } from '../shared/host-scenario-card';
+
+type LaunchableScenario = {
+  scenario_id: string;
+  title: string;
+  quality_level?: string;
+  completeness?: number;
+  risk_warning?: string;
+};
 
 export default function HostCreate() {
   const [roomId, setRoomId] = useState('');
-  const [scenarios, setScenarios] = useState<Array<{ scenario_id: string; title: string }>>([]);
+  const [scenarios, setScenarios] = useState<LaunchableScenario[]>([]);
   const [selectedScenario, setSelectedScenario] = useState('');
   const [account, setAccount] = useState<any>(null);
   const [error, setError] = useState('');
@@ -95,20 +104,28 @@ export default function HostCreate() {
         已登录：{account.username} ({account.role === 'admin' ? '管理员' : '房主'})
       </p>
       <div style={{ marginBottom: 16 }}>
-        <label style={{ display: 'block', fontWeight: 700, marginBottom: 4, fontSize: 13 }}>选择剧本</label>
+        <label style={{ display: 'block', fontWeight: 700, marginBottom: 4, fontSize: 13 }}>选择已发布剧本</label>
         {scenarios.length === 0 ? (
           <p style={{ color: 'var(--bh-dim)', fontSize: 13, padding: '12px 0' }}>暂无可用剧本，请管理员先导入剧本。</p>
         ) : (
-        <select
-          style={{ width: '100%', padding: '8px 12px', fontSize: 14, border: '2px solid var(--bh-black)', fontFamily: 'inherit' }}
-          value={selectedScenario}
-          onChange={(e) => { setSelectedScenario(e.target.value); setError(''); }}
-        >
-          <option value="">-- 请选择剧本 --</option>
-          {scenarios.map((s: any) => (
-            <option key={s.scenario_id} value={s.scenario_id}>{s.title || s.scenario_id}</option>
-          ))}
-        </select>
+          <div className="bh-preset-list" aria-label="可开团剧本">
+            {scenarios.map((scenario) => {
+              const badge = getScenarioLaunchBadge(scenario);
+              return (
+                <button
+                  key={scenario.scenario_id}
+                  type="button"
+                  className={`bh-preset-card ${selectedScenario === scenario.scenario_id ? 'bh-preset-card--selected' : ''}`}
+                  onClick={() => { setSelectedScenario(scenario.scenario_id); setError(''); }}
+                >
+                  <strong>{scenario.title || scenario.scenario_id}</strong>
+                  <span>{badge.label}</span>
+                  <small>{badge.detail}</small>
+                  {typeof scenario.completeness === 'number' && <small>编译完整度：{Math.round(scenario.completeness * 100)}%</small>}
+                </button>
+              );
+            })}
+          </div>
         )}
       </div>
       {error && <p style={{ color: 'var(--bh-red)', fontSize: 13, marginBottom: 8 }}>{error}</p>}

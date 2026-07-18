@@ -1,9 +1,55 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from ..models import ActionDraftDTO, DirectorPlanDTO
+from ..models import ActionDraftDTO, DirectorPlanDTO, RedactedCitation, redact_citation
+from ..player.action_service import redact_backstage_references
+
+
+_CONDITIONAL_SOLO_BRANCH_RE = re.compile(
+    r"如果你的[“\"']?(?P<attribute>体型|力量|体质|敏捷|外貌|智力|意志|教育|幸运|"
+    r"STR|CON|SIZ|DEX|APP|INT|POW|EDU|LUCK)[”\"']?\s*"
+    r"(?P<operator>是|为|等于|高于|低于|不低于|不高于|至少|至多)\s*"
+    r"(?P<value>\d+)\s*[，,。；;]?\s*转到\s*(?P<target>\d+)",
+    re.IGNORECASE,
+)
+_ATTRIBUTE_NAME_PATTERN = (
+    r"体型|力量|体质|敏捷|外貌|智力|意志|教育|幸运|"
+    r"STR|CON|SIZ|DEX|APP|INT|POW|EDU|LUCK"
+)
+_COMPARATIVE_SOLO_CONTEXT_RE = re.compile(
+    rf"比较你的[“\"']?(?P<first>{_ATTRIBUTE_NAME_PATTERN})[”\"']?\s*(?:和|与)\s*"
+    rf"[“\"']?(?P<second>{_ATTRIBUTE_NAME_PATTERN})[”\"']?",
+    re.IGNORECASE,
+)
+_COMPARATIVE_SOLO_BRANCH_RE = re.compile(
+    rf"如果你的[“\"']?(?P<attribute>{_ATTRIBUTE_NAME_PATTERN})[”\"']?\s*(?:较高|较大)"
+    r"\s*[，,。；;]?\s*转到\s*(?P<target>\d+)",
+    re.IGNORECASE,
+)
+
+_SOLO_ATTRIBUTE_KEYS = {
+    "体型": ("siz", "size", "体型"),
+    "力量": ("str", "力量"),
+    "体质": ("con", "体质"),
+    "敏捷": ("dex", "敏捷"),
+    "外貌": ("app", "外貌"),
+    "智力": ("int", "智力"),
+    "意志": ("pow", "意志"),
+    "教育": ("edu", "教育"),
+    "幸运": ("luck", "幸运"),
+    "str": ("str", "力量"),
+    "con": ("con", "体质"),
+    "siz": ("siz", "size", "体型"),
+    "dex": ("dex", "敏捷"),
+    "app": ("app", "外貌"),
+    "int": ("int", "智力"),
+    "pow": ("pow", "意志"),
+    "edu": ("edu", "教育"),
+    "luck": ("luck", "幸运"),
+}
 
 
 def build_director_context(conn, character: dict, draft: ActionDraftDTO) -> dict[str, Any]:
@@ -62,14 +108,22 @@ def apply_director_plan(
     plan_payload["state_patch_authority"] = "advisory_only"
     params["director_plan"] = plan_payload
 
-    citations = [_sanitize_citation(item) for item in plan.citations]
-    basis_refs = [_sanitize_citation(item) for item in plan.basis_refs]
+    citations = [
+        RedactedCitation(**redact_citation(_sanitize_citation(item)))
+        for item in plan.citations
+    ]
+    basis_refs = [
+        RedactedCitation(**redact_citation(_sanitize_citation(item)))
+        for item in plan.basis_refs
+    ]
     candidate_interpretations = _candidate_interpretations(plan)
     semantic_progression = _validate_semantic_progression(conn, character, plan, context)
     update: dict[str, Any] = {
         "context_version": plan.context_version,
         "intent_type": plan.intent_type or draft.intent_type,
-        "understanding_summary": plan.interpreted_intent or draft.understanding_summary,
+        "understanding_summary": redact_backstage_references(
+            plan.interpreted_intent or draft.understanding_summary
+        ),
         "confidence": _clamp_confidence(plan.confidence),
         "citations": (citations or basis_refs)[:10],
         "semantic_progression": semantic_progression,
@@ -103,7 +157,9 @@ def apply_director_plan(
             "confirmation_requirements": [],
             "requires_confirmation": False,
         })
-    elif plan.requires_player_clarification or plan.confidence < 0.6:
+    elif (
+        plan.requires_player_clarification and candidate_interpretations
+    ) or plan.confidence < 0.6:
         update.update({
             "status": "analyzing",
             "adjudication_stage": "player_clarification_required",
@@ -111,7 +167,7 @@ def apply_director_plan(
             "confirmation_requirements": [],
             "requires_confirmation": False,
         })
-    elif plan.requires_host_exception:
+    elif plan.requires_host_exception and str(plan.exception_reason or "").strip():
         update.update({
             "adjudication_stage": "host_exception_required",
             "resolution_route": "host_exception",
@@ -187,6 +243,19 @@ def _compact_runtime_package(
         for node in nodes
         if str(node.get("node_id") or "") in visible_node_ids
     ]
+    generic_edges = [
+        {
+            "from_scene_id": str(edge.get("from_scene_id") or ""),
+            "to_scene_id": str(edge.get("to_scene_id") or ""),
+            "relation_type": str(edge.get("relation_type") or ""),
+            "conditions": _compact_value(edge.get("conditions"), max_items=20),
+            "citation": _sanitize_citation(edge.get("citation") or {}),
+        }
+        for edge in progression_rules.get("edges") or []
+        if isinstance(edge, dict)
+        and edge.get("relation_type") == "transitions_to"
+        and str(edge.get("from_scene_id") or "") == str(current_scene.get("current_scene") or "")
+    ][:20]
     evidence = [
         item
         for item in runtime_package.get("story_evidence_nodes") or []
@@ -207,6 +276,7 @@ def _compact_runtime_package(
         "style_pack": _compact_value(runtime_package.get("style_pack"), max_items=20),
         "story_evidence_nodes": _compact_value(evidence, max_items=20),
         "semantic_progression_rules": {
+            "edges": generic_edges,
             "solo_adventure": {
                 "root_node_id": solo.get("root_node_id"),
                 "nodes": compact_nodes,
@@ -311,29 +381,155 @@ def _validate_semantic_progression(
     target = str(progression.get("targetNodeId") or progression.get("target_node_id") or "")
     if not target:
         return {}
+    provider_citation_supplied = (
+        plan.semantic_progression.citation is not None or bool(plan.citations)
+    )
     citation = _sanitize_citation(progression.get("citation") or (plan.citations[0] if plan.citations else {}))
     current = context.get("current_scene") if isinstance(context.get("current_scene"), dict) else {}
     from_node = str(current.get("node_id") or "")
     runtime_package = context.get("runtime_package") if isinstance(context.get("runtime_package"), dict) else {}
     rules = runtime_package.get("semantic_progression_rules") if isinstance(runtime_package, dict) else {}
+    current_scene_id = str(current.get("current_scene") or "")
+    generic_edges = (
+        rules.get("edges") if isinstance(rules, dict) else []
+    )
+    if current_scene_id and isinstance(generic_edges, list):
+        for edge in generic_edges:
+            if not isinstance(edge, dict) or edge.get("relation_type") != "transitions_to":
+                continue
+            from_scene_id = str(edge.get("from_scene_id") or "")
+            to_scene_id = str(edge.get("to_scene_id") or "")
+            if from_scene_id != current_scene_id or to_scene_id != target:
+                continue
+            rule_citation = _sanitize_citation(edge.get("citation") or {})
+            conditions_met = _generic_edge_conditions_are_met(
+                conn,
+                str(character.get("room_id") or ""),
+                edge.get("conditions"),
+            )
+            if (
+                citation
+                and rule_citation
+                and _citation_matches(citation, [rule_citation])
+                and conditions_met
+            ):
+                return {
+                    "targetNodeId": target,
+                    "fromNodeId": current_scene_id,
+                    "citation": citation,
+                    "ruleCitation": rule_citation,
+                    "validated": True,
+                }
+            if (
+                not citation
+                and not provider_citation_supplied
+                and rule_citation
+                and conditions_met
+                and plan.confidence >= 0.7
+                and str(plan.interpreted_intent or "").strip()
+            ):
+                return {
+                    "targetNodeId": target,
+                    "fromNodeId": current_scene_id,
+                    "citation": rule_citation,
+                    "ruleCitation": rule_citation,
+                    "providerCitationMissing": True,
+                    "validated": True,
+                }
     solo = _json_object(rules.get("solo_adventure") if isinstance(rules, dict) else None)
     allowed = False
     matched_rule_citation: dict[str, Any] = {}
+    matched_node: dict[str, Any] = {}
+    target_node_citation: dict[str, Any] = {}
     for node in solo.get("nodes") or []:
         if not isinstance(node, dict):
             continue
+        if str(node.get("node_id") or "") == target:
+            target_node_citation = _sanitize_citation(node.get("citation") or {})
         if str(node.get("node_id") or "") != from_node:
             continue
+        matched_rule_citation = _sanitize_citation(node.get("citation") or {})
+        matched_node = node
         if target in [str(item) for item in (node.get("target_node_ids") or [])]:
             allowed = True
-            matched_rule_citation = _sanitize_citation(node.get("citation") or {})
-            break
+    forced_targets = [str(item) for item in (matched_node.get("target_node_ids") or [])]
+    if not allowed and len(forced_targets) == 1 and matched_rule_citation:
+        return {
+            "targetNodeId": forced_targets[0],
+            "fromNodeId": from_node,
+            "citation": matched_rule_citation,
+            "ruleCitation": matched_rule_citation,
+            "providerTargetDeferred": True,
+            "validated": True,
+        }
     if allowed and citation and _citation_matches(citation, [matched_rule_citation]):
         return {
             "targetNodeId": target,
             "fromNodeId": from_node,
             "citation": citation,
             "ruleCitation": matched_rule_citation,
+            "validated": True,
+        }
+    if allowed and citation and _citation_matches(citation, [target_node_citation]):
+        return {
+            "targetNodeId": target,
+            "fromNodeId": from_node,
+            "citation": matched_rule_citation,
+            "ruleCitation": matched_rule_citation,
+            "providerCitationTargetMatched": True,
+            "validated": True,
+        }
+    if allowed and citation and _citation_page_matches(citation, target_node_citation):
+        return {
+            "targetNodeId": target,
+            "fromNodeId": from_node,
+            "citation": matched_rule_citation,
+            "ruleCitation": matched_rule_citation,
+            "providerCitationTargetPageMatched": True,
+            "validated": True,
+        }
+    if allowed and _conditional_solo_branch_matches(character, matched_node, target):
+        return {
+            "targetNodeId": target,
+            "fromNodeId": from_node,
+            "citation": matched_rule_citation,
+            "ruleCitation": matched_rule_citation,
+            "conditionValidated": True,
+            "validated": True,
+        }
+    if (
+        allowed
+        and citation
+        and matched_rule_citation
+        and len(matched_node.get("target_node_ids") or []) == 1
+        and plan.confidence >= 0.8
+        and str(plan.interpreted_intent or "").strip()
+    ):
+        return {
+            "targetNodeId": target,
+            "fromNodeId": from_node,
+            "citation": matched_rule_citation,
+            "ruleCitation": matched_rule_citation,
+            "providerCitationReplaced": True,
+            "validated": True,
+        }
+    if (
+        allowed
+        and not citation
+        and not provider_citation_supplied
+        and matched_rule_citation
+        and (
+            len(matched_node.get("target_node_ids") or []) == 1
+            or plan.confidence >= 0.7
+        )
+        and str(plan.interpreted_intent or "").strip()
+    ):
+        return {
+            "targetNodeId": target,
+            "fromNodeId": from_node,
+            "citation": matched_rule_citation,
+            "ruleCitation": matched_rule_citation,
+            "providerCitationMissing": True,
             "validated": True,
         }
     return {
@@ -344,6 +540,114 @@ def _validate_semantic_progression(
         "rejected": True,
         "reason": "semantic_progression_evidence_required",
     }
+
+
+def _generic_edge_conditions_are_met(conn, room_id: str, conditions: Any) -> bool:
+    if not conditions:
+        return True
+    if not room_id or not isinstance(conditions, list):
+        return False
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            return False
+        kind = str(condition.get("kind") or "")
+        identifier = str(condition.get("id") or "")
+        if not identifier:
+            return False
+        if kind == "clue":
+            discovered = conn.execute(
+                "SELECT 1 FROM clues WHERE room_id = %s AND clue_id = %s",
+                (room_id, identifier),
+            ).fetchone()
+            if not discovered:
+                return False
+            continue
+        if kind == "scene":
+            state = conn.execute(
+                "SELECT current_scene, visited_scenes FROM room_scene_state WHERE room_id = %s",
+                (room_id,),
+            ).fetchone()
+            visited = _json_list(state.get("visited_scenes") if state else [])
+            if not state or (
+                str(state.get("current_scene") or "") != identifier
+                and identifier not in visited
+            ):
+                return False
+            continue
+        return False
+    return True
+
+
+def _conditional_solo_branch_matches(
+    character: dict[str, Any],
+    node: dict[str, Any],
+    target: str,
+) -> bool:
+    sheet = _json_object(character.get("xlsx_data"))
+    attributes = _json_object(sheet.get("attributes"))
+    normalized_attributes = {
+        str(key).lower(): value
+        for key, value in attributes.items()
+    }
+    text = re.sub(r"\s+", "", str(node.get("text") or ""))
+    for comparison in _COMPARATIVE_SOLO_CONTEXT_RE.finditer(text):
+        first = comparison.group("first").lower()
+        second = comparison.group("second").lower()
+        for branch in _COMPARATIVE_SOLO_BRANCH_RE.finditer(text[comparison.end():]):
+            if branch.group("target") != target:
+                continue
+            winner = branch.group("attribute").lower()
+            if winner not in {first, second}:
+                continue
+            other = second if winner == first else first
+            winner_value = _solo_attribute_value(normalized_attributes, winner)
+            other_value = _solo_attribute_value(normalized_attributes, other)
+            if winner_value is not None and other_value is not None and winner_value > other_value:
+                return True
+    for match in _CONDITIONAL_SOLO_BRANCH_RE.finditer(text):
+        if match.group("target") != target:
+            continue
+        attribute_name = match.group("attribute").lower()
+        value = _solo_attribute_value(normalized_attributes, attribute_name)
+        if value is None:
+            continue
+        threshold = int(match.group("value"))
+        operator = match.group("operator")
+        if operator in {"是", "为", "等于"} and value == threshold:
+            return True
+        if operator == "高于" and value > threshold:
+            return True
+        if operator == "低于" and value < threshold:
+            return True
+        if operator in {"不低于", "至少"} and value >= threshold:
+            return True
+        if operator in {"不高于", "至多"} and value <= threshold:
+            return True
+    return False
+
+
+def _solo_attribute_value(attributes: dict[str, Any], attribute_name: str) -> int | None:
+    value = next(
+        (
+            attributes.get(key.lower())
+            for key in _SOLO_ATTRIBUTE_KEYS.get(attribute_name, ())
+            if attributes.get(key.lower()) is not None
+        ),
+        None,
+    )
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_conditional_solo_target(character: dict[str, Any], node: dict[str, Any]) -> str | None:
+    matches = [
+        str(target)
+        for target in node.get("target_node_ids") or []
+        if _conditional_solo_branch_matches(character, node, str(target))
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _citation_matches(citation: dict[str, Any], candidates: list[dict[str, Any]]) -> bool:
@@ -369,6 +673,11 @@ def _citation_matches(citation: dict[str, Any], candidates: list[dict[str, Any]]
     return False
 
 
+def _citation_page_matches(citation: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    page_number = citation.get("page_number")
+    return page_number not in (None, "") and page_number == candidate.get("page_number")
+
+
 def _sanitize_citation(value: dict[str, Any]) -> dict[str, Any]:
     value = _object_dict(value)
     if not isinstance(value, dict):
@@ -376,6 +685,7 @@ def _sanitize_citation(value: dict[str, Any]) -> dict[str, Any]:
     return {
         key: item
         for key, item in value.items()
+        if item not in (None, "")
         if not str(key).lower().endswith("_path")
         and str(key).lower()
         not in {
@@ -414,6 +724,18 @@ def _json_object(value: Any) -> dict[str, Any]:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
 
 
 def _json_safe(value: Any) -> Any:

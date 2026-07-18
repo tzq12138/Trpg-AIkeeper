@@ -44,7 +44,13 @@ const receipt: ActionReceiptDTO = {
   can_cancel: false,
   can_review: true,
   rule_explanation: {
-    authoritative_inputs: { skill_name: '射击', skill_value: 60, target: 60 },
+    authoritative_inputs: {
+      skill_name: '射击',
+      skill_value: 60,
+      target: 60,
+      raw_rolls: [{ dice: 'd100', result: 42 }],
+      success_level: 'hard',
+    },
     modifiers: { difficulty: 'regular', bonus_dice: 0 },
     hidden_sources: [{ source: 'hidden', effect: '1 penalty die' }],
     formula: 'd100 <= 60',
@@ -98,6 +104,28 @@ describe('PlayerActionComposer', () => {
     expect(html).toContain('放弃草稿');
   });
 
+  test('does not render a second primary action button while the server requires clarification', () => {
+    const html = renderToStaticMarkup(
+      <PlayerActionComposer
+        inputText={highRiskDraft.declared_intent}
+        phase="analyzing"
+        draft={{
+          ...highRiskDraft,
+          status: 'analyzing',
+          requires_confirmation: false,
+          confirmation_requirements: [],
+        }}
+        onInputChange={() => {}}
+        onAnalyze={() => {}}
+        onConfirm={() => {}}
+        onDiscard={() => {}}
+        onCancelAction={() => {}}
+      />,
+    );
+
+    expect((html.match(/bh-button--yellow/g) || []).length).toBe(1);
+  });
+
   test('renders authoritative timeline and expandable rule receipt', () => {
     const html = renderToStaticMarkup(
       <PlayerActionComposer
@@ -117,6 +145,13 @@ describe('PlayerActionComposer', () => {
     expect(html).toContain('completed');
     expect(html).toContain('d100 &lt;= 60');
     expect(html).toContain('coc7-v1');
+    expect(html).toContain('技能');
+    expect(html).toContain('目标值');
+    expect(html).toContain('难度');
+    expect(html).toContain('骰点');
+    expect(html).toContain('成功等级');
+    expect(html).toContain('d100 42');
+    expect(html).toContain('hard');
     expect(html).toContain('隐藏来源');
     expect(html).toContain('1 penalty die');
     expect(html).toContain('依据已校验');

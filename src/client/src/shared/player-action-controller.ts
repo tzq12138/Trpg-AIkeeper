@@ -17,7 +17,9 @@ export function createConfirmIdempotencyKey(draft: ActionDraftDTO): string {
 
 
 export function shouldAutoConfirmDraft(draft: ActionDraftDTO): boolean {
-  return !draft.requires_confirmation && (draft.confirmation_requirements?.length || 0) === 0;
+  return draft.status === 'awaiting_confirmation'
+    && !draft.requires_confirmation
+    && (draft.confirmation_requirements?.length || 0) === 0;
 }
 
 

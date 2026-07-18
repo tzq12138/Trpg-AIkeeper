@@ -35,6 +35,54 @@ ACTION_TIMING_PRESETS = {
 }
 
 
+def _initialize_runtime_scene_state(conn, room_id: str, scenario_version_id: str | None) -> None:
+    if not scenario_version_id:
+        return
+    existing = conn.execute(
+        "SELECT current_scene FROM room_scene_state WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    if existing and str(existing.get("current_scene") or ""):
+        return
+    package_row = conn.execute(
+        "SELECT runtime_package FROM runtime_package_versions "
+        "WHERE scenario_version_id = %s AND gate_status = 'ready' "
+        "ORDER BY package_version_number DESC LIMIT 1",
+        (scenario_version_id,),
+    ).fetchone()
+    if not package_row:
+        return
+    runtime_package = package_row.get("runtime_package") or {}
+    if isinstance(runtime_package, str):
+        try:
+            runtime_package = json.loads(runtime_package)
+        except json.JSONDecodeError:
+            return
+    scenes = runtime_package.get("semantic_scenes") if isinstance(runtime_package, dict) else []
+    if not isinstance(scenes, list):
+        return
+    candidates = [
+        scene for scene in scenes
+        if isinstance(scene, dict) and str(scene.get("scene_id") or "")
+    ]
+    if not candidates:
+        return
+    first_scene = min(
+        candidates,
+        key=lambda scene: (int(scene.get("order") or 0), str(scene["scene_id"])),
+    )
+    scene_id = str(first_scene["scene_id"])
+    conn.execute(
+        "INSERT INTO room_scene_state (room_id, current_scene, visited_scenes, scene_variables, version) "
+        "VALUES (%s, %s, %s, %s, 1) "
+        "ON CONFLICT (room_id) DO UPDATE SET current_scene = EXCLUDED.current_scene, "
+        "visited_scenes = EXCLUDED.visited_scenes, version = room_scene_state.version + 1 "
+        "WHERE room_scene_state.current_scene = ''",
+        (room_id, scene_id, json.dumps([scene_id]), json.dumps({})),
+    )
+    conn.commit()
+
+
 class ActionTimingUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -497,6 +545,8 @@ async def start_room(request: Request, room_id: str):
                 logger.info("Map initialized for room %s from scenario %s", room_id, scenario_id)
         except Exception as e:
             logger.warning("Failed to init map for room %s: %s", room_id, e)
+
+    _initialize_runtime_scene_state(conn, room_id, room.get("scenario_version_id"))
 
     # Auto-checkpoint on room start
     try:

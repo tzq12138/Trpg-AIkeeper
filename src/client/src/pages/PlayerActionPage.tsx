@@ -17,8 +17,11 @@ import {
   deleteActionDraft,
   getActionHints,
   getActionReceipt,
+  getCurrentActionDraft,
+  getPendingEncounterReaction,
   PlayerApiError,
   reconnectPlayer,
+  resolveEncounterReaction,
 } from '../shared/player-api';
 import {
   canStartNewAction,
@@ -38,6 +41,7 @@ import type {
   PlayerChatMessage,
   SemanticMapProjectionDTO,
   SkillCheckResult,
+  SoloCombatReactionDTO,
   TacticalAction,
 } from '../types';
 import type { PlayerTabKey } from '../navigation';
@@ -83,6 +87,54 @@ export function applyActionInspiration(text: string): { inputText: string; shoul
   return { inputText: text, shouldSubmit: false };
 }
 
+export function shouldApplyEphemeralAnalysis(requestEpoch: number, currentEpoch: number): boolean {
+  return requestEpoch === currentEpoch;
+}
+
+export function narrationFollowUpItems(
+  payload: {
+    environmentChanges?: unknown;
+    interactableObjects?: unknown;
+    openQuestion?: unknown;
+  },
+  eventId: string,
+): NarrativeFeedItem[] {
+  const environmentChanges = Array.isArray(payload.environmentChanges)
+    ? payload.environmentChanges.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).slice(0, 3)
+    : [];
+  const interactableObjects = Array.isArray(payload.interactableObjects)
+    ? payload.interactableObjects.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).slice(0, 5)
+    : [];
+  const openQuestion = typeof payload.openQuestion === 'string' ? payload.openQuestion.trim() : '';
+  const items: NarrativeFeedItem[] = environmentChanges.map((text, index) => ({
+    id: `${eventId}-environment-${index}`,
+    kind: 'environment_change',
+    text,
+  }));
+  if (interactableObjects.length > 0) {
+    items.push({
+      id: `${eventId}-interactable-0`,
+      kind: 'interactable_object',
+      text: `可交互：${interactableObjects.join('、')}`,
+    });
+  }
+  if (openQuestion) {
+    items.push({ id: `${eventId}-question`, kind: 'open_question', text: openQuestion });
+  }
+  return items;
+}
+
+export function mergeNarrationDetails(
+  previous: NarrativeFeedItem[],
+  incoming: NarrativeFeedItem[],
+): NarrativeFeedItem[] {
+  const incomingKinds = new Set(incoming.map((item) => item.kind));
+  return [
+    ...previous.filter((item) => !incomingKinds.has(item.kind)),
+    ...incoming,
+  ].slice(-30);
+}
+
 export function NarrativeFeed({
   items,
   recoveryText,
@@ -105,8 +157,7 @@ export function NarrativeFeed({
           </article>
         ))}
       </div>
-      <PlayerAuxiliarySidebar activeTab="action" />
-    </section>
+      </section>
   );
 }
 
@@ -150,7 +201,13 @@ export function PlayerAuxiliarySidebar({ activeTab }: { activeTab: PlayerTabKey 
   );
 }
 
-export function SemanticMapPanel({ projection }: { projection: SemanticMapProjectionDTO }) {
+export function SemanticMapPanel({
+  projection,
+  imageUrl = '',
+}: {
+  projection: SemanticMapProjectionDTO;
+  imageUrl?: string;
+}) {
   return (
     <section className="bh-panel bh-semantic-map" aria-label="语义地图">
       <span className="bh-eyebrow">语义地图 · 只读</span>
@@ -163,6 +220,7 @@ export function SemanticMapPanel({ projection }: { projection: SemanticMapProjec
         </div>
       ) : null}
       <div className={`bh-map-grid bh-map-grid--${projection.mapType || 'graph'}`}>
+        {imageUrl ? <img className="bh-map-base-asset" src={imageUrl} alt="当前地图底图" /> : null}
         {projection.knownConnections.map((connection, index) => (
           <span key={`${connection.fromNodeId}-${connection.toNodeId}-${index}`} className="bh-map-edge-label">
             {connection.label || `${connection.fromNodeId} → ${connection.toNodeId}`}
@@ -194,7 +252,7 @@ export function SemanticMapPanel({ projection }: { projection: SemanticMapProjec
 
 export default function PlayerActionPage({
   roomId,
-  initialTab = 'home',
+  initialTab = 'action',
 }: {
   roomId: string;
   initialTab?: PlayerTabKey;
@@ -212,8 +270,11 @@ export default function PlayerActionPage({
   const wsRef = useRef<PlayerWS | null>(null);
   const restoredSequence = useRef(0);
   const lastEphemeralText = useRef('');
+  const analysisEpoch = useRef(0);
   const [messages, setMessages] = useState<PlayerChatMessage[]>([]);
+  const [narrationDetails, setNarrationDetails] = useState<NarrativeFeedItem[]>([]);
   const [pendingActions, setPendingActions] = useState<TacticalAction[]>([]);
+  const [pendingCombatReaction, setPendingCombatReaction] = useState<SoloCombatReactionDTO | null>(null);
   const [claimOpen, setClaimOpen] = useState(false);
   const [claimedItemName, setClaimedItemName] = useState('');
   const [claimJustification, setClaimJustification] = useState('');
@@ -273,7 +334,17 @@ export default function PlayerActionPage({
           if (savedDraft) {
             setActionError('服务器行动优先；你的本地草稿已保留，当前行动结束后可继续编辑。');
           }
+        } else {
+          const currentDraft = await getCurrentActionDraft();
+          if (!cancelled && currentDraft) {
+            setDraft(currentDraft);
+            setEphemeralPreview(null);
+            setInputText(currentDraft.declared_intent);
+            setActionStatus(currentDraft.status);
+          }
         }
+        const pendingReaction = await getPendingEncounterReaction();
+        if (!cancelled) setPendingCombatReaction(pendingReaction.reaction);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -337,6 +408,7 @@ export default function PlayerActionPage({
     if (!text || draft || (receipt && isActionInFlight(receipt.status))) return;
     if (!['idle', 'typing'].includes(actionStatus) || lastEphemeralText.current === text) return;
     const timer = window.setTimeout(async () => {
+      const requestEpoch = ++analysisEpoch.current;
       lastEphemeralText.current = text;
       setActionStatus('analyzing');
       try {
@@ -345,13 +417,20 @@ export default function PlayerActionPage({
           base_state_version: stateVersion,
           ephemeral: true,
         });
-        setEphemeralPreview(preview);
+        if (shouldApplyEphemeralAnalysis(requestEpoch, analysisEpoch.current)) {
+          setEphemeralPreview(preview);
+        }
       } catch (error) {
-        if (!(error instanceof PlayerApiError && error.status === 403)) {
+        if (
+          shouldApplyEphemeralAnalysis(requestEpoch, analysisEpoch.current)
+          && !(error instanceof PlayerApiError && error.status === 403)
+        ) {
           setActionError(formatPlayerApiError(error));
         }
       } finally {
-        setActionStatus('typing');
+        if (shouldApplyEphemeralAnalysis(requestEpoch, analysisEpoch.current)) {
+          setActionStatus('typing');
+        }
       }
     }, 2000);
     return () => window.clearTimeout(timer);
@@ -407,6 +486,9 @@ export default function PlayerActionPage({
             })
             .catch(() => {});
         }
+        apiFetch<CharacterSheet>('/api/player/character', { headers: authHeaders() })
+          .then(setCharacter)
+          .catch(() => {});
         setPendingActions([]);
         // Try to extract skill check result for PlayerCharacter
         const payload = event.payload as Record<string, unknown>;
@@ -474,6 +556,15 @@ export default function PlayerActionPage({
       } else if (event.type === 's2c_director_plan_validated') {
         setAiProgress({ stage: 'validating_rules', status: 'completed', label: '导演计划已验证' });
       } else if (event.type === 's2c_narration_completed') {
+        const payload = event.payload as {
+          environmentChanges?: unknown;
+          interactableObjects?: unknown;
+          openQuestion?: unknown;
+        };
+        const details = narrationFollowUpItems(payload, event.eventId || crypto.randomUUID());
+        if (details.length > 0) {
+          setNarrationDetails((previous) => mergeNarrationDetails(previous, details));
+        }
         setAiProgress({ stage: 'completed', status: 'completed', label: '叙事完成' });
       } else if (event.type === 's2c_encounter_started') {
         const payload = event.payload as { encounter?: { type?: string }; participants?: any[] };
@@ -490,6 +581,13 @@ export default function PlayerActionPage({
         }
       } else if (event.type === 's2c_encounter_resolved') {
         setPendingActions([]);
+        setPendingCombatReaction(null);
+      } else if (event.type === 's2c_solo_combat_reaction_requested') {
+        const payload = event.payload as { reaction?: SoloCombatReactionDTO };
+        if (payload.reaction) {
+          setPendingCombatReaction(payload.reaction);
+          setPendingActions([]);
+        }
       } else if (event.type === 's2c_team_message') {
         const p = event.payload as Record<string, unknown>;
         if (p.text && typeof p.text === 'string') {
@@ -526,6 +624,9 @@ export default function PlayerActionPage({
       setEphemeralPreview(null);
       setReceipt(nextReceipt);
       setActionStatus(nextReceipt.status);
+      apiFetch<CharacterSheet>('/api/player/character', { headers: authHeaders() })
+        .then(setCharacter)
+        .catch(() => {});
       setMessages((prev) => [...prev.slice(-49), {
         id: nextReceipt.action_id,
         sender: 'player',
@@ -547,16 +648,21 @@ export default function PlayerActionPage({
 
   const submitAction = async (
     overrideText?: string,
-    intentType = 'dialogue',
+    intentType?: string,
     params: Record<string, unknown> = {},
   ) => {
     const declaredIntent = (overrideText ?? inputText).trim();
     if (!declaredIntent || draft || (receipt && isActionInFlight(receipt.status))) return;
+    if (pendingCombatReaction) {
+      setActionError('黑熊正在发动攻击；请先选择闪避或反击。');
+      return;
+    }
     if (deviceControl === false) {
       setActionError('此设备为只读。请先接管主控设备，再提交行动。');
       return;
     }
     setActionError('');
+    analysisEpoch.current += 1;
     setActionStatus('analyzing');
     try {
       const analyzed = await analyzeActionDraft({
@@ -571,7 +677,7 @@ export default function PlayerActionPage({
         await confirmDraft(analyzed);
       } else {
         setDraft(analyzed);
-        setActionStatus('awaiting_confirmation');
+        setActionStatus(analyzed.status);
       }
     } catch (error) {
       setActionError(formatPlayerApiError(error));
@@ -580,6 +686,7 @@ export default function PlayerActionPage({
   };
 
   const updateInputText = (value: string) => {
+    analysisEpoch.current += 1;
     setInputText(value);
     setDraft(null);
     setEphemeralPreview(null);
@@ -635,6 +742,32 @@ export default function PlayerActionPage({
     void submitAction(action.label, action.intent_type, action.params);
   };
 
+  const resolveCombatReaction = async (choice: 'dodge' | 'counterattack') => {
+    if (!pendingCombatReaction || deviceControl === false) return;
+    setActionError('');
+    try {
+      const outcome = await resolveEncounterReaction(pendingCombatReaction.reactionId, choice);
+      setPendingCombatReaction(outcome.nextReaction);
+      const receivedDamage = Number(outcome.result.damageToPlayer || 0);
+      const dealtDamage = Number(outcome.result.damageToBear || 0);
+      setMessages((previous) => [...previous.slice(-49), {
+        id: outcome.reaction.reactionId,
+        sender: 'system',
+        text: outcome.result.playerWins
+          ? `你${choice === 'dodge' ? '闪开了' : '反击成功'}黑熊的${pendingCombatReaction.attackName}${dealtDamage ? `，造成 ${dealtDamage} 点伤害` : ''}。`
+          : `黑熊的${pendingCombatReaction.attackName}命中，受到 ${receivedDamage} 点伤害。`,
+        timestamp: Date.now(),
+      }]);
+      if (outcome.soloTransition) {
+        setMapRefresh((value) => value + 1);
+      }
+      const updatedCharacter = await apiFetch<CharacterSheet>('/api/player/character', { headers: authHeaders() });
+      setCharacter(updatedCharacter);
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
   const submitRetroClaim = () => {
     if (!claimedItemName.trim() || !canStartNewAction(draft, receipt)) return;
     const itemName = claimedItemName.trim();
@@ -662,7 +795,7 @@ export default function PlayerActionPage({
   return (
     <PlayerTerminal activeTab={tab} character={character} onTabChange={setTab} isReady={isReady} charStatus={charStatus} onToggleReady={toggleReady}>
       {tab === 'home' && (
-        <CampaignHomePanel roomId={roomId} onContinueScene={() => setTab('map')} />
+        <CampaignHomePanel roomId={roomId} onContinueScene={() => setTab('action')} />
       )}
       {tab === 'action' && (
         <ActionPanel
@@ -680,9 +813,12 @@ export default function PlayerActionPage({
           ephemeralPreview={ephemeralPreview}
           receipt={receipt}
           messages={messages}
+          narrationDetails={narrationDetails}
           recoveryText={recoveryText}
           pendingActions={pendingActions}
+          pendingCombatReaction={pendingCombatReaction}
           deviceControl={deviceControl}
+          character={character}
           onClaimJustificationChange={setClaimJustification}
           onClaimOpenChange={setClaimOpen}
           onClaimStatusChange={setClaimStatus}
@@ -694,13 +830,23 @@ export default function PlayerActionPage({
           onCancelAction={() => void cancelSubmittedAction()}
           onSubmitRetroClaim={submitRetroClaim}
           onTacticalSelect={submitTacticalAction}
+          onResolveCombatReaction={(choice) => void resolveCombatReaction(choice)}
           onTakeOverDevice={() => void takeOverDevice()}
           onRequestActionHints={() => void requestActionHints()}
           onApplyHint={applyHint}
+          onOpenTab={setTab}
         />
       )}
       {tab === 'character' && <PlayerCharacter externalResult={lastSkillCheckResult} onResultConsumed={() => setLastSkillCheckResult(null)} />}
-      {tab === 'inventory' && <PlayerInventory />}
+      {tab === 'inventory' && (
+        <PlayerInventory
+          onDescribeInNarration={(text) => {
+            updateInputText(text);
+            setTab('action');
+          }}
+          onOpenCampaignHome={() => setTab('home')}
+        />
+      )}
       {tab === 'logs' && <PlayerLogsPanel messages={messages} />}
       {tab === 'map' && (
         <PlayerMapPanel
@@ -727,9 +873,12 @@ interface ActionPanelProps {
   ephemeralPreview: ActionDraftDTO | null;
   receipt: ActionReceiptDTO | null;
   messages: PlayerChatMessage[];
+  narrationDetails: NarrativeFeedItem[];
   recoveryText: string;
   pendingActions: TacticalAction[];
+  pendingCombatReaction: SoloCombatReactionDTO | null;
   deviceControl: boolean | null;
+  character: CharacterSheet | null;
   onClaimJustificationChange: (value: string) => void;
   onClaimOpenChange: (value: boolean) => void;
   onClaimStatusChange: (value: string) => void;
@@ -741,9 +890,11 @@ interface ActionPanelProps {
   onCancelAction: () => void;
   onSubmitRetroClaim: () => void;
   onTacticalSelect: (action: TacticalAction) => void;
+  onResolveCombatReaction: (choice: 'dodge' | 'counterattack') => void;
   onTakeOverDevice: () => void;
   onRequestActionHints: () => void;
   onApplyHint: (hint: string) => void;
+  onOpenTab: (tab: PlayerTabKey) => void;
 }
 
 function formatPlayerApiError(error: unknown): string {
@@ -777,9 +928,12 @@ function ActionPanel({
   ephemeralPreview,
   receipt,
   messages,
+  narrationDetails,
   recoveryText,
   pendingActions,
+  pendingCombatReaction,
   deviceControl,
+  character,
   onClaimJustificationChange,
   onClaimOpenChange,
   onClaimStatusChange,
@@ -791,22 +945,28 @@ function ActionPanel({
   onCancelAction,
   onSubmitRetroClaim,
   onTacticalSelect,
+  onResolveCombatReaction,
   onTakeOverDevice,
   onRequestActionHints,
   onApplyHint,
+  onOpenTab,
 }: ActionPanelProps) {
   const isIdle = canStartNewAction(draft, receipt);
-  const narrativeItems: NarrativeFeedItem[] = messages.map((message) => ({
-    id: message.id,
-    kind: message.sender === 'player' ? 'player' : message.sender === 'system' ? 'recovery' : 'kp_narration',
-    text: message.text,
-  }));
+  const narrativeItems: NarrativeFeedItem[] = [
+    ...messages.map((message) => ({
+      id: message.id,
+      kind: message.sender === 'player' ? 'player' : message.sender === 'system' ? 'recovery' : 'kp_narration',
+      text: message.text,
+    } as NarrativeFeedItem)),
+    ...narrationDetails,
+  ];
 
   return (
-    <section
-      className="bh-panel bh-player-narrative-layout bh-player-narrative-layout--mobile-safe"
-      data-safe-widths="360 390 430"
-    >
+    <div className="bh-player-play-grid">
+      <section
+        className="bh-panel bh-player-narrative-layout bh-player-narrative-layout--mobile-safe"
+        data-safe-widths="360 390 430"
+      >
       <span className="bh-eyebrow">TACTICAL CHANNEL</span>
       <h2 className="bh-panel-title">自然语言行动</h2>
       <NarrativeFeed items={narrativeItems} recoveryText={recoveryText} />
@@ -825,27 +985,6 @@ function ActionPanel({
         </div>
       )}
 
-      <div className="bh-message-list" aria-live="polite">
-        {messages.length === 0 && (
-          <div className="bh-message">等待 KP 指令，或主动描述你的下一步行动。</div>
-        )}
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`bh-message ${msg.sender === 'player' ? 'bh-message--player' : ''} ${msg.sender === 'system' ? 'bh-message--system' : ''}`}
-          >
-            {msg.text}
-            {msg.actions && msg.actions.length > 0 && (
-              <TacticalButtons
-                actions={msg.actions}
-                disabled={!isIdle}
-                onSelect={onTacticalSelect}
-              />
-            )}
-          </div>
-        ))}
-      </div>
-
       {pendingActions.length > 0 && isIdle && (
         <div className="bh-panel" style={{ marginTop: 16 }}>
           <span className="bh-eyebrow">QUICK ACTIONS</span>
@@ -854,6 +993,18 @@ function ActionPanel({
             disabled={false}
             onSelect={onTacticalSelect}
           />
+        </div>
+      )}
+
+      {pendingCombatReaction && (
+        <div className="bh-panel" style={{ marginTop: 16 }} role="alert">
+          <span className="bh-eyebrow">INCOMING ATTACK</span>
+          <h3 className="bh-panel-title">黑熊第 {pendingCombatReaction.roundNumber} 轮·{pendingCombatReaction.attackName}</h3>
+          <p>先决定你的应对方式；结算前不会扣除生命。</p>
+          <div className="bh-hint-list">
+            <button className="bh-button" type="button" disabled={deviceControl === false} onClick={() => onResolveCombatReaction('dodge')}>闪避</button>
+            <button className="bh-button bh-button--yellow" type="button" disabled={deviceControl === false} onClick={() => onResolveCombatReaction('counterattack')}>反击</button>
+          </div>
         </div>
       )}
 
@@ -939,6 +1090,8 @@ function ActionPanel({
         )}
       </div>
     </section>
+    <PlayerContextRail character={character} onOpenTab={onOpenTab} />
+  </div>
   );
 }
 
@@ -1083,7 +1236,7 @@ function PlayerMapPanel({
   }
 
   if (!loading && projection) {
-    return <SemanticMapPanel projection={projection} />;
+    return <SemanticMapPanel projection={projection} imageUrl={mapImageUrl} />;
   }
 
   // Loading state
@@ -1106,6 +1259,42 @@ function PlayerMapPanel({
         style={mapImageUrl ? { backgroundImage: `url(${mapImageUrl})` } : undefined}
       />
       <p className="bh-muted-box">地图仅显示已知信息。移动请在行动区用自然语言描述。</p>
-    </section>
+      </section>
+  );
+}
+
+export function PlayerContextRail({
+  character,
+  onOpenTab,
+}: {
+  character: CharacterSheet | null;
+  onOpenTab: (tab: PlayerTabKey) => void;
+}) {
+  const content = (
+    <>
+      <span className="bh-eyebrow">SESSION CONTEXT</span>
+      <h3>本局资料</h3>
+      <div className="bh-context-vitals">
+        <div><span>生命</span><strong>{character ? `${character.hp}/${character.max_hp}` : '--/--'}</strong></div>
+        <div><span>理智</span><strong>{character ? `${character.san}/${character.max_san}` : '--/--'}</strong></div>
+      </div>
+      <p>地图只展示已知地点；移动、使用物品与检定仍通过自然语言行动确认。</p>
+      <div className="bh-context-actions">
+        <button className="bh-button" type="button" onClick={() => onOpenTab('map')}>打开地图</button>
+        <button className="bh-button" type="button" onClick={() => onOpenTab('character')}>角色与技能</button>
+        <button className="bh-button" type="button" onClick={() => onOpenTab('inventory')}>物品与线索</button>
+        <button className="bh-button" type="button" onClick={() => onOpenTab('logs')}>调查日志</button>
+      </div>
+    </>
+  );
+
+  return (
+    <aside className="bh-player-context-rail" aria-label="本局资料">
+      <div className="bh-player-context-rail__desktop">{content}</div>
+      <details className="bh-player-context-rail__mobile">
+        <summary>本局资料</summary>
+        <div className="bh-player-context-rail__drawer">{content}</div>
+      </details>
+    </aside>
   );
 }
