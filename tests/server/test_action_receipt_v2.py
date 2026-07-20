@@ -1,3 +1,5 @@
+import pytest
+
 from src.server.engine.roll_receipt import create_roll_receipt, verify_roll_receipt
 from src.server.engine.secure_random import secure_randint
 from src.server.engine.skill_check import roll_skill_check
@@ -103,3 +105,32 @@ def test_roll_receipt_rejects_tampered_raw_rolls():
     receipt["raw_rolls"][0]["result"] = 1
 
     assert verify_roll_receipt(receipt, secret="test-secret") is False
+
+
+def test_roll_receipt_uses_isolated_development_secret_in_dev_mode(monkeypatch):
+    monkeypatch.delenv("ROLL_RECEIPT_SECRET", raising=False)
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.setenv("AIKEEPER_DEV_MODE", "1")
+
+    receipt = create_roll_receipt(
+        action_id="dev-action",
+        rule_set_version="coc7-dev",
+        rolled_at="2026-07-12T00:00:00Z",
+        raw_rolls=[{"kind": "d100", "value": 42}],
+    )
+
+    assert verify_roll_receipt(receipt) is True
+
+
+def test_roll_receipt_still_requires_secret_outside_dev_mode(monkeypatch):
+    monkeypatch.delenv("ROLL_RECEIPT_SECRET", raising=False)
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.delenv("AIKEEPER_DEV_MODE", raising=False)
+
+    with pytest.raises(RuntimeError, match="ROLL_RECEIPT_SECRET or JWT_SECRET is required"):
+        create_roll_receipt(
+            action_id="prod-action",
+            rule_set_version="coc7",
+            rolled_at="2026-07-12T00:00:00Z",
+            raw_rolls=[{"kind": "d100", "value": 42}],
+        )

@@ -5,7 +5,10 @@ from typing import Any
 
 
 _NODE_PATTERN = re.compile(r"(?<!\d)(?P<node_id>\d{1,3})#")
-_TARGET_PATTERN = re.compile(r"转到\s*(?P<node_id>\d{1,3})(?:\s*#)?")
+_TARGET_PATTERN = re.compile(
+    r"(?:转|翻)\s*(?:\d+\s*(?:[dD]\s*\d+)?\s*)*"
+    r"(?:到|至)\s*(?:个|条目|第)?\s*(?P<node_id>\d{1,3})(?:\s*#)?"
+)
 
 
 def extract_solo_adventure(parts: list[dict[str, Any]]) -> dict[str, Any]:

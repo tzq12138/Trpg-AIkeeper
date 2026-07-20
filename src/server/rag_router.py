@@ -275,7 +275,10 @@ async def publish_rule_set_version(request: Request, rule_set_version_id: str):
     _require_admin(request)
     conn = request.app.state.db
     version = conn.execute(
-        "SELECT rule_set_id FROM rule_set_versions WHERE rule_set_version_id = %s",
+        "SELECT rsv.rule_set_id, rs.system, rs.is_base "
+        "FROM rule_set_versions rsv "
+        "JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id "
+        "WHERE rsv.rule_set_version_id = %s",
         (rule_set_version_id,),
     ).fetchone()
     if not version:
@@ -296,6 +299,23 @@ async def publish_rule_set_version(request: Request, rule_set_version_id: str):
             "UPDATE rule_sets SET status = 'published' WHERE rule_set_id = %s",
             (version["rule_set_id"],),
         )
+        if version.get("system") == "coc7" and version.get("is_base"):
+            tx.execute(
+                """
+                INSERT INTO scenario_rule_bindings (
+                    scenario_version_id, rule_set_version_id, priority
+                )
+                SELECT s.published_version_id, %s, 100
+                FROM scenarios s
+                JOIN scenario_versions sv
+                  ON sv.scenario_version_id = s.published_version_id
+                WHERE s.publish_status = 'published'
+                  AND s.published_version_id IS NOT NULL
+                  AND sv.status = 'published'
+                ON CONFLICT (scenario_version_id, rule_set_version_id) DO NOTHING
+                """,
+                (rule_set_version_id,),
+            )
     return {"rule_set_version_id": rule_set_version_id, "status": "published"}
 
 

@@ -52,6 +52,8 @@ def _derive_key(secret: str) -> bytes:
 
 def _receipt_secret() -> str:
     secret = os.getenv("ROLL_RECEIPT_SECRET") or os.getenv("JWT_SECRET")
+    if not secret and os.getenv("AIKEEPER_DEV_MODE", "").lower() in ("1", "true", "yes"):
+        return "aikeeper-local-development-roll-receipt-v1"
     if not secret:
         raise RuntimeError("ROLL_RECEIPT_SECRET or JWT_SECRET is required")
     return secret

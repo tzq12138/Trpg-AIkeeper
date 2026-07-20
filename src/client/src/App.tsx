@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import HostStage from './pages/HostStage';
+import HostConsole from './pages/HostConsole';
 import HostLobby from './pages/HostLobby';
 import AdminDashboard from './pages/AdminDashboard';
+import AdminAcceptancePage from './pages/AdminAcceptancePage';
 import RagTestPage from './pages/RagTestPage';
 import PlayerActionPage from './pages/PlayerActionPage';
 import PlayerLobby from './pages/PlayerLobby';
@@ -12,6 +14,8 @@ import HostCreate from './pages/HostCreate';
 import IdentitySwitcher from './components/IdentitySwitcher';
 import { BauhausPage } from './components/BauhausShell';
 import { getCurrentRoute, type AppRoute } from './navigation';
+import { getSlotValue } from './shared/identity';
+import { getHomeTasks } from './shared/home-navigation';
 
 export default function App() {
   const [route, setRoute] = useState<AppRoute>(getCurrentRoute());
@@ -25,8 +29,14 @@ export default function App() {
   if (route.page === 'host-stage') {
     return <HostStage roomId={route.param} />;
   }
+  if (route.page === 'host-console') {
+    return <HostConsole roomId={route.param} />;
+  }
   if (route.page === 'admin') {
     return <AdminDashboard />;
+  }
+  if (route.page === 'admin-acceptance') {
+    return <AdminAcceptancePage />;
   }
   if (route.page === 'rag-test') {
     return <RagTestPage />;
@@ -92,24 +102,25 @@ export default function App() {
 }
 
 function Home() {
+  let role = '';
+  try {
+    role = JSON.parse(getSlotValue('account') || '{}').role || '';
+  } catch {
+    role = '';
+  }
+
   return (
     <div className="bh-grid-links">
-      <a className="bh-link-card bh-link-card--black" href="/admin">
-        <strong>管理后台</strong>
-        <span>ROOMS / SCENARIOS</span>
-      </a>
-      <a className="bh-link-card bh-link-card--yellow" href="/rag-test">
-        <strong>规则书 RAG</strong>
-        <span>RULEBOOK LAB</span>
-      </a>
-      <a className="bh-link-card" href="/host/create">
-        <strong>创建房间</strong>
-        <span>HOST / KEEPER</span>
-      </a>
-      <a className="bh-link-card" href="/player/join">
-        <strong>加入房间</strong>
-        <span>PLAYER / INVESTIGATOR</span>
-      </a>
+      {getHomeTasks(role).map((task) => (
+        <a
+          key={task.href}
+          className={`bh-link-card${task.tone === 'yellow' ? ' bh-link-card--yellow' : ''}${task.tone === 'black' ? ' bh-link-card--black' : ''}`}
+          href={task.href}
+        >
+          <strong>{task.label}</strong>
+          <span>{task.eyebrow}</span>
+        </a>
+      ))}
     </div>
   );
 }

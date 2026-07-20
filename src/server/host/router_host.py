@@ -1,8 +1,9 @@
 import json
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request, HTTPException
-from ..models import EngineEvent, RevealTransaction
+from ..models import EngineEvent, HostPublicSceneTimeUpdate, RevealTransaction
 from .host_store import HostStore, HOST_VISIBLE_EVENTS, PRIVATE_EVENTS
+from .public_stage import build_public_presentation_projection, build_public_stage_projection
 from .ws_manager import manager as ws_manager
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,41 @@ def _verify_owner(request: Request, room_id: str) -> dict:
     raise HTTPException(403, "不是房间所有者")
 
 
+def _event_safe_record(value: dict | None) -> dict:
+    return {
+        key: item.isoformat() if hasattr(item, "isoformat") else item
+        for key, item in dict(value or {}).items()
+    }
+
+
+def _require_emergency_reason(body: dict, operation: str) -> str:
+    reason = str(body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, f"{operation} requires an emergency reason")
+    return reason[:500]
+
+
+def _audit_encounter_intervention(
+    conn,
+    room_id: str,
+    owner_info: dict,
+    *,
+    operation: str,
+    encounter_id: str,
+    reason: str,
+    target_id: str = "",
+) -> None:
+    from ..events.event_log import EventLog
+
+    EventLog(conn).log_event(room_id, "host_encounter_intervention", "system", {
+        "operation": operation,
+        "encounterId": encounter_id,
+        "reason": reason,
+        "actorAccountId": owner_info.get("owner_account_id") or "host",
+        "targetId": target_id,
+    })
+
+
 def get_host_store(room_id: str, db_conn=None) -> HostStore:
     if room_id not in _host_stores:
         store = HostStore(room_id)
@@ -85,6 +121,138 @@ async def get_hud(request: Request, room_id: str):
     return hud.model_dump(by_alias=True)
 
 
+@router.get("/{room_id}/stage-projection")
+async def get_stage_projection(request: Request, room_id: str):
+    """Return a display-safe projection without host controls or exact resources."""
+    _verify_owner(request, room_id)
+    conn = request.app.state.db
+
+    from .hud_builder import build_hud
+    from .public_stage import build_public_combat_round_projection
+    hud = build_hud(conn, room_id)
+    store = _host_stores.get(room_id)
+    if store:
+        hud.engine_state = store.engine_state
+        hud.scene_image_url = store.current_scene_image_url
+
+    rows = conn.execute(
+        """SELECT event_type, payload, issued_at
+           FROM events
+           WHERE room_id = %s
+             AND audience = 'party'
+             AND event_type IN ('s2c_public_observation', 's2c_turn_resolved')
+           ORDER BY sequence DESC
+           LIMIT 5""",
+        (room_id,),
+    ).fetchall()
+    public_events = []
+    for row in reversed(rows):
+        payload = row.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        text = ""
+        if row.get("event_type") == "s2c_public_observation" and isinstance(payload, dict):
+            text = str(payload.get("text", ""))
+        elif row.get("event_type") == "s2c_turn_resolved" and isinstance(payload, dict):
+            summary = payload.get("combat_summary")
+            if isinstance(summary, dict):
+                parts = [str(summary.get("title", ""))]
+                public_facts = [str(item) for item in summary.get("public_facts", []) if item]
+                parts.extend(public_facts)
+                current_situation = summary.get("current_situation")
+                if current_situation and str(current_situation).strip() != (public_facts[-1].strip() if public_facts else ""):
+                    parts.append(str(current_situation))
+                text = "\n".join(part for part in parts if part)
+        public_events.append({"text": text, "issued_at": row.get("issued_at", "")})
+    combat_round = build_public_combat_round_projection(
+        conn,
+        room_id,
+        total_players=len(hud.players),
+    )
+    return build_public_stage_projection(hud, public_events, combat_round)
+
+
+@router.put("/{room_id}/public-scene-time")
+async def update_public_scene_time(
+    request: Request,
+    room_id: str,
+    payload: HostPublicSceneTimeUpdate,
+):
+    """Update the one scene field that is explicitly safe for public display."""
+    room = _verify_owner(request, room_id)
+    conn = request.app.state.db
+    scene_row = conn.execute(
+        "SELECT scene_variables FROM room_scene_state WHERE room_id = %s FOR UPDATE",
+        (room_id,),
+    ).fetchone()
+    scene_variables = scene_row.get("scene_variables") if scene_row else {}
+    if isinstance(scene_variables, str):
+        try:
+            scene_variables = json.loads(scene_variables)
+        except json.JSONDecodeError:
+            scene_variables = {}
+    scene_variables = dict(scene_variables or {})
+    scene_variables["public_time"] = payload.scene_time
+
+    row = conn.execute(
+        """
+        INSERT INTO room_scene_state (room_id, scene_variables, version)
+        VALUES (%s, %s, 1)
+        ON CONFLICT (room_id) DO UPDATE SET
+            scene_variables = EXCLUDED.scene_variables,
+            version = room_scene_state.version + 1,
+            updated_at = NOW()
+        RETURNING version
+        """,
+        (room_id, json.dumps(scene_variables, ensure_ascii=False)),
+    ).fetchone()
+    from ..events.event_log import EventLog
+    EventLog(conn).log_event(room_id, "host_public_scene_time_updated", "system", {
+        "operation": "public_scene_time_updated",
+        "actorAccountId": room.get("owner_account_id", "host"),
+        "sceneTime": payload.scene_time,
+        "sceneVersion": row["version"],
+    })
+    return {"sceneTime": payload.scene_time, "version": row["version"]}
+
+
+@router.get("/{room_id}/safety-requests")
+async def get_safety_requests(request: Request, room_id: str):
+    _verify_owner(request, room_id)
+    from ..player.private_data import PrivateDataDecryptionError, private_data_cipher_from_env
+
+    rows = request.app.state.db.execute(
+        """
+        SELECT submission.action_id, submission.character_id,
+               submission.raw_text_ciphertext, submission.created_at
+        FROM player_action_submissions AS submission
+        WHERE submission.room_id = %s
+          AND submission.input_mode = 'safety'
+        ORDER BY submission.created_at DESC
+        LIMIT 20
+        """,
+        (room_id,),
+    ).fetchall()
+    cipher = private_data_cipher_from_env()
+    items = []
+    for row in rows:
+        try:
+            text = cipher.decrypt(row["raw_text_ciphertext"])
+        except PrivateDataDecryptionError:
+            logger.warning("Skipping unreadable safety request: %s", row["action_id"])
+            continue
+        items.append({
+            "actionId": row["action_id"],
+            "characterId": row["character_id"],
+            "text": text,
+            "createdAt": str(row["created_at"]),
+        })
+    return {"items": items}
+
+
 @router.post("/{room_id}/reset")
 async def emergency_reset(request: Request, room_id: str):
     _verify_owner(request, room_id)
@@ -105,6 +273,145 @@ async def pause_host(request: Request, room_id: str):
     return {"status": "paused" if store.is_paused else "resumed", "room_id": room_id}
 
 
+def _presentation_status(store: HostStore) -> dict:
+    transaction = store.active_transaction
+    total_steps = len(transaction.steps) if transaction else 0
+    can_skip_visual = bool(
+        transaction
+        and store.current_step_index < total_steps
+        and transaction.steps[store.current_step_index].kind == "scene_transition"
+    )
+    return {
+        "transactionId": store.active_transaction_id,
+        "currentStepIndex": store.current_step_index,
+        "totalSteps": total_steps,
+        "paused": store.presentation_paused,
+        "completed": bool(transaction) and store.current_step_index >= total_steps,
+        "queuedTransactions": len(store.normal_queue) + len(store.urgent_queue),
+        "canSkipVisual": can_skip_visual,
+    }
+
+
+def _json_object(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _public_presentation_projection(conn, room_id: str, store: HostStore) -> dict:
+    transaction = store.active_transaction
+    stage_projection = None
+    if transaction and transaction.action_id:
+        row = conn.execute(
+            """SELECT stage_projection FROM resolution_bundles
+               WHERE room_id = %s AND action_id = %s AND release_status = 'released'""",
+            (room_id, transaction.action_id),
+        ).fetchone()
+        if row:
+            stage_projection = _json_object(row.get("stage_projection"))
+    return build_public_presentation_projection(
+        transaction,
+        store.current_step_index,
+        stage_projection,
+        store.presentation_version,
+    )
+
+
+@router.get("/{room_id}/presentation")
+async def get_presentation(request: Request, room_id: str):
+    _verify_owner(request, room_id)
+    return _presentation_status(get_host_store(room_id, request.app.state.db))
+
+
+@router.get("/{room_id}/stage-presentation")
+async def get_stage_presentation(request: Request, room_id: str):
+    """Return only the safe, already-released narration selected for public playback."""
+    _verify_owner(request, room_id)
+    conn = request.app.state.db
+    return _public_presentation_projection(conn, room_id, get_host_store(room_id, conn))
+
+
+@router.post("/{room_id}/presentation/play")
+async def play_presentation(request: Request, room_id: str):
+    _verify_owner(request, room_id)
+    store = get_host_store(room_id, request.app.state.db)
+    store.presentation_paused = False
+    store.start_next_presentation()
+    store.save_state(request.app.state.db)
+    return _presentation_status(store)
+
+
+@router.post("/{room_id}/presentation/pause")
+async def pause_presentation(request: Request, room_id: str):
+    _verify_owner(request, room_id)
+    store = get_host_store(room_id, request.app.state.db)
+    store.presentation_paused = True
+    store.save_state(request.app.state.db)
+    return _presentation_status(store)
+
+
+@router.post("/{room_id}/presentation/next")
+async def advance_presentation(request: Request, room_id: str):
+    _verify_owner(request, room_id)
+    store = get_host_store(room_id, request.app.state.db)
+    if store.presentation_paused:
+        raise HTTPException(409, "Presentation is paused")
+    step = store.advance_step()
+    if step is None:
+        raise HTTPException(409, "No presentation step is available")
+    await _release_saved_player_events(
+        room_id,
+        store,
+        store.active_transaction_id or "",
+        store.current_step_index,
+        step.step_id,
+    )
+    store.presentation_version += 1
+    store.save_state(request.app.state.db)
+    return _presentation_status(store)
+
+
+@router.post("/{room_id}/presentation/skip-visual")
+async def skip_visual_presentation_steps(request: Request, room_id: str):
+    """Acknowledge contiguous scene-transition steps without exposing their payloads."""
+    _verify_owner(request, room_id)
+    store = get_host_store(room_id, request.app.state.db)
+    if store.presentation_paused:
+        raise HTTPException(409, "Presentation is paused")
+    first_step_index = store.current_step_index
+    skipped_steps = store.skip_visual_steps()
+    if not skipped_steps:
+        raise HTTPException(409, "No visual presentation step is available")
+    for offset, step in enumerate(skipped_steps, start=1):
+        await _release_saved_player_events(
+            room_id,
+            store,
+            store.active_transaction_id or "",
+            first_step_index + offset,
+            step.step_id,
+        )
+    store.presentation_version += len(skipped_steps)
+    store.save_state(request.app.state.db)
+    return _presentation_status(store) | {"skippedVisualSteps": len(skipped_steps)}
+
+
+@router.post("/{room_id}/presentation/replay")
+async def replay_presentation(request: Request, room_id: str):
+    """Request another render of the persisted public projection without changing authority."""
+    _verify_owner(request, room_id)
+    conn = request.app.state.db
+    store = get_host_store(room_id, conn)
+    store.presentation_version += 1
+    store.save_state(conn)
+    return _public_presentation_projection(conn, room_id, store)
+
+
 @router.post("/{room_id}/retry-turn")
 async def retry_turn(request: Request, room_id: str):
     _verify_owner(request, room_id)
@@ -114,6 +421,85 @@ async def retry_turn(request: Request, room_id: str):
         store.current_step_index = 0
         return {"status": "retried", "transaction_id": store.active_transaction_id}
     return {"status": "no_active_transaction", "room_id": room_id}
+
+
+@router.get("/{room_id}/projection-replays")
+async def list_projection_replays(request: Request, room_id: str):
+    """List pending projection retries without exposing action text or results."""
+    _verify_owner(request, room_id)
+    rows = request.app.state.db.execute(
+        "SELECT action_id, character_id FROM resolution_bundles "
+        "WHERE room_id = %s AND release_status = 'projection_pending' ORDER BY created_at",
+        (room_id,),
+    ).fetchall()
+    return {"items": [dict(row) for row in rows]}
+
+
+@router.post("/{room_id}/actions/{action_id}/replay-projection")
+async def replay_action_projection(request: Request, room_id: str, action_id: str):
+    """Replay persisted projections after delivery failed; never re-resolve the action."""
+    _verify_owner(request, room_id)
+    conn = request.app.state.db
+    action = conn.execute(
+        "SELECT action_id, room_id, status FROM actions WHERE action_id = %s AND room_id = %s",
+        (action_id, room_id),
+    ).fetchone()
+    if not action:
+        raise HTTPException(404, "Action not found")
+    if action.get("status") not in {"completed", "resolved"}:
+        raise HTTPException(409, "Action is not ready for projection replay")
+    pipeline = getattr(request.app.state, "pipeline", None)
+    replay = getattr(pipeline, "replay_projection", None)
+    if not callable(replay):
+        raise HTTPException(503, "Projection replay is unavailable")
+    return await replay(action_id)
+
+
+def _events_released_by_host_ack(
+    store: HostStore,
+    transaction_id: str,
+    step_index: int,
+    step_id: str,
+) -> list[dict]:
+    if transaction_id != store.active_transaction_id:
+        return []
+    acknowledged_step = min(max(step_index, 0), store.current_step_index)
+    if not store.active_transaction or acknowledged_step <= 0:
+        return []
+    completed_step = store.active_transaction.steps[acknowledged_step - 1]
+    if completed_step.step_id != step_id:
+        return []
+    return store.pop_ready_events(acknowledged_step)
+
+
+async def _release_saved_player_events(
+    room_id: str,
+    store: HostStore,
+    transaction_id: str,
+    step_index: int,
+    step_id: str,
+) -> None:
+    ready = _events_released_by_host_ack(store, transaction_id, step_index, step_id)
+    for event_data in ready:
+        character_id = event_data.get("character_id")
+        if not character_id:
+            continue
+        try:
+            player_event = EngineEvent(
+                roomId=str(event_data.get("room_id") or room_id),
+                type=event_data["event_type"],
+                audience=event_data.get("audience", "player"),
+                payload=event_data["payload"],
+            )
+            await ws_manager.send_event(room_id, f"player:{character_id}", player_event)
+        except Exception as error:
+            logger.warning(
+                "Host %s could not release delayed event %s to player %s: %s",
+                room_id,
+                event_data.get("event_type"),
+                character_id,
+                error,
+            )
 
 
 async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str = ""):
@@ -170,7 +556,7 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
         }))
     except Exception:
         logger.exception("Failed to push initial HUD to host room=%s", room_id)
-        ws_manager.disconnect(room_id, "host")
+        ws_manager.disconnect(room_id, "host", websocket=websocket)
         return
 
     last_seq = 0
@@ -186,46 +572,26 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
             msg_type = event_data.get("type", "")
 
             if msg_type == "host_step_complete":
-                step_index = event_data.get("step_index", store.current_step_index)
-                ready = store.pop_ready_events(step_index)
-                for ev in ready:
-                    target_cid = ev.get("character_id")
-                    if target_cid:
-                        conn_id = f"player:{target_cid}"
-                        try:
-                            from ..models import EngineEvent as _EE
-                            player_event = _EE(
-                                roomId=ev["room_id"],
-                                type=ev["event_type"],
-                                audience=ev.get("audience", "player"),
-                                payload=ev["payload"],
-                            )
-                            await ws_manager.send_event(room_id, conn_id, player_event)
-                        except Exception as _flush_err:
-                            logger.warning("Host %s bad delayed event type=%s: %s",
-                                           room_id, ev.get("event_type"), _flush_err)
-                        else:
-                            logger.info(
-                                "Host %s flushed delayed event %s to player %s at step %d",
-                                room_id, ev["event_type"], target_cid, step_index,
-                            )
-                remaining = store.flush_all_delayed()
-                for ev in remaining:
-                    target_cid = ev.get("character_id")
-                    if target_cid:
-                        conn_id = f"player:{target_cid}"
-                        try:
-                            from ..models import EngineEvent as _EE
-                            player_event = _EE(
-                                roomId=ev["room_id"],
-                                type=ev["event_type"],
-                                audience=ev.get("audience", "player"),
-                                payload=ev["payload"],
-                            )
-                            await ws_manager.send_event(room_id, conn_id, player_event)
-                        except Exception as _rem_err:
-                            logger.warning("Host %s bad remaining event type=%s: %s",
-                                           room_id, ev.get("event_type"), _rem_err)
+                transaction_id = event_data.get("transactionId")
+                step_index = event_data.get("stepIndex", event_data.get("step_index"))
+                step_id = event_data.get("stepId", event_data.get("step_id"))
+                if (
+                    not isinstance(transaction_id, str)
+                    or not transaction_id
+                    or not isinstance(step_index, int)
+                    or isinstance(step_index, bool)
+                    or not isinstance(step_id, str)
+                    or not step_id
+                ):
+                    logger.warning("Host %s sent malformed step acknowledgement", room_id)
+                    continue
+                await _release_saved_player_events(
+                    room_id,
+                    store,
+                    transaction_id,
+                    step_index,
+                    step_id,
+                )
                 store.save_state(conn)
                 continue
 
@@ -331,18 +697,20 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
                     "payload": event.payload,
                 }))
             elif event.type == "s2c_encounter_started":
-                store.active_encounter = event.payload
-                store.encounter_suggestion = None
-                await websocket.send_text(json.dumps({
-                    "type": "encounter_started",
-                    "payload": event.payload,
-                }))
+                if isinstance(event.payload.get("participants"), list):
+                    store.active_encounter = event.payload
+                    store.encounter_suggestion = None
+                    await websocket.send_text(json.dumps({
+                        "type": "encounter_started",
+                        "payload": event.payload,
+                    }))
             elif event.type == "s2c_encounter_updated":
-                store.active_encounter = event.payload
-                await websocket.send_text(json.dumps({
-                    "type": "encounter_updated",
-                    "payload": event.payload,
-                }))
+                if isinstance(event.payload.get("participants"), list):
+                    store.active_encounter = event.payload
+                    await websocket.send_text(json.dumps({
+                        "type": "encounter_updated",
+                        "payload": event.payload,
+                    }))
             elif event.type == "s2c_encounter_resolved":
                 store.active_encounter = None
                 await websocket.send_text(json.dumps({
@@ -352,6 +720,11 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
             elif event.type == "s2c_team_message":
                 await websocket.send_text(json.dumps({
                     "type": "team_message",
+                    "payload": event.payload,
+                }))
+            elif event.type == "s2c_safety_request":
+                await websocket.send_text(json.dumps({
+                    "type": "safety_request",
                     "payload": event.payload,
                 }))
             elif event.type == "s2c_room_lobby_snapshot":
@@ -365,7 +738,7 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
     except Exception as e:
         logger.error("Host %s error: %s", room_id, e)
     finally:
-        ws_manager.disconnect(room_id, "host")
+        ws_manager.disconnect(room_id, "host", websocket=websocket)
 
 
 @router.post("/{room_id}/approve/{character_id}")
@@ -714,18 +1087,31 @@ async def host_confirm_encounter(request: Request, room_id: str):
             weapon_name=p.get("weapon_name", p.get("weaponName", "")),
             damage_expression=p.get("damage_expression", p.get("damageExpression", "1d3")),
             main_skill=p.get("main_skill", p.get("mainSkill", "")),
+            display_name=p.get("display_name", p.get("displayName", "")),
+            public_visibility=p.get("public_visibility", p.get("publicVisibility", "hidden")),
+            public_label=p.get("public_label", p.get("publicLabel", "")),
+            last_observed_position=p.get("last_observed_position", p.get("lastObservedPosition", "")),
         )
 
     from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
     import asyncio
     try:
-        all_parts = [dict(p) for p in get_participants(conn, encounter_id)]
+        full_encounter = _event_safe_record(get_encounter(conn, encounter_id))
+        full_parts = [dict(p) for p in get_participants(conn, encounter_id)]
         asyncio.get_running_loop().create_task(
             dispatcher.emit(room_id, "s2c_encounter_started", "party", {
+                **build_public_encounter_event_projection(
+                    full_encounter,
+                    build_public_combat_units_for_encounter(conn, encounter_id),
+                ),
+            })
+        )
+        asyncio.get_running_loop().create_task(
+            dispatcher.emit(room_id, "s2c_encounter_started", "host", {
                 "encounterId": encounter_id,
-                "encounter": dict(get_encounter(conn, encounter_id)),
-                "participants": all_parts,
+                "encounter": full_encounter,
+                "participants": full_parts,
             })
         )
     except RuntimeError:
@@ -755,7 +1141,8 @@ async def host_reject_encounter(request: Request, room_id: str):
 @router.post("/{room_id}/encounter/next-round")
 async def host_next_round(request: Request, room_id: str):
     """Advance encounter to next round — resets acted_this_round for all."""
-    _verify_owner(request, room_id)
+    owner_info = _verify_owner(request, room_id)
+    reason = _require_emergency_reason(await request.json(), "advance_round")
     conn = request.app.state.db
     from ..encounter_persistence import (
         get_active_encounter, update_encounter_round, reset_round_actions, get_participants,
@@ -769,15 +1156,35 @@ async def host_next_round(request: Request, room_id: str):
     new_round = enc["current_round"] + 1
     update_encounter_round(conn, enc["encounter_id"], new_round)
     reset_round_actions(conn, enc["encounter_id"])
+    _audit_encounter_intervention(
+        conn,
+        room_id,
+        owner_info,
+        operation="advance_round",
+        encounter_id=enc["encounter_id"],
+        reason=reason,
+    )
 
     from ..engine.projection import ProjectionDispatcher
+    from .public_stage import (
+        build_public_combat_units_for_encounter,
+        build_public_encounter_event_projection,
+    )
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
     import asyncio
     try:
         asyncio.get_running_loop().create_task(
             dispatcher.emit(room_id, "s2c_encounter_updated", "party", {
+                **build_public_encounter_event_projection(
+                    _event_safe_record(get_active_encounter(conn, room_id)),
+                    build_public_combat_units_for_encounter(conn, enc["encounter_id"]),
+                ),
+            })
+        )
+        asyncio.get_running_loop().create_task(
+            dispatcher.emit(room_id, "s2c_encounter_updated", "host", {
                 "encounterId": enc["encounter_id"],
-                "encounter": dict(get_active_encounter(conn, room_id)),
+                "encounter": _event_safe_record(get_active_encounter(conn, room_id)),
                 "participants": [dict(p) for p in get_participants(conn, enc["encounter_id"])],
             })
         )
@@ -790,7 +1197,8 @@ async def host_next_round(request: Request, room_id: str):
 @router.post("/{room_id}/encounter/resolve")
 async def host_resolve_encounter(request: Request, room_id: str):
     """Host manually ends an encounter."""
-    _verify_owner(request, room_id)
+    owner_info = _verify_owner(request, room_id)
+    reason = _require_emergency_reason(await request.json(), "resolve_encounter")
     conn = request.app.state.db
     from ..encounter_persistence import get_active_encounter, update_encounter_status
     enc = get_active_encounter(conn, room_id)
@@ -798,6 +1206,14 @@ async def host_resolve_encounter(request: Request, room_id: str):
         raise HTTPException(404, "No active encounter")
 
     update_encounter_status(conn, enc["encounter_id"], "resolved", "Host manually ended")
+    _audit_encounter_intervention(
+        conn,
+        room_id,
+        owner_info,
+        operation="resolve_encounter",
+        encounter_id=enc["encounter_id"],
+        reason=reason,
+    )
 
     from ..engine.projection import ProjectionDispatcher
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
@@ -818,8 +1234,9 @@ async def host_resolve_encounter(request: Request, room_id: str):
 @router.post("/{room_id}/encounter/npc")
 async def host_create_npc(request: Request, room_id: str):
     """Quick-create an NPC participant for an encounter."""
-    _verify_owner(request, room_id)
+    owner_info = _verify_owner(request, room_id)
     body = await request.json()
+    reason = _require_emergency_reason(body, "create_encounter_participant")
     encounter_id = body.get("encounter_id", body.get("encounterId", ""))
     npc_name = body.get("name", "未命名NPC")
 
@@ -847,6 +1264,18 @@ async def host_create_npc(request: Request, room_id: str):
         main_skill=body.get("main_skill", body.get("mainSkill", "")),
         notes=body.get("notes", ""),
         display_name=npc_name,
+        public_visibility=body.get("public_visibility", body.get("publicVisibility", "hidden")),
+        public_label=body.get("public_label", body.get("publicLabel", "")),
+        last_observed_position=body.get("last_observed_position", body.get("lastObservedPosition", "")),
+    )
+    _audit_encounter_intervention(
+        conn,
+        room_id,
+        owner_info,
+        operation="create_encounter_participant",
+        encounter_id=encounter_id,
+        reason=reason,
+        target_id=npc_id,
     )
 
     parts = [dict(p) for p in get_participants(conn, encounter_id)]

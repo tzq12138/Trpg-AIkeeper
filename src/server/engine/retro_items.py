@@ -68,17 +68,16 @@ class RetroactiveItemService:
         assets = scenario_assets or {}
         item = self._find_item(assets, claimed_name)
         if not item:
+            if self._declared_in_background(character, claimed_name):
+                return RetroactiveClaimDecision(
+                    branch="auto_pass",
+                    item=self._synthetic_item(claimed_name),
+                    claimed_item_name=claimed_name,
+                    justification_text=justification,
+                )
             return RetroactiveClaimDecision(
                 branch="roll_required",
-                item={
-                    "itemId": self._slug(claimed_name),
-                    "name": claimed_name,
-                    "narrative": {
-                        "tags": [],
-                        "baselineAccess": "restricted",
-                        "description": "",
-                    },
-                },
+                item=self._synthetic_item(claimed_name),
                 claimed_item_name=claimed_name,
                 justification_text=justification,
                 roll_skill="luck",
@@ -115,6 +114,29 @@ class RetroactiveItemService:
             )
 
         raise RetroactiveClaimError(409, "Claim does not fit character background")
+
+    def _declared_in_background(self, character: dict[str, Any], claimed_name: str) -> bool:
+        xlsx_data = character.get("xlsx_data") or {}
+        if isinstance(xlsx_data, str):
+            try:
+                xlsx_data = json.loads(xlsx_data)
+            except json.JSONDecodeError:
+                xlsx_data = {}
+        background = xlsx_data.get("background") or xlsx_data.get("backstory") or ""
+        if isinstance(background, dict):
+            background = json.dumps(background, ensure_ascii=False)
+        return claimed_name in str(background)
+
+    def _synthetic_item(self, claimed_name: str) -> dict[str, Any]:
+        return {
+            "itemId": self._slug(claimed_name),
+            "name": claimed_name,
+            "narrative": {
+                "tags": [],
+                "baselineAccess": "restricted",
+                "description": "",
+            },
+        }
 
     def _find_item(self, assets: dict[str, Any], claimed_name: str) -> dict[str, Any] | None:
         for item_id, item in (assets.get("items") or {}).items():

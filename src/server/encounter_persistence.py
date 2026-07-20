@@ -119,16 +119,21 @@ def add_participant(
     weapon_name: str = "", damage_expression: str = "1d3",
     main_skill: str = "", notes: str = "",
     display_name: str = "",
+    public_visibility: str = "hidden",
+    public_label: str = "",
+    last_observed_position: str = "",
 ) -> dict:
     conn.execute(
         "INSERT INTO encounter_participants "
         "(encounter_id, character_id, side, hp, hp_max, san, san_max, dex, mov, "
         "current_position, distance_band, status_tags, acted_this_round, "
-        "weapon_name, damage_expression, main_skill, notes, display_name) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        "weapon_name, damage_expression, main_skill, notes, display_name, "
+        "public_visibility, public_label, last_observed_position) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (encounter_id, character_id, side, hp, hp_max, san, san_max, dex, mov,
          current_position, distance_band, _ensure_json([]), False,
-         weapon_name, damage_expression, main_skill, notes, display_name),
+         weapon_name, damage_expression, main_skill, notes, display_name,
+         public_visibility, public_label, last_observed_position),
     )
     conn.commit()
     return get_participant(conn, encounter_id, character_id)
@@ -141,7 +146,8 @@ def update_participant(conn, encounter_id: str, character_id: str, **fields):
     allowed = {"hp", "hp_max", "san", "san_max", "dex", "mov",
                "current_position", "distance_band", "status_tags",
                "acted_this_round", "weapon_name", "damage_expression",
-               "main_skill", "notes", "side"}
+               "main_skill", "notes", "side", "public_visibility",
+               "public_label", "last_observed_position"}
     set_parts = []
     params = []
     for k, v in fields.items():

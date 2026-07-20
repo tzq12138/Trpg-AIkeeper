@@ -50,13 +50,75 @@ beforeEach(() => {
 
 describe('AdminDashboard scenario import management', () => {
   test('renders map draft generation and confirmation controls inside scenario review', async () => {
-    const { MapDraftReviewPanel } = await loadAdminDashboard();
-    const html = renderToStaticMarkup(<MapDraftReviewPanel scenarioId="scenario-1" />);
+    const {
+      MapBaseAssetControl,
+      MapDraftReviewPanel,
+      buildScenarioMapGenerateEndpoint,
+    } = await loadAdminDashboard();
+    const html = renderToStaticMarkup(
+      <MapDraftReviewPanel scenarioId="scenario-1" scenarioVersionId="version-2" assets={[]} />,
+    );
+    const assetControl = renderToStaticMarkup(
+      <MapBaseAssetControl
+        assets={[{
+          asset_id: 'map-asset',
+          original_name: '地图.png',
+          mime_type: 'image/png',
+        }]}
+        disabled={false}
+        selectedAssetId="map-asset"
+        onChange={() => {}}
+      />,
+    );
 
     expect(html).toContain('地图草稿');
     expect(html).toContain('生成地图草稿');
     expect(html).toContain('确认地图');
     expect(html).toContain('区域与路径仅在备团阶段由管理员审核。');
+    expect(assetControl).toContain('地图底图');
+    expect(assetControl).toContain('地图.png');
+    expect(assetControl).toContain('value="map-asset" selected=""');
+    expect(buildScenarioMapGenerateEndpoint('scenario-1', 'version-2')).toBe(
+      '/api/admin/scenarios/scenario-1/map/generate?scenario_version_id=version-2',
+    );
+  });
+
+  test('renders review controls for a suggested scenario asset binding', async () => {
+    const { AssetBindingReviewCard, ScenarioAssetBindingsPanel } = await loadAdminDashboard();
+    const card = renderToStaticMarkup(
+      <AssetBindingReviewCard
+        binding={{
+          binding_id: 'binding-1',
+          asset_id: 'bus-image',
+          original_name: '长途车.png',
+          target_type: 'branch_node',
+          target_key: '1',
+          confidence: 0.91,
+          evidence: { method: 'content_match' },
+          generated_by: 'gateway',
+          status: 'draft',
+        }}
+        disabled={false}
+        scenarioId="scenario-1"
+        targets={[
+          { target_type: 'branch_node', target_key: '1', label: '条目 1' },
+          { target_type: 'item', target_key: 'ticket', label: '车票' },
+        ]}
+        onReview={() => {}}
+      />,
+    );
+    const panel = renderToStaticMarkup(
+      <ScenarioAssetBindingsPanel scenarioId="scenario-1" scenarioVersionId="version-2" />,
+    );
+
+    expect(card).toContain('长途车.png');
+    expect(card).toContain('91%');
+    expect(card).toContain('条目 1');
+    expect(card).toContain('确认绑定');
+    expect(card).toContain('拒绝');
+    expect(card).toContain('content_match');
+    expect(panel).toContain('图片素材绑定');
+    expect(panel).toContain('自动匹配素材');
   });
 
   test('renders multimodal import control with multiple file support', async () => {
@@ -99,7 +161,11 @@ describe('AdminDashboard scenario import management', () => {
   });
 
   test('normalizes backend job_ids and restores retry state from scenario rows', async () => {
-    const { normalizeScenarioImportResult, recoverScenarioImportResult } = await loadAdminDashboard();
+    const {
+      chooseScenarioImportResult,
+      normalizeScenarioImportResult,
+      recoverScenarioImportResult,
+    } = await loadAdminDashboard();
 
     expect(normalizeScenarioImportResult({
       status: 'awaiting_provider',
@@ -112,6 +178,43 @@ describe('AdminDashboard scenario import management', () => {
       latest_import_job_id: 'job-42',
       latest_import_job_status: 'awaiting_provider',
     }).job_id).toBe('job-42');
+    expect(recoverScenarioImportResult({
+      scenario_id: 'sc-2',
+      import_status: 'parsing',
+      latest_import_job_id: 'job-stale',
+      latest_import_job_status: 'structuring',
+      latest_import_job_retryable: true,
+    })).toMatchObject({
+      job_id: 'job-stale',
+      status: 'structuring',
+      retryable: true,
+    });
+    expect(chooseScenarioImportResult(
+      {
+        scenario_id: 'sc-2',
+        scenario_version_id: 'version-1',
+        status: 'draft_ready',
+      },
+      {
+        scenario_id: 'sc-2',
+        job_id: 'job-stale',
+        status: 'structuring',
+        retryable: true,
+      },
+      'sc-2',
+    )).toMatchObject({
+      scenario_version_id: 'version-1',
+      status: 'draft_ready',
+    });
+    expect(chooseScenarioImportResult(
+      {
+        scenario_id: 'other-scenario',
+        job_id: 'other-job',
+        status: 'awaiting_provider',
+      },
+      null,
+      'sc-2',
+    )).toBeNull();
   });
 
   test('redacts local and network file paths from scenario errors', async () => {
@@ -188,6 +291,26 @@ describe('AdminDashboard scenario import management', () => {
     expect(html).toContain('[已隐藏路径]');
   });
 
+  test('shows retry recognition action for interrupted structuring jobs', async () => {
+    const { ScenarioImportStatusCard } = await loadAdminDashboard();
+    const html = renderToStaticMarkup(
+      <ScenarioImportStatusCard
+        importResult={{
+          status: 'structuring',
+          job_id: 'job-stale',
+          scenario_id: 'sc-2',
+          retryable: true,
+        }}
+        retrying={false}
+        retryError=""
+        onRetry={() => {}}
+      />,
+    );
+
+    expect(html).toContain('重试识别');
+    expect(html).toContain('job-stale');
+  });
+
   test('maps structured and import workflow statuses to readable labels', async () => {
     const { getScenarioStatusMeta } = await loadAdminDashboard();
     expect(getScenarioStatusMeta('structured').label).toBe('已结构化');
@@ -197,7 +320,7 @@ describe('AdminDashboard scenario import management', () => {
 });
 
 describe('AdminDashboard AI provider management', () => {
-  test('renders API configuration tab and secure provider form', async () => {
+  test('renders the secure provider form from the system tools area', async () => {
     const {
       ADMIN_TABS,
       AI_PROVIDER_ENDPOINT,
@@ -223,7 +346,7 @@ describe('AdminDashboard AI provider management', () => {
     );
 
     expect(AI_PROVIDER_ENDPOINT).toBe('/api/admin/ai/providers');
-    expect(ADMIN_TABS.some((tab) => tab.key === 'apiProviders' && tab.label === 'API配置')).toBe(true);
+    expect(ADMIN_TABS.some((tab) => tab.key === 'systemTools' && tab.label === '系统工具')).toBe(true);
     expect(html).toContain('API Base URL');
     expect(html).toContain('type="password"');
     expect(html).toContain('value="gpt-5.4"');

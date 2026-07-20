@@ -191,6 +191,77 @@ def test_archive_filter_by_type(client, test_db):
     assert data["entries"][0]["type"] == "s2c_state_patch"
 
 
+def test_narrative_archive_reads_released_bundles_without_exposing_other_players_results(
+    client, test_db
+):
+    room_id, _, char_id, token = _setup_player(client, test_db)
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token) "
+        "VALUES ('other-char', %s, 'Other', 'other-token')",
+        (room_id,),
+    )
+    for action_id, owner, intent, narrative, result, state_version in [
+        ("own-bundle", char_id, "检查书桌", "你在书桌夹层找到烧焦的车票。", {"roll": 23}, 4),
+        ("other-bundle", "other-char", "私下翻找档案", "队友从档案室回来，神色凝重。", {"secret": "地下室入口"}, 5),
+    ]:
+        test_db.execute(
+            "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
+            "VALUES (%s, %s, %s, 'dialogue', %s, 'completed')",
+            (action_id, room_id, owner, intent),
+        )
+        test_db.execute(
+            "INSERT INTO resolution_bundles "
+            "(action_id, room_id, character_id, canonical_result, rule_explanation, "
+            "actor_projection, stage_projection, host_console, release_status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'released')",
+            (
+                action_id,
+                room_id,
+                owner,
+                json.dumps({"stateVersion": state_version}),
+                json.dumps({"citations": [{"label": "已校验依据", "page": 2}]}),
+                json.dumps({"result": result}),
+                json.dumps({"narrativeText": narrative, "spoilerStatus": "none"}),
+                json.dumps({"transactionId": f"tx-{action_id}"}),
+            ),
+        )
+    test_db.execute(
+        "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
+        "VALUES ('unreleased-bundle', %s, %s, 'dialogue', '未公布的发现', 'completed')",
+        (room_id, char_id),
+    )
+    test_db.execute(
+        "INSERT INTO resolution_bundles "
+        "(action_id, room_id, character_id, canonical_result, rule_explanation, "
+        "actor_projection, stage_projection, host_console, release_status) "
+        "VALUES ('unreleased-bundle', %s, %s, '{}', '{}', '{}', %s, '{}', 'ready')",
+        (room_id, char_id, json.dumps({"narrativeText": "不应出现"})),
+    )
+    test_db.commit()
+
+    response = client.get("/api/player/archive?type=narrative", headers={"X-Room-Token": token})
+
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    assert [entry["data"]["text"] for entry in entries] == [
+        "你在书桌夹层找到烧焦的车票。",
+        "队友从档案室回来，神色凝重。",
+    ]
+    own = next(entry for entry in entries if entry["data"]["actionId"] == "own-bundle")
+    other = next(entry for entry in entries if entry["data"]["actionId"] == "other-bundle")
+    assert own["data"]["result"] == {"roll": 23}
+    assert own["data"]["citations"] == [{"label": "已校验依据", "page": 2}]
+    assert own["data"]["stateVersion"] == 4
+    assert own["data"]["transactionId"] == "tx-own-bundle"
+    assert "result" not in other["data"]
+    assert "citations" not in other["data"]
+    assert "transactionId" not in other["data"]
+
+    citations = client.get("/api/player/archive?type=citations", headers={"X-Room-Token": token})
+    assert citations.status_code == 200
+    assert [entry["data"]["actionId"] for entry in citations.json()["entries"]] == ["own-bundle"]
+
+
 def test_archive_search_keyword(client, test_db):
     room_id, owner_token, char_id, token = _setup_player(client, test_db)
 

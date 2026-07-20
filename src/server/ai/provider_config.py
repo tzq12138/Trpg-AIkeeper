@@ -70,8 +70,10 @@ class SecretCipher:
 def secret_cipher_from_env() -> SecretCipher:
     master_secret = (
         os.getenv("AI_CONFIG_MASTER_KEY", "").strip()
-        or os.getenv("JWT_SECRET", "aikeeper-change-me-in-production")
+        or os.getenv("JWT_SECRET", "").strip()
     )
+    if not master_secret:
+        raise ProviderConfigStateError("config_master_key_unavailable")
     return SecretCipher(master_secret)
 
 
@@ -140,7 +142,12 @@ def assert_api_target_safe(value: str) -> str:
 class AiProviderConfigStore:
     def __init__(self, conn, cipher: SecretCipher | None = None):
         self.conn = conn
-        self.cipher = cipher or secret_cipher_from_env()
+        self.cipher = cipher
+
+    def _cipher(self) -> SecretCipher:
+        if self.cipher is None:
+            self.cipher = secret_cipher_from_env()
+        return self.cipher
 
     def list_public(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -151,7 +158,7 @@ class AiProviderConfigStore:
     def create(self, payload: dict[str, Any], actor_id: str) -> dict[str, Any]:
         config = self._validated(payload, require_key=True)
         provider_config_id = str(uuid.uuid4())
-        ciphertext = self.cipher.encrypt(config["api_key"])
+        ciphertext = self._cipher().encrypt(config["api_key"])
         key_mask = _key_mask(config["api_key"])
         self.conn.execute(
             """
@@ -192,7 +199,7 @@ class AiProviderConfigStore:
     def get_secret(self, provider_config_id: str) -> str:
         row = self._get(provider_config_id)
         try:
-            return self.cipher.decrypt(row["api_key_ciphertext"])
+            return self._cipher().decrypt(row["api_key_ciphertext"])
         except SecretDecryptionError:
             self.conn.execute(
                 "UPDATE ai_provider_configs SET test_status = 'key_unavailable', "
@@ -221,7 +228,7 @@ class AiProviderConfigStore:
         ciphertext = existing["api_key_ciphertext"]
         key_mask = existing["key_mask"]
         if new_key:
-            ciphertext = self.cipher.encrypt(new_key)
+            ciphertext = self._cipher().encrypt(new_key)
             key_mask = _key_mask(new_key)
         critical_changed = bool(new_key) or any(
             field in payload and payload[field] != existing[field]

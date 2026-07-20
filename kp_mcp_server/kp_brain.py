@@ -13,7 +13,10 @@ PROMPT_DIR = Path(__file__).parent / "prompts"
 MAX_MULTIMODAL_IMAGES = 20
 MAX_IMAGE_DATA_URL_CHARS = 8 * 1024 * 1024
 SCENARIO_STRUCTURE_SYSTEM_PROMPT = """你是 TRPG 剧本结构化与图像识别器。只返回 JSON 对象，不得返回 Markdown。
-输出必须包含 scenarioTitle、synopsis、scenes、npcs、clues、truth、endings、triggerMechanics。
+输出必须包含 scenarioTitle、synopsis、scenes、npcs、clues、branches、truth、endings、triggerMechanics。
+每个场景必须包含稳定的 scene_id；每个 branch 必须包含 branch_id、from_scene_id、to_scene_id、conditions 和 citation。
+branch 只提取原文明示的场景转换，citation 必须定位支持它的来源；不得猜测路径或条件。
+每个 ending 必须包含 ending_id、citation，以及只使用 all_clues、any_clues、entered_scenes、event_types、room_status 的 completion_conditions。
 对每个图像来源，必须在 source_part_texts 中返回 {"source_ref":"输入中给出的来源标识","text":"该图像的可检索转写或语义描述"}。
 source_ref 必须逐字复用输入标识；无法确认的内容要明确标注不确定，不得伪造页码或引用。"""
 
@@ -181,6 +184,56 @@ class KpBrain:
         prompt = args.get("user_message") or self._build_generate_narrative_prompt(args)
         return await self._call_llm(prompt, temperature=0.8, system_prompt=system_prompt)
 
+    async def analyze_director_action(self, args: dict) -> dict:
+        if self.config.is_mock:
+            return {
+                "interpreted_intent": str(args.get("declared_intent") or "等待澄清行动"),
+                "intent_type": "dialogue",
+                "confidence": 0.0,
+                "requires_player_clarification": True,
+                "requires_host_exception": False,
+                "narration_mode": "summarize",
+            }
+        system_prompt = args.get("system_prompt") or (
+            "You are AI-Keeper Director. Return structured JSON only. "
+            "You must not mutate authoritative game state; state_patch is advisory only. "
+            "Use only the supplied runtime package, visible facts, deterministic rule outcome, "
+            "and citations. Required fields include interpreted_intent, intent_type, confidence, "
+            "requires_player_clarification, requires_host_exception, and narration_mode."
+        )
+        prompt = args.get("user_message") or json.dumps(args, ensure_ascii=False)
+        return await self._call_llm(prompt, temperature=0.2, system_prompt=system_prompt)
+
+    async def narrate_action(self, args: dict) -> dict:
+        if self.config.is_mock:
+            return {
+                "context_version": int(args.get("context_version") or 0),
+                "director_plan_digest": "mock",
+                "narrative_text": "KP 正在等待可验证的裁决结果。",
+                "environment_changes": ["权威状态未改变。"],
+                "interactable_objects": ["当前场景"],
+                "open_question": "你想怎么做？",
+                "fact_refs": {
+                    "narrative_text": ["mock"],
+                    "environment_changes": ["mock"],
+                    "interactable_objects": ["mock"],
+                    "open_question": ["mock"],
+                },
+                "redacted_citations": [],
+                "style_pack_version": "mock",
+                "status": "completed",
+            }
+        system_prompt = args.get("system_prompt") or (
+            "You are AI-Keeper Narrator. Return JSON only. "
+            "Narrate only from allowed_facts and deterministic_rule_outcome. "
+            "You must not create state mutations, hidden facts, new branches, or internal IDs. "
+            "Return context_version, director_plan_digest, narrative_text, environment_changes, "
+            "interactable_objects, open_question, fact_refs, redacted_citations, "
+            "style_pack_version, and status."
+        )
+        prompt = args.get("user_message") or json.dumps(args, ensure_ascii=False)
+        return await self._call_llm(prompt, temperature=0.7, system_prompt=system_prompt)
+
     async def structure_scenario(self, args: dict) -> dict:
         if self.config.is_mock:
             return {
@@ -188,6 +241,7 @@ class KpBrain:
                 "scenes": [],
                 "npcs": [],
                 "clues": [],
+                "branches": [],
                 "truth": {},
                 "endings": [],
                 "triggerMechanics": [],
@@ -211,13 +265,15 @@ class KpBrain:
             "返回格式：\n"
             "{\n"
             '  "scenarioTitle": "...",\n'
-            '  "scenes": [{"name":"...","order":1,"description":"...","npcsPresent":[],"cluesAvailable":[]}],\n'
+            '  "scenes": [{"scene_id":"stable-scene-slug","name":"...","order":1,"description":"...","npcsPresent":[],"cluesAvailable":[]}],\n'
             '  "npcs": [{"name":"...","role":"...","personality":"...","motivation":"...","secret":"..."}],\n'
             '  "clues": [{"name":"...","description":"...","location":"...","importance":"core|support|danger"}],\n'
+            '  "branches": [{"branch_id":"stable-branch-slug","from_scene_id":"stable-scene-slug","to_scene_id":"stable-scene-slug","conditions":[],"citation":{"source_ref":"page:1","page_number":1}}],\n'
             '  "truth": {"summary":"..."},\n'
-            '  "endings": [{"name":"...","description":"...","type":"victory|defeat|mixed"}],\n'
+            '  "endings": [{"ending_id":"stable-ending-slug","name":"...","description":"...","type":"victory|defeat|mixed","completion_conditions":{"entered_scenes":["stable-scene-slug"]},"citation":{"source_ref":"page:1","page_number":1}}],\n'
             '  "triggerMechanics": [{"condition":"...","effect":"..."}]\n'
             "}\n\n"
+            "只提取原文明示的场景转换；每条 branch 必须带支持它的 citation，不得猜测路径或条件。\n\n"
             f"原文：\n{truncated}"
         )
         return await self._call_llm(prompt, temperature=0.3)

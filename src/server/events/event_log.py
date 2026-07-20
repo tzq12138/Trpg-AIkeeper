@@ -81,16 +81,18 @@ class EventLog:
         return False
 
     def get_events_for_player(self, room_id: str, character_id: str,
-                              since_sequence: int = 0, limit: int = 100) -> list[EventLogEntry]:
+                              since_sequence: int = 0, limit: int = 100,
+                              latest: bool = False) -> list[EventLogEntry]:
         """Get events visible to a specific player on catch-up.
 
         Uses unified visibility helper — same rules as archive/reconnect.
         """
+        order = "DESC" if latest else "ASC"
         rows = self.conn.execute(
             "SELECT sequence, room_id, event_type, audience, payload, issued_at "
             "FROM events WHERE room_id = %s AND sequence > %s "
             "AND audience != 'host' "
-            "ORDER BY sequence LIMIT %s",
+            f"ORDER BY sequence {order} LIMIT %s",
             (room_id, since_sequence, limit),
         ).fetchall()
         result = []
@@ -102,7 +104,7 @@ class EventLog:
                     event_type=r["event_type"], audience=r["audience"],
                     payload=payload, issued_at=_to_iso(r["issued_at"]),
                 ))
-        return result
+        return list(reversed(result)) if latest else result
 
     def get_public_events(self, room_id: str, since_sequence: int = 0, limit: int = 100) -> list[EventLogEntry]:
         """Get public events — party audience + whitelisted system_safe events only.

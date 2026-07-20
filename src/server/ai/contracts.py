@@ -67,6 +67,38 @@ class KpCitation(BaseModel):
     score: float = 0.0
 
 
+class CombatRoundClusterSuggestion(BaseModel):
+    """Non-authoritative public presentation group for a locked combat round."""
+    model_config = ConfigDict(populate_by_name=True)
+    action_ids: list[str] = Field(alias="actionIds")
+    public_title: str = Field(min_length=1, max_length=80, alias="publicTitle")
+
+
+class CombatRoundDependencySuggestion(BaseModel):
+    """Advisory dependency only; the deterministic planner keeps rule order."""
+    model_config = ConfigDict(populate_by_name=True)
+    action_id: str = Field(min_length=1, alias="actionId")
+    depends_on_action_ids: list[str] = Field(alias="dependsOnActionIds")
+
+
+class CombatRoundSuggestion(BaseModel):
+    """Strict provider result accepted by the combat presentation planner."""
+    model_config = ConfigDict(populate_by_name=True)
+    clusters: list[CombatRoundClusterSuggestion]
+    dependencies: list[CombatRoundDependencySuggestion]
+
+
+class HypothesisDisproofSuggestion(BaseModel):
+    """Read-only AI advice for a shared player hypothesis."""
+    model_config = ConfigDict(populate_by_name=True)
+    suggested_status: Literal["possible_disproved", "no_suggestion"] = Field(
+        alias="suggestedStatus"
+    )
+    reason: str = Field(default="", max_length=500)
+    fact_ids: list[str] = Field(default_factory=list, alias="factIds", max_length=8)
+    confidence: Literal["low", "medium", "high"] = "low"
+
+
 class KpResponse(BaseModel):
     """Unified KP response — all providers must return this shape."""
     model_config = ConfigDict(populate_by_name=True)

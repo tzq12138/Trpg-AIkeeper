@@ -4,10 +4,15 @@ import type {
   ActionReceiptDTO,
   CampaignHomeDTO,
   EvidenceCardDTO,
+  EvidenceDetailDTO,
   PlayerDeviceSessionDTO,
+  PlayerCombatRoundDTO,
   PlayerNoteDTO,
   PlayerReconnectDTO,
+  SoloCombatReactionDTO,
+  SoloCombatReactionResolutionDTO,
 } from './types';
+import type { PlayerInputMode } from './player-input-modes';
 
 
 const PLAYER_DEVICE_ID_KEY = 'aikeeper_player_device_id';
@@ -29,6 +34,61 @@ export interface AnalyzeActionDraftInput {
   params?: Record<string, unknown>;
   base_state_version?: number;
   ephemeral?: boolean;
+  submission_action_id?: string;
+}
+
+export interface ReceiveActionSubmissionInput {
+  actionId: string;
+  rawText: string;
+  inputMode: PlayerInputMode;
+  clientSequence: number;
+  baseStateVersion: number;
+  requestedVisibility?: 'public' | 'party' | 'private';
+}
+
+export interface PlayerActionSubmissionReceipt {
+  actionId: string;
+  inputMode: PlayerInputMode;
+  status: 'received' | 'recorded' | 'analyzing' | 'awaiting_confirmation';
+  requiresAnalysis: boolean;
+  receivedAt: string;
+}
+
+export interface PlayerRuleQuestionDTO {
+  actionId: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface PlayerSettingsDTO {
+  room_id: string;
+  character_id: string;
+  draft_analysis_enabled: boolean;
+  absent_policy: 'idle' | 'maintain_existing';
+  speech_routing: 'party_message' | 'npc_dialogue';
+}
+
+export interface CollaborationParticipantDTO {
+  characterId: string;
+  playerName: string;
+}
+
+export interface CollaborationLinkedDraftDTO {
+  characterId: string;
+  draftId: string;
+  status: string;
+}
+
+export interface CollaborationContractDTO {
+  contractId: string;
+  roomId: string;
+  initiatorCharacterId: string;
+  sharedIntent: string;
+  status: 'pending' | 'accepted' | 'completed' | 'canceled' | 'expired';
+  participantCharacterIds: string[];
+  pendingCharacterIds: string[];
+  linkedDrafts: CollaborationLinkedDraftDTO[];
+  expiresAt: string;
 }
 
 export class PlayerApiError extends Error {
@@ -48,6 +108,31 @@ export async function analyzeActionDraft(input: AnalyzeActionDraftInput): Promis
     method: 'POST',
     body: JSON.stringify(input),
   });
+}
+
+export async function receiveActionSubmission(
+  input: ReceiveActionSubmissionInput,
+): Promise<PlayerActionSubmissionReceipt> {
+  return requestJson('/api/player/action-submissions', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getRuleQuestions(): Promise<{ questions: PlayerRuleQuestionDTO[] }> {
+  return requestJson('/api/player/rule-questions');
+}
+
+export function nextPlayerActionSequence(): number {
+  const key = 'aikeeper_player_action_sequence';
+  const current = Number(localStorage.getItem(key) || '0');
+  const next = Number.isFinite(current) && current >= 0 ? current + 1 : 1;
+  localStorage.setItem(key, String(next));
+  return next;
+}
+
+export async function getCurrentActionDraft(): Promise<ActionDraftDTO | null> {
+  return requestJson('/api/player/action-drafts/current');
 }
 
 export async function reviseActionDraft(
@@ -70,11 +155,17 @@ export async function confirmActionDraft(
   draftId: string,
   confirmations: string[],
   idempotencyKey: string,
+  selectedSkill?: string,
+  compositeStepOrder?: string[],
 ): Promise<ActionReceiptDTO> {
   return requestJson(`/api/player/action-drafts/${encodeURIComponent(draftId)}/confirm`, {
     method: 'POST',
     headers: { 'Idempotency-Key': idempotencyKey },
-    body: JSON.stringify({ confirmations }),
+    body: JSON.stringify({
+      confirmations,
+      ...(selectedSkill ? { selected_skill: selectedSkill } : {}),
+      ...(compositeStepOrder?.length ? { composite_step_order: compositeStepOrder } : {}),
+    }),
   });
 }
 
@@ -84,8 +175,100 @@ export async function cancelAction(actionId: string): Promise<ActionReceiptDTO> 
   });
 }
 
+export async function resolveCompositeActionChoice(
+  actionId: string,
+  proceed: boolean,
+): Promise<ActionReceiptDTO> {
+  return requestJson(`/api/player/actions/${encodeURIComponent(actionId)}/composite-choice`, {
+    method: 'POST',
+    body: JSON.stringify({ proceed }),
+  });
+}
+
 export async function getActionReceipt(actionId: string): Promise<ActionReceiptDTO> {
   return requestJson(`/api/player/actions/${encodeURIComponent(actionId)}`);
+}
+
+export async function getPendingEncounterReaction(): Promise<{
+  reaction: SoloCombatReactionDTO | null;
+}> {
+  return requestJson('/api/player/encounter-reactions/pending');
+}
+
+export async function getPlayerCombatRound(): Promise<PlayerCombatRoundDTO> {
+  return requestJson('/api/player/combat-round');
+}
+
+export async function declareCombatRoundIdle(): Promise<{
+  status: 'declared_idle';
+  turnId: string;
+  actionId: string;
+}> {
+  return requestJson('/api/player/combat-round/idle', { method: 'POST' });
+}
+
+export async function getPlayerSettings(): Promise<PlayerSettingsDTO> {
+  return requestJson('/api/player/settings');
+}
+
+export async function getCollaborationContracts(): Promise<{ items: CollaborationContractDTO[] }> {
+  return requestJson('/api/player/collaboration-contracts');
+}
+
+export async function getCollaborationParticipants(): Promise<{ items: CollaborationParticipantDTO[] }> {
+  return requestJson('/api/player/collaboration-contracts/participants');
+}
+
+export async function createCollaborationContract(
+  sharedIntent: string,
+  inviteeCharacterIds: string[],
+): Promise<CollaborationContractDTO> {
+  return requestJson('/api/player/collaboration-contracts', {
+    method: 'POST',
+    body: JSON.stringify({ sharedIntent, inviteeCharacterIds }),
+  });
+}
+
+export async function respondToCollaborationContract(
+  contractId: string,
+  decision: 'accept' | 'decline',
+): Promise<CollaborationContractDTO> {
+  return requestJson(`/api/player/collaboration-contracts/${encodeURIComponent(contractId)}/responses`, {
+    method: 'POST',
+    body: JSON.stringify({ decision }),
+  });
+}
+
+export async function cancelCollaborationContract(contractId: string): Promise<CollaborationContractDTO> {
+  return requestJson(`/api/player/collaboration-contracts/${encodeURIComponent(contractId)}/cancel`, {
+    method: 'POST',
+  });
+}
+
+export async function updatePlayerSettings(
+  input: Partial<Pick<PlayerSettingsDTO, 'draft_analysis_enabled' | 'absent_policy'>>,
+): Promise<PlayerSettingsDTO> {
+  return requestJson('/api/player/settings', {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function resolveEncounterReaction(
+  reactionId: string,
+  choice: 'dodge' | 'counterattack',
+): Promise<SoloCombatReactionResolutionDTO> {
+  return requestJson(`/api/player/encounter-reactions/${encodeURIComponent(reactionId)}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ choice }),
+  });
+}
+
+export async function getActionHints(): Promise<{ hints: string[] }> {
+  const payload = await requestJson<{ hints?: string[]; examples?: string[] }>('/api/player/action-hints', {
+    method: 'POST',
+  });
+  return { hints: (payload.hints || payload.examples || []).slice(0, 5) };
 }
 
 export async function reconnectPlayer(): Promise<PlayerReconnectDTO> {
@@ -137,6 +320,13 @@ export async function createPlayerNote(title: string, body: string): Promise<Pla
   });
 }
 
+export async function updatePlayerNote(noteId: string, title: string, body: string): Promise<PlayerNoteDTO> {
+  return requestJson(`/api/player/notes/${encodeURIComponent(noteId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title, body }),
+  });
+}
+
 export async function sharePlayerNote(noteId: string, title: string, body: string): Promise<PlayerNoteDTO> {
   return requestJson(`/api/player/notes/${encodeURIComponent(noteId)}/share`, {
     method: 'POST',
@@ -161,17 +351,118 @@ export async function listEvidence(roomId: string): Promise<{
     to_evidence_card_id: string;
     relation_type: string;
   }>;
+  comments: EvidenceCommentDTO[];
 }> {
   return requestJson(`/api/rooms/${encodeURIComponent(roomId)}/evidence`);
 }
 
+export async function getEvidenceDetail(
+  roomId: string,
+  evidenceCardId: string,
+): Promise<EvidenceDetailDTO> {
+  return requestJson(
+    `/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/detail`,
+  );
+}
+
+export async function createEvidenceNote(
+  roomId: string,
+  evidenceCardId: string,
+  title: string,
+  body: string,
+): Promise<PlayerNoteDTO> {
+  return requestJson(
+    `/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/notes`,
+    { method: 'POST', body: JSON.stringify({ title, body }) },
+  );
+}
+
+export interface EvidenceCommentDTO {
+  evidence_card_id: string;
+  body: string;
+  author_name: string;
+}
+
+export interface SharedHypothesisStatusTransition {
+  card: EvidenceCardDTO;
+  undo_available: boolean;
+  changed: boolean;
+}
+
+export interface HypothesisDisproofSuggestion {
+  suggestedStatus: 'possible_disproved';
+  reason: string;
+  factIds: string[];
+  confidence: 'low' | 'medium' | 'high';
+  requiresPlayerConfirmation: true;
+}
+
+export interface HypothesisDisproofSuggestionResponse {
+  suggestion: HypothesisDisproofSuggestion | null;
+  reason: 'no_confirmed_linked_facts' | 'ai_unavailable' | 'no_supported_disproof' | null;
+}
+
 export async function createEvidence(
   roomId: string,
-  input: Pick<EvidenceCardDTO, 'title' | 'body' | 'card_type'>,
+  input: Pick<EvidenceCardDTO, 'title' | 'body' | 'card_type'>
+    & Pick<Partial<EvidenceCardDTO>, 'visibility'>
+    & { related_evidence_card_ids?: string[] },
 ): Promise<EvidenceCardDTO> {
   return requestJson(`/api/rooms/${encodeURIComponent(roomId)}/evidence`, {
     method: 'POST',
     body: JSON.stringify(input),
+  });
+}
+
+export async function shareEvidence(
+  roomId: string,
+  evidenceCardId: string,
+  title: string,
+  body: string,
+): Promise<EvidenceCardDTO> {
+  return requestJson(`/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/share`, {
+    method: 'POST',
+    body: JSON.stringify({ title, body }),
+  });
+}
+
+export async function createEvidenceComment(
+  roomId: string,
+  evidenceCardId: string,
+  body: string,
+): Promise<EvidenceCommentDTO> {
+  return requestJson(`/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
+  });
+}
+
+export async function updateSharedHypothesisStatus(
+  roomId: string,
+  evidenceCardId: string,
+  hypothesisStatus: 'discussing' | 'disproved' | 'shelved',
+): Promise<SharedHypothesisStatusTransition> {
+  return requestJson(`/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/hypothesis-status`, {
+    method: 'POST',
+    body: JSON.stringify({ hypothesis_status: hypothesisStatus }),
+  });
+}
+
+export async function revertSharedHypothesisStatus(
+  roomId: string,
+  evidenceCardId: string,
+): Promise<SharedHypothesisStatusTransition> {
+  return requestJson(`/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/hypothesis-status/revert`, {
+    method: 'POST',
+  });
+}
+
+export async function suggestSharedHypothesisDisproof(
+  roomId: string,
+  evidenceCardId: string,
+): Promise<HypothesisDisproofSuggestionResponse> {
+  return requestJson(`/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/hypothesis-disproof-suggestion`, {
+    method: 'POST',
   });
 }
 
@@ -189,6 +480,57 @@ export async function createEvidenceLink(
       relation_type: relationType,
     }),
   });
+}
+
+export interface PartyQuestionClosePreview {
+  question: EvidenceCardDTO;
+  related_hypotheses: Array<Pick<EvidenceCardDTO, 'evidence_card_id' | 'title' | 'card_type' | 'fact_status'>>;
+  disputed_cards: Array<Pick<EvidenceCardDTO, 'evidence_card_id' | 'title' | 'card_type' | 'fact_status'>>;
+}
+
+export interface PartyQuestionTransition {
+  card: EvidenceCardDTO;
+  undo_available: boolean;
+  undid_close: boolean;
+}
+
+export async function previewPartyQuestionClose(
+  roomId: string,
+  evidenceCardId: string,
+): Promise<PartyQuestionClosePreview> {
+  return requestJson(
+    `/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/question-close-preview`,
+  );
+}
+
+export async function closePartyQuestion(
+  roomId: string,
+  evidenceCardId: string,
+): Promise<PartyQuestionTransition> {
+  return requestJson(
+    `/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/question-close`,
+    { method: 'POST', body: JSON.stringify({ confirmed: true }) },
+  );
+}
+
+export async function reopenPartyQuestion(
+  roomId: string,
+  evidenceCardId: string,
+): Promise<PartyQuestionTransition> {
+  return requestJson(
+    `/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/question-reopen`,
+    { method: 'POST' },
+  );
+}
+
+export async function markPartyQuestionExplained(
+  roomId: string,
+  evidenceCardId: string,
+): Promise<PartyQuestionTransition> {
+  return requestJson(
+    `/api/rooms/${encodeURIComponent(roomId)}/evidence/${encodeURIComponent(evidenceCardId)}/question-explanation`,
+    { method: 'POST' },
+  );
 }
 
 async function requestJson<T = void>(path: string, init: RequestInit = {}): Promise<T> {

@@ -28,50 +28,12 @@ def build_server(config: Config) -> FastMCP:
     brain = KpBrain(config)
     mcp = FastMCP(
         name="kp-mcp-server",
-        instructions="COC 7th Edition AI Keeper，负责主持、规则和叙事生成。",
+    instructions="COC 7th Edition AI Keeper，负责剧本编译、结构化裁决计划和证据约束叙事。",
         host=config.host,
         port=config.port,
         streamable_http_path="/mcp",
         log_level=config.log_level,
     )
-
-    @mcp.tool(
-        name="kp_resolve_turn",
-        description="处理一轮玩家行动，返回叙事、检定请求、状态变更和战术提示。",
-    )
-    async def resolve_turn(roomId: str, action: dict, context: dict) -> str:
-        result = await brain.resolve_turn(
-            {"roomId": roomId, "action": action, "context": context}
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    @mcp.tool(
-        name="kp_generate_narrative",
-        description="根据玩家发言或重写约束，生成一段公开叙事。",
-    )
-    async def generate_narrative(context: dict) -> str:
-        result = await brain.generate_narrative(context or {})
-        return json.dumps(result, ensure_ascii=False)
-
-    @mcp.tool(
-        name="kp_resolve_sanity",
-        description="处理理智事件，生成 SAN 检定与叙事。",
-    )
-    async def resolve_sanity(roomId: str, context: dict, trigger: dict) -> str:
-        result = await brain.resolve_sanity(
-            {"roomId": roomId, "context": context, "trigger": trigger}
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    @mcp.tool(
-        name="kp_resolve_combat_round",
-        description="处理一轮战斗，确定行动顺序、检定请求与结果。",
-    )
-    async def resolve_combat_round(roomId: str, combatants: list) -> str:
-        result = await brain.resolve_combat_round(
-            {"roomId": roomId, "combatants": combatants}
-        )
-        return json.dumps(result, ensure_ascii=False)
 
     @mcp.tool(
         name="kp_structure_scenario",
@@ -90,33 +52,19 @@ def build_server(config: Config) -> FastMCP:
         return json.dumps(result, ensure_ascii=False)
 
     @mcp.tool(
-        name="kp_query_rules",
-        description="查询 COC 七版规则、检定和战斗机制。",
+        name="kp_analyze_director_action",
+        description="根据运行时上下文生成结构化 Director 裁决计划，不写入游戏状态。",
     )
-    async def query_rules(question: str, context: dict | None = None) -> str:
-        result = await brain.query_rules(
-            {"question": question, "context": context or {}}
-        )
+    async def analyze_director_action(context: dict) -> str:
+        result = await brain.analyze_director_action(context or {})
         return json.dumps(result, ensure_ascii=False)
 
     @mcp.tool(
-        name="kp_query_knowledge",
-        description="查询当前剧本、NPC、线索和真相相关知识。",
+        name="kp_narrate_action",
+        description="基于已验证的裁决结果生成公开叙事，不创建事实或状态修改。",
     )
-    async def query_knowledge(
-        query: str,
-        roomId: str = "",
-        sources: list | None = None,
-        maxTokens: int = 500,
-    ) -> str:
-        result = await brain.query_knowledge(
-            {
-                "query": query,
-                "roomId": roomId,
-                "sources": sources or ["scenario", "rules"],
-                "maxTokens": maxTokens,
-            }
-        )
+    async def narrate_action(context: dict) -> str:
+        result = await brain.narrate_action(context or {})
         return json.dumps(result, ensure_ascii=False)
 
     @mcp.tool(
@@ -139,7 +87,7 @@ def build_server(config: Config) -> FastMCP:
         config.provider,
         config.model,
         config.is_mock,
-        8,
+        4,
     )
     return mcp
 

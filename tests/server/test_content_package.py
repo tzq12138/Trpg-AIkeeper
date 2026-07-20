@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from pypdf import PdfWriter
 
+from src.server.scenario import content_package
 from src.server.scenario.content_package import (
     ContentPackageError,
     build_content_package,
@@ -122,6 +123,25 @@ def test_build_content_package_wraps_malformed_docx_as_domain_error():
 
     with pytest.raises(ContentPackageError):
         build_content_package("broken.docx", buffer.getvalue())
+
+
+def test_build_content_package_for_legacy_doc_uses_converter_and_preserves_original_hash(monkeypatch):
+    original = b"legacy-doc-source"
+    converted_pdf = _build_blank_pdf_bytes()
+    monkeypatch.setattr(
+        content_package,
+        "_convert_legacy_doc_to_pdf",
+        lambda filename, content: converted_pdf,
+    )
+
+    package = build_content_package("scan.doc", original)
+
+    assert package.source_filename == "scan.doc"
+    assert package.source_sha256 == hashlib.sha256(original).hexdigest()
+    assert package.mime_type == "application/msword"
+    assert package.requires_multimodal is True
+    assert package.metadata["conversion"] == "legacy_doc_to_pdf"
+    assert package.parts[0].source_ref == "page:1"
 
 
 def _build_blank_pdf_bytes() -> bytes:

@@ -1,7 +1,9 @@
 import json
 import logging
 from fastapi import APIRouter, Request, HTTPException
+from ..events.event_log import EventLog
 from ..host.ws_manager import NONTERMINAL_ACTION_STATUSES, manager
+from .private_data import PrivateDataDecryptionError, private_data_cipher_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,36 @@ def _get_character(conn, token: str):
     ).fetchone()
 
 
+def _pending_submissions(conn, room_id: str, character_id: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT action_id, input_mode, raw_text_ciphertext, requested_visibility, "
+        "client_sequence, base_state_version, status "
+        "FROM player_action_submissions "
+        "WHERE room_id = %s AND character_id = %s "
+        "AND status = ANY(%s) ORDER BY created_at ASC",
+        (room_id, character_id, ["received", "analyzing", "awaiting_confirmation"]),
+    ).fetchall()
+    cipher = private_data_cipher_from_env()
+    pending: list[dict] = []
+    for row in rows:
+        submission = dict(row)
+        try:
+            raw_text = cipher.decrypt(submission["raw_text_ciphertext"])
+        except PrivateDataDecryptionError:
+            logger.warning("Skipping unreadable action submission during reconnect: %s", submission["action_id"])
+            continue
+        pending.append({
+            "action_id": submission["action_id"],
+            "input_mode": submission["input_mode"],
+            "raw_text": raw_text,
+            "requested_visibility": submission["requested_visibility"],
+            "client_sequence": submission["client_sequence"],
+            "base_state_version": submission["base_state_version"],
+            "status": submission["status"],
+        })
+    return pending
+
+
 @router.get("/reconnect")
 async def reconnect(request: Request):
     token = request.headers.get("X-Room-Token", "")
@@ -65,18 +97,13 @@ async def reconnect(request: Request):
         "SELECT state_version FROM rooms WHERE room_id = %s", (room_id,)
     ).fetchone()
     current_state_version = room_row["state_version"] if room_row else 0
+    pending_submissions = _pending_submissions(conn, room_id, character_id)
 
     result = manager.reconnect(conn, room_id, character_id, last_sequence)
 
     if result.get("needs_snapshot"):
         char_data = dict(char)
         char_data.pop("player_token", None)
-
-        all_events = conn.execute(
-            "SELECT sequence, event_type, audience, payload, issued_at FROM events "
-            "WHERE room_id = %s ORDER BY sequence ASC",
-            (room_id,),
-        ).fetchall()
 
         pending = conn.execute(
             "SELECT action_id, intent_type, declared_intent, status, result, created_at "
@@ -88,11 +115,26 @@ async def reconnect(request: Request):
             "SELECT MAX(sequence) as max_seq FROM events WHERE room_id = %s", (room_id,)
         ).fetchone()
         max_seq = max_seq_row["max_seq"] or 0
+        all_events = [
+            {
+                "sequence": event.sequence,
+                "event_type": event.event_type,
+                "audience": event.audience,
+                "payload": event.payload,
+                "issued_at": event.issued_at,
+            }
+            for event in EventLog(conn).get_events_for_player(
+                room_id,
+                character_id,
+                limit=max_seq,
+            )
+        ]
 
         return {
             "character": char_data,
-            "recent_events": [dict(r) for r in all_events],
+            "recent_events": all_events,
             "pending_actions": [dict(r) for r in pending],
+            "pending_submissions": pending_submissions,
             "last_sequence": max_seq,
             "stateVersion": current_state_version,
             "sceneState": _scene_snapshot(conn, room_id),
@@ -114,6 +156,7 @@ async def reconnect(request: Request):
         "character": char_data,
         "recent_events": result["events"],
         "pending_actions": result["pending_actions"],
+        "pending_submissions": pending_submissions,
         "last_sequence": new_last,
         "stateVersion": current_state_version,
         "sceneState": _scene_snapshot(conn, room_id),

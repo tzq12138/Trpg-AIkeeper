@@ -283,7 +283,7 @@ STRUCTURE_SYSTEM_PROMPT = """你是一个TRPG剧本分析器。给定一段剧�
 
 返回格式：
 {
-  "scenes": [{"name": "场景名", "description": "描述", "order": 1}],
+  "scenes": [{"scene_id": "stable-scene-slug", "name": "场景名", "description": "描述", "order": 1, "citation": {"source_ref": "page:1", "page_number": 1}}],
   "npcs": [{
     "npc_id": "稳定ID（英文slug，如 'professor-zhang'）",
     "name": "NPC真名（truth层）",
@@ -297,12 +297,14 @@ STRUCTURE_SYSTEM_PROMPT = """你是一个TRPG剧本分析器。给定一段剧�
     "is_hidden": false
   }],
   "clues": [{"name": "线索名", "description": "描述", "location": "所在场景", "is_hidden": false}],
+  "branches": [{"branch_id": "stable-branch-slug", "from_scene_id": "stable-scene-slug", "to_scene_id": "stable-scene-slug", "conditions": [{"kind": "clue|scene", "id": "稳定线索或场景ID"}], "citation": {"source_ref": "page:1", "page_number": 1}}],
   "truth": {"summary": "真相摘要"},
-  "endings": [{"name": "结局名", "description": "描述", "type": "victory/defeat/mixed"}]
+  "endings": [{"ending_id": "stable-ending-slug", "name": "结局名", "description": "描述", "type": "victory/defeat/mixed", "completion_conditions": {"entered_scenes": ["stable-scene-slug"], "all_clues": ["stable-clue-slug"]}, "citation": {"source_ref": "page:1", "page_number": 1}}]
 }
 
 注意：隐藏NPC（真相尚未公开的反派/幕后人物）必须设置 is_hidden=true，并提供 public_description 作为玩家初步印象。
-npc_id 必须稳定且唯一，建议使用角色英文名/定位的slug格式。"""
+npc_id、scene_id 和 branch_id 必须稳定且唯一，建议使用英文slug格式。
+branches 只提取原文明示的场景转换；每条必须引用支持它的来源，不得猜测路径或前置条件。"""
 
 
 async def structure_scenario(raw_text: str, api_key: str = "", api_base: str = "https://api.deepseek.com", model: str = "deepseek-v4-pro") -> dict:
@@ -384,24 +386,136 @@ def _ensure_npc_ids(npcs: list[dict], scenario_id: str = "") -> list[dict]:
     return result
 
 
+def normalize_knowledge_graph(raw: dict) -> dict:
+    """Canonicalize provider output without discarding import-only metadata."""
+    if not isinstance(raw, dict):
+        return {}
+
+    normalized = dict(raw)
+    normalized["title"] = (
+        raw.get("scenarioTitle") or raw.get("title") or raw.get("scenario_title", "")
+    )
+    normalized["scenes"], scene_aliases = _normalize_scenes(raw.get("scenes"))
+    normalized["npcs"] = _ensure_npc_ids(_dict_list(raw.get("npcs")))
+    normalized["clues"] = _dict_list(raw.get("clues"))
+    normalized["truth"] = raw.get("truth") if isinstance(raw.get("truth"), dict) else {}
+    normalized["endings"] = _normalize_endings(raw.get("endings"))
+    normalized["branches"] = _normalize_branches(
+        raw.get("branches") or raw.get("scenarioBranches"),
+        scene_aliases,
+    )
+    normalized["trigger_mechanics"] = _dict_list(
+        raw.get("triggerMechanics")
+        or raw.get("trigger_mechanics")
+        or raw.get("triggerMechanisms")
+    )
+    return normalized
+
+
 def _normalize_kg(raw: dict) -> dict:
-    """Normalize AI knowledge graph output — handle camelCase/snake_case aliases and ensure npc_id."""
-    npcs = raw.get("npcs", [])
-    npcs = _ensure_npc_ids(npcs)
-    return {
-        "title": raw.get("scenarioTitle") or raw.get("title") or raw.get("scenario_title", ""),
-        "scenes": raw.get("scenes", []),
-        "npcs": npcs,
-        "clues": raw.get("clues", []),
-        "truth": raw.get("truth", {}),
-        "endings": raw.get("endings", []),
-        "trigger_mechanics": (
-            raw.get("triggerMechanics")
-            or raw.get("trigger_mechanics")
-            or raw.get("triggerMechanisms")
-            or []
-        ),
-    }
+    """Backward-compatible alias for callers using the former private helper."""
+    return normalize_knowledge_graph(raw)
+
+
+def _dict_list(value) -> list[dict]:
+    return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _normalize_scenes(value) -> tuple[list[dict], dict[str, str]]:
+    scenes: list[dict] = []
+    aliases: dict[str, str] = {}
+    for index, raw_scene in enumerate(_dict_list(value)):
+        scene = dict(raw_scene)
+        scene_id = _stable_identifier(
+            scene,
+            ("scene_id", "sceneId", "id"),
+            "scene",
+            index,
+        )
+        for key in ("scene_id", "sceneId", "id", "name"):
+            alias = str(scene.get(key) or "").strip()
+            if alias and alias not in aliases:
+                aliases[alias] = scene_id
+        scene.pop("sceneId", None)
+        scene["scene_id"] = scene_id
+        scenes.append(scene)
+    return scenes, aliases
+
+
+def _normalize_branches(value, scene_aliases: dict[str, str]) -> list[dict]:
+    branches: list[dict] = []
+    alias_keys = {"branchId", "fromSceneId", "toSceneId", "from", "to", "id"}
+    for index, raw_branch in enumerate(_dict_list(value)):
+        branch = {
+            key: item
+            for key, item in raw_branch.items()
+            if key not in alias_keys and key not in {"branch_id", "from_scene_id", "to_scene_id"}
+        }
+        branch["branch_id"] = _stable_identifier(
+            raw_branch,
+            ("branch_id", "branchId", "id"),
+            "branch",
+            index,
+        )
+        from_scene_id = str(
+            raw_branch.get("from_scene_id")
+            or raw_branch.get("fromSceneId")
+            or raw_branch.get("from")
+            or ""
+        ).strip()
+        to_scene_id = str(
+            raw_branch.get("to_scene_id")
+            or raw_branch.get("toSceneId")
+            or raw_branch.get("to")
+            or ""
+        ).strip()
+        branch["from_scene_id"] = scene_aliases.get(from_scene_id, from_scene_id)
+        branch["to_scene_id"] = scene_aliases.get(to_scene_id, to_scene_id)
+        branch["conditions"] = _dict_list(raw_branch.get("conditions"))
+        citation = raw_branch.get("citation")
+        if isinstance(citation, dict):
+            branch["citation"] = dict(citation)
+        branches.append(branch)
+    return branches
+
+
+def _normalize_endings(value) -> list[dict]:
+    endings: list[dict] = []
+    alias_keys = {"endingId", "completionConditions", "id"}
+    for index, raw_ending in enumerate(_dict_list(value)):
+        ending = {
+            key: item
+            for key, item in raw_ending.items()
+            if key not in alias_keys and key not in {"ending_id", "completion_conditions"}
+        }
+        ending["ending_id"] = _stable_identifier(
+            raw_ending,
+            ("ending_id", "endingId", "id"),
+            "ending",
+            index,
+        )
+        conditions = (
+            raw_ending.get("completion_conditions")
+            or raw_ending.get("completionConditions")
+        )
+        if isinstance(conditions, dict):
+            ending["completion_conditions"] = dict(conditions)
+        citation = raw_ending.get("citation")
+        if isinstance(citation, dict):
+            ending["citation"] = dict(citation)
+        endings.append(ending)
+    return endings
+
+
+def _stable_identifier(value: dict, keys: tuple[str, ...], prefix: str, index: int) -> str:
+    for key in keys:
+        candidate = str(value.get(key) or "").strip()
+        if candidate:
+            return candidate
+    import hashlib
+
+    seed = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return f"{prefix}-{hashlib.sha256(f'{index}:{seed}'.encode('utf-8')).hexdigest()[:12]}"
 
 
 def _structure_mock(raw_text: str) -> dict:
@@ -440,6 +554,7 @@ def _structure_mock(raw_text: str) -> dict:
         "scenes": scenes,
         "npcs": npcs,
         "clues": clues,
+        "branches": [],
         "truth": None,
         "endings": [],
     }

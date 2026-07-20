@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, StrictBool
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, StrictBool, model_validator
 
 
 router = APIRouter(prefix="/api/player")
@@ -8,7 +10,21 @@ router = APIRouter(prefix="/api/player")
 class PlayerSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    draft_analysis_enabled: StrictBool
+    draft_analysis_enabled: StrictBool | None = None
+    absent_policy: Literal["idle", "maintain_existing"] | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self):
+        if not self.model_fields_set:
+            raise ValueError("At least one player setting is required")
+        if (
+            "draft_analysis_enabled" in self.model_fields_set
+            and self.draft_analysis_enabled is None
+        ):
+            raise ValueError("draft_analysis_enabled must be a boolean")
+        if "absent_policy" in self.model_fields_set and self.absent_policy is None:
+            raise ValueError("absent_policy must be idle or maintain_existing")
+        return self
 
 
 def _require_character(request: Request) -> dict:
@@ -36,6 +52,24 @@ def get_effective_draft_analysis_enabled(conn, character: dict) -> bool:
     return bool(row["draft_analysis_enabled"])
 
 
+def get_absent_policy(conn, character: dict) -> str:
+    row = conn.execute(
+        "SELECT absent_policy FROM room_player_settings "
+        "WHERE room_id = %s AND character_id = %s",
+        (character["room_id"], character["character_id"]),
+    ).fetchone()
+    return str(row["absent_policy"]) if row else "idle"
+
+
+def get_speech_routing(conn, character: dict) -> str:
+    row = conn.execute(
+        "SELECT speech_routing FROM rooms WHERE room_id = %s",
+        (character["room_id"],),
+    ).fetchone()
+    routing = str(row["speech_routing"]) if row else "party_message"
+    return routing if routing in {"party_message", "npc_dialogue"} else "party_message"
+
+
 def _settings_response(conn, character: dict) -> dict:
     return {
         "room_id": character["room_id"],
@@ -43,6 +77,8 @@ def _settings_response(conn, character: dict) -> dict:
         "draft_analysis_enabled": get_effective_draft_analysis_enabled(
             conn, character
         ),
+        "absent_policy": get_absent_policy(conn, character),
+        "speech_routing": get_speech_routing(conn, character),
     }
 
 
@@ -56,15 +92,27 @@ async def get_player_settings(request: Request):
 async def update_player_settings(request: Request, body: PlayerSettingsUpdate):
     character = _require_character(request)
     conn = request.app.state.db
+    draft_analysis_enabled = (
+        body.draft_analysis_enabled
+        if "draft_analysis_enabled" in body.model_fields_set
+        else get_effective_draft_analysis_enabled(conn, character)
+    )
+    absent_policy = (
+        body.absent_policy
+        if "absent_policy" in body.model_fields_set
+        else get_absent_policy(conn, character)
+    )
     conn.execute(
         "INSERT INTO room_player_settings "
-        "(room_id, character_id, draft_analysis_enabled) VALUES (%s, %s, %s) "
+        "(room_id, character_id, draft_analysis_enabled, absent_policy) VALUES (%s, %s, %s, %s) "
         "ON CONFLICT (room_id, character_id) DO UPDATE SET "
-        "draft_analysis_enabled = EXCLUDED.draft_analysis_enabled, updated_at = NOW()",
+        "draft_analysis_enabled = EXCLUDED.draft_analysis_enabled, "
+        "absent_policy = EXCLUDED.absent_policy, updated_at = NOW()",
         (
             character["room_id"],
             character["character_id"],
-            body.draft_analysis_enabled,
+            draft_analysis_enabled,
+            absent_policy,
         ),
     )
     conn.commit()

@@ -61,6 +61,103 @@ class TestInventory:
         assert len(items) == 2
 
 
+class TestInventoryTransfers:
+    def _two_players_with_item(self, client, test_db):
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        room_id = room["room_id"]
+        sender = client.post(f"/api/player/rooms/{room_id}/join").json()
+        recipient = client.post(f"/api/player/rooms/{room_id}/join").json()
+        test_db.execute(
+            "INSERT INTO inventory (id, character_id, room_id, name, description, quantity, is_secret, source) "
+            "VALUES ('transfer-item', %s, %s, '急救包', '带有私人标记的急救包', 2, TRUE, 'test')",
+            (sender["character_id"], room_id),
+        )
+        test_db.commit()
+        return room_id, sender, recipient
+
+    def test_transfer_keeps_item_with_sender_until_recipient_accepts(self, client, test_db):
+        room_id, sender, recipient = self._two_players_with_item(client, test_db)
+
+        response = client.post(
+            "/api/player/inventory/transfer-item/transfers",
+            json={"toCharacterId": recipient["character_id"], "quantity": 1},
+            headers={"X-Room-Token": sender["player_token"]},
+        )
+
+        assert response.status_code == 201
+        transfer = response.json()
+        assert transfer["status"] == "pending"
+        assert transfer["itemName"] == "急救包"
+        source_item = test_db.execute(
+            "SELECT character_id, quantity FROM inventory WHERE id = 'transfer-item'"
+        ).fetchone()
+        assert source_item == {"character_id": sender["character_id"], "quantity": 2}
+        incoming = client.get(
+            "/api/player/inventory-transfers",
+            headers={"X-Room-Token": recipient["player_token"]},
+        )
+        assert incoming.status_code == 200
+        assert incoming.json()["incoming"][0]["transferId"] == transfer["transferId"]
+        sender_name = test_db.execute(
+            "SELECT player_name FROM characters WHERE character_id = %s",
+            (sender["character_id"],),
+        ).fetchone()["player_name"]
+        assert incoming.json()["incoming"][0]["fromPlayerName"] == sender_name
+        assert "description" not in incoming.json()["incoming"][0]
+
+    def test_accepting_transfer_moves_requested_quantity_atomically(self, client, test_db):
+        room_id, sender, recipient = self._two_players_with_item(client, test_db)
+        requested = client.post(
+            "/api/player/inventory/transfer-item/transfers",
+            json={"toCharacterId": recipient["character_id"], "quantity": 1},
+            headers={"X-Room-Token": sender["player_token"]},
+        ).json()
+
+        accepted = client.post(
+            f"/api/player/inventory-transfers/{requested['transferId']}/accept",
+            headers={"X-Room-Token": recipient["player_token"]},
+        )
+
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "completed"
+        items = test_db.execute(
+            "SELECT character_id, quantity FROM inventory WHERE room_id = %s ORDER BY character_id, id",
+            (room_id,),
+        ).fetchall()
+        assert sorted((item["character_id"], item["quantity"]) for item in items) == sorted([
+            (recipient["character_id"], 1),
+            (sender["character_id"], 1),
+        ])
+        transfer = test_db.execute(
+            "SELECT status FROM inventory_transfer_requests WHERE transfer_id = %s",
+            (requested["transferId"],),
+        ).fetchone()
+        assert transfer["status"] == "completed"
+
+    def test_accepting_an_unavailable_transfer_marks_it_unavailable(self, client, test_db):
+        _, sender, recipient = self._two_players_with_item(client, test_db)
+        requested = client.post(
+            "/api/player/inventory/transfer-item/transfers",
+            json={"toCharacterId": recipient["character_id"], "quantity": 1},
+            headers={"X-Room-Token": sender["player_token"]},
+        ).json()
+        test_db.execute("DELETE FROM inventory WHERE id = 'transfer-item'")
+        test_db.commit()
+
+        unavailable = client.post(
+            f"/api/player/inventory-transfers/{requested['transferId']}/accept",
+            headers={"X-Room-Token": recipient["player_token"]},
+        )
+
+        assert unavailable.status_code == 409
+        transfer = test_db.execute(
+            "SELECT status FROM inventory_transfer_requests WHERE transfer_id = %s",
+            (requested["transferId"],),
+        ).fetchone()
+        assert transfer["status"] == "unavailable"
+
+
 class TestSkillCheckAPI:
     def test_skill_check(self, client, room_and_player):
         _, token, _ = room_and_player

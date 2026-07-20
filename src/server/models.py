@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from typing import Literal, Any
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Event type literals — canonical registry is at .events.events_registry.ALL_EVENTS
 EngineEventType = Literal[
@@ -10,20 +10,25 @@ EngineEventType = Literal[
     "s2c_host_snapshot", "s2c_full_snapshot", "s2c_state_patch",
     "s2c_private_notice", "s2c_public_observation", "s2c_tactical_prompt",
     "s2c_room_lobby_snapshot", "s2c_campaign_ended",
-    "s2c_action_queued", "s2c_action_batched", "s2c_action_completed",
+    "s2c_action_queued", "s2c_action_batched", "s2c_action_completed", "s2c_action_deferred",
     "s2c_action_review_requested", "s2c_action_review_resolved",
     "s2c_action_exception_requested",
     "s2c_action_choice_requested",
+    "s2c_safety_request",
     "s2c_clarification_prompt", "s2c_clarification_result",
     "s2c_ready_toggled",
     "s2c_map_updated", "s2c_player_moved", "s2c_map_revealed",
     "s2c_encounter_suggested", "s2c_encounter_started",
     "s2c_encounter_updated", "s2c_encounter_resolved",
+    "s2c_solo_combat_reaction_requested",
     "s2c_team_message",
     "s2c_turn_resolved",
+    "s2c_combat_round_locked",
     "s2c_clue_discovered", "s2c_clue_shared",
     "s2c_checkpoint_created", "s2c_checkpoint_restored",
     "s2c_private_note_emergency_access",
+    "s2c_ai_stage_changed", "s2c_player_clarification_required",
+    "s2c_director_plan_validated", "s2c_narration_completed", "s2c_ai_recovery_required",
 ]
 
 Audience = Literal["host", "player", "party", "system"]
@@ -60,11 +65,17 @@ class PlayerIntent(BaseModel):
         "voice_command", "dialogue", "skill_check", "move",
         "use_item", "show_item", "ready_toggle", "character_import_confirm",
         "clarification_request", "retroactive_item_claim",
-        "combat_action", "chase_action", "system_skip",
+        "combat_action", "chase_action", "prepared_action", "system_skip",
     ]
     declared_intent: str = ""
     base_state_version: int = 0
     params: dict[str, Any] = {}
+
+
+class InventoryTransferCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    to_character_id: str = Field(alias="toCharacterId", min_length=1, max_length=128)
+    quantity: int = Field(ge=1, le=999)
 
 
 class ActionReceipt(BaseModel):
@@ -79,12 +90,132 @@ class ActionReceipt(BaseModel):
     result: str | None = None
 
 
+PlayerInputMode = Literal[
+    "action", "speech", "party_chat", "ooc", "rule_question", "private_note",
+    "clue_share", "item_action", "map_move", "combat_action", "safety",
+]
+
+
+class PlayerActionSubmissionRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    action_id: str = Field(default_factory=lambda: str(uuid.uuid4()), alias="actionId", min_length=1, max_length=128)
+    raw_text: str = Field(alias="rawText", min_length=1, max_length=2000)
+    input_mode: PlayerInputMode = Field(default="action", alias="inputMode")
+    client_sequence: int | None = Field(default=None, alias="clientSequence", ge=0)
+    base_state_version: int = Field(default=0, alias="baseStateVersion", ge=0)
+    requested_visibility: Literal["public", "party", "private"] | None = Field(
+        default=None,
+        alias="requestedVisibility",
+    )
+
+
+class PlayerActionSubmissionReceipt(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    action_id: str = Field(alias="actionId")
+    input_mode: PlayerInputMode = Field(alias="inputMode")
+    status: Literal["received", "recorded", "analyzing", "awaiting_confirmation"]
+    requires_analysis: bool = Field(alias="requiresAnalysis")
+    received_at: str = Field(alias="receivedAt")
+
+
 class ActionDraftAnalyzeRequest(BaseModel):
     declared_intent: str = Field(min_length=1, max_length=2000)
     intent_type: str | None = None
     base_state_version: int = 0
     params: dict[str, Any] = Field(default_factory=dict)
     ephemeral: bool = False
+    submission_action_id: str | None = None
+
+
+class RedactedCitation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = "已校验依据"
+    page: int | None = None
+    scene: str | None = None
+    verified: bool = True
+
+
+def _redact_citation(value: Any) -> dict[str, Any]:
+    if isinstance(value, RedactedCitation):
+        return value.model_dump()
+    if not isinstance(value, dict):
+        return {"label": "已校验依据"}
+    label = value.get("label") or value.get("citation_label") or value.get("source") or value.get("source_part_id")
+    page = value.get("page", value.get("page_number"))
+    scene = value.get("scene") or value.get("location")
+    redacted: dict[str, Any] = {"label": str(label or "已校验依据")}
+    if isinstance(page, int):
+        redacted["page"] = page
+    if isinstance(scene, str) and scene:
+        redacted["scene"] = scene
+    redacted["verified"] = bool(value.get("verified", True))
+    return redacted
+
+
+def redact_citation(value: Any) -> dict[str, Any]:
+    return _redact_citation(value)
+
+
+def _redact_citations(values: Any) -> list[dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    return [_redact_citation(value) for value in values]
+
+
+AiStageName = Literal[
+    "retrieving",
+    "directing",
+    "validating_rules",
+    "narrating",
+    "recovering",
+    "completed",
+]
+
+
+class AiStageProgress(BaseModel):
+    stage: AiStageName
+    status: Literal["idle", "active", "completed", "failed"] = "active"
+    label: str | None = None
+    detail: str | None = None
+    updated_at: str | None = None
+
+
+class SemanticMapProjectionDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    room_id: str = Field(alias="roomId")
+    map_status: str = Field(default="active", alias="mapStatus")
+    map_type: Literal["graph", "image", "hybrid", "text"] = Field(default="graph", alias="mapType")
+    base_asset: dict[str, Any] = Field(default_factory=dict, alias="baseAsset")
+    known_locations: list[dict[str, Any]] = Field(default_factory=list, alias="knownLocations")
+    known_connections: list[dict[str, Any]] = Field(default_factory=list, alias="knownConnections")
+    party_position: dict[str, Any] | None = Field(default=None, alias="partyPosition")
+    fog_of_war: list[dict[str, Any]] = Field(default_factory=list, alias="fogOfWar")
+    text_scene: dict[str, Any] | None = Field(default=None, alias="textScene")
+
+
+class HostDirectorSnapshotDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    current_scene: str = Field(default="", alias="currentScene")
+    confirmed_facts: list[str] = Field(default_factory=list, alias="confirmedFacts")
+    pending_triggers: list[str] = Field(default_factory=list, alias="pendingTriggers")
+    ai_evidence: list[RedactedCitation] = Field(default_factory=list, alias="aiEvidence")
+    stage: AiStageName = "completed"
+    risks: list[str] = Field(default_factory=list)
+    exception_queue: list[str] = Field(default_factory=list, alias="exceptionQueue")
+
+
+class IntentContractDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target: str | None = Field(default=None, max_length=200)
+    method: str | None = Field(default=None, max_length=200)
+    object: str | None = Field(default=None, max_length=200)
+    constraints: list[str] = Field(default_factory=list, max_length=8)
+    resources: list[str] = Field(default_factory=list, max_length=8)
+    conditions: list[str] = Field(default_factory=list, max_length=8)
+    visibility: Literal["public", "party", "private"] = "public"
+    ambiguities: list[str] = Field(default_factory=list, max_length=8)
 
 
 class ActionDraftDTO(BaseModel):
@@ -97,7 +228,10 @@ class ActionDraftDTO(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     understanding_summary: str
     risk: Literal["low", "medium", "high"]
+    intent_contract: IntentContractDTO = Field(default_factory=IntentContractDTO)
     suggested_skill: str | None = None
+    alternative_skills: list[str] = Field(default_factory=list)
+    composite_steps: list["ActionDraftStepDTO"] = Field(default_factory=list)
     difficulty: str | None = None
     resource_impacts: list[dict[str, Any]] = Field(default_factory=list)
     visibility: Literal["public", "party", "private"] = "public"
@@ -105,10 +239,161 @@ class ActionDraftDTO(BaseModel):
     confirmation_requirements: list[str] = Field(default_factory=list)
     requires_confirmation: bool = False
     confidence: float = 0.0
-    citations: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[RedactedCitation] = Field(default_factory=list)
     analysis_source: Literal["configured_provider", "fallback_provider", "local_fallback"]
     resolution_route: Literal["ai", "local", "host_exception"] = "local"
     ephemeral: bool = False
+    context_version: int = 0
+    candidate_interpretations: list[dict[str, Any]] = Field(default_factory=list)
+    semantic_progression: dict[str, Any] = Field(default_factory=dict)
+    adjudication_stage: str = "local_analysis"
+    npc_reactions: list[dict[str, Any]] = Field(default_factory=list)
+    time_impact: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def _citations_are_redacted(cls, values):
+        return _redact_citations(values)
+
+
+class DirectorCitationDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: str | None = None
+    source_part_id: str | None = None
+    content_item_id: str | None = None
+    page_number: int | None = None
+    location: str | None = None
+
+
+class DirectorBasisRefDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: str
+    citation: DirectorCitationDTO | None = None
+
+
+class DirectorPreconditionDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["room_status", "state_version", "position", "resource", "visibility", "permission"]
+    expected: Any = None
+    path: str | None = None
+    scope: str | None = None
+
+
+class DirectorPermissionDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scope: str
+    allowed: bool
+    reason: str | None = None
+
+
+class DirectorMechanicPlanDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    mechanic: str = "dialogue"
+    skill_name: str | None = Field(default=None, alias="skillName")
+    difficulty: str | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class DirectorStatePatchDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["add", "replace", "remove", "test"]
+    path: str = Field(min_length=1)
+    value: Any = None
+
+
+class DirectorEventPlanDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: EngineEventType
+    audience: Audience | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class DirectorSemanticProgressionDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    target_node_id: str | None = Field(default=None, alias="targetNodeId")
+    from_node_id: str | None = Field(default=None, alias="fromNodeId")
+    citation: DirectorCitationDTO | None = None
+    rationale: str | None = None
+
+
+class DirectorActionStepDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    step_id: str = Field(min_length=1, max_length=80)
+    summary: str = Field(min_length=1, max_length=500)
+    declared_intent: str = Field(min_length=1, max_length=2000)
+    intent_type: str = Field(min_length=1, max_length=80)
+    params: dict[str, Any] = Field(default_factory=dict)
+    execution_condition: Literal[
+        "always", "previous_step_success", "previous_step_failure"
+    ] = "previous_step_success"
+    on_previous_failure: Literal["cancel", "continue"] = "cancel"
+
+
+class DirectorPlanDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    context_version: int = 0
+    actor_display_name: str = ""
+    declared_intent: str = ""
+    interpreted_intent: str = ""
+    intent_type: str = "dialogue"
+    intent_contract: IntentContractDTO = Field(default_factory=IntentContractDTO)
+    preconditions: list[DirectorPreconditionDTO] = Field(default_factory=list)
+    permissions: list[DirectorPermissionDTO] = Field(default_factory=list)
+    mechanic_plan: DirectorMechanicPlanDTO = Field(default_factory=DirectorMechanicPlanDTO)
+    state_patch: list[DirectorStatePatchDTO] = Field(default_factory=list)
+    event_plan: list[DirectorEventPlanDTO] = Field(default_factory=list)
+    semantic_progression: DirectorSemanticProgressionDTO = Field(default_factory=DirectorSemanticProgressionDTO)
+    action_steps: list[DirectorActionStepDTO] = Field(default_factory=list, max_length=2)
+    npc_reactions: list[dict[str, Any]] = Field(default_factory=list)
+    time_impact: dict[str, Any] = Field(default_factory=dict)
+    visibility: Literal["public", "party", "private"] = "public"
+    basis_refs: list[DirectorBasisRefDTO] = Field(default_factory=list)
+    citations: list[DirectorCitationDTO] = Field(default_factory=list)
+    confidence: float = 0.0
+    requires_player_clarification: bool = False
+    clarification_options: list[dict[str, Any]] = Field(default_factory=list)
+    requires_host_exception: bool = False
+    exception_reason: str | None = None
+    narration_mode: str = "summarize"
+    analysis_source: Literal["configured_provider", "fallback_provider", "local_fallback"] = "fallback_provider"
+
+
+class NarrationResultDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action_id: str
+    context_version: int
+    director_plan_digest: str
+    narrative_text: str = Field(min_length=1)
+    environment_changes: list[str] = Field(min_length=1)
+    interactable_objects: list[str] = Field(min_length=1)
+    open_question: str = Field(min_length=1)
+    fact_refs: dict[str, list[str]]
+    redacted_citations: list[RedactedCitation] = Field(default_factory=list)
+    style_pack_version: str
+    provider_source: Literal["configured_provider", "fallback_provider", "local_fallback"]
+    status: Literal["completed", "invalid_response"] = "completed"
+
+    @field_validator("redacted_citations", mode="before")
+    @classmethod
+    def _narration_citations_are_redacted(cls, values):
+        return _redact_citations(values)
+
+    @model_validator(mode="after")
+    def _requires_visible_fact_refs(self):
+        required = {
+            "narrative_text",
+            "environment_changes",
+            "interactable_objects",
+            "open_question",
+        }
+        if set(self.fact_refs) != required:
+            raise ValueError("fact_refs must cover all player-visible fields")
+        for key in required:
+            refs = self.fact_refs.get(key)
+            if not isinstance(refs, list) or not refs or any(not str(item).strip() for item in refs):
+                raise ValueError("fact_refs values must be non-empty string lists")
+        return self
 
 
 class ActionDraftUpdateRequest(BaseModel):
@@ -120,6 +405,59 @@ class ActionDraftUpdateRequest(BaseModel):
 
 class ActionDraftConfirmRequest(BaseModel):
     confirmations: list[str] = Field(default_factory=list)
+    selected_skill: str | None = Field(default=None, max_length=100)
+    composite_step_order: list[str] = Field(default_factory=list, max_length=2)
+
+
+class CollaborationContractCreateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    shared_intent: str = Field(alias="sharedIntent", min_length=1, max_length=1000)
+    invitee_character_ids: list[str] = Field(alias="inviteeCharacterIds", min_length=1, max_length=3)
+    expires_in_seconds: int = Field(default=120, alias="expiresInSeconds", ge=30, le=600)
+
+
+class CollaborationContractResponseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accept", "decline"]
+
+
+class CollaborationLinkedDraftDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    character_id: str = Field(alias="characterId")
+    draft_id: str = Field(alias="draftId")
+    status: str
+
+
+class CollaborationContractDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    contract_id: str = Field(alias="contractId")
+    room_id: str = Field(alias="roomId")
+    initiator_character_id: str = Field(alias="initiatorCharacterId")
+    shared_intent: str = Field(alias="sharedIntent")
+    status: Literal["pending", "accepted", "completed", "canceled", "expired"]
+    participant_character_ids: list[str] = Field(default_factory=list, alias="participantCharacterIds")
+    pending_character_ids: list[str] = Field(default_factory=list, alias="pendingCharacterIds")
+    linked_drafts: list[CollaborationLinkedDraftDTO] = Field(default_factory=list, alias="linkedDrafts")
+    expires_at: datetime = Field(alias="expiresAt")
+
+
+class CompositeActionChoiceRequest(BaseModel):
+    proceed: bool
+
+
+class ActionDraftStepDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    step_id: str = Field(min_length=1, max_length=80)
+    summary: str = Field(min_length=1, max_length=500)
+    declared_intent: str = Field(min_length=1, max_length=2000)
+    intent_type: str = Field(min_length=1, max_length=80)
+    params: dict[str, Any] = Field(default_factory=dict)
+    execution_condition: Literal["always", "previous_step_success", "previous_step_failure"] = "previous_step_success"
+    on_previous_failure: Literal["cancel", "continue"] = "cancel"
 
 
 class ActionStatusEventDTO(BaseModel):
@@ -130,6 +468,8 @@ class ActionStatusEventDTO(BaseModel):
 
 class ActionReceiptV2(BaseModel):
     action_id: str
+    transaction_id: str | None = None
+    state_version: int | None = None
     draft_id: str | None = None
     status: str
     declared_intent: str = ""
@@ -149,8 +489,13 @@ class RuleExplanationDTO(BaseModel):
     state_before: dict[str, Any] = Field(default_factory=dict)
     state_after: dict[str, Any] = Field(default_factory=dict)
     rule_set_version: str
-    citations: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[RedactedCitation] = Field(default_factory=list)
     verification_receipt: dict[str, Any] | None = None
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def _rule_citations_are_redacted(cls, values):
+        return _redact_citations(values)
 
 
 class PlayerDeviceSessionDTO(BaseModel):
@@ -184,23 +529,79 @@ class EvidenceCardDTO(BaseModel):
     confirmed_by: str | None = None
     created_by_character_id: str | None = None
     version: int = 1
+    question_status: Literal["investigating", "explained", "closed"] | None = None
+    question_closed_by_character_id: str | None = None
+    question_closed_at: str | None = None
+    question_undo_until: str | None = None
+    hypothesis_status: Literal["discussing", "disproved", "shelved"] | None = None
+    hypothesis_status_changed_by_character_id: str | None = None
+    hypothesis_status_changed_at: str | None = None
+    hypothesis_status_undo_until: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
 
+class EvidenceDetailKnownItemDTO(BaseModel):
+    evidence_card_id: str
+    title: str
+    body: str
+    cognitive_tag: Literal["亲眼观察", "NPC 证词", "玩家推测", "存在争议", "已确认", "已证伪"]
+
+
+class EvidenceDetailNoteDTO(BaseModel):
+    note_id: str
+    title: str
+    body: str
+
+
+class EvidenceDetailDTO(BaseModel):
+    summary: EvidenceCardDTO
+    current_known: list[EvidenceDetailKnownItemDTO] = Field(default_factory=list)
+    related_materials: list[EvidenceDetailKnownItemDTO] = Field(default_factory=list)
+    player_notes: list[EvidenceDetailNoteDTO] = Field(default_factory=list)
+
+
+class CampaignCurrentSceneDTO(BaseModel):
+    title: str
+    text_preview: str
+    citation: RedactedCitation = Field(default_factory=RedactedCitation)
+    choice_count: int = Field(default=0, ge=0)
+    image_asset_id: str | None = None
+
+
+class CampaignQuestionDTO(BaseModel):
+    evidence_card_id: str
+    title: str
+    fact_status: Literal["hypothesis", "confirmed", "excluded"]
+
+
+class CampaignRecentClueDTO(BaseModel):
+    clue_id: str
+    text: str
+    discovered_at: str
+    is_owner: bool
+    is_shared: bool
+
+
 class CampaignHomeDTO(BaseModel):
     room_id: str
+    current_scene: CampaignCurrentSceneDTO | None = None
     session: CampaignSessionDTO | None = None
     team_objectives: list[dict[str, Any]] = Field(default_factory=list)
     personal_objectives: list[dict[str, Any]] = Field(default_factory=list)
     last_summary: dict[str, Any] | None = None
     next_session: CampaignSessionDTO | None = None
-    recent_clues: list[dict[str, Any]] = Field(default_factory=list)
-    unresolved_questions: list[EvidenceCardDTO] = Field(default_factory=list)
+    recent_clues: list[CampaignRecentClueDTO] = Field(default_factory=list)
+    unresolved_questions: list[CampaignQuestionDTO] = Field(default_factory=list)
+
+
+class ActionHintsDTO(BaseModel):
+    hints: list[str] = Field(default_factory=list)
 
 
 class TransactionStep(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
+    step_id: str = Field(default_factory=lambda: str(uuid.uuid4()), alias="stepId")
     kind: Literal["roll", "status_delta", "scene_transition", "narrative_text"]
     payload: dict[str, Any] = {}
     timeout_ms: int = Field(default=15000, alias="timeoutMs")
@@ -209,6 +610,7 @@ class TransactionStep(BaseModel):
 class RevealTransaction(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     transaction_id: str = Field(default_factory=lambda: str(uuid.uuid4()), alias="transactionId")
+    action_id: str | None = Field(default=None, alias="actionId")
     priority: Literal["normal", "urgent"] = "normal"
     steps: list[TransactionStep] = []
     summary_text: str | None = Field(default=None, alias="summaryText")
@@ -238,6 +640,21 @@ class HostHUD(BaseModel):
     engine_state: str = Field(default="idle", alias="engineState")
     queue_status: dict[str, int] = Field(default={"normal": 0, "urgent": 0}, alias="queueStatus")
     audio_action: str | None = Field(default=None, alias="audioAction")
+    team_objectives: list[str] = Field(default_factory=list, alias="teamObjectives")
+    scene_time: str = Field(default="时间未定", alias="sceneTime")
+
+
+class HostPublicSceneTimeUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    scene_time: str = Field(alias="sceneTime", min_length=1, max_length=120)
+
+    @field_validator("scene_time")
+    @classmethod
+    def _scene_time_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("sceneTime 不能为空")
+        return value
 
 
 class AtmosphereCommand(BaseModel):
@@ -449,6 +866,7 @@ class ScenarioKnowledgeGraph(BaseModel):
     scenes: list[dict[str, Any]] = []
     npcs: list[dict[str, Any]] = []
     clues: list[dict[str, Any]] = []
+    branches: list[dict[str, Any]] = []
     truth: dict[str, Any] | None = None
     endings: list[dict[str, Any]] = []
 
@@ -632,6 +1050,7 @@ class SpoilerSensitiveItem(BaseModel):
     aliases: list[str] = []
     source_ref: str = Field(default="", alias="sourceRef")
     default_audience: Audience = Field(default="host", alias="defaultAudience")
+    unlock_clue_ids: list[str] = Field(default=[], alias="unlockClueIds")
 
 
 class SpoilerReviewResult(BaseModel):

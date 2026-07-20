@@ -51,6 +51,7 @@ class FakeConn:
         self.inventory = []
         self.scenarios = {}
         self.events = []
+        self.resolution_bundles = []
         self.last_insert_params = None
 
     def execute(self, sql, params=None):
@@ -84,6 +85,8 @@ class FakeConn:
             return Rows([self.characters[params[0]]] if params[0] in self.characters else [])
         if normalized.startswith("SELECT * FROM rooms WHERE room_id"):
             return Rows([self.rooms[params[0]]] if params[0] in self.rooms else [])
+        if normalized.startswith("SELECT state_version FROM rooms WHERE room_id"):
+            return Rows([self.rooms[params[0]]] if params[0] in self.rooms else [])
         if normalized.startswith("SELECT * FROM scenarios WHERE scenario_id"):
             return Rows([self.scenarios[params[0]]] if params[0] in self.scenarios else [])
         if normalized.startswith("SELECT * FROM inventory WHERE character_id"):
@@ -100,6 +103,61 @@ class FakeConn:
                 "payload": json.loads(payload) if isinstance(payload, str) else payload,
             })
             return Rows([{"sequence": len(self.events)}])
+        if normalized.startswith("INSERT INTO resolution_bundles"):
+            (
+                action_id,
+                room_id,
+                character_id,
+                canonical_result,
+                rule_explanation,
+                actor_projection,
+                stage_projection,
+                host_console,
+                release_status,
+            ) = params
+            self.resolution_bundles.append({
+                "action_id": action_id,
+                "room_id": room_id,
+                "character_id": character_id,
+                "status": canonical_result.get("status", "resolved") if isinstance(canonical_result, dict) else "resolved",
+                "bundle": {
+                    "authoritative_result": json.loads(canonical_result) if isinstance(canonical_result, str) else canonical_result,
+                    "rule_explanation": json.loads(rule_explanation) if isinstance(rule_explanation, str) else rule_explanation,
+                    "player_projection": json.loads(actor_projection) if isinstance(actor_projection, str) else actor_projection,
+                    "party_projection": json.loads(stage_projection) if isinstance(stage_projection, str) else stage_projection,
+                    "host_projection": json.loads(host_console) if isinstance(host_console, str) else host_console,
+                    "release_status": release_status,
+                },
+            })
+            return Rows()
+        if normalized.startswith("UPDATE resolution_bundles SET actor_projection"):
+            actor_projection, stage_projection, host_console, release_status, action_id = params
+            for saved in self.resolution_bundles:
+                if saved["action_id"] == action_id:
+                    saved["bundle"]["player_projection"] = json.loads(actor_projection) if isinstance(actor_projection, str) else actor_projection
+                    saved["bundle"]["party_projection"] = json.loads(stage_projection) if isinstance(stage_projection, str) else stage_projection
+                    saved["bundle"]["host_projection"] = json.loads(host_console) if isinstance(host_console, str) else host_console
+                    saved["bundle"]["release_status"] = release_status
+                    break
+            return Rows()
+        if normalized.startswith("UPDATE resolution_bundles SET release_status = %s WHERE action_id"):
+            release_status, action_id = params
+            for saved in self.resolution_bundles:
+                if saved["action_id"] == action_id:
+                    saved["bundle"]["release_status"] = release_status
+                    break
+            return Rows()
+        if normalized.startswith("SELECT actor_projection, stage_projection, host_console, release_status FROM resolution_bundles"):
+            for saved in self.resolution_bundles:
+                if saved["action_id"] == params[0]:
+                    bundle = saved["bundle"]
+                    return Rows([{
+                        "actor_projection": json.dumps(bundle["player_projection"], ensure_ascii=False),
+                        "stage_projection": json.dumps(bundle["party_projection"], ensure_ascii=False),
+                        "host_console": json.dumps(bundle["host_projection"], ensure_ascii=False),
+                        "release_status": bundle["release_status"],
+                    }])
+            return Rows()
         if normalized.startswith("SELECT status FROM rooms WHERE room_id"):
             return Rows([self.rooms.get(params[0])])
         if normalized.startswith("SELECT * FROM character_runtime_state WHERE character_id"):
@@ -121,6 +179,17 @@ class FakeDispatcher:
 
     async def emit(self, room_id, event_type, audience, payload, character_id=None):
         self.events.append((room_id, event_type, audience, payload, character_id))
+
+
+class FailingProjectionDispatcher(FakeDispatcher):
+    def __init__(self):
+        super().__init__()
+        self.fail_public_projection = True
+
+    async def emit(self, room_id, event_type, audience, payload, character_id=None):
+        if self.fail_public_projection and event_type == "s2c_public_observation":
+            raise RuntimeError("projection unavailable")
+        await super().emit(room_id, event_type, audience, payload, character_id)
 
 
 class FakeStateService:
@@ -151,6 +220,40 @@ class FailingRuleExecutor:
         raise RuntimeError("handler failed")
 
 
+class CompositeRuleExecutor:
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, intent, _compiled, character, _inventory, _scenario_assets):
+        self.calls.append(intent.declared_intent)
+        return ResolutionResult(
+            actionId=intent.action_id,
+            roomId=character["room_id"],
+            characterId=character["character_id"],
+            mechanic=intent.intent_type,
+            isSuccess=intent.params.get("expected_success", True),
+        )
+
+
+class CharacterAndEncounterMutationRuleExecutor:
+    async def execute(self, intent, _compiled, character, _inventory, _scenario_assets):
+        return ResolutionResult(
+            actionId=intent.action_id,
+            roomId=character["room_id"],
+            characterId=character["character_id"],
+            mechanic="combat_attack",
+            isSuccess=True,
+            mutations=[
+                {"op": "replace", "path": "/character/luck", "value": 39},
+                {
+                    "op": "replace",
+                    "path": "/encounter/enc-1/participants/npc:hidden/hp_delta",
+                    "value": -3,
+                },
+            ],
+        )
+
+
 @pytest.mark.asyncio
 async def test_pipeline_resolves_queued_action_and_projects_events():
     random.seed(0)
@@ -171,9 +274,82 @@ async def test_pipeline_resolves_queued_action_and_projects_events():
     # State version is NOT directly bumped by pipeline anymore (StateService owns it)
     # The pipeline only bumps via StateService when mutations exist
     assert conn.actions["act-1"]["result"]["mechanic"] == "skill_check"
+    assert len(conn.resolution_bundles) == 1
+    bundle = conn.resolution_bundles[0]
+    assert bundle["action_id"] == "act-1"
+    assert bundle["status"] == "resolved"
+    assert bundle["bundle"]["authoritative_result"]["actionId"] == "act-1"
+    assert bundle["bundle"]["player_projection"]["actionId"] == "act-1"
+    assert bundle["bundle"]["party_projection"]["narrativeText"]
     event_types = [event[1] for event in dispatcher.events]
     assert "s2c_reveal_transaction" in event_types
     assert "s2c_action_completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_pipeline_resolves_batched_action():
+    conn = FakeConn()
+    conn.actions["act-1"]["status"] = "batched"
+
+    result = await ResolutionPipeline(
+        conn=conn,
+        compiler=MechanicCompiler(api_key=""),
+        dispatcher=FakeDispatcher(),
+    ).resolve_action("act-1")
+
+    assert result["status"] == "resolved"
+    assert conn.actions["act-1"]["status"] == "resolved"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_never_sends_encounter_mutations_to_state_service():
+    conn = FakeConn()
+    dispatcher = FakeDispatcher()
+    state_svc = FakeStateService()
+    pipeline = ResolutionPipeline(
+        conn=conn,
+        compiler=MechanicCompiler(api_key=""),
+        dispatcher=dispatcher,
+        rule_executor=CharacterAndEncounterMutationRuleExecutor(),
+        state_service=state_svc,
+    )
+
+    result = await pipeline.resolve_action("act-1")
+
+    assert result["status"] == "resolved"
+    changes = state_svc.changes[0]["changes"].model_dump(by_alias=True)
+    assert changes["characterMutations"] == [
+        {
+            "characterId": "char-1",
+            "mutations": [{"op": "replace", "path": "/character/luck", "value": 39}],
+            "permanent": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_projection_failure_keeps_resolution_complete_and_replays_saved_bundle_only():
+    conn = FakeConn()
+    dispatcher = FailingProjectionDispatcher()
+    pipeline = ResolutionPipeline(
+        conn=conn,
+        compiler=MechanicCompiler(api_key=""),
+        dispatcher=dispatcher,
+    )
+
+    result = await pipeline.resolve_action("act-1")
+
+    assert result["status"] == "resolved"
+    assert conn.actions["act-1"]["status"] == "resolved"
+    assert conn.resolution_bundles[0]["bundle"]["release_status"] == "projection_pending"
+
+    dispatcher.fail_public_projection = False
+    replayed = await pipeline.replay_projection("act-1")
+
+    assert replayed == {"status": "replayed", "action_id": "act-1"}
+    assert conn.actions["act-1"]["status"] == "resolved"
+    assert conn.resolution_bundles[0]["bundle"]["release_status"] == "released"
+    assert any(event[1] == "s2c_action_completed" for event in dispatcher.events)
 
 
 @pytest.mark.asyncio
@@ -226,6 +402,149 @@ async def test_pipeline_rejects_when_rule_handler_fails_without_partial_projecti
     assert conn.actions["act-1"]["result"]["reason"] == "resolution failed: handler failed"
     event_types = [event[1] for event in dispatcher.events]
     assert event_types == ["s2c_action_completed"]
+
+
+@pytest.mark.asyncio
+async def test_composite_action_cancels_its_second_stage_after_first_stage_failure():
+    conn = FakeConn()
+    conn.actions["act-1"]["params"] = json.dumps({
+        "composite_steps": [
+            {
+                "step_id": "step_1",
+                "summary": "先撬门",
+                "declared_intent": "先撬门",
+                "intent_type": "skill_check",
+                "params": {"expected_success": False},
+                "on_previous_failure": "cancel",
+            },
+            {
+                "step_id": "step_2",
+                "summary": "再进入房间",
+                "declared_intent": "再进入房间",
+                "intent_type": "move",
+                "params": {"expected_success": True},
+                "on_previous_failure": "cancel",
+            },
+        ],
+    })
+    executor = CompositeRuleExecutor()
+    pipeline = ResolutionPipeline(
+        conn=conn,
+        compiler=MechanicCompiler(api_key=""),
+        dispatcher=FakeDispatcher(),
+        rule_executor=executor,
+    )
+
+    result = await pipeline.resolve_action("act-1")
+
+    assert result["status"] == "resolved"
+    assert executor.calls == ["先撬门"]
+    phases = result["result"]["metadata"]["composite_action"]["phases"]
+    assert [phase["status"] for phase in phases] == ["failed", "canceled"]
+
+
+@pytest.mark.asyncio
+async def test_composite_action_can_continue_to_its_second_stage_after_failure():
+    conn = FakeConn()
+    conn.actions["act-1"]["params"] = json.dumps({
+        "composite_steps": [
+            {
+                "step_id": "step_1",
+                "summary": "先撬门",
+                "declared_intent": "先撬门",
+                "intent_type": "skill_check",
+                "params": {"expected_success": False},
+                "on_previous_failure": "cancel",
+            },
+            {
+                "step_id": "step_2",
+                "summary": "改从窗户进入",
+                "declared_intent": "改从窗户进入",
+                "intent_type": "move",
+                "params": {"expected_success": True},
+                "on_previous_failure": "continue",
+            },
+        ],
+    })
+    executor = CompositeRuleExecutor()
+    pipeline = ResolutionPipeline(
+        conn=conn,
+        compiler=MechanicCompiler(api_key=""),
+        dispatcher=FakeDispatcher(),
+        rule_executor=executor,
+    )
+
+    result = await pipeline.resolve_action("act-1")
+
+    assert result["status"] == "resolved"
+    assert executor.calls == ["先撬门", "改从窗户进入"]
+    phases = result["result"]["metadata"]["composite_action"]["phases"]
+    assert [phase["status"] for phase in phases] == ["failed", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_conditional_follow_up_executes_only_after_a_failed_first_step():
+    conn = FakeConn()
+    conn.actions["act-1"]["params"] = json.dumps({
+        "composite_steps": [
+            {
+                "step_id": "step_1",
+                "summary": "先试着撬门",
+                "declared_intent": "先试着撬门",
+                "intent_type": "skill_check",
+                "params": {"expected_success": False},
+                "on_previous_failure": "cancel",
+            },
+            {
+                "step_id": "step_2",
+                "summary": "如果撬不开就改从窗户进入",
+                "declared_intent": "改从窗户进入",
+                "intent_type": "move",
+                "params": {"expected_success": True},
+                "execution_condition": "previous_step_failure",
+                "on_previous_failure": "cancel",
+            },
+        ],
+    })
+    executor = CompositeRuleExecutor()
+    pipeline = ResolutionPipeline(
+        conn=conn,
+        compiler=MechanicCompiler(api_key=""),
+        dispatcher=FakeDispatcher(),
+        rule_executor=executor,
+    )
+
+    result = await pipeline.resolve_action("act-1")
+
+    assert result["status"] == "resolved"
+    assert executor.calls == ["先试着撬门", "改从窗户进入"]
+    phases = result["result"]["metadata"]["composite_action"]["phases"]
+    assert [phase["status"] for phase in phases] == ["failed", "completed"]
+
+
+def test_composite_steps_downgrade_legacy_choice_policy_to_cancel():
+    steps = ResolutionPipeline._composite_steps({
+        "composite_steps": [
+            {
+                "step_id": "step_1",
+                "summary": "先撬门",
+                "declared_intent": "先撬门",
+                "intent_type": "skill_check",
+                "params": {},
+                "on_previous_failure": "cancel",
+            },
+            {
+                "step_id": "step_2",
+                "summary": "再进入房间",
+                "declared_intent": "再进入房间",
+                "intent_type": "move",
+                "params": {},
+                "on_previous_failure": "ask",
+            },
+        ],
+    })
+
+    assert steps[1]["on_previous_failure"] == "cancel"
 
 
 @pytest.mark.asyncio

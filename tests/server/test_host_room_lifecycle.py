@@ -1,5 +1,7 @@
 """Tests for host room lifecycle: create → configure → start."""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from src.server.main import app
@@ -78,6 +80,32 @@ class TestHostCreateRoom:
         assert data["owner_account_id"] == "acc-host"
         assert data["scenario_id"] == "sc-life"
 
+    def test_create_room_binds_latest_ready_runtime_package_snapshot(self, client_with_data, test_db):
+        scenario_version_id = test_db.execute(
+            "SELECT published_version_id FROM scenarios WHERE scenario_id = 'sc-life'"
+        ).fetchone()["published_version_id"]
+        for package_id, version_number, synopsis in [
+            ("runtime-snapshot-v1", 1, "旧版运行包"),
+            ("runtime-snapshot-v2", 2, "新版运行包"),
+        ]:
+            test_db.execute(
+                "INSERT INTO runtime_package_versions "
+                "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, "
+                "input_checksum, runtime_package, created_by) "
+                "VALUES (%s, %s, %s, 'ready', 'sha', %s, 'test')",
+                (package_id, scenario_version_id, version_number, json.dumps({"world_book": {"synopsis": synopsis}})),
+            )
+        test_db.commit()
+
+        room = _create_room(client_with_data, _login(client_with_data, "hostlife"))
+
+        assert room["runtime_package_version_id"] == "runtime-snapshot-v2"
+        persisted = test_db.execute(
+            "SELECT runtime_package_version_id FROM rooms WHERE room_id = %s",
+            (room["room_id"],),
+        ).fetchone()
+        assert persisted["runtime_package_version_id"] == "runtime-snapshot-v2"
+
 
 class TestStartRoom:
     def _setup_room_with_player(self, client_with_data, test_db, ready=True):
@@ -138,6 +166,41 @@ class TestStartRoom:
         assert res.status_code == 200
         assert get_character_position(test_db, "ch-start", room_id) == "start"
         assert "start" in get_room_map_state(test_db, room_id)["explored_nodes"]
+
+    def test_start_room_initializes_first_runtime_scene(self, client_with_data, test_db):
+        room_id, owner_token = self._setup_room_with_player(client_with_data, test_db)
+        scenario_version_id = test_db.execute(
+            "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()["scenario_version_id"]
+        test_db.execute(
+            "INSERT INTO runtime_package_versions "
+            "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, input_checksum, runtime_package, created_by) "
+            "VALUES ('room-start-runtime', %s, 1, 'ready', 'sha', %s, 'test')",
+            (
+                scenario_version_id,
+                json.dumps({
+                    "semantic_scenes": [
+                        {"scene_id": "atrium", "order": 1},
+                        {"scene_id": "basement", "order": 2},
+                    ],
+                }),
+            ),
+        )
+        test_db.commit()
+
+        response = client_with_data.post(
+            f"/api/rooms/{room_id}/start",
+            headers={"X-Owner-Token": owner_token},
+        )
+
+        assert response.status_code == 200
+        scene = test_db.execute(
+            "SELECT current_scene, visited_scenes FROM room_scene_state WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()
+        assert scene["current_scene"] == "atrium"
+        assert scene["visited_scenes"] == ["atrium"]
 
     def test_start_room_empty_returns_409(self, client_with_data):
         """Empty room (no players) should not start."""

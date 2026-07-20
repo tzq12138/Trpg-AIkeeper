@@ -1,6 +1,8 @@
+import json
+
 import pytest
 
-from src.server.ai.contracts import KpResponse, NarrativePayload
+from src.server.ai.contracts import CombatRoundSuggestion, KpResponse, NarrativePayload
 from src.server.ai.gateway import AiGateway
 from src.server.ai.providers import BaseAiProvider
 from src.server.scenario.content_package import ContentPackage, ContentPart
@@ -40,6 +42,168 @@ class RecordingProvider(BaseAiProvider):
 
     async def health_check(self) -> bool:
         return True
+
+
+@pytest.mark.asyncio
+async def test_combat_round_planning_requires_a_dedicated_suggestion_contract():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "configured",
+        {
+            "clusters": [
+                {"actionIds": ["public-action"], "publicTitle": "Doorway exchange"}
+            ],
+            "dependencies": [
+                {"actionId": "public-action", "dependsOnActionIds": []}
+            ],
+        },
+    )
+    gateway._providers = {"configured": remote}
+    gateway._provider_order = ["configured"]
+
+    result = await gateway.resolve_combat_round(
+        {"public_actions": [{"action_id": "public-action"}]},
+        room_id="combat-room",
+    )
+
+    assert isinstance(result, CombatRoundSuggestion)
+    assert result.clusters[0].public_title == "Doorway exchange"
+    assert remote.calls[0][0] == "resolve_combat_round"
+
+
+@pytest.mark.asyncio
+async def test_combat_round_planning_rejects_generic_narrative_without_local_fallback():
+    gateway = AiGateway()
+    remote = RecordingProvider("configured", {"narrative": {"public": "Attack now"}})
+    local = RecordingProvider("local", {"clusters": [], "dependencies": []})
+    gateway._providers = {"configured": remote, "local": local}
+    gateway._provider_order = ["configured", "local"]
+
+    result = await gateway.resolve_combat_round(
+        {"public_actions": [{"action_id": "public-action"}]},
+        room_id="combat-room",
+    )
+
+    assert result is None
+    assert local.calls == []
+
+
+@pytest.mark.asyncio
+async def test_hypothesis_disproof_suggestion_only_returns_supplied_confirmed_fact_ids():
+    gateway = AiGateway()
+    remote = RecordingProvider("configured", {
+        "suggestedStatus": "possible_disproved",
+        "reason": "The confirmed fact conflicts.",
+        "factIds": ["fact-1", "invented-fact"],
+        "confidence": "medium",
+    })
+    gateway._providers = {"configured": remote}
+    gateway._provider_order = ["configured"]
+
+    result = await gateway.suggest_hypothesis_disproof(
+        {
+            "hypothesis": {"evidence_card_id": "hypothesis-1", "title": "A hypothesis"},
+            "confirmed_facts": [{"evidence_card_id": "fact-1", "title": "A confirmed fact"}],
+        },
+        room_id="room-hypothesis",
+    )
+
+    assert result == {
+        "suggestedStatus": "possible_disproved",
+        "reason": "The confirmed fact conflicts.",
+        "factIds": ["fact-1"],
+        "confidence": "medium",
+    }
+    assert remote.calls[0][0] == "suggest_hypothesis_disproof"
+
+
+@pytest.mark.asyncio
+async def test_scene_image_suggestion_uses_text_provider_and_requires_source_citations():
+    gateway = AiGateway()
+    provider = RecordingProvider("configured", {
+        "summary": "地下室需要一张场景图。",
+        "suggestions": [{"scene_id": "cellar"}],
+    })
+    gateway._providers = {"configured": provider}
+    gateway._provider_order = ["configured"]
+
+    result = await gateway.suggest_scene_images({
+        "scenes": [{"scene_id": "cellar", "description": "潮湿的地下室"}],
+        "source_parts": [{"source_part_id": "part-1", "text_content": "地下室石阶潮湿。"}],
+    })
+
+    assert result["suggestions"][0]["scene_id"] == "cellar"
+    context = provider.calls[0][1]
+    assert context["user_message"]
+    assert "citation" in context["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_scenario_image_suggestion_restricts_provider_to_given_targets():
+    gateway = AiGateway()
+    provider = RecordingProvider("configured", {
+        "summary": "图书管理员可补一张肖像。",
+        "suggestions": [{"target_type": "npc", "target_key": "librarian"}],
+    })
+    gateway._providers = {"configured": provider}
+    gateway._provider_order = ["configured"]
+
+    result = await gateway.suggest_scenario_images({
+        "targets": [{"target_type": "npc", "target_key": "librarian"}],
+        "source_parts": [{"source_part_id": "part-1", "text_content": "图书管理员神色疲惫。"}],
+    })
+
+    assert result["suggestions"][0]["target_key"] == "librarian"
+    context = provider.calls[0][1]
+    assert "target_type" in context["system_prompt"]
+    assert "librarian" in context["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_structure_scenario_requests_extended_import_timeout():
+    gateway = AiGateway()
+    remote = RecordingProvider("remote", {"scenes": [{"name": "港口"}]})
+    gateway._providers = {"remote": remote}
+    gateway._provider_order = ["remote"]
+
+    await gateway.structure_scenario("场景：港口。")
+
+    assert remote.calls[0][1]["timeout_seconds"] == 180
+
+
+@pytest.mark.asyncio
+async def test_runtime_contract_repair_disables_local_fallback():
+    gateway = AiGateway()
+    remote = RecordingProvider("remote", {"branches": [], "endings": []})
+    local = RecordingProvider("local", {"branches": [{"branch_id": "invented"}]})
+    gateway._providers = {"remote": remote, "local": local}
+    gateway._provider_order = ["remote", "local"]
+
+    result = await gateway.repair_runtime_contract(
+        {"canonical_text": "场景：港口。", "parts": []},
+        {"scenes": [{"scene_id": "harbor", "name": "港口"}]},
+    )
+
+    assert result == {"branches": [], "endings": []}
+    assert local.calls == []
+    context = remote.calls[0][1]
+    assert context["timeout_seconds"] == 180
+    assert "不得新增场景" in context["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_structure_scenario_skips_empty_worldbook_before_fallback():
+    gateway = AiGateway()
+    empty = RecordingProvider("configured", {"scenes": [], "endings": []})
+    backup = RecordingProvider("mcp", {"scenes": [{"name": "港口"}]})
+    gateway._providers = {"configured": empty, "mcp": backup}
+    gateway._provider_order = ["configured", "mcp"]
+
+    result = await gateway.structure_scenario("场景：港口。")
+
+    assert result == {"scenes": [{"name": "港口"}]}
+    assert len(empty.calls) == 1
+    assert len(backup.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -103,6 +267,720 @@ async def test_ephemeral_action_analysis_does_not_create_ai_call_log(test_db):
 
     after = test_db.execute("SELECT COUNT(*) AS count FROM ai_call_logs").fetchone()["count"]
     assert after == before
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_requires_structured_json_without_local_fallback():
+    gateway = AiGateway()
+    remote = RecordingProvider("remote", {"text": "not a director plan"})
+    local = RecordingProvider("local", {"interpreted_intent": "local story"})
+    gateway._providers = {"remote": remote, "local": local}
+    gateway._provider_order = ["remote", "local"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "declared_intent": "I open the door",
+            "actor_display_name": "Ada",
+            "room": {"state_version": 3},
+        },
+        room_id="room-director",
+    )
+
+    assert result is None
+    assert local.calls == []
+    assert remote.calls[0][0] == "analyze_director_action"
+    assert "JSON" in remote.calls[0][1]["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_rejects_incomplete_json_schema():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "interpreted_intent": "open the door",
+            "confidence": 0.8,
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "declared_intent": "I open the door",
+            "actor_display_name": "Ada",
+            "room": {"state_version": 3},
+        },
+        room_id="room-director",
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_accepts_core_provider_fields_with_safe_defaults():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "inspect the visible station",
+            "intent_type": "dialogue",
+            "confidence": 0.88,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 3,
+            "declared_intent": "I look around",
+            "actor_display_name": "Ada",
+            "local_analysis": {"draft_id": "draft-1", "visibility": "public"},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert result["action_id"] == "draft-1"
+    assert result["context_version"] == 3
+    assert result["state_patch"] == []
+    assert result["event_plan"] == []
+    assert result["semantic_progression"] == {
+        "targetNodeId": None,
+        "fromNodeId": None,
+        "citation": None,
+        "rationale": None,
+    }
+    assert result["analysis_source"] == "fallback_provider"
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_accepts_at_most_two_composite_steps():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "先撬锁，再进入房间",
+            "intent_type": "skill_check",
+            "confidence": 0.88,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+            "intent_contract": {
+                "target": "房门",
+                "method": "开锁",
+                "object": "门锁",
+                "constraints": ["保持安静"],
+                "resources": ["开锁工具"],
+                "conditions": ["门锁完好"],
+                "visibility": "public",
+                "ambiguities": [],
+            },
+            "action_steps": [
+                {
+                    "step_id": "pick-lock",
+                    "summary": "尝试撬开房门",
+                    "declared_intent": "我先尝试撬开房门。",
+                    "intent_type": "skill_check",
+                    "params": {"skillName": "Locksmith"},
+                },
+                {
+                    "step_id": "enter-room",
+                    "summary": "门开后进入房间",
+                    "declared_intent": "如果门打开，我就进入房间。",
+                    "intent_type": "move",
+                    "params": {"target": "room"},
+                    "execution_condition": "previous_step_success",
+                    "on_previous_failure": "cancel",
+                },
+            ],
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 3,
+            "declared_intent": "我先撬锁，成功后进入房间。",
+            "actor_display_name": "Ada",
+            "local_analysis": {"draft_id": "draft-1", "visibility": "public"},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert [step["step_id"] for step in result["action_steps"]] == [
+        "pick-lock",
+        "enter-room",
+    ]
+    assert result["action_steps"][1]["execution_condition"] == "previous_step_success"
+    assert result["intent_contract"]["target"] == "房门"
+    assert result["intent_contract"]["conditions"] == ["门锁完好"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_requests_a_primary_step_when_provider_returns_three():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "射击人影、掩护同伴并检查门锁",
+            "intent_type": "combat_action",
+            "confidence": 0.91,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+            "action_steps": [
+                {
+                    "step_id": "shoot",
+                    "summary": "朝人影射击",
+                    "declared_intent": "我朝人影射击。",
+                    "intent_type": "combat_action",
+                },
+                {
+                    "step_id": "cover",
+                    "summary": "掩护同伴撤退",
+                    "declared_intent": "我掩护同伴撤退。",
+                    "intent_type": "combat_action",
+                },
+                {
+                    "step_id": "inspect-lock",
+                    "summary": "检查门锁",
+                    "declared_intent": "我检查门锁。",
+                    "intent_type": "skill_check",
+                },
+            ],
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 3,
+            "declared_intent": "我射击人影、掩护同伴，再检查门锁。",
+            "actor_display_name": "Ada",
+            "local_analysis": {"draft_id": "draft-1", "visibility": "public"},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert result["action_steps"] == []
+    assert result["requires_player_clarification"] is True
+    assert len(result["clarification_options"]) == 3
+    assert "主要" in result["clarification_options"][0]["label"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_normalizes_observation_and_unsafe_state_patch():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "inspect the visible station",
+            "intent_type": "observation",
+            "state_patch": {"hp": 0},
+            "narration_identity": "Ada",
+            "confidence": 0.91,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 3,
+            "declared_intent": "I look around",
+            "actor_display_name": "Ada",
+            "local_analysis": {"draft_id": "draft-1", "visibility": "public"},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert result["intent_type"] == "dialogue"
+    assert result["state_patch"] == []
+    assert "narration_identity" not in result
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_falls_back_from_unknown_intent_and_empty_host_exception():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "interpreted_intent": "put the suitcase away",
+            "intent_type": "action",
+            "confidence": 0.95,
+            "requires_player_clarification": False,
+            "requires_host_exception": True,
+            "exception_reason": None,
+            "narration_mode": "descriptive",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "declared_intent": "I put my suitcase away and sit down",
+            "actor_display_name": "Ada",
+            "local_analysis": {"intent_type": "dialogue", "visibility": "public"},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert result["intent_type"] == "dialogue"
+    assert result["requires_host_exception"] is False
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_normalizes_redacted_provider_citations():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "interpreted_intent": "board the bus",
+            "intent_type": "move",
+            "confidence": 0.9,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "scene",
+            "citations": [
+                {
+                    "label": "redacted-label",
+                    "page": 51,
+                    "verified": True,
+                    "source_part_id": "part-51",
+                }
+            ],
+            "semantic_progression": {
+                "targetNodeId": "8",
+                "citation_label": "redacted-label",
+                "citation": {
+                    "label": "redacted-label",
+                    "page": 51,
+                    "verified": True,
+                    "source_part_id": "part-51",
+                },
+            },
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "declared_intent": "I board the bus",
+            "actor_display_name": "Ada",
+            "local_analysis": {"intent_type": "move", "visibility": "public"},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    citation = {
+        "source": None,
+        "source_part_id": "part-51",
+        "content_item_id": None,
+        "page_number": 51,
+        "location": None,
+    }
+    assert result["citations"] == [citation]
+    assert result["semantic_progression"] == {
+        "targetNodeId": "8",
+        "fromNodeId": None,
+        "citation": citation,
+        "rationale": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_marks_actual_provider_source():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "action_id": "action-1",
+            "context_version": 3,
+            "actor_display_name": "Ada",
+            "declared_intent": "I open the door",
+            "interpreted_intent": "open the door",
+            "intent_type": "move",
+            "preconditions": [],
+            "mechanic_plan": {"mechanic": "auto_success"},
+            "state_patch": [],
+            "event_plan": [],
+            "semantic_progression": {},
+            "npc_reactions": [],
+            "time_impact": {},
+            "visibility": "public",
+            "basis_refs": [],
+            "citations": [],
+            "confidence": 0.8,
+            "requires_player_clarification": False,
+            "clarification_options": [],
+            "requires_host_exception": False,
+            "exception_reason": None,
+            "narration_mode": "summarize",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "declared_intent": "I open the door",
+            "actor_display_name": "Ada",
+            "room": {"state_version": 3},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert result["analysis_source"] == "fallback_provider"
+
+
+@pytest.mark.asyncio
+async def test_narrate_action_scrubs_internal_ids_and_overwrites_provider_source():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "context_version": 4,
+            "director_plan_digest": "digest",
+            "narrative_text": "Ada checks the brass key on the oak desk.",
+            "environment_changes": ["The desk drawer is open."],
+            "interactable_objects": ["oak desk", "brass key"],
+            "open_question": "How do you inspect the brass key?",
+            "fact_refs": {
+                "narrative_text": ["fact:ada", "fact:brass-key", "fact:oak-desk"],
+                "environment_changes": ["fact:desk-drawer"],
+                "interactable_objects": ["fact:oak-desk", "fact:brass-key"],
+                "open_question": ["fact:brass-key"],
+            },
+            "redacted_citations": [{"source": "scene", "page_number": 1}],
+            "style_pack_version": "noir-v1",
+            "provider_source": "configured_provider",
+            "status": "completed",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.narrate_action(
+        {
+            "local_action_id": "action-secret",
+            "room_id": "room-secret",
+            "character_id": "char-secret",
+            "investigator_name": "Ada",
+            "allowed_facts": [{"fact_ref": "fact:ada", "text": "Ada"}],
+        },
+        room_id="room-secret",
+    )
+
+    provider_context = remote.calls[0][1]
+    serialized = json.dumps(provider_context, ensure_ascii=False)
+    assert "action-secret" not in serialized
+    assert "room-secret" not in serialized
+    assert "char-secret" not in serialized
+    assert result["action_id"] == "action-secret"
+    assert result["provider_source"] == "fallback_provider"
+
+
+@pytest.mark.asyncio
+async def test_narrate_action_repairs_only_empty_system_change_from_verified_context():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "context_version": 0,
+            "director_plan_digest": "untrusted-digest",
+            "narrative_text": "Ada steps into the coach and takes the window seat.",
+            "environment_changes": [],
+            "interactable_objects": ["coach window"],
+            "open_question": "What do you inspect from your seat?",
+            "fact_refs": {
+                "narrative_text": ["fact:scene"],
+                "environment_changes": [],
+                "interactable_objects": ["fact:scene"],
+                "open_question": ["fact:scene"],
+            },
+            "redacted_citations": [],
+            "style_pack_version": "noir-v1",
+            "state_patch": [{"field": "hp", "value": 0}],
+            "status": "completed",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+    context = {
+        "local_action_id": "action-safe",
+        "context_version": 4,
+        "director_plan_digest": "verified-digest",
+        "visible_state_changes": ["你已抵达新的可见场景。"],
+        "allowed_facts": [
+            {"fact_ref": "fact:visible-change:arrival", "text": "你已抵达新的可见场景。"},
+            {"fact_ref": "fact:scene", "text": "长途车车厢"},
+        ],
+    }
+
+    result = await gateway.narrate_action(context, action_id="action-safe")
+
+    assert result is not None
+    assert result["context_version"] == 4
+    assert result["director_plan_digest"] == "verified-digest"
+    assert result["environment_changes"] == ["你已抵达新的可见场景。"]
+    assert result["fact_refs"]["environment_changes"] == ["fact:visible-change:arrival"]
+    assert "state_patch" not in result
+
+
+@pytest.mark.asyncio
+async def test_narrate_action_normalizes_mimo_success_and_verified_fact_ref_list():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "configured:mimo",
+        {
+            "context_version": 0,
+            "director_plan_digest": "untrusted-digest",
+            "narrative_text": "Ada boards the coach and takes the window seat.",
+            "environment_changes": ["Ada reaches the visible coach interior."],
+            "interactable_objects": ["coach window"],
+            "open_question": "What do you inspect from your seat?",
+            "fact_refs": ["fact:scene", "fact:visible-change:arrival"],
+            "redacted_citations": [],
+            "style_pack_version": "noir-v1",
+            "status": "success",
+        },
+    )
+    gateway._providers = {"configured:mimo": remote}
+    gateway._provider_order = ["configured:mimo"]
+    context = {
+        "local_action_id": "action-mimo",
+        "context_version": 4,
+        "director_plan_digest": "verified-digest",
+        "allowed_facts": [
+            {"fact_ref": "fact:scene", "text": "长途车车厢"},
+            {
+                "fact_ref": "fact:visible-change:arrival",
+                "text": "Ada reaches the visible coach interior.",
+            },
+        ],
+    }
+
+    result = await gateway.narrate_action(context, action_id="action-mimo")
+
+    assert result is not None
+    assert result["status"] == "completed"
+    assert result["context_version"] == 4
+    assert result["director_plan_digest"] == "verified-digest"
+    assert set(result["fact_refs"]) == {
+        "narrative_text",
+        "environment_changes",
+        "interactable_objects",
+        "open_question",
+    }
+    assert all(
+        refs == ["fact:scene", "fact:visible-change:arrival"]
+        for refs in result["fact_refs"].values()
+    )
+
+
+@pytest.mark.asyncio
+async def test_narrate_action_repairs_empty_mimo_interactables_and_question_from_context():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "configured:mimo",
+        {
+            "narrative_text": "Ada enters the coach.",
+            "environment_changes": ["Ada reaches the visible coach interior."],
+            "interactable_objects": [],
+            "open_question": "",
+            "fact_refs": {
+                "narrative_text": ["fact:scene"],
+                "environment_changes": ["fact:visible-change:arrival"],
+                "interactable_objects": [],
+                "open_question": [],
+            },
+            "redacted_citations": [],
+            "style_pack_version": "noir-v1",
+            "status": "completed",
+        },
+    )
+    gateway._providers = {"configured:mimo": remote}
+    gateway._provider_order = ["configured:mimo"]
+    context = {
+        "local_action_id": "action-mimo-empty",
+        "context_version": 4,
+        "director_plan_digest": "verified-digest",
+        "interactable_objects": ["coach window"],
+        "allowed_facts": [
+            {"fact_ref": "fact:scene", "text": "长途车车厢"},
+            {
+                "fact_ref": "fact:visible-change:arrival",
+                "text": "Ada reaches the visible coach interior.",
+            },
+            {"fact_ref": "fact:interactable:1", "text": "coach window"},
+        ],
+    }
+
+    result = await gateway.narrate_action(context, action_id="action-mimo-empty")
+
+    assert result is not None
+    assert result["interactable_objects"] == ["coach window"]
+    assert result["open_question"] == "你想如何继续观察coach window？"
+    assert result["fact_refs"]["interactable_objects"] == ["fact:interactable:1"]
+    assert result["fact_refs"]["open_question"] == ["fact:interactable:1"]
+
+
+@pytest.mark.asyncio
+async def test_narrate_action_uses_visible_scene_when_mimo_has_no_interactables():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "configured:mimo",
+        {
+            "narrative_text": "Ada enters the coach.",
+            "environment_changes": ["Ada reaches the visible coach interior."],
+            "interactable_objects": [],
+            "open_question": "",
+            "fact_refs": {
+                "narrative_text": ["fact:scene"],
+                "environment_changes": ["fact:visible-change:arrival"],
+                "interactable_objects": [],
+                "open_question": [],
+            },
+            "redacted_citations": [],
+            "style_pack_version": "noir-v1",
+            "status": "completed",
+        },
+    )
+    gateway._providers = {"configured:mimo": remote}
+    gateway._provider_order = ["configured:mimo"]
+    context = {
+        "local_action_id": "action-mimo-scene",
+        "context_version": 4,
+        "director_plan_digest": "verified-digest",
+        "allowed_facts": [
+            {"fact_ref": "fact:scene", "text": "长途车车厢"},
+            {
+                "fact_ref": "fact:visible-change:arrival",
+                "text": "Ada reaches the visible coach interior.",
+            },
+        ],
+    }
+
+    result = await gateway.narrate_action(context, action_id="action-mimo-scene")
+
+    assert result is not None
+    assert result["interactable_objects"] == ["当前环境"]
+    assert result["open_question"] == "你想如何继续观察当前环境？"
+    assert result["fact_refs"]["interactable_objects"] == ["fact:scene"]
+    assert result["fact_refs"]["open_question"] == ["fact:scene"]
+
+
+@pytest.mark.asyncio
+async def test_narrate_action_repairs_missing_mimo_field_citations_from_verified_context():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "configured:mimo",
+        {
+            "narrative_text": "Ada continues the journey.",
+            "environment_changes": [],
+            "interactable_objects": [],
+            "open_question": "旅程的下一站是什么？",
+            "fact_refs": {},
+            "redacted_citations": [],
+            "style_pack_version": "noir-v1",
+            "status": "completed",
+        },
+    )
+    gateway._providers = {"configured:mimo": remote}
+    gateway._provider_order = ["configured:mimo"]
+    context = {
+        "local_action_id": "action-mimo-missing-citations",
+        "context_version": 4,
+        "director_plan_digest": "verified-digest",
+        "visible_state_changes": ["你已抵达新的可见场景。"],
+        "allowed_facts": [
+            {"fact_ref": "fact:scene", "text": "长途车车厢"},
+            {
+                "fact_ref": "fact:visible-change:arrival",
+                "text": "你已抵达新的可见场景。",
+            },
+        ],
+    }
+
+    result = await gateway.narrate_action(
+        context,
+        action_id="action-mimo-missing-citations",
+    )
+
+    assert result is not None
+    assert result["narrative_text"] == "你已抵达新的可见场景。"
+    assert result["environment_changes"] == ["你已抵达新的可见场景。"]
+    assert result["interactable_objects"] == ["当前环境"]
+    assert result["open_question"] == "你想如何继续观察当前环境？"
+    assert result["fact_refs"] == {
+        "narrative_text": ["fact:visible-change:arrival"],
+        "environment_changes": ["fact:visible-change:arrival"],
+        "interactable_objects": ["fact:scene"],
+        "open_question": ["fact:scene"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_narrate_action_falls_back_when_mcp_result_cannot_be_validated():
+    gateway = AiGateway()
+    invalid_mcp = RecordingProvider("mcp", {"unexpected": "shape"})
+    fallback = RecordingProvider(
+        "deepseek",
+        {
+            "narrative_text": "雨水沿着候车亭的玻璃缓缓滑落。",
+            "environment_changes": ["候车区仍然安静。"],
+            "interactable_objects": ["候车亭"],
+            "open_question": "你想先观察候车亭的哪个角落？",
+            "fact_refs": {
+                "narrative_text": ["fact:scene"],
+                "environment_changes": ["fact:scene"],
+                "interactable_objects": ["fact:scene"],
+                "open_question": ["fact:scene"],
+            },
+            "redacted_citations": [],
+            "style_pack_version": "noir-v1",
+            "status": "completed",
+        },
+    )
+    gateway._providers = {"mcp": invalid_mcp, "deepseek": fallback}
+    gateway._provider_order = ["mcp", "deepseek"]
+
+    result = await gateway.narrate_action(
+        {
+            "local_action_id": "action-narrator-fallback",
+            "context_version": 4,
+            "director_plan_digest": "观察候车亭。",
+            "allowed_facts": [{"fact_ref": "fact:scene", "text": "雨夜的候车亭"}],
+        },
+        action_id="action-narrator-fallback",
+    )
+
+    assert result is not None
+    assert result["narrative_text"] == "雨水沿着候车亭的玻璃缓缓滑落。"
+    assert len(invalid_mcp.calls) == 1
+    assert len(fallback.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -190,6 +1068,34 @@ async def test_structure_content_package_text_uses_existing_chain():
     assert "rawText" in mcp.calls[0][1]
     assert mcp.calls[0][1]["rawText"] == "第一幕：调查开始"
     assert local.calls == []
+
+
+@pytest.mark.asyncio
+async def test_structure_content_package_requests_cited_scene_branches():
+    gateway = AiGateway()
+    provider = RecordingProvider(
+        "configured",
+        {"scenes": [{"name": "A"}]},
+        capabilities={"text"},
+    )
+    gateway._providers = {"configured": provider}
+    gateway._provider_order = ["configured"]
+    package = ContentPackage(
+        source_filename="scenario.txt",
+        source_sha256="sha",
+        mime_type="text/plain",
+        parts=[ContentPart(ordinal=1, kind="text", text="第一幕：调查开始")],
+        canonical_text="第一幕：调查开始",
+        requires_multimodal=False,
+    )
+
+    await gateway.structure_content_package(package)
+
+    prompt = provider.calls[0][1]["system_prompt"]
+    assert "branches" in prompt
+    assert "scene_id" in prompt
+    assert "from_scene_id" in prompt
+    assert "citation" in prompt
 
 
 @pytest.mark.asyncio

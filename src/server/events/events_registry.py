@@ -65,6 +65,10 @@ ALL_EVENTS: dict[str, EventDef] = {
         "s2c_action_completed", EventDomain.ACTION, "player",
         "行动已结算，含结果 payload",
     ),
+    "s2c_action_deferred": EventDef(
+        "s2c_action_deferred", EventDomain.ACTION, "player",
+        "行动已进入 Host 异常队列，等待人工复核",
+    ),
     "s2c_action_review_requested": EventDef(
         "s2c_action_review_requested", EventDomain.ACTION, "host",
         "玩家提交行动申诉，进入 Host 异常队列",
@@ -81,6 +85,10 @@ ALL_EVENTS: dict[str, EventDef] = {
         "s2c_action_choice_requested", EventDomain.ACTION, "player",
         "Host 异常裁决要求玩家补充选择",
     ),
+    "s2c_safety_request": EventDef(
+        "s2c_safety_request", EventDomain.ACTION, "host",
+        "玩家安全边界请求（事件不含敏感正文）",
+    ),
     "s2c_tactical_prompt": EventDef(
         "s2c_tactical_prompt", EventDomain.ACTION, "player",
         "战术行动提示（AI 生成的快捷按钮）",
@@ -95,6 +103,27 @@ ALL_EVENTS: dict[str, EventDef] = {
     ),
 
     # ── State sync ──
+    "s2c_ai_stage_changed": EventDef(
+        "s2c_ai_stage_changed", EventDomain.ACTION, "player",
+        "Director / AI adjudication stage changed.",
+    ),
+    "s2c_player_clarification_required": EventDef(
+        "s2c_player_clarification_required", EventDomain.ACTION, "player",
+        "Director requires the player to clarify the intended action.",
+    ),
+    "s2c_director_plan_validated": EventDef(
+        "s2c_director_plan_validated", EventDomain.ACTION, "host",
+        "Director plan was validated and persisted for deterministic resolution.",
+    ),
+    "s2c_narration_completed": EventDef(
+        "s2c_narration_completed", EventDomain.NARRATIVE, "party",
+        "Narrator completed human-readable narration after deterministic resolution.",
+    ),
+    "s2c_ai_recovery_required": EventDef(
+        "s2c_ai_recovery_required", EventDomain.ACTION, "player",
+        "AI adjudication could not safely proceed and requires host recovery.",
+    ),
+
     "s2c_state_patch": EventDef(
         "s2c_state_patch", EventDomain.STATE, "player",
         "状态增量更新（JSON Patch 格式）",
@@ -136,6 +165,10 @@ ALL_EVENTS: dict[str, EventDef] = {
     "s2c_turn_resolved": EventDef(
         "s2c_turn_resolved", EventDomain.ACTION, "party",
         "回合结算完成——广播给全队",
+    ),
+    "s2c_combat_round_locked": EventDef(
+        "s2c_combat_round_locked", EventDomain.ACTION, "party",
+        "战斗轮声明已锁定，进入统一结算",
     ),
 
     # ── Clue ──
@@ -196,6 +229,10 @@ ALL_EVENTS: dict[str, EventDef] = {
     "s2c_encounter_updated": EventDef(
         "s2c_encounter_updated", EventDomain.STATE, "party",
         "遭遇状态更新（回合变化、参与者 HP/距离变化）",
+    ),
+    "s2c_solo_combat_reaction_requested": EventDef(
+        "s2c_solo_combat_reaction_requested", EventDomain.ACTION, "player",
+        "单人剧本敌方攻击要求玩家选择闪避或反击",
     ),
     "s2c_encounter_resolved": EventDef(
         "s2c_encounter_resolved", EventDomain.STATE, "party",

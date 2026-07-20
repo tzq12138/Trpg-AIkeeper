@@ -68,10 +68,30 @@ def build_hud(conn, room_id: str):
             status_tags=list(status_tags or []),
         ))
 
+    objective_rows = conn.execute(
+        "SELECT text FROM objectives WHERE room_id = %s AND type = 'team' AND status = 'active' "
+        "ORDER BY assigned_at ASC LIMIT 3",
+        (room_id,),
+    ).fetchall()
+    scene_time = "时间未定"
+    scene_row = conn.execute(
+        "SELECT scene_variables FROM room_scene_state WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    if scene_row:
+        scene_variables = _parse_xlsx(scene_row.get("scene_variables"))
+        for key in ("public_time", "scene_time", "time"):
+            value = scene_variables.get(key) if isinstance(scene_variables, dict) else None
+            if isinstance(value, str) and value.strip():
+                scene_time = value.strip()
+                break
+
     return HostHUD(
         room_id=room_id,
         players=players,
         scene_image_url=None,
         engine_state="idle",
         queue_status={"normal": 0, "urgent": 0},
+        team_objectives=[str(row["text"]) for row in objective_rows if row.get("text")],
+        scene_time=scene_time,
     )

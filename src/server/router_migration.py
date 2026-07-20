@@ -1,6 +1,15 @@
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 
+from .global_reset import (
+    GlobalResetError,
+    collect_reset_counts,
+    create_global_reset_backup,
+    download_global_reset_backup,
+    execute_global_reset,
+    verify_global_reset_backup,
+)
+
 from .room_migration import (
     RoomMigrationError,
     build_room_package,
@@ -10,6 +19,68 @@ from .room_migration import (
 
 
 router = APIRouter(prefix="/api")
+
+
+@router.get("/admin/reset/preflight")
+async def global_reset_preflight(request: Request):
+    _require_admin_bearer(request)
+    return {"counts": collect_reset_counts(request.app.state.db)}
+
+
+@router.post("/admin/reset/backups", status_code=201)
+async def create_reset_backup(request: Request):
+    _require_admin_bearer(request)
+    try:
+        backup = create_global_reset_backup(request.app.state.db)
+    except (GlobalResetError, RoomMigrationError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return _backup_payload(backup)
+
+
+@router.get("/admin/reset/backups/{backup_id}/download")
+async def download_reset_backup(request: Request, backup_id: str):
+    _require_admin_bearer(request)
+    try:
+        backup, raw = download_global_reset_backup(backup_id)
+    except GlobalResetError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return Response(
+        content=raw,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="aikeeper-global-reset-{backup.backup_id}.zip"',
+            "X-AIKP-Backup-SHA256": backup.sha256,
+        },
+    )
+
+
+@router.get("/admin/reset/backups/{backup_id}/verify")
+async def verify_reset_backup(request: Request, backup_id: str):
+    _require_admin_bearer(request)
+    try:
+        backup = verify_global_reset_backup(backup_id)
+    except GlobalResetError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"valid": True, **_backup_payload(backup)}
+
+
+@router.post("/admin/reset/execute")
+async def execute_reset(request: Request):
+    _require_admin_bearer(request)
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(400, "需要 JSON 确认信息") from exc
+    if not isinstance(payload, dict) or payload.get("confirm_download") is not True:
+        raise HTTPException(400, "需要 confirm_download: true 才能清空房间数据")
+    backup_id = payload.get("backup_id")
+    if not isinstance(backup_id, str):
+        raise HTTPException(400, "需要有效的 backup_id")
+    try:
+        deleted = execute_global_reset(request.app.state.db, backup_id)
+    except GlobalResetError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"deleted": deleted, "preserved": ["accounts", "scenarios", "content_library"]}
 
 
 @router.get("/exports/rooms/{room_id}/package")
@@ -74,6 +145,23 @@ def _require_host_or_admin_bearer(request: Request) -> dict:
     if account.get("role") not in {"host", "admin"}:
         raise HTTPException(403, "仅 Host 或管理员可以导入")
     return account
+
+
+def _require_admin_bearer(request: Request) -> dict:
+    account = _require_host_or_admin_bearer(request)
+    if account.get("role") != "admin":
+        raise HTTPException(403, "仅管理员可以执行全局重置")
+    return account
+
+
+def _backup_payload(backup) -> dict:
+    return {
+        "backup_id": backup.backup_id,
+        "sha256": backup.sha256,
+        "created_at": backup.created_at,
+        "counts": backup.counts,
+        "downloaded_at": backup.downloaded_at,
+    }
 
 
 def _require_room_owner_or_admin(request: Request, room_id: str) -> dict:

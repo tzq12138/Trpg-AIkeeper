@@ -1,5 +1,9 @@
 import { useState, useEffect } from 'react';
 import { getSlotValue, setSlotValue } from '../shared/identity';
+import { canExecuteGlobalReset } from '../shared/reset-workflow';
+import { getScenarioPublishGate } from '../shared/scenario-publish-gate';
+import { SCENARIO_WORKFLOW_STEPS, type ScenarioWorkflowStep } from '../shared/scenario-workflow';
+import { ScenarioReviewWorkbench } from '../components/ScenarioReviewWorkbench';
 
 function api(path: string, opts?: RequestInit) {
   const token = getSlotValue('account_token') || '';
@@ -14,7 +18,7 @@ function api(path: string, opts?: RequestInit) {
   });
 }
 
-type AdminTab = 'overview' | 'rooms' | 'scenarios' | 'apiProviders' | 'characters' | 'accounts';
+type AdminTab = 'overview' | 'rooms' | 'scenarios' | 'systemTools' | 'characters' | 'accounts';
 
 export type AiProviderConfig = {
   provider_config_id: string;
@@ -48,6 +52,7 @@ type ScenarioSummary = {
   publish_status?: string;
   latest_import_job_id?: string;
   latest_import_job_status?: string;
+  latest_import_job_retryable?: boolean;
 };
 
 type ScenarioVersion = {
@@ -80,7 +85,7 @@ export const ADMIN_TABS: Array<{ key: AdminTab; label: string; eyebrow: string }
   { key: 'overview', label: '概览', eyebrow: 'OVERVIEW' },
   { key: 'rooms', label: '房间', eyebrow: 'ROOMS' },
   { key: 'scenarios', label: '剧本', eyebrow: 'SCENARIOS' },
-  { key: 'apiProviders', label: 'API配置', eyebrow: 'AI API' },
+  { key: 'systemTools', label: '系统工具', eyebrow: 'TOOLS' },
   { key: 'characters', label: '角色', eyebrow: 'CHARS' },
   { key: 'accounts', label: '账号', eyebrow: 'ACCOUNTS' },
 ];
@@ -175,13 +180,35 @@ export function recoverScenarioImportResult(
 ): Record<string, any> | null {
   if (
     scenario.import_status !== 'awaiting_provider'
+    && !scenario.latest_import_job_retryable
     || !scenario.latest_import_job_id
   ) return null;
   return normalizeScenarioImportResult({
     scenario_id: scenario.scenario_id,
     status: scenario.latest_import_job_status || scenario.import_status,
     job_id: scenario.latest_import_job_id,
+    retryable: scenario.latest_import_job_retryable === true,
   });
+}
+
+export function chooseScenarioImportResult(
+  current: Record<string, any> | null,
+  recovery: Record<string, any> | null,
+  selectedScenarioId: string,
+): Record<string, any> | null {
+  if (!recovery) {
+    if (
+      current?.scenario_id === selectedScenarioId
+      && (current.scenario_version_id || current.status === 'draft_ready')
+    ) return current;
+    return null;
+  }
+  if (
+    current
+    && current.scenario_id === recovery.scenario_id
+    && (current.scenario_version_id || current.status === 'draft_ready')
+  ) return current;
+  return recovery;
 }
 
 function sanitizeCitationText(value: unknown) {
@@ -265,6 +292,7 @@ export function ScenarioVersionInspector({
   const qualityLevel = typeof versionDetail.quality_report?.level === 'string'
     ? versionDetail.quality_report.level
     : 'unknown';
+  const publishGate = getScenarioPublishGate(qualityLevel);
   const soloAdventure = prepPackage.solo_adventure || {};
 
   return (
@@ -377,7 +405,15 @@ export function ScenarioVersionInspector({
         </div>
       </div>
 
-      {(versionDetail.status === 'draft' || versionDetail.status === 'draft_review') && (
+      {(versionDetail.status === 'draft' || versionDetail.status === 'draft_review') && publishGate.blocked && (
+        <div className="bh-panel" style={{ padding: 12, borderColor: 'var(--bh-red)' }}>
+          <span className="bh-eyebrow">PUBLISH BLOCKED</span>
+          <strong>存在阻塞质量问题</strong>
+          <p style={{ marginTop: 8 }}>请先修复质量报告中的错误、重新编译并复核。管理员不能绕过此门禁。</p>
+        </div>
+      )}
+
+      {(versionDetail.status === 'draft' || versionDetail.status === 'draft_review') && !publishGate.blocked && (
         <div className="bh-panel" style={{ padding: 12, borderColor: 'var(--bh-yellow)' }}>
           <span className="bh-eyebrow">PUBLISH</span>
           <strong>确认后发布</strong>
@@ -418,7 +454,8 @@ export function ScenarioImportStatusCard({
   if (!importResult) return null;
 
   const status = getScenarioStatusMeta(importResult.status);
-  const canRetry = importResult.status === 'awaiting_provider' && !!importResult.job_id;
+  const canRetry = !!importResult.job_id
+    && (importResult.status === 'awaiting_provider' || importResult.retryable === true);
 
   return (
     <div className="bh-muted-box" style={{ marginTop: 8 }}>
@@ -490,7 +527,7 @@ export default function AdminDashboard() {
         {tab === 'overview' && <OverviewPanel />}
         {tab === 'rooms' && <RoomsPanel />}
         {tab === 'scenarios' && <ScenariosPanel />}
-        {tab === 'apiProviders' && <AiProviderPanel />}
+        {tab === 'systemTools' && <SystemToolsPanel />}
         {tab === 'characters' && <CharactersPanel />}
         {tab === 'accounts' && <AccountsPanel />}
       </div>
@@ -925,7 +962,7 @@ export function AiProviderPanel({
             </label>
             <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 700 }}>
               <input type="checkbox" checked={draft.supportsImage} onChange={(event) => updateDraft('supportsImage', event.target.checked)} />
-              支持图片
+              支持图片理解与生成预览
             </label>
           </div>
 
@@ -952,6 +989,184 @@ export function AiProviderPanel({
   );
 }
 
+type ResetBackup = {
+  backup_id: string;
+  sha256: string;
+  counts: Record<string, number>;
+  downloaded_at?: string | null;
+};
+
+function SystemToolsPanel() {
+  return (
+    <section>
+      <span className="bh-eyebrow">SYSTEM TOOLS</span>
+      <h2 className="bh-panel-title">系统工具</h2>
+      <p className="bh-panel-desc">配置 AI、验收 RAG、执行浏览器检查，并在严格备份门禁下重置测试数据。</p>
+      <div className="bh-grid-links" style={{ margin: '16px 0' }}>
+        <a className="bh-link-card" href="/rag-test">
+          <span className="bh-eyebrow">RAG</span>
+          <strong>规则检索验收台</strong>
+          <span>使用黄金问题核对命中片段与 citation。</span>
+        </a>
+        <a className="bh-link-card" href="/admin/acceptance">
+          <span className="bh-eyebrow">BROWSER</span>
+          <strong>体验验收中心</strong>
+          <span>从测试入口按角色完成手工验证。</span>
+        </a>
+      </div>
+      <div className="bh-panel" style={{ marginBottom: 16 }}>
+        <AiProviderPanel />
+      </div>
+      <ResetDataPanel />
+    </section>
+  );
+}
+
+function ResetDataPanel() {
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [backup, setBackup] = useState<ResetBackup | null>(null);
+  const [downloaded, setDownloaded] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [busy, setBusy] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  const loadPreflight = async () => {
+    const data = await api('/api/admin/reset/preflight') as { counts: Record<string, number> };
+    setCounts(data.counts || {});
+  };
+
+  useEffect(() => {
+    loadPreflight().catch(() => setError('无法读取重置预检。'));
+  }, []);
+
+  const createBackup = async () => {
+    setBusy('backup');
+    setError('');
+    setMessage('');
+    try {
+      const created = await api('/api/admin/reset/backups', { method: 'POST' }) as ResetBackup;
+      setBackup(created);
+      setDownloaded(false);
+      setVerified(false);
+      setAcknowledged(false);
+      setMessage('备份已生成。请下载、校验后再解锁重置。');
+    } catch (caught) {
+      setError(coerceErrorMessage(caught));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const downloadBackup = async () => {
+    if (!backup) return;
+    setBusy('download');
+    setError('');
+    try {
+      const token = getSlotValue('account_token') || '';
+      const response = await fetch(`/api/admin/reset/backups/${encodeURIComponent(backup.backup_id)}/download`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error('备份下载失败');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `aikeeper-global-reset-${backup.backup_id}.zip`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setDownloaded(true);
+      setMessage('备份已下载；下一步校验 SHA-256 和压缩包结构。');
+    } catch (caught) {
+      setError(coerceErrorMessage(caught));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const verifyBackup = async () => {
+    if (!backup) return;
+    setBusy('verify');
+    setError('');
+    try {
+      const result = await api(`/api/admin/reset/backups/${encodeURIComponent(backup.backup_id)}/verify`) as { valid?: boolean } & ResetBackup;
+      setVerified(result.valid === true);
+      setBackup(result);
+      setMessage(result.valid ? 'SHA-256、清单和房间包均已校验。' : '备份未通过校验。');
+    } catch (caught) {
+      setVerified(false);
+      setError(coerceErrorMessage(caught));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const executeReset = async () => {
+    if (!backup || !canExecuteGlobalReset({ backupId: backup.backup_id, downloaded, verified, acknowledged })) return;
+    if (!window.confirm('将删除所有房间、角色与战役记录，账号和内容库会保留。确认继续？')) return;
+    setBusy('reset');
+    setError('');
+    try {
+      const result = await api('/api/admin/reset/execute', {
+        method: 'POST',
+        body: JSON.stringify({ backup_id: backup.backup_id, confirm_download: true }),
+      }) as { deleted: Record<string, number> };
+      await loadPreflight();
+      setMessage(`重置已完成：清理 ${Object.values(result.deleted || {}).reduce((total, value) => total + value, 0)} 条房间相关记录。`);
+    } catch (caught) {
+      setError(coerceErrorMessage(caught));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const canReset = backup && canExecuteGlobalReset({
+    backupId: backup.backup_id,
+    downloaded,
+    verified,
+    acknowledged,
+  });
+
+  return (
+    <section className="bh-panel" aria-label="全局数据重置">
+      <span className="bh-eyebrow">RESET GATE</span>
+      <h3 className="bh-panel-title">重置房间与战役数据</h3>
+      <p className="bh-panel-desc">保留账号、已发布剧本与内容素材；删除全部房间、角色、行动和战役记录。服务器备份保留 90 天。</p>
+      <div className="bh-muted-box">
+        预检：{Object.entries(counts).map(([key, value]) => `${key} ${value}`).join(' · ') || '加载中'}
+      </div>
+      <div className="bh-action-row bh-action-row--responsive" style={{ marginTop: 12 }}>
+        <button className="bh-button bh-button--yellow" type="button" onClick={() => void createBackup()} disabled={Boolean(busy)}>
+          {busy === 'backup' ? '生成中...' : '1. 生成备份'}
+        </button>
+        <button className="bh-button" type="button" onClick={() => void downloadBackup()} disabled={!backup || Boolean(busy)}>
+          {busy === 'download' ? '下载中...' : '2. 下载备份'}
+        </button>
+        <button className="bh-button" type="button" onClick={() => void verifyBackup()} disabled={!backup || !downloaded || Boolean(busy)}>
+          {busy === 'verify' ? '校验中...' : '3. 校验备份'}
+        </button>
+      </div>
+      {backup && (
+        <div className="bh-muted-box" style={{ marginTop: 12 }}>
+          <div>备份：{backup.backup_id}</div>
+          <div>SHA-256：{backup.sha256}</div>
+          <div>下载：{downloaded ? '已确认' : '未确认'} · 校验：{verified ? '通过' : '未通过'}</div>
+        </div>
+      )}
+      <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 12, fontSize: 13 }}>
+        <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} disabled={!verified} />
+        我已下载并验证备份，理解重置后旧房间运行状态不再兼容。
+      </label>
+      <button className="bh-button bh-button--red" type="button" style={{ marginTop: 12 }} onClick={() => void executeReset()} disabled={!canReset || Boolean(busy)}>
+        {busy === 'reset' ? '清理中...' : '4. 执行不可逆重置'}
+      </button>
+      {message && <div className="bh-muted-box" style={{ color: 'var(--bh-blue)', marginTop: 12 }}>{message}</div>}
+      {error && <div className="bh-muted-box" style={{ color: 'var(--bh-red)', marginTop: 12 }}>{error}</div>}
+    </section>
+  );
+}
+
 // ── Scenarios ──
 
 type ScenarioMapDraft = {
@@ -966,11 +1181,67 @@ type ScenarioMapDraft = {
   paths: Array<Record<string, unknown>>;
 };
 
-export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
+export type ScenarioAssetSummary = {
+  asset_id: string;
+  original_name: string;
+  mime_type: string;
+};
+
+export function buildScenarioMapGenerateEndpoint(
+  scenarioId: string,
+  scenarioVersionId: string,
+): string {
+  const base = `/api/admin/scenarios/${encodeURIComponent(scenarioId)}/map/generate`;
+  return scenarioVersionId
+    ? `${base}?scenario_version_id=${encodeURIComponent(scenarioVersionId)}`
+    : base;
+}
+
+export function MapBaseAssetControl({
+  assets,
+  disabled,
+  selectedAssetId,
+  onChange,
+}: {
+  assets: ScenarioAssetSummary[];
+  disabled: boolean;
+  selectedAssetId: string;
+  onChange: (assetId: string) => void;
+}) {
+  const imageAssets = assets.filter((asset) => asset.mime_type.startsWith('image/'));
+  return (
+    <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+      地图底图
+      <select
+        aria-label="地图底图"
+        className="bh-input"
+        disabled={disabled}
+        value={selectedAssetId}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">不使用图片底图</option>
+        {imageAssets.map((asset) => (
+          <option key={asset.asset_id} value={asset.asset_id}>{asset.original_name}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+export function MapDraftReviewPanel({
+  scenarioId,
+  scenarioVersionId = '',
+  assets = [],
+}: {
+  scenarioId: string;
+  scenarioVersionId?: string;
+  assets?: ScenarioAssetSummary[];
+}) {
   const [mapDraft, setMapDraft] = useState<ScenarioMapDraft | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [previewUrl, setPreviewUrl] = useState('');
 
   const loadDraft = async () => {
     if (!scenarioId) return;
@@ -989,11 +1260,37 @@ export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
     loadDraft();
   }, [scenarioId]);
 
+  const selectedAssetId = String(mapDraft?.baseAsset?.assetId || '');
+  useEffect(() => {
+    if (!selectedAssetId) {
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return '';
+      });
+      return;
+    }
+    let active = true;
+    fetch(
+      `/api/admin/scenarios/${encodeURIComponent(scenarioId)}/assets/${encodeURIComponent(selectedAssetId)}/content`,
+      { headers: getAuthHeader() },
+    )
+      .then((response) => response.ok ? response.blob() : null)
+      .then((blob) => {
+        if (!blob || !active) return;
+        setPreviewUrl((current) => {
+          if (current) URL.revokeObjectURL(current);
+          return URL.createObjectURL(blob);
+        });
+      })
+      .catch(() => setPreviewUrl(''));
+    return () => { active = false; };
+  }, [scenarioId, selectedAssetId]);
+
   const generate = async () => {
     setSaving(true);
     setError('');
     try {
-      setMapDraft(await api(`/api/admin/scenarios/${encodeURIComponent(scenarioId)}/map/generate`, { method: 'POST' }));
+      setMapDraft(await api(buildScenarioMapGenerateEndpoint(scenarioId, scenarioVersionId), { method: 'POST' }));
     } catch (generationError) {
       setError(sanitizeAdminScenarioError(generationError));
     } finally {
@@ -1018,6 +1315,32 @@ export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
         }),
       });
       setMapDraft({ ...mapDraft, mapType });
+    } catch (saveError) {
+      setError(sanitizeAdminScenarioError(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveBaseAsset = async (assetId: string) => {
+    if (!mapDraft || mapDraft.status !== 'draft') return;
+    const mapType = assetId && mapDraft.mapType === 'graph' ? 'hybrid' : mapDraft.mapType;
+    const baseAsset = assetId ? { assetId } : {};
+    setSaving(true);
+    setError('');
+    try {
+      await api(`/api/admin/scenarios/${encodeURIComponent(scenarioId)}/map`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          mapType,
+          baseAsset,
+          nodes: mapDraft.nodes,
+          edges: mapDraft.edges,
+          regions: mapDraft.regions,
+          paths: mapDraft.paths,
+        }),
+      });
+      setMapDraft({ ...mapDraft, mapType, baseAsset });
     } catch (saveError) {
       setError(sanitizeAdminScenarioError(saveError));
     } finally {
@@ -1064,6 +1387,19 @@ export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
               <option value="hybrid">混合地图</option>
             </select>
           </label>
+          <MapBaseAssetControl
+            assets={assets}
+            disabled={saving || mapDraft.status !== 'draft'}
+            selectedAssetId={selectedAssetId}
+            onChange={(assetId) => void saveBaseAsset(assetId)}
+          />
+          {previewUrl && (
+            <img
+              alt="地图底图预览"
+              src={previewUrl}
+              style={{ width: '100%', maxHeight: 320, objectFit: 'contain', border: '3px solid var(--bh-black)' }}
+            />
+          )}
         </div>
       ) : (
         <div className="bh-muted-box" style={{ marginTop: 8 }}>尚未生成地图草稿；可先发布文字场景模式。</div>
@@ -1077,6 +1413,229 @@ export function MapDraftReviewPanel({ scenarioId }: { scenarioId: string }) {
         </button>
       </div>
       {error && <div className="bh-muted-box" style={{ color: 'var(--bh-red)', marginTop: 8 }}>{error}</div>}
+    </div>
+  );
+}
+
+export type AssetBindingTarget = {
+  target_type: 'map' | 'branch_node' | 'scene' | 'item' | 'clue' | 'npc' | 'ending';
+  target_key: string;
+  label: string;
+};
+
+export type ScenarioAssetBinding = {
+  binding_id: string;
+  asset_id: string;
+  original_name: string;
+  target_type: AssetBindingTarget['target_type'];
+  target_key: string;
+  confidence: number;
+  evidence: Record<string, unknown>;
+  generated_by: string;
+  status: 'draft' | 'confirmed' | 'rejected' | 'stale';
+};
+
+function AdminAssetThumbnail({
+  scenarioId,
+  assetId,
+  alt,
+}: {
+  scenarioId: string;
+  assetId: string;
+  alt: string;
+}) {
+  const [src, setSrc] = useState('');
+  useEffect(() => {
+    let active = true;
+    fetch(
+      `/api/admin/scenarios/${encodeURIComponent(scenarioId)}/assets/${encodeURIComponent(assetId)}/content`,
+      { headers: getAuthHeader() },
+    )
+      .then((response) => response.ok ? response.blob() : null)
+      .then((blob) => {
+        if (blob && active) setSrc(URL.createObjectURL(blob));
+      })
+      .catch(() => setSrc(''));
+    return () => {
+      active = false;
+      if (src) URL.revokeObjectURL(src);
+    };
+  }, [scenarioId, assetId]);
+  return (
+    <div aria-label={alt} data-asset-id={assetId}>
+      {src && <img alt={alt} src={src} style={{ width: '100%', maxHeight: 180, objectFit: 'contain' }} />}
+    </div>
+  );
+}
+
+export function AssetBindingReviewCard({
+  binding,
+  disabled,
+  scenarioId,
+  targets,
+  onReview,
+}: {
+  binding: ScenarioAssetBinding;
+  disabled: boolean;
+  scenarioId: string;
+  targets: AssetBindingTarget[];
+  onReview: (
+    bindingId: string,
+    targetType: AssetBindingTarget['target_type'],
+    targetKey: string,
+    status: ScenarioAssetBinding['status'],
+  ) => void;
+}) {
+  const [selection, setSelection] = useState(
+    JSON.stringify([binding.target_type, binding.target_key]),
+  );
+  const [targetType, targetKey] = JSON.parse(selection) as [AssetBindingTarget['target_type'], string];
+  return (
+    <article className="bh-muted-box" style={{ display: 'grid', gap: 8 }}>
+      <AdminAssetThumbnail
+        scenarioId={scenarioId}
+        assetId={binding.asset_id}
+        alt={`${binding.original_name} 缩略图`}
+      />
+      <strong>{binding.original_name}</strong>
+      <span>
+        {binding.status} · {binding.generated_by} · {Math.round(binding.confidence * 100)}%
+      </span>
+      <select
+        aria-label={`${binding.original_name} 绑定目标`}
+        className="bh-input"
+        disabled={disabled || binding.status === 'confirmed'}
+        value={selection}
+        onChange={(event) => setSelection(event.target.value)}
+      >
+        <option value={JSON.stringify(['scene', ''])}>未匹配</option>
+        {targets.map((target) => (
+          <option
+            key={`${target.target_type}:${target.target_key}`}
+            value={JSON.stringify([target.target_type, target.target_key])}
+          >
+            {target.label} · {target.target_type}
+          </option>
+        ))}
+      </select>
+      <code>{JSON.stringify(binding.evidence)}</code>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          className="bh-button bh-button--yellow"
+          disabled={disabled || !targetKey || binding.status === 'confirmed'}
+          onClick={() => onReview(binding.binding_id, targetType, targetKey, 'confirmed')}
+          type="button"
+        >
+          确认绑定
+        </button>
+        <button
+          className="bh-button"
+          disabled={disabled || binding.status === 'rejected'}
+          onClick={() => onReview(binding.binding_id, targetType, targetKey, 'rejected')}
+          type="button"
+        >
+          拒绝
+        </button>
+      </div>
+    </article>
+  );
+}
+
+export function ScenarioAssetBindingsPanel({
+  scenarioId,
+  scenarioVersionId,
+}: {
+  scenarioId: string;
+  scenarioVersionId: string;
+}) {
+  const [bindings, setBindings] = useState<ScenarioAssetBinding[]>([]);
+  const [targets, setTargets] = useState<AssetBindingTarget[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const endpoint = scenarioId && scenarioVersionId
+    ? `/api/admin/scenarios/${encodeURIComponent(scenarioId)}/versions/${encodeURIComponent(scenarioVersionId)}/asset-bindings`
+    : '';
+  const applyPayload = (payload: { bindings?: ScenarioAssetBinding[]; targets?: AssetBindingTarget[] }) => {
+    setBindings(payload.bindings || []);
+    setTargets(payload.targets || []);
+  };
+  const load = async () => {
+    if (!endpoint) {
+      applyPayload({});
+      return;
+    }
+    try {
+      applyPayload(await api(endpoint));
+    } catch {
+      applyPayload({});
+    }
+  };
+  useEffect(() => { void load(); }, [endpoint]);
+
+  const generate = async () => {
+    if (!endpoint) return;
+    setSaving(true);
+    setError('');
+    try {
+      applyPayload(await api(`${endpoint}/generate`, { method: 'POST' }));
+    } catch (generationError) {
+      setError(sanitizeAdminScenarioError(generationError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const review = async (
+    bindingId: string,
+    targetType: AssetBindingTarget['target_type'],
+    targetKey: string,
+    status: ScenarioAssetBinding['status'],
+  ) => {
+    if (!endpoint) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api(`${endpoint}/${encodeURIComponent(bindingId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ target_type: targetType, target_key: targetKey, status }),
+      });
+      await load();
+    } catch (reviewError) {
+      setError(sanitizeAdminScenarioError(reviewError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bh-panel" style={{ padding: 12, marginTop: 12 }}>
+      <span className="bh-eyebrow">ASSET BINDINGS</span>
+      <strong>图片素材绑定</strong>
+      <p style={{ fontSize: 12, color: 'var(--bh-dim)' }}>
+        只有确认后的图片才会出现在对应条目、线索、物品或结局中。
+      </p>
+      <button
+        className="bh-button bh-button--yellow"
+        disabled={saving || !endpoint}
+        onClick={() => void generate()}
+        type="button"
+      >
+        {saving ? '匹配中...' : '自动匹配素材'}
+      </button>
+      <div className="bh-preset-list" style={{ marginTop: 8 }}>
+        {bindings.map((binding) => (
+          <AssetBindingReviewCard
+            key={binding.binding_id}
+            binding={binding}
+            disabled={saving}
+            scenarioId={scenarioId}
+            targets={targets}
+            onReview={review}
+          />
+        ))}
+      </div>
+      {error && <div className="bh-muted-box" style={{ color: 'var(--bh-red)' }}>{error}</div>}
     </div>
   );
 }
@@ -1106,6 +1665,7 @@ export function ScenariosPanel() {
   const [importError, setImportError] = useState('');
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState('');
+  const [workflowStep, setWorkflowStep] = useState<ScenarioWorkflowStep>('import');
 
   const loadScenarios = async () => {
     const list = await api('/api/admin/scenarios');
@@ -1172,6 +1732,11 @@ export function ScenariosPanel() {
 
   const selectScenario = async (sid: string, preferredVersionId?: string) => {
     setSelectedId(sid);
+    const selectedScenario = scenarios.find((scenario) => scenario.scenario_id === sid);
+    const recovery = selectedScenario ? recoverScenarioImportResult(selectedScenario) : null;
+    if (recovery) {
+      setImportResult((current) => chooseScenarioImportResult(current, recovery, sid));
+    } else setImportResult((current) => chooseScenarioImportResult(current, null, sid));
     loadAssets(sid);
     await loadVersions(sid, preferredVersionId);
   };
@@ -1301,7 +1866,20 @@ export function ScenariosPanel() {
         <button className="bh-button" onClick={() => { loadScenarios().then((list) => { if (!selectedId && list[0]) selectScenario(list[0].scenario_id); }); }}>刷新</button>
       </div>
 
-      <div className="bh-panel" style={{ marginTop: 12, padding: 12 }}>
+      <div className="bh-source-toggle" style={{ marginTop: 12 }} aria-label="剧本导入工作流">
+        {SCENARIO_WORKFLOW_STEPS.map((step) => (
+          <button
+            key={step.key}
+            type="button"
+            className={`bh-button ${workflowStep === step.key ? 'bh-button--yellow' : ''}`}
+            onClick={() => setWorkflowStep(step.key)}
+          >
+            {step.label}
+          </button>
+        ))}
+      </div>
+
+      {workflowStep === 'import' && <div className="bh-panel" style={{ marginTop: 12, padding: 12 }}>
         <span className="bh-eyebrow">IMPORT</span>
         <strong>多模态剧本导入</strong>
         <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
@@ -1344,9 +1922,9 @@ export function ScenariosPanel() {
           retryError={retryError}
           onRetry={retryImportRecognition}
         />
-      </div>
+      </div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: selectedId ? '1fr 1fr' : '1fr', gap: 16, marginTop: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: workflowStep !== 'import' && selectedId ? '1fr 1fr' : '1fr', gap: 16, marginTop: 16 }}>
         <div className="bh-preset-list">
           {scenarios.length === 0 ? (
             <div className="bh-muted-box" style={{ padding: 24, textAlign: 'center' }}>
@@ -1371,7 +1949,7 @@ export function ScenariosPanel() {
           )}
         </div>
 
-        {selectedId && (
+        {selectedId && workflowStep !== 'import' && (
           <div className="bh-preview-box">
             <span className="bh-eyebrow">{selectedScenarioStatus.eyebrow}</span>
             <h3>{selectedScenario?.title || selectedId}</h3>
@@ -1413,7 +1991,17 @@ export function ScenariosPanel() {
               {publishSuccess && <div className="bh-muted-box" style={{ color: 'var(--bh-blue)', marginTop: 8 }}>{publishSuccess}</div>}
             </div>
 
-            <div style={{ marginTop: 12 }}>
+            {workflowStep === 'review' && <div style={{ marginTop: 12 }}>
+              {selectedVersionId ? (
+                <ScenarioReviewWorkbench
+                  scenarioId={selectedId}
+                  scenarioVersionId={selectedVersionId}
+                  onVersionChanged={(nextVersionId) => { void loadVersions(selectedId, nextVersionId); }}
+                />
+              ) : <div className="bh-muted-box">请选择一个剧本版本开始审核。</div>}
+            </div>}
+
+            {workflowStep === 'publish' && <div style={{ marginTop: 12 }}>
               {loadingPrep ? (
                 <div className="bh-muted-box">正在加载质量报告与 AI 备团包...</div>
               ) : (
@@ -1428,17 +2016,25 @@ export function ScenariosPanel() {
                   onPublish={publishVersion}
                 />
               )}
-            </div>
+            </div>}
 
-            <MapDraftReviewPanel scenarioId={selectedId} />
+            {workflowStep === 'assets' && <MapDraftReviewPanel
+              scenarioId={selectedId}
+              scenarioVersionId={selectedVersionId}
+              assets={assets}
+            />}
+            {workflowStep === 'assets' && <ScenarioAssetBindingsPanel
+              scenarioId={selectedId}
+              scenarioVersionId={selectedVersionId}
+            />}
 
-            <label className="bh-upload-box" style={{ marginTop: 12 }}>
+            {workflowStep === 'assets' && <label className="bh-upload-box" style={{ marginTop: 12 }}>
               <span>{uploading ? '上传中...' : '上传素材文件'}</span>
               <input type="file" accept="image/*,audio/*,video/*,.pdf" multiple disabled={uploading}
                 onChange={(e) => { if (e.target.files) { for (let i = 0; i < e.target.files.length; i++) uploadAsset(selectedId, e.target.files[i]); } e.target.value = ''; }} />
-            </label>
+            </label>}
 
-            <div className="bh-preset-list" style={{ marginTop: 12 }}>
+            {workflowStep === 'assets' && <div className="bh-preset-list" style={{ marginTop: 12 }}>
               {assets.length === 0 && <div className="bh-muted-box">暂无素材</div>}
               {assets.map((a: any) => (
                 <div key={a.asset_id} className="bh-skill-row" style={{ padding: '8px' }}>
@@ -1448,7 +2044,7 @@ export function ScenariosPanel() {
                     onClick={() => deleteAsset(selectedId, a.asset_id)}>删除</button>
                 </div>
               ))}
-            </div>
+            </div>}
           </div>
         )}
       </div>

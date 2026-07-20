@@ -1,12 +1,16 @@
+import asyncio
 import json
 import logging
 from fastapi import WebSocket
+from ..events.event_log import EventLog
 from ..models import EngineEvent
 
 logger = logging.getLogger(__name__)
+WS_SEND_TIMEOUT_SECONDS = 1.0
 
 FULL_SNAPSHOT_THRESHOLD = 100
 NONTERMINAL_ACTION_STATUSES = (
+    "armed",
     "queued",
     "batched",
     "resolving",
@@ -23,7 +27,7 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, room_id: str, connection_id: str):
         await websocket.accept()
-        self._connections.setdefault(room_id, {})[connection_id] = websocket
+        self.register_accepted(websocket, room_id, connection_id)
         logger.info("WS connect: room=%s conn=%s total_rooms=%s",
                     room_id, connection_id, len(self._connections))
 
@@ -32,29 +36,65 @@ class ConnectionManager:
         old = self._connections.setdefault(room_id, {}).get(connection_id)
         if old is not None and old is not websocket:
             try:
-                old.close(code=1000, reason="replaced")
+                asyncio.get_running_loop().create_task(
+                    old.close(code=1000, reason="replaced")
+                )
             except Exception:
                 pass
         self._connections.setdefault(room_id, {})[connection_id] = websocket
 
-    def disconnect(self, room_id: str, connection_id: str):
+    def disconnect(
+        self,
+        room_id: str,
+        connection_id: str,
+        websocket: WebSocket | None = None,
+    ):
+        current = self._connections.get(room_id, {}).get(connection_id)
+        if websocket is not None and current is not websocket:
+            return
         if room_id in self._connections:
             self._connections[room_id].pop(connection_id, None)
         logger.info("WS disconnect: room=%s conn=%s", room_id, connection_id)
 
+    def is_connected(self, room_id: str, connection_id: str) -> bool:
+        return connection_id in self._connections.get(room_id, {})
+
     async def send_event(self, room_id: str, connection_id: str, event: EngineEvent):
         ws = self._connections.get(room_id, {}).get(connection_id)
         if ws:
-            await ws.send_text(event.model_dump_json(by_alias=True))
+            sent = await self._send_text(ws, event.model_dump_json(by_alias=True))
+            if not sent:
+                self.disconnect(room_id, connection_id, websocket=ws)
 
     async def broadcast_to_room(self, room_id: str, event: EngineEvent):
-        for conn_id, ws in self._connections.get(room_id, {}).items():
-            if event.audience == "party":
-                await ws.send_text(event.model_dump_json(by_alias=True))
-            elif event.audience == "host" and conn_id == "host":
-                await ws.send_text(event.model_dump_json(by_alias=True))
-            elif event.audience == "player" and conn_id.startswith("player:"):
-                await ws.send_text(event.model_dump_json(by_alias=True))
+        targets = []
+        for conn_id, ws in list(self._connections.get(room_id, {}).items()):
+            if (
+                event.audience == "party"
+                or (event.audience == "host" and conn_id == "host")
+                or (event.audience == "player" and conn_id.startswith("player:"))
+            ):
+                targets.append((conn_id, ws))
+        if not targets:
+            return
+        payload = event.model_dump_json(by_alias=True)
+        results = await asyncio.gather(
+            *(self._send_text(ws, payload) for _, ws in targets)
+        )
+        for (connection_id, socket), sent in zip(targets, results):
+            if not sent:
+                self.disconnect(room_id, connection_id, websocket=socket)
+
+    @staticmethod
+    async def _send_text(ws: WebSocket, payload: str) -> bool:
+        try:
+            await asyncio.wait_for(
+                ws.send_text(payload),
+                timeout=WS_SEND_TIMEOUT_SECONDS,
+            )
+            return True
+        except Exception:
+            return False
 
     def update_last_sequence(self, room_id: str, connection_id: str, sequence: int):
         self._last_sequence.setdefault(room_id, {})[connection_id] = sequence
@@ -79,19 +119,26 @@ class ConnectionManager:
         if missed > FULL_SNAPSHOT_THRESHOLD or last_sequence == 0:
             return {"needs_snapshot": True, "reason": "too_many_missed"}
 
-        rows = conn.execute(
-            "SELECT sequence, event_type, audience, payload, issued_at FROM events "
-            "WHERE room_id = %s AND sequence > %s ORDER BY sequence ASC",
-            (room_id, last_sequence),
-        ).fetchall()
-
         pending = conn.execute(
             "SELECT action_id, intent_type, declared_intent, status, result, created_at "
             "FROM actions WHERE room_id = %s AND character_id = %s AND status = ANY(%s)",
             (room_id, character_id, list(NONTERMINAL_ACTION_STATUSES)),
         ).fetchall()
 
-        events = [dict(r) for r in rows]
+        events = [
+            {
+                "sequence": event.sequence,
+                "event_type": event.event_type,
+                "audience": event.audience,
+                "payload": event.payload,
+                "issued_at": event.issued_at,
+            }
+            for event in EventLog(conn).get_events_for_player(
+                room_id,
+                character_id,
+                since_sequence=last_sequence,
+            )
+        ]
         pending_actions = [dict(r) for r in pending]
 
         return {

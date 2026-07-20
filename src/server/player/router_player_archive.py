@@ -5,12 +5,95 @@ from typing import Literal
 router = APIRouter(prefix="/api")
 
 ARCHIVE_EVENT_TYPES = {
+    "narrative": ["s2c_public_observation"],
     "clues": ["s2c_private_notice", "s2c_public_observation"],
     "actions": ["s2c_action_queued", "s2c_action_batched", "s2c_action_completed"],
     "skill_checks": ["s2c_action_completed"],
+    "citations": [],
     "state_changes": ["s2c_state_patch", "s2c_full_snapshot", "s2c_engine_state"],
     "messages": ["s2c_team_message"],
 }
+
+
+def _json_object(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _released_bundle_entries(conn, room_id: str, character_id: str, archive_type: str):
+    if archive_type not in {"all", "narrative", "actions", "skill_checks", "citations"}:
+        return [], set()
+    rows = conn.execute(
+        """
+        SELECT bundle.action_id, bundle.character_id, bundle.canonical_result,
+               bundle.rule_explanation, bundle.actor_projection, bundle.stage_projection,
+               bundle.host_console,
+               bundle.created_at, bundle.released_at, action.intent_type, action.declared_intent
+        FROM resolution_bundles AS bundle
+        JOIN actions AS action ON action.action_id = bundle.action_id
+        WHERE bundle.room_id = %s AND bundle.release_status = 'released'
+        ORDER BY COALESCE(bundle.released_at, bundle.created_at), bundle.action_id
+        """,
+        (room_id,),
+    ).fetchall()
+    entries = []
+    released_action_ids = set()
+    for row in rows:
+        row = dict(row)
+        stage_projection = _json_object(row.get("stage_projection"))
+        narration = stage_projection.get("narrativeText")
+        if not isinstance(narration, str) or not narration.strip():
+            continue
+        owns_action = row["character_id"] == character_id
+        rule_explanation = _json_object(row.get("rule_explanation"))
+        if archive_type == "actions" and not owns_action:
+            continue
+        if archive_type == "skill_checks" and (
+            not owns_action or row.get("intent_type") != "skill_check"
+        ):
+            continue
+        if archive_type == "citations" and (
+            not owns_action or not isinstance(rule_explanation.get("citations"), list)
+        ):
+            continue
+        released_action_ids.add(row["action_id"])
+        data = {
+            "kind": "resolution_bundle",
+            "actionId": row["action_id"],
+            "text": narration,
+            "spoilerStatus": stage_projection.get("spoilerStatus", "none"),
+        }
+        if owns_action:
+            actor_projection = _json_object(row.get("actor_projection"))
+            canonical_result = _json_object(row.get("canonical_result"))
+            host_console = _json_object(row.get("host_console"))
+            data["intent"] = row.get("declared_intent") or ""
+            if isinstance(actor_projection.get("result"), dict):
+                data["result"] = actor_projection["result"]
+            citations = rule_explanation.get("citations")
+            if isinstance(citations, list):
+                data["citations"] = citations
+            state_version = canonical_result.get("stateVersion")
+            if isinstance(state_version, int):
+                data["stateVersion"] = state_version
+            transaction_id = host_console.get("transactionId")
+            if isinstance(transaction_id, str) and transaction_id:
+                data["transactionId"] = transaction_id
+        entries.append({
+            "sequence": f"bundle:{row['action_id']}",
+            "type": "resolution_bundle",
+            "timestamp": row.get("released_at") or row.get("created_at"),
+            "data": data,
+            "is_public": True,
+        })
+    return entries, released_action_ids
 
 
 def _get_character(conn, token: str):
@@ -22,7 +105,7 @@ def _get_character(conn, token: str):
 @router.get("/player/archive")
 async def player_archive(
     request: Request,
-    type: Literal["clues", "actions", "skill_checks", "state_changes", "messages", "all"] = "all",
+    type: Literal["narrative", "clues", "actions", "skill_checks", "citations", "state_changes", "messages", "all"] = "all",
     keyword: str = Query(default=""),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
@@ -46,20 +129,24 @@ async def player_archive(
     else:
         allowed_types = set(ARCHIVE_EVENT_TYPES.get(type, []))
 
-    if not allowed_types:
+    if not allowed_types and type != "citations":
         return {"entries": [], "total": 0}
 
-    placeholders = ",".join("%s" for _ in allowed_types)
-    params: list = [room_id, *allowed_types]
+    rows = []
+    if allowed_types:
+        placeholders = ",".join("%s" for _ in allowed_types)
+        params: list = [room_id, *allowed_types]
+        rows = conn.execute(
+            f"SELECT sequence, event_type, audience, payload, issued_at FROM events "
+            f"WHERE room_id = %s AND event_type IN ({placeholders}) "
+            f"ORDER BY sequence ASC",
+            params,
+        ).fetchall()
 
-    rows = conn.execute(
-        f"SELECT sequence, event_type, audience, payload, issued_at FROM events "
-        f"WHERE room_id = %s AND event_type IN ({placeholders}) "
-        f"ORDER BY sequence ASC",
-        params,
-    ).fetchall()
-
-    entries = []
+    bundle_entries, released_action_ids = _released_bundle_entries(
+        conn, room_id, character_id, type
+    )
+    entries = list(bundle_entries)
     for r in rows:
         payload = r["payload"]
         if isinstance(payload, str):
@@ -68,16 +155,17 @@ async def player_archive(
             except (json.JSONDecodeError, TypeError):
                 payload = {}
 
+        if (
+            r["event_type"] == "s2c_public_observation"
+            and payload.get("actionId") in released_action_ids
+        ):
+            continue
+
         is_public = r["audience"] in ("party", "system")
 
         if not is_public:
             owner_char_id = payload.get("characterId", "")
             if owner_char_id and owner_char_id != character_id:
-                continue
-
-        if keyword:
-            payload_str = str(payload).lower()
-            if keyword.lower() not in payload_str:
                 continue
 
         entries.append({
@@ -88,6 +176,14 @@ async def player_archive(
             "is_public": is_public,
         })
 
+    if keyword:
+        keyword_lower = keyword.lower()
+        entries = [
+            entry for entry in entries
+            if keyword_lower in json.dumps(entry["data"], ensure_ascii=False).lower()
+        ]
+
+    entries.sort(key=lambda entry: (str(entry.get("timestamp") or ""), str(entry["sequence"])))
     total = len(entries)
     paginated = entries[offset : offset + limit]
 

@@ -198,10 +198,10 @@ class KpMcpProvider(BaseAiProvider):
 
         if task_type == "structure_scenario" and "contentPackage" in context:
             arguments = {"contentPackage": context["contentPackage"]}
+        elif task_type in {"analyze_director_action", "narrate_action"}:
+            arguments = {"context": context.get("arguments", context)}
         else:
             arguments = context.get("arguments", context)
-        if task_type == "generate_narrative":
-            arguments = {"context": arguments}
         try:
             for attempt in range(2):
                 async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers) as client:
@@ -267,13 +267,9 @@ class KpMcpProvider(BaseAiProvider):
 
 def _task_to_tool(task_type: str) -> str | None:
     mapping = {
-        "resolve_turn": "kp_resolve_turn",
-        "generate_narrative": "kp_generate_narrative",
-        "resolve_sanity": "kp_resolve_sanity",
-        "resolve_combat_round": "kp_resolve_combat_round",
         "structure_scenario": "kp_structure_scenario",
-        "query_rules": "kp_query_rules",
-        "query_knowledge": "kp_query_knowledge",
+        "analyze_director_action": "kp_analyze_director_action",
+        "narrate_action": "kp_narrate_action",
         "health_check": "kp_health_check",
     }
     return mapping.get(task_type)
@@ -357,7 +353,7 @@ class ConfiguredOpenAIProvider(BaseAiProvider):
             }
             endpoint, payload = self._request_payload(system_prompt, user_content)
             async with httpx.AsyncClient(
-                timeout=self.timeout,
+                timeout=self._request_timeout(task_type, context),
                 follow_redirects=False,
             ) as client:
                 response = await client.post(endpoint, headers=headers, json=payload)
@@ -370,7 +366,7 @@ class ConfiguredOpenAIProvider(BaseAiProvider):
                 )
             response.raise_for_status()
             parsed = _parse_configured_response(response.json(), self.protocol)
-            return parsed or None
+            return _unwrap_runtime_json_envelope(task_type, parsed) or None
         except Exception as exc:
             logger.warning(
                 "Configured provider failed task=%s provider=%s error=%s",
@@ -379,6 +375,59 @@ class ConfiguredOpenAIProvider(BaseAiProvider):
                 type(exc).__name__,
             )
             return None
+
+    async def generate_image(self, *, prompt: str, size: str) -> dict | None:
+        """Generate a preview image through the active OpenAI-compatible provider.
+
+        Only base64 data is accepted so the server never follows a provider-returned URL.
+        """
+        if not self.api_key or "image" not in self.capabilities:
+            return None
+        try:
+            assert_api_target_safe(self.api_base_url)
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=False,
+            ) as client:
+                response = await client.post(
+                    f"{self.api_base_url}/images/generations",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "size": size,
+                        "response_format": "b64_json",
+                    },
+                )
+            response.raise_for_status()
+            data = response.json().get("data") or []
+            first = data[0] if data and isinstance(data[0], dict) else {}
+            encoded = str(first.get("b64_json") or "").strip()
+            if not encoded:
+                return None
+            return {
+                "data_url": f"data:image/png;base64,{encoded}",
+                "mime_type": "image/png",
+            }
+        except Exception as exc:
+            logger.warning(
+                "Configured image provider failed provider=%s error=%s",
+                self.provider_config_id,
+                type(exc).__name__,
+            )
+            return None
+
+    def _request_timeout(self, task_type: str, context: dict) -> int:
+        if task_type != "structure_scenario":
+            return self.timeout
+        try:
+            requested = int(context.get("timeout_seconds", self.timeout))
+        except (TypeError, ValueError):
+            return self.timeout
+        return max(self.timeout, min(requested, 900))
 
     async def test_connection(self) -> dict:
         started = time.monotonic()
@@ -557,6 +606,20 @@ def _parse_configured_response(data: dict, protocol: str) -> dict:
         return parsed if isinstance(parsed, dict) else {"result": parsed}
     except json.JSONDecodeError:
         return {"narrative": {"public": text}, "keeperNotes": ""}
+
+
+def _unwrap_runtime_json_envelope(task_type: str, value: dict) -> dict:
+    if task_type not in {"analyze_director_action", "narrate_action", "resolve_combat_round"}:
+        return value
+    narrative = value.get("narrative") if isinstance(value, dict) else None
+    public = narrative.get("public") if isinstance(narrative, dict) else None
+    if not isinstance(public, str):
+        return value
+    try:
+        unwrapped = json.loads(public)
+    except json.JSONDecodeError:
+        return value
+    return unwrapped if isinstance(unwrapped, dict) else value
 
 
 def _provider_test_error_code(status_code: int, probe_kind: str) -> str:

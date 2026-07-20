@@ -1,3 +1,5 @@
+import json
+
 import openpyxl
 from tests.server.conftest import setup_auth_test_data, create_room
 
@@ -138,6 +140,77 @@ def test_join_with_preset_locks_that_preset_for_room(client, test_db, tmp_path):
     )
 
     assert duplicate.status_code == 409
+
+
+def test_join_with_scenario_template_creates_initial_inventory(client, test_db):
+    room_id = _room_id(client, test_db)
+    test_db.execute(
+        "INSERT INTO character_templates "
+        "(template_id, scenario_id, name, occupation, attributes, skills, backstory) "
+        "VALUES ('yhdx-reporter', 'sc-test', '查尔斯·钱伯斯', '记者', %s, %s, %s)",
+        (
+            json.dumps({"con": 50, "pow": 50, "siz": 40, "luck": 50}),
+            json.dumps({"侦查": 65, "图书馆使用": 70}),
+            json.dumps({
+                "inventory": [
+                    {"name": "旅行箱", "description": "装着前往阿卡姆的行李。"},
+                    {"name": "记者证", "description": "证明记者身份的证件。"},
+                ]
+            }, ensure_ascii=False),
+        ),
+    )
+    test_db.commit()
+
+    response = client.post(
+        f"/api/player/rooms/{room_id}/join-with-character",
+        data={"player_name": "田文", "template_id": "yhdx-reporter"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["character"]["hp"] == 9
+    assert response.json()["character"]["max_hp"] == 9
+    assert response.json()["character"]["attributes"] == {
+        "con": 50,
+        "pow": 50,
+        "siz": 40,
+        "luck": 50,
+    }
+    rows = test_db.execute(
+        "SELECT name, description, quantity, source FROM inventory "
+        "WHERE character_id = %s ORDER BY acquired_at, name",
+        (response.json()["character_id"],),
+    ).fetchall()
+    assert [row["name"] for row in rows] == ["旅行箱", "记者证"]
+    assert all(row["quantity"] == 1 and row["source"] == "scenario_template" for row in rows)
+
+
+def test_scenario_templates_endpoint_returns_public_template_fields(client, test_db):
+    _room_id(client, test_db)
+    test_db.execute(
+        "INSERT INTO character_templates "
+        "(template_id, scenario_id, name, occupation, background, age, gender, attributes, skills, backstory) "
+        "VALUES ('public-template', 'sc-test', '艾达', '记者', '公开背景', 29, '女', %s, %s, %s)",
+        (
+            json.dumps({"con": 55, "pow": 60, "luck": 45}),
+            json.dumps({"侦查": 65}),
+            json.dumps({"inventory": [{"name": "隐藏物品"}], "secret": "不得返回"}),
+        ),
+    )
+    test_db.commit()
+
+    response = client.get("/api/scenarios/sc-test/templates")
+
+    assert response.status_code == 200
+    assert response.json() == [{
+        "template_id": "public-template",
+        "name": "艾达",
+        "occupation": "记者",
+        "background": "公开背景",
+        "age": 29,
+        "gender": "女",
+        "attributes": {"con": 55, "pow": 60, "luck": 45},
+        "skills": {"侦查": 65},
+    }]
 
 
 def test_join_with_multiple_sources_rejected(client, test_db, tmp_path):

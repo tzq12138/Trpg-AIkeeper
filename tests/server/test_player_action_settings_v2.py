@@ -64,6 +64,8 @@ def test_player_settings_require_token_and_fall_back_to_room(client, test_db):
         "room_id": room["room_id"],
         "character_id": player["character_id"],
         "draft_analysis_enabled": False,
+        "absent_policy": "idle",
+        "speech_routing": "party_message",
     }
 
 
@@ -90,6 +92,8 @@ def test_patch_player_settings_upserts_boolean_override(client, test_db):
         "room_id": room["room_id"],
         "character_id": player["character_id"],
         "draft_analysis_enabled": False,
+        "absent_policy": "idle",
+        "speech_routing": "party_message",
     }
     row = test_db.execute(
         "SELECT room_id, character_id, draft_analysis_enabled "
@@ -101,6 +105,26 @@ def test_patch_player_settings_upserts_boolean_override(client, test_db):
         "character_id": player["character_id"],
         "draft_analysis_enabled": False,
     }
+
+
+def test_player_can_save_a_documented_absence_preset(client, test_db):
+    room = _setup_room(client, test_db)
+    player = _join_room(client, room["room_id"])
+
+    response = client.patch(
+        "/api/player/settings",
+        headers={"X-Room-Token": player["player_token"]},
+        json={"absent_policy": "maintain_existing"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["absent_policy"] == "maintain_existing"
+    row = test_db.execute(
+        "SELECT absent_policy FROM room_player_settings "
+        "WHERE room_id = %s AND character_id = %s",
+        (room["room_id"], player["character_id"]),
+    ).fetchone()
+    assert row["absent_policy"] == "maintain_existing"
 
 
 @pytest.mark.parametrize(
@@ -186,6 +210,8 @@ def test_host_action_settings_apply_fixed_presets(client, test_db, preset):
         "preset": preset,
         "timing": PRESET_TIMINGS[preset],
         "draft_analysis_enabled": True,
+        "speech_routing": "party_message",
+        "host_autonomy_policy": "host_required",
     }
     stored = test_db.execute(
         "SELECT action_pacing_preset, action_timing FROM rooms WHERE room_id = %s",
@@ -222,7 +248,52 @@ def test_host_action_settings_apply_custom_timing_and_room_draft_toggle(
         "preset": "custom",
         "timing": timing,
         "draft_analysis_enabled": False,
+        "speech_routing": "party_message",
+        "host_autonomy_policy": "host_required",
     }
+
+
+def test_host_can_route_speech_to_npc_dialogue_and_players_can_read_it(client, test_db):
+    room = _setup_room(client, test_db)
+    player = _join_room(client, room["room_id"])
+
+    response = client.patch(
+        f"/api/rooms/{room['room_id']}/action-settings",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"speech_routing": "npc_dialogue"},
+    )
+    player_settings = client.get(
+        "/api/player/settings",
+        headers={"X-Room-Token": player["player_token"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["speech_routing"] == "npc_dialogue"
+    assert player_settings.status_code == 200
+    assert player_settings.json()["speech_routing"] == "npc_dialogue"
+    stored = test_db.execute(
+        "SELECT speech_routing FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert stored["speech_routing"] == "npc_dialogue"
+
+
+def test_host_can_delegate_safe_actions_while_planned_offline(client, test_db):
+    room = _setup_room(client, test_db)
+
+    response = client.patch(
+        f"/api/rooms/{room['room_id']}/action-settings",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"host_autonomy_policy": "delegated"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["host_autonomy_policy"] == "delegated"
+    stored = test_db.execute(
+        "SELECT host_autonomy_policy FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert stored["host_autonomy_policy"] == "delegated"
 
 
 @pytest.mark.parametrize(

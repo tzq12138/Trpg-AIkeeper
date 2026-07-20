@@ -50,6 +50,33 @@ class _RecordingClient:
 
 
 @pytest.mark.asyncio
+async def test_configured_provider_generates_base64_scene_image_without_following_redirects(monkeypatch):
+    from src.server.ai.providers import ConfiguredOpenAIProvider
+
+    _RecordingClient.requests = []
+    _RecordingClient.response = _FakeResponse({
+        "data": [{"b64_json": "AA=="}],
+    })
+    monkeypatch.setattr("src.server.ai.providers.httpx.AsyncClient", _RecordingClient)
+
+    result = await ConfiguredOpenAIProvider(_provider_config()).generate_image(
+        prompt="雾中的旧宅，画面中不要文字。",
+        size="1024x1024",
+    )
+
+    request = _RecordingClient.requests[0]
+    assert request["url"] == "http://127.0.0.1:9999/v1/images/generations"
+    assert request["client"]["follow_redirects"] is False
+    assert request["json"] == {
+        "model": "gpt-5.4",
+        "prompt": "雾中的旧宅，画面中不要文字。",
+        "size": "1024x1024",
+        "response_format": "b64_json",
+    }
+    assert result == {"data_url": "data:image/png;base64,AA==", "mime_type": "image/png"}
+
+
+@pytest.mark.asyncio
 async def test_responses_protocol_sends_text_and_image_content(monkeypatch):
     from src.server.ai.providers import ConfiguredOpenAIProvider
 
@@ -109,6 +136,47 @@ async def test_chat_completions_protocol_sends_openai_image_url(monkeypatch):
     assert request["url"] == "http://127.0.0.1:9999/v1/chat/completions"
     assert any(item["type"] == "image_url" for item in user_content)
     assert result == {"scenes": []}
+
+
+@pytest.mark.asyncio
+async def test_structure_call_uses_bounded_extended_timeout(monkeypatch):
+    from src.server.ai.providers import ConfiguredOpenAIProvider
+
+    _RecordingClient.requests = []
+    _RecordingClient.response = _FakeResponse({
+        "choices": [{"message": {"content": json.dumps({"scenes": []})}}],
+    })
+    monkeypatch.setattr("src.server.ai.providers.httpx.AsyncClient", _RecordingClient)
+    provider = ConfiguredOpenAIProvider(_provider_config("chat_completions"), timeout=30)
+
+    await provider.call(
+        "structure_scenario",
+        {"user_message": "编译完整剧本", "timeout_seconds": 3600},
+    )
+
+    assert _RecordingClient.requests[0]["client"]["timeout"] == 900
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_unwraps_nested_json_for_runtime_tasks(monkeypatch):
+    from src.server.ai.providers import ConfiguredOpenAIProvider
+
+    _RecordingClient.requests = []
+    _RecordingClient.response = _FakeResponse({
+        "choices": [{"message": {"content": json.dumps({
+            "narrative": {
+                "public": json.dumps({"narrative_text": "车门在身后关闭。"})
+            }
+        })}}],
+    })
+    monkeypatch.setattr("src.server.ai.providers.httpx.AsyncClient", _RecordingClient)
+
+    result = await ConfiguredOpenAIProvider(_provider_config("chat_completions")).call(
+        "narrate_action",
+        {"user_message": "返回叙事 JSON。", "system_prompt": "JSON only"},
+    )
+
+    assert result == {"narrative_text": "车门在身后关闭。"}
 
 
 @pytest.mark.asyncio
@@ -212,6 +280,31 @@ def test_gateway_puts_active_configured_provider_before_legacy_chain(test_db):
 
     assert isinstance(providers[0], ConfiguredOpenAIProvider)
     assert providers[1] is legacy
+
+
+@pytest.mark.asyncio
+async def test_gateway_generates_scene_image_through_active_configured_provider(test_db, monkeypatch):
+    from src.server.ai.providers import ConfiguredOpenAIProvider
+
+    _create_active_config(test_db)
+    gateway = AiGateway(db_conn=test_db)
+    calls = []
+
+    async def generate_image(self, *, prompt, size):
+        calls.append((prompt, size, self.provider_config_id))
+        return {"data_url": "data:image/png;base64,AA==", "mime_type": "image/png"}
+
+    monkeypatch.setattr(ConfiguredOpenAIProvider, "generate_image", generate_image)
+
+    result = await gateway.generate_scene_image({
+        "prompt": "雾中的旧宅",
+        "size": "1024x1024",
+    })
+
+    assert result["mime_type"] == "image/png"
+    assert len(calls) == 1
+    assert calls[0][:2] == ("雾中的旧宅", "1024x1024")
+    assert calls[0][2]
 
 
 @pytest.mark.asyncio

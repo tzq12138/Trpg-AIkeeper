@@ -48,10 +48,14 @@ def test_map_generator_rejects_an_incomplete_gateway_map_and_uses_deterministic_
 def test_admin_map_generation_persists_reviewable_region_and_path_drafts(client, test_db, monkeypatch):
     from src.server.ai.map_generator import MapGenerator
 
+    captured = {}
+
     async def deterministic_draft(self, scenes, base_asset=None):
+        captured["scenes"] = scenes
+        captured["base_asset"] = base_asset
         return {
-            "map_type": "graph",
-            "base_asset": {},
+            "map_type": "hybrid" if base_asset else "graph",
+            "base_asset": base_asset or {},
             "nodes": [
                 {"node_id": "node_0", "name": "大厅", "position": {"x": 50, "y": 15}, "is_start": True},
                 {"node_id": "node_1", "name": "图书馆", "position": {"x": 50, "y": 85}, "is_start": False},
@@ -67,26 +71,36 @@ def test_admin_map_generation_persists_reviewable_region_and_path_drafts(client,
     monkeypatch.setattr(MapGenerator, "generate_draft", deterministic_draft)
     setup_auth_test_data(test_db)
     test_db.execute(
-        "UPDATE scenarios SET knowledge_graph = %s WHERE scenario_id = 'sc-test'",
+        "INSERT INTO scenario_versions "
+        "(scenario_version_id, scenario_id, version_number, knowledge_graph, created_by) "
+        "VALUES ('sc-test-v2', 'sc-test', 2, %s, 'admin-1')",
         (
             '{"scenes":['
-            '{"sceneId":"hall","name":"大厅","description":"大厅里有一座落地钟。"},'
-            '{"sceneId":"library","name":"图书馆","description":"书架间有潮湿的纸张。"}'
+            '{"sceneId":"station","name":"草稿车站","description":"太阳高悬。"},'
+            '{"sceneId":"village","name":"烬头村","description":"村庄地图。"}'
             ']}' ,
         ),
+    )
+    test_db.execute(
+        "INSERT INTO scenario_assets "
+        "(asset_id, scenario_id, filename, original_name, mime_type, file_size, relative_path, visibility) "
+        "VALUES ('map-asset', 'sc-test', 'map-asset.png', '地图.png', 'image/png', 10, "
+        "'data/scenario_assets/sc-test/map-asset.png', 'host_only')"
     )
     test_db.commit()
 
     response = client.post(
-        "/api/admin/scenarios/sc-test/map/generate",
+        "/api/admin/scenarios/sc-test/map/generate?scenario_version_id=sc-test-v2",
         headers={"Authorization": f"Bearer {login(client, 'admin')}"},
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "draft"
-    assert payload["mapType"] == "graph"
-    assert payload["baseAsset"] == {}
+    assert payload["mapType"] == "hybrid"
+    assert payload["baseAsset"] == {"assetId": "map-asset"}
+    assert captured["scenes"][0]["name"] == "草稿车站"
+    assert captured["base_asset"] == {"assetId": "map-asset"}
     assert [region["nodeId"] for region in payload["regions"]] == ["node_0", "node_1"]
     assert len(payload["regions"][0]["polygon"]) == 4
     assert all(
@@ -109,6 +123,96 @@ def test_admin_map_generation_persists_reviewable_region_and_path_drafts(client,
     assert saved.status_code == 200
     assert saved.json()["regions"] == payload["regions"]
     assert saved.json()["paths"] == payload["paths"]
+
+
+def test_admin_map_generation_times_out_to_local_fallback_without_losing_base_asset(
+    client, test_db, monkeypatch
+):
+    import src.server.router_admin as router_admin
+    from src.server.ai.map_generator import MapGenerator
+
+    async def force_timeout(awaitable, timeout):
+        awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(router_admin.asyncio, "wait_for", force_timeout)
+    setup_auth_test_data(test_db)
+    test_db.execute(
+        "UPDATE scenarios SET knowledge_graph = %s WHERE scenario_id = 'sc-test'",
+        ('{"scenes":[{"name":"车站"},{"name":"村庄"}]}',),
+    )
+    test_db.execute(
+        "INSERT INTO scenario_assets "
+        "(asset_id, scenario_id, filename, original_name, mime_type, file_size, relative_path, visibility) "
+        "VALUES ('map-fallback', 'sc-test', 'map.png', 'map.png', 'image/png', 10, "
+        "'data/scenario_assets/sc-test/map.png', 'host_only')"
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/admin/scenarios/sc-test/map/generate",
+        headers={"Authorization": f"Bearer {login(client, 'admin')}"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["generatedBy"] == "python"
+    assert payload["mapType"] == "hybrid"
+    assert payload["baseAsset"] == {"assetId": "map-fallback"}
+    assert len(payload["nodes"]) == 2
+
+
+def test_admin_can_preview_a_scenario_map_asset(client, test_db, monkeypatch, tmp_path):
+    import src.server.router_admin as router_admin
+
+    setup_auth_test_data(test_db)
+    asset_dir = tmp_path / "sc-test"
+    asset_dir.mkdir()
+    image_bytes = b"\x89PNG\r\n\x1a\nmap-preview"
+    (asset_dir / "map-preview.png").write_bytes(image_bytes)
+    monkeypatch.setattr(router_admin, "ASSETS_ROOT", tmp_path)
+    test_db.execute(
+        "INSERT INTO scenario_assets "
+        "(asset_id, scenario_id, filename, original_name, mime_type, file_size, relative_path, visibility) "
+        "VALUES ('map-preview', 'sc-test', 'map-preview.png', '地图.png', 'image/png', %s, "
+        "'data/scenario_assets/sc-test/map-preview.png', 'host_only')",
+        (len(image_bytes),),
+    )
+    test_db.commit()
+
+    response = client.get(
+        "/api/admin/scenarios/sc-test/assets/map-preview/content",
+        headers={"Authorization": f"Bearer {login(client, 'admin')}"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content == image_bytes
+
+
+def test_admin_cannot_delete_asset_used_as_confirmed_map_base(client, test_db):
+    setup_auth_test_data(test_db)
+    test_db.execute(
+        "INSERT INTO scenario_assets "
+        "(asset_id, scenario_id, filename, original_name, mime_type, file_size, relative_path, visibility) "
+        "VALUES ('map-in-use', 'sc-test', 'map.png', '地图.png', 'image/png', 10, "
+        "'data/scenario_assets/sc-test/map.png', 'host_only')"
+    )
+    test_db.execute(
+        "INSERT INTO scenario_maps "
+        "(map_id, scenario_id, generated_by, status, map_type, base_asset, nodes, edges, regions, paths) "
+        "VALUES ('map-confirmed', 'sc-test', 'test', 'confirmed', 'image', %s, '[]', '[]', '[]', '[]')",
+        ('{"assetId":"map-in-use"}',),
+    )
+    test_db.commit()
+
+    response = client.delete(
+        "/api/admin/scenarios/sc-test/assets/map-in-use",
+        headers={"Authorization": f"Bearer {login(client, 'admin')}"},
+    )
+
+    assert response.status_code == 409
+    assert "引用" in response.json()["detail"]
 
 
 def test_admin_can_install_a_golden_module_as_a_ready_to_play_scenario(client, test_db):
@@ -161,3 +265,73 @@ def test_admin_can_install_a_golden_module_as_a_ready_to_play_scenario(client, t
     ]
     library = client.get("/api/library")
     assert payload["scenarioId"] in [item["scenario_id"] for item in library.json()["items"]]
+
+
+def test_golden_module_install_builds_a_ready_cited_runtime_package(client, test_db):
+    setup_auth_test_data(test_db)
+    test_db.execute(
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, license_type, created_by, status) "
+        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', 'open', 'test', 'published')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, created_by) "
+        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', 'test')"
+    )
+    test_db.commit()
+
+    installed = client.post(
+        "/api/admin/golden-modules/golden-team-glass-rain/install",
+        headers={"Authorization": f"Bearer {login(client, 'admin')}"},
+    )
+
+    assert installed.status_code == 201
+    payload = installed.json()
+    assert payload["runtimePackage"]["gate_status"] == "ready"
+    runtime_package = payload["runtimePackage"]["runtime_package"]
+    assert runtime_package["ending_conditions"]
+    assert all(
+        ending["citation"].get("source_part_id")
+        and ending["completion_conditions"]
+        for ending in runtime_package["ending_conditions"]
+    )
+    assert any(
+        edge["from_scene_id"] == "glass-gate"
+        and edge["to_scene_id"] == "orchid-hall"
+        and edge["citation"].get("source_part_id")
+        for edge in runtime_package["semantic_progression_rules"]["edges"]
+    )
+    content_items = test_db.execute(
+        "SELECT item_type, citation FROM content_items WHERE scenario_version_id = %s",
+        (payload["scenarioVersionId"],),
+    ).fetchall()
+    assert {item["item_type"] for item in content_items} >= {
+        "scene", "npc", "clue", "ending", "truth",
+    }
+    assert all(item["citation"].get("source_part_id") for item in content_items)
+
+
+def test_second_golden_playthrough_module_installs_with_a_ready_runtime_package(client, test_db):
+    setup_auth_test_data(test_db)
+    test_db.execute(
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, license_type, created_by, status) "
+        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', 'open', 'test', 'published')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, created_by) "
+        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', 'test')"
+    )
+    test_db.commit()
+
+    installed = client.post(
+        "/api/admin/golden-modules/golden-sandbox-lost-property/install",
+        headers={"Authorization": f"Bearer {login(client, 'admin')}"},
+    )
+
+    assert installed.status_code == 201
+    runtime_package = installed.json()["runtimePackage"]
+    assert runtime_package["gate_status"] == "ready"
+    assert any(
+        edge["from_scene_id"] == "lost-property-counter"
+        and edge["to_scene_id"] == "harbor-post"
+        for edge in runtime_package["runtime_package"]["semantic_progression_rules"]["edges"]
+    )

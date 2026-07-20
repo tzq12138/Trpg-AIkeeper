@@ -35,6 +35,77 @@ ACTION_TIMING_PRESETS = {
 }
 
 
+def _latest_ready_runtime_package_id(conn, scenario_version_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT runtime_package_version_id FROM runtime_package_versions "
+        "WHERE scenario_version_id = %s AND gate_status = 'ready' "
+        "ORDER BY package_version_number DESC LIMIT 1",
+        (scenario_version_id,),
+    ).fetchone()
+    return str(row["runtime_package_version_id"]) if row else None
+
+
+def _initialize_runtime_scene_state(
+    conn,
+    room_id: str,
+    scenario_version_id: str | None,
+    runtime_package_version_id: str | None,
+) -> None:
+    if not scenario_version_id:
+        return
+    existing = conn.execute(
+        "SELECT current_scene FROM room_scene_state WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    if existing and str(existing.get("current_scene") or ""):
+        return
+    if runtime_package_version_id:
+        package_row = conn.execute(
+            "SELECT runtime_package FROM runtime_package_versions "
+            "WHERE runtime_package_version_id = %s AND scenario_version_id = %s "
+            "AND gate_status = 'ready'",
+            (runtime_package_version_id, scenario_version_id),
+        ).fetchone()
+    else:
+        package_row = conn.execute(
+            "SELECT runtime_package FROM runtime_package_versions "
+            "WHERE scenario_version_id = %s AND gate_status = 'ready' "
+            "ORDER BY package_version_number DESC LIMIT 1",
+            (scenario_version_id,),
+        ).fetchone()
+    if not package_row:
+        return
+    runtime_package = package_row.get("runtime_package") or {}
+    if isinstance(runtime_package, str):
+        try:
+            runtime_package = json.loads(runtime_package)
+        except json.JSONDecodeError:
+            return
+    scenes = runtime_package.get("semantic_scenes") if isinstance(runtime_package, dict) else []
+    if not isinstance(scenes, list):
+        return
+    candidates = [
+        scene for scene in scenes
+        if isinstance(scene, dict) and str(scene.get("scene_id") or "")
+    ]
+    if not candidates:
+        return
+    first_scene = min(
+        candidates,
+        key=lambda scene: (int(scene.get("order") or 0), str(scene["scene_id"])),
+    )
+    scene_id = str(first_scene["scene_id"])
+    conn.execute(
+        "INSERT INTO room_scene_state (room_id, current_scene, visited_scenes, scene_variables, version) "
+        "VALUES (%s, %s, %s, %s, 1) "
+        "ON CONFLICT (room_id) DO UPDATE SET current_scene = EXCLUDED.current_scene, "
+        "visited_scenes = EXCLUDED.visited_scenes, version = room_scene_state.version + 1 "
+        "WHERE room_scene_state.current_scene = ''",
+        (room_id, scene_id, json.dumps([scene_id]), json.dumps({})),
+    )
+    conn.commit()
+
+
 class ActionTimingUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -50,6 +121,8 @@ class RoomActionSettingsUpdate(BaseModel):
     preset: Literal["fast", "standard", "slow", "custom"] | None = None
     timing: ActionTimingUpdate | None = None
     draft_analysis_enabled: StrictBool | None = None
+    speech_routing: Literal["party_message", "npc_dialogue"] | None = None
+    host_autonomy_policy: Literal["host_required", "conservative", "delegated"] | None = None
 
     @model_validator(mode="after")
     def validate_update(self):
@@ -60,6 +133,10 @@ class RoomActionSettingsUpdate(BaseModel):
             and self.draft_analysis_enabled is None
         ):
             raise ValueError("draft_analysis_enabled must be a boolean")
+        if "speech_routing" in self.model_fields_set and self.speech_routing is None:
+            raise ValueError("speech_routing must be party_message or npc_dialogue")
+        if "host_autonomy_policy" in self.model_fields_set and self.host_autonomy_policy is None:
+            raise ValueError("host_autonomy_policy must be host_required, conservative or delegated")
         if self.preset == "custom" and self.timing is None:
             raise ValueError("custom preset requires timing")
         if self.timing is not None and self.preset != "custom":
@@ -93,6 +170,10 @@ async def create_room(request: Request):
     scenario_version_id = sc.get("published_version_id")
     if sc.get("publish_status") != "published" or not scenario_version_id:
         raise HTTPException(409, "剧本尚未确认发布，不能开房")
+    runtime_package_version_id = _latest_ready_runtime_package_id(
+        conn,
+        scenario_version_id,
+    )
 
     # Admin may specify owner; host always creates for self
     if role == "host":
@@ -103,10 +184,10 @@ async def create_room(request: Request):
     room_id = str(uuid.uuid4())[:8]
     owner_token = str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, owner_token, "
-        "owner_account_id, spoiler_level) VALUES (%s, %s, %s, %s, %s, %s)",
+        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, "
+        "owner_token, owner_account_id, spoiler_level) VALUES (%s, %s, %s, %s, %s, %s, %s)",
         (
-            room_id, scenario_id, scenario_version_id, owner_token,
+            room_id, scenario_id, scenario_version_id, runtime_package_version_id, owner_token,
             owner_account_id, body.get("spoiler_level", "standard"),
         ),
     )
@@ -115,6 +196,7 @@ async def create_room(request: Request):
         "room_id": room_id, "owner_token": owner_token,
         "status": "lobby", "scenario_title": sc["title"],
         "scenario_id": scenario_id, "scenario_version_id": scenario_version_id,
+        "runtime_package_version_id": runtime_package_version_id,
         "owner_account_id": owner_account_id,
     }
 
@@ -155,7 +237,7 @@ async def update_room_action_settings(
     conn = request.app.state.db
     _verify_owner_or_admin(request, room_id, conn)
     room = conn.execute(
-        "SELECT action_pacing_preset, action_timing, draft_analysis_enabled "
+        "SELECT action_pacing_preset, action_timing, draft_analysis_enabled, speech_routing, host_autonomy_policy "
         "FROM rooms WHERE room_id = %s",
         (room_id,),
     ).fetchone()
@@ -174,14 +256,26 @@ async def update_room_action_settings(
         if "draft_analysis_enabled" in body.model_fields_set
         else bool(room["draft_analysis_enabled"])
     )
+    speech_routing = (
+        body.speech_routing
+        if "speech_routing" in body.model_fields_set
+        else str(room.get("speech_routing") or "party_message")
+    )
+    host_autonomy_policy = (
+        body.host_autonomy_policy
+        if "host_autonomy_policy" in body.model_fields_set
+        else str(room.get("host_autonomy_policy") or "host_required")
+    )
 
     conn.execute(
         "UPDATE rooms SET action_pacing_preset = %s, action_timing = %s, "
-        "draft_analysis_enabled = %s WHERE room_id = %s",
+        "draft_analysis_enabled = %s, speech_routing = %s, host_autonomy_policy = %s WHERE room_id = %s",
         (
             preset,
             json.dumps(timing),
             draft_analysis_enabled,
+            speech_routing,
+            host_autonomy_policy,
             room_id,
         ),
     )
@@ -191,6 +285,8 @@ async def update_room_action_settings(
         "preset": preset,
         "timing": timing,
         "draft_analysis_enabled": draft_analysis_enabled,
+        "speech_routing": speech_routing,
+        "host_autonomy_policy": host_autonomy_policy,
     }
 
 
@@ -240,6 +336,8 @@ async def get_room(request: Request, room_id: str):
         "scenario_id": room.get("scenario_id", ""),
         "scenario_title": scenario_title,
         "spoiler_level": room.get("spoiler_level", "standard"),
+        "speech_routing": room.get("speech_routing", "party_message"),
+        "host_autonomy_policy": room.get("host_autonomy_policy", "host_required"),
         "created_at": str(room.get("created_at", "")),
         "started_at": str(room.get("started_at", "")) if room.get("started_at") else None,
         "player_count": player_count,
@@ -303,6 +401,10 @@ async def set_room_scenario(request: Request, room_id: str):
     scenario_version_id = sc.get("published_version_id")
     if sc.get("publish_status") != "published" or not scenario_version_id:
         raise HTTPException(409, "剧本尚未确认发布")
+    runtime_package_version_id = _latest_ready_runtime_package_id(
+        conn,
+        scenario_version_id,
+    )
     # Check room status
     room = conn.execute("SELECT status FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
@@ -310,8 +412,9 @@ async def set_room_scenario(request: Request, room_id: str):
     if room["status"] in ("active", "completed", "archived"):
         raise HTTPException(409, "Cannot change scenario in active/completed/archived room")
     conn.execute(
-        "UPDATE rooms SET scenario_id = %s, scenario_version_id = %s WHERE room_id = %s",
-        (scenario_id, scenario_version_id, room_id),
+        "UPDATE rooms SET scenario_id = %s, scenario_version_id = %s, "
+        "runtime_package_version_id = %s WHERE room_id = %s",
+        (scenario_id, scenario_version_id, runtime_package_version_id, room_id),
     )
     conn.commit()
     # Return updated room with title
@@ -341,10 +444,20 @@ async def update_room(request: Request, room_id: str):
             raise HTTPException(404, "剧本不存在")
         if sc.get("publish_status") != "published" or not sc.get("published_version_id"):
             raise HTTPException(409, "剧本尚未确认发布")
+        runtime_package_version_id = _latest_ready_runtime_package_id(
+            conn,
+            sc["published_version_id"],
+        )
         conn.execute(
-            "UPDATE rooms SET scenario_id = %s, scenario_version_id = %s "
+            "UPDATE rooms SET scenario_id = %s, scenario_version_id = %s, "
+            "runtime_package_version_id = %s "
             "WHERE room_id = %s",
-            (body["scenario_id"], sc["published_version_id"], room_id),
+            (
+                body["scenario_id"],
+                sc["published_version_id"],
+                runtime_package_version_id,
+                room_id,
+            ),
         )
 
     # Update owner
@@ -498,6 +611,13 @@ async def start_room(request: Request, room_id: str):
         except Exception as e:
             logger.warning("Failed to init map for room %s: %s", room_id, e)
 
+    _initialize_runtime_scene_state(
+        conn,
+        room_id,
+        room.get("scenario_version_id"),
+        room.get("runtime_package_version_id"),
+    )
+
     # Auto-checkpoint on room start
     try:
         from .events.event_log import EventLog
@@ -571,9 +691,11 @@ async def skip_character(request: Request, room_id: str, turn_id: str):
     if not character_id:
         raise HTTPException(400, "character_id required")
     tm = TurnManager(conn)
-    result = tm.skip_character(room_id, turn_id, character_id)
+    result = tm.skip_character(room_id, turn_id, character_id, body.get("policy", "idle"))
     if result.get("status") == "not_found":
         raise HTTPException(404, "Turn not found")
+    if result.get("status") == "invalid_policy":
+        raise HTTPException(422, "policy must be idle or maintain_existing")
     if tm.all_submitted(room_id):
         import asyncio
         from .player.router_player import _settle_turn_background

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 
 import {
   buildPlayerJoinReturnPath,
+  getPrimaryJoinSource,
   PLAYER_JOIN_SOURCE_ORDER,
   playerRoomEntryPath,
 } from '../src/shared/player-join-flow';
@@ -9,6 +10,11 @@ import {
 describe('player join flow', () => {
   test('keeps the required character source order', () => {
     expect(PLAYER_JOIN_SOURCE_ORDER).toEqual(['account', 'preset', 'builder', 'upload']);
+  });
+
+  test('recommends a scenario preset until an account recovery is available', () => {
+    expect(getPrimaryJoinSource(false)).toBe('preset');
+    expect(getPrimaryJoinSource(true)).toBe('account');
   });
 
   test('preserves the invitation room across login or registration', () => {

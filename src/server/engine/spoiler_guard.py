@@ -64,11 +64,13 @@ class SpoilerGuard:
         items: list[SpoilerSensitiveItem] = []
         if not knowledge_graph:
             return items
+        boundary_index = _spoiler_boundary_index(knowledge_graph)
 
         # Truth
         truth = knowledge_graph.get("truth") or {}
         truth_summary = truth.get("summary", "") or knowledge_graph.get("truth_summary", "")
         if truth_summary:
+            policy = boundary_index.get(("truth", "truth"), _default_boundary_policy())
             aliases = self._extract_aliases(truth_summary, "truth")
             # Also include key substrings from the truth summary itself
             aliases = self._add_key_phrases(truth_summary, aliases)
@@ -79,11 +81,14 @@ class SpoilerGuard:
                 label="真相摘要",
                 aliases=aliases,
                 sourceRef="knowledge_graph.truth.summary",
-                defaultAudience="host",
+                defaultAudience=policy["default_audience"],
+                unlockClueIds=policy["unlock_clue_ids"],
             ))
 
         # Endings
         for i, ending in enumerate(knowledge_graph.get("endings", []) or []):
+            ending_id = str(ending.get("ending_id") or ending.get("id") or i)
+            policy = boundary_index.get(("ending", ending_id), _default_boundary_policy())
             name = ending.get("name", "")
             desc = ending.get("description", "")
             label = name or f"结局{i + 1}"
@@ -96,7 +101,8 @@ class SpoilerGuard:
                 label=label,
                 aliases=aliases,
                 sourceRef=f"knowledge_graph.endings[{i}]",
-                defaultAudience="host",
+                defaultAudience=policy["default_audience"],
+                unlockClueIds=policy["unlock_clue_ids"],
             ))
 
         # Hidden clues
@@ -104,7 +110,8 @@ class SpoilerGuard:
             if clue.get("is_hidden"):
                 name = clue.get("name", "")
                 desc = clue.get("description", "")
-                clue_id = clue.get("clue_id", "")
+                clue_id = str(clue.get("clue_id") or clue.get("id") or i)
+                policy = boundary_index.get(("clue", str(clue_id)), _default_boundary_policy())
                 label = name or desc or f"隐藏线索{i + 1}"
                 text_parts = [name, desc] if name and desc else [name or desc]
                 aliases = self._extract_aliases(" ".join(text_parts), "clue")
@@ -117,7 +124,8 @@ class SpoilerGuard:
                     label=label,
                     aliases=aliases,
                     sourceRef=source_ref,
-                    defaultAudience="host",
+                    defaultAudience=policy["default_audience"],
+                    unlockClueIds=policy["unlock_clue_ids"],
                 ))
 
         # Hidden NPCs
@@ -127,7 +135,8 @@ class SpoilerGuard:
                 public_name = npc.get("public_name", "")
                 desc = npc.get("description", "")
                 role = npc.get("role", "")
-                npc_id = npc.get("npc_id", "")
+                npc_id = str(npc.get("npc_id") or npc.get("id") or i)
+                policy = boundary_index.get(("npc", str(npc_id)), _default_boundary_policy())
                 label = name or f"隐藏NPC{i + 1}"
                 text_parts = [name, public_name, role, desc]
                 aliases = self._extract_aliases(" ".join([p for p in text_parts if p]), "npc")
@@ -141,7 +150,8 @@ class SpoilerGuard:
                     label=label,
                     aliases=aliases,
                     sourceRef=f"knowledge_graph.npcs[{i}]",
-                    defaultAudience="host",
+                    defaultAudience=policy["default_audience"],
+                    unlockClueIds=policy["unlock_clue_ids"],
                 ))
 
         # Hidden assets (from scenario_assets JSONB)
@@ -149,6 +159,7 @@ class SpoilerGuard:
             asset_items = assets.get("items", {}) if isinstance(assets, dict) else {}
             for key, asset in asset_items.items():
                 if isinstance(asset, dict) and asset.get("is_secret"):
+                    policy = boundary_index.get(("asset", str(key)), _default_boundary_policy())
                     name = asset.get("name", key)
                     desc = asset.get("description", "") or asset.get("narrative", {}).get("description", "")
                     aliases = self._extract_aliases(f"{name} {desc}", "asset")
@@ -159,7 +170,8 @@ class SpoilerGuard:
                         label=name,
                         aliases=aliases,
                         sourceRef=f"scenario_assets.items.{key}",
-                        defaultAudience="host",
+                        defaultAudience=policy["default_audience"],
+                        unlockClueIds=policy["unlock_clue_ids"],
                     ))
 
         self.persist_index(scenario_id, items)
@@ -175,13 +187,14 @@ class SpoilerGuard:
         )
         for item in items:
             self.conn.execute(
-                "INSERT INTO spoiler_sensitive_items "
-                "(item_id, scenario_id, category, label, aliases, source_ref, default_audience) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO spoiler_sensitive_items "
+            "(item_id, scenario_id, category, label, aliases, source_ref, default_audience, unlock_clue_ids) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     item.item_id, scenario_id, item.category, item.label,
                     json.dumps(item.aliases, ensure_ascii=False),
                     item.source_ref, item.default_audience,
+                    json.dumps(item.unlock_clue_ids, ensure_ascii=False),
                 ),
             )
         self.conn.commit()
@@ -209,6 +222,7 @@ class SpoilerGuard:
                 aliases=list(aliases_raw) if aliases_raw else [],
                 sourceRef=row.get("source_ref", ""),
                 defaultAudience=row.get("default_audience", "host"),
+                unlockClueIds=_json_list(row.get("unlock_clue_ids")),
             ))
         return items
 
@@ -414,11 +428,14 @@ class SpoilerGuard:
         label_lower = item.label.lower()
         item_id = item.item_id
         category = item.category
+        unlocked_clues = set(unlock.discovered_clue_ids + unlock.shared_clue_ids)
+
+        if item.unlock_clue_ids:
+            return bool(unlocked_clues.intersection(item.unlock_clue_ids))
 
         if category == "hidden_clue":
             # Check if any discovered or shared clue ID is in the source_ref
-            all_clue_ids = set(unlock.discovered_clue_ids + unlock.shared_clue_ids)
-            for cid in all_clue_ids:
+            for cid in unlocked_clues:
                 cid_lower = cid.lower()
                 if cid_lower in item_id.lower() or cid_lower in item.source_ref.lower():
                     return True
@@ -584,3 +601,53 @@ class SpoilerGuard:
                 seen.add(seg)
                 result.append(seg)
         return result
+
+
+def _default_boundary_policy() -> dict[str, Any]:
+    return {"default_audience": "host", "unlock_clue_ids": []}
+
+
+def _spoiler_boundary_index(knowledge_graph: dict) -> dict[tuple[str, str], dict[str, Any]]:
+    """Return only complete, published-boundary policies; malformed data keeps legacy safety."""
+    indexed: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw_boundary in knowledge_graph.get("spoiler_boundaries") or []:
+        if not isinstance(raw_boundary, dict):
+            continue
+        target_type = str(raw_boundary.get("target_type") or "").strip()
+        target_id = str(raw_boundary.get("target_id") or "").strip()
+        player_visibility = str(raw_boundary.get("player_visibility") or "").strip()
+        host_visibility = str(raw_boundary.get("host_visibility") or "").strip()
+        citation = raw_boundary.get("citation")
+        unlock_clue_ids = [
+            str(clue_id).strip()
+            for clue_id in raw_boundary.get("unlock_clues") or []
+            if str(clue_id).strip()
+        ]
+        if (
+            not str(raw_boundary.get("id") or "").strip()
+            or target_type not in {"truth", "ending", "npc", "clue", "asset"}
+            or not target_id
+            or player_visibility not in {"public", "discovered", "hidden"}
+            or host_visibility not in {"summary", "complete"}
+            or not str(raw_boundary.get("player_description") or "").strip()
+            or not isinstance(citation, dict)
+            or not str(citation.get("source_part_id") or "").strip()
+            or (player_visibility == "discovered" and not unlock_clue_ids)
+        ):
+            continue
+        indexed[(target_type, target_id)] = {
+            "default_audience": "party" if player_visibility == "public" else "host",
+            "unlock_clue_ids": unlock_clue_ids if player_visibility == "discovered" else [],
+        }
+    return indexed
+
+
+def _json_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            value = []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]

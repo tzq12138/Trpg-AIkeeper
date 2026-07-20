@@ -11,6 +11,31 @@ logger = logging.getLogger(__name__)
 
 MAX_CHAT_MESSAGES = 200
 
+
+def _restore_transaction(value) -> RevealTransaction | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return RevealTransaction(**value)
+    except Exception:
+        return None
+
+
+def _restore_transactions(value) -> list[RevealTransaction]:
+    if not isinstance(value, list):
+        return []
+    return [transaction for item in value if (transaction := _restore_transaction(item))]
+
+
+def _restore_step_index(value, transaction: RevealTransaction | None) -> int:
+    if not transaction or isinstance(value, bool):
+        return 0
+    try:
+        return min(max(int(value), 0), len(transaction.steps))
+    except (TypeError, ValueError):
+        return 0
+
+
 HOST_VISIBLE_EVENTS = {
     "s2c_reveal_transaction", "s2c_resume_transaction", "s2c_cancel_transaction",
     "s2c_atmosphere", "s2c_engine_state", "s2c_scene_sync", "s2c_host_snapshot",
@@ -18,7 +43,7 @@ HOST_VISIBLE_EVENTS = {
     "s2c_map_updated", "s2c_player_moved", "s2c_map_revealed",
     "s2c_encounter_suggested", "s2c_encounter_started",
     "s2c_encounter_updated", "s2c_encounter_resolved",
-    "s2c_team_message",
+    "s2c_team_message", "s2c_safety_request",
 }
 
 PRIVATE_EVENTS = {
@@ -47,6 +72,8 @@ class HostStore:
         self.players: list[PlayerPublicStatus] = []
         self.engine_state: str = "idle"
         self.is_paused: bool = False
+        self.presentation_paused: bool = False
+        self.presentation_version: int = 0
         self.pending_audio_action: str | None = None
         self.delayed_events: list[dict] = []
         self.active_encounter: dict | None = None
@@ -145,6 +172,14 @@ class HostStore:
         if tx.audio_action:
             self.pending_audio_action = tx.audio_action
 
+    def start_next_presentation(self) -> RevealTransaction | None:
+        if self.active_transaction:
+            return self.active_transaction
+        transaction = self.pop_next_transaction()
+        if transaction:
+            self.start_transaction(transaction)
+        return transaction
+
     def advance_step(self) -> TransactionStep | None:
         if not self.active_transaction:
             return None
@@ -153,6 +188,19 @@ class HostStore:
         step = self.active_transaction.steps[self.current_step_index]
         self.current_step_index += 1
         return step
+
+    def skip_visual_steps(self) -> list[TransactionStep]:
+        skipped: list[TransactionStep] = []
+        while (
+            self.active_transaction
+            and self.current_step_index < len(self.active_transaction.steps)
+            and self.active_transaction.steps[self.current_step_index].kind == "scene_transition"
+        ):
+            step = self.advance_step()
+            if step is None:
+                break
+            skipped.append(step)
+        return skipped
 
     def consume_pending_audio_action(self) -> str | None:
         action = self.pending_audio_action
@@ -217,6 +265,8 @@ class HostStore:
         self.players = []
         self.engine_state = "idle"
         self.is_paused = False
+        self.presentation_paused = False
+        self.presentation_version = 0
         self.delayed_events = []
         self.pending_audio_action = None
 
@@ -241,6 +291,20 @@ class HostStore:
                 for p in self.players
             ],
             "delayed_events": self.delayed_events,
+            "active_transaction": (
+                self.active_transaction.model_dump(by_alias=True)
+                if self.active_transaction else None
+            ),
+            "current_step_index": self.current_step_index,
+            "presentation_paused": self.presentation_paused,
+            "presentation_version": self.presentation_version,
+            "normal_queue": [transaction.model_dump(by_alias=True) for transaction in self.normal_queue],
+            "urgent_queue": [transaction.model_dump(by_alias=True) for transaction in self.urgent_queue],
+            "interrupted_transaction": (
+                self.interrupted_transaction.model_dump(by_alias=True)
+                if self.interrupted_transaction else None
+            ),
+            "interrupted_step_index": self.interrupted_step_index,
         }
         db_conn.execute(
             """INSERT INTO host_states (room_id, state, updated_at)
@@ -269,9 +333,28 @@ class HostStore:
         self.atmosphere = state.get("atmosphere", {"bgm": None, "sfx_queue": [], "visual": None})
         self.engine_state = state.get("engine_state", "idle")
         self.is_paused = state.get("is_paused", False)
+        self.presentation_paused = bool(state.get("presentation_paused", False))
+        try:
+            self.presentation_version = max(int(state.get("presentation_version", 0)), 0)
+        except (TypeError, ValueError):
+            self.presentation_version = 0
         self.last_host_sequence = state.get("last_host_sequence", 0)
         self.players = [PlayerPublicStatus(**p) for p in state.get("players", [])]
         self.delayed_events = state.get("delayed_events", [])
+        self.normal_queue = _restore_transactions(state.get("normal_queue"))
+        self.urgent_queue = _restore_transactions(state.get("urgent_queue"))
+        active = _restore_transaction(state.get("active_transaction"))
+        self.active_transaction = active
+        self.active_transaction_id = active.transaction_id if active else None
+        self.current_step_index = _restore_step_index(
+            state.get("current_step_index"), active
+        )
+        self.interrupted_transaction = _restore_transaction(
+            state.get("interrupted_transaction")
+        )
+        self.interrupted_step_index = _restore_step_index(
+            state.get("interrupted_step_index"), self.interrupted_transaction
+        )
 
     def get_hud(self) -> HostHUD:
         return HostHUD(

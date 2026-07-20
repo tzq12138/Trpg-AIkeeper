@@ -34,3 +34,46 @@ def test_rule_docs_lists_indexed_rule_documents(client, test_db):
             "chunks": 2,
         }
     ]
+
+
+def test_publishing_base_coc7_rules_binds_existing_published_scenarios(client, test_db):
+    setup_auth_test_data(test_db)
+    token = login(client, "admin")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = client.post(
+        "/api/rag/rule-sets",
+        headers=headers,
+        json={
+            "name": "CoC7 Core",
+            "slug": "coc7",
+            "system": "coc7",
+            "license_type": "authorized",
+            "is_base": True,
+        },
+    )
+    assert created.status_code == 200
+    rule_set_id = created.json()["rule_set_id"]
+
+    version = client.post(
+        f"/api/rag/rule-sets/{rule_set_id}/versions",
+        headers=headers,
+        json={"label": "local-test-v1"},
+    )
+    assert version.status_code == 200
+    rule_set_version_id = version.json()["rule_set_version_id"]
+
+    published = client.post(
+        f"/api/rag/rule-set-versions/{rule_set_version_id}/publish",
+        headers=headers,
+    )
+
+    assert published.status_code == 200
+    binding = test_db.execute(
+        "SELECT rule_set_version_id, priority FROM scenario_rule_bindings "
+        "WHERE scenario_version_id = 'sv-sc-test'"
+    ).fetchone()
+    assert binding == {
+        "rule_set_version_id": rule_set_version_id,
+        "priority": 100,
+    }

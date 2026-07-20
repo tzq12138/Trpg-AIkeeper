@@ -1,23 +1,16 @@
-"""Map router — player map view with team-shared fog of war, move via engine intent."""
-import asyncio
+"""Map router — player-safe semantic map projection."""
 import json
 import logging
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import FileResponse
 
-from .models import PlayerIntent
 from .map_persistence import (
     build_player_map_view,
     get_room_map_state,
-    get_scenario_map,
     get_character_position,
-    set_character_position,
-    mark_node_explored,
-    are_nodes_adjacent,
-    is_node_hidden,
-    get_adjacent_nodes,
 )
 from .player.router_player import _get_character
 
@@ -26,24 +19,54 @@ maps_router = APIRouter(prefix="/api/maps")
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_player_scene_text(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(r"(?:转到|轉到)\s*(?:条目\s*)?\d+\s*[。.!！]?", "", text)
+    return text.strip()
+
+
+def _safe_player_scene_name(value: str) -> str:
+    name = str(value or "").strip()
+    if re.fullmatch(r"(?:条目|條目|entry)\s*\d+", name, flags=re.IGNORECASE):
+        return "当前场景"
+    return name or "当前场景"
+
+
+def _is_player_visible_map_asset(conn, room_id: str, asset_id: str) -> bool:
+    if not asset_id:
+        return False
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM rooms r
+        JOIN scenario_maps sm ON sm.scenario_id = r.scenario_id
+        JOIN scenario_assets a ON a.asset_id = %s AND a.scenario_id = r.scenario_id
+        LEFT JOIN scenario_asset_bindings sab
+          ON sab.asset_id = a.asset_id
+         AND sab.scenario_version_id = r.scenario_version_id
+         AND sab.target_type = 'map'
+         AND sab.target_key = 'map'
+         AND sab.status = 'confirmed'
+        WHERE r.room_id = %s
+          AND sm.status = 'confirmed'
+          AND sm.base_asset->>'assetId' = a.asset_id
+          AND (a.visibility IN ('player', 'party', 'public') OR sab.binding_id IS NOT NULL)
+        LIMIT 1
+        """,
+        (asset_id, room_id),
+    ).fetchone()
+    return row is not None
+
+
 def _safe_text_scene_view(conn, room_id: str) -> dict:
     try:
         from .scenario.solo_runtime import SoloAdventureRuntime
         solo_scene = SoloAdventureRuntime(conn).current(room_id)
         if solo_scene:
-            choices = [
-                {"nodeId": node_id, "label": f"转到条目 {node_id}"}
-                for node_id in solo_scene.get("target_node_ids", [])
-            ]
             return {
-                "name": solo_scene["title"],
-                "description": solo_scene["text"],
-                "visibleExits": [choice["label"] for choice in choices],
-                "soloAdventure": {
-                    "nodeId": solo_scene["node_id"],
-                    "citation": solo_scene.get("citation") or {},
-                    "choices": choices,
-                },
+                "name": _safe_player_scene_name(solo_scene["title"]),
+                "description": "请根据 AI KP 的叙事、当前目标与已公开线索行动。",
+                "visibleExits": [],
             }
     except Exception:
         logger.exception("failed to build solo adventure player projection room=%s", room_id)
@@ -127,8 +150,14 @@ async def get_map_view(request: Request, room_id: str):
     map_state = get_room_map_state(conn, room_id)
     if not map_state:
         return {
-            "roomId": room_id, "nodes": [],
-            "currentNodeId": None, "hiddenCount": 0, "mapStatus": "text_mode",
+            "roomId": room_id,
+            "mapStatus": "text_mode",
+            "mapType": "text",
+            "baseAsset": {},
+            "knownLocations": [],
+            "knownConnections": [],
+            "partyPosition": None,
+            "fogOfWar": [],
             "textScene": _safe_text_scene_view(conn, room_id),
         }
 
@@ -137,10 +166,13 @@ async def get_map_view(request: Request, room_id: str):
     if not pos:
         return {
             "roomId": room_id,
-            "nodes": [],
-            "currentNodeId": None,
-            "hiddenCount": 0,
             "mapStatus": "no_current_position",
+            "mapType": "graph",
+            "baseAsset": {},
+            "knownLocations": [],
+            "knownConnections": [],
+            "partyPosition": None,
+            "fogOfWar": [],
         }
 
     view = build_player_map_view(conn, room_id, character_id)
@@ -177,6 +209,12 @@ async def get_map_view(request: Request, room_id: str):
     for node in view.get("nodes", []):
         node.pop("cluesAvailable", None)
 
+    base_asset = view.get("baseAsset") if isinstance(view.get("baseAsset"), dict) else {}
+    if not _is_player_visible_map_asset(conn, room_id, str(base_asset.get("assetId") or "")):
+        view["baseAsset"] = {}
+
+    view["textScene"] = _safe_text_scene_view(conn, room_id)
+
     return view
 
 
@@ -191,12 +229,11 @@ async def get_player_map_asset(request: Request, room_id: str, asset_id: str):
     if char.get("room_id") != room_id:
         raise HTTPException(403, "无权访问此房间的地图素材")
     conn = request.app.state.db
+    if not _is_player_visible_map_asset(conn, room_id, asset_id):
+        raise HTTPException(404, "地图素材不存在或未公开")
     asset = conn.execute(
-        "SELECT a.mime_type, a.relative_path FROM scenario_assets a "
-        "JOIN rooms r ON r.scenario_id = a.scenario_id "
-        "WHERE r.room_id = %s AND a.asset_id = %s "
-        "AND a.visibility IN ('player', 'party', 'public')",
-        (room_id, asset_id),
+        "SELECT mime_type, relative_path FROM scenario_assets WHERE asset_id = %s",
+        (asset_id,),
     ).fetchone()
     if not asset:
         raise HTTPException(404, "地图素材不存在或未公开")
@@ -213,76 +250,11 @@ async def get_player_map_asset(request: Request, room_id: str, asset_id: str):
 
 @router.post("/{room_id}/move")
 async def move_player(request: Request, room_id: str):
-    """Submit a move intent through the engine (not direct position update)."""
-    char = _get_character(request)
-    character_id = char["character_id"]
-
-    body = await request.json()
-    target_node_id = (body.get("target_node_id") or body.get("targetNodeId") or "").strip()
-    from_node_id = (body.get("from_node_id") or body.get("fromNodeId") or "").strip()
-
-    if not target_node_id:
-        raise HTTPException(400, "target_node_id is required")
-
-    conn = request.app.state.db
-
-    # Quick pre-validation
-    map_state = get_room_map_state(conn, room_id)
-    if not map_state:
-        raise HTTPException(400, "No map in this room")
-
-    scenario_map = get_scenario_map(conn, map_state["map_id"])
-    if not scenario_map:
-        raise HTTPException(400, "Map not found")
-
-    nodes = scenario_map.get("nodes", [])
-    edges = scenario_map.get("edges", [])
-
-    # Determine current position
-    current_pos = from_node_id or get_character_position(conn, character_id, room_id)
-    if not current_pos:
-        # Auto-place then try again
-        start_node = next((n for n in nodes if n.get("is_start") or n.get("isStart")), None)
-        start_id = start_node.get("node_id", start_node.get("nodeId", "")) if start_node else (
-            nodes[0].get("node_id", nodes[0].get("nodeId", "")) if nodes else ""
-        )
-        if start_id:
-            set_character_position(conn, character_id, room_id, start_id)
-            mark_node_explored(conn, room_id, start_id)
-            current_pos = start_id
-        else:
-            raise HTTPException(400, "Character has no current position and no start node")
-
-    # Adjacency check
-    if not are_nodes_adjacent(nodes, edges, current_pos, target_node_id):
-        raise HTTPException(400, f"Cannot move from {current_pos} to {target_node_id}: not adjacent")
-
-    # Hidden check
-    if is_node_hidden(conn, room_id, target_node_id):
-        raise HTTPException(400, "Target node is hidden")
-
-    # Submit intent through engine
-    engine = request.app.state.engine
-    intent = PlayerIntent(
-        intent_type="move",
-        declared_intent=f"移动到 {target_node_id}",
-        params={
-            "targetNodeId": target_node_id,
-            "fromNodeId": current_pos,
-            "roomId": room_id,
+    """Reject direct map movement; players must use natural-language actions."""
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "use_action_draft",
+            "message": "Map movement must be submitted as a natural-language action draft.",
         },
     )
-    result = engine.submit_intent(room_id, character_id, intent)
-
-    if result.get("status") == "accepted":
-        # Trigger background resolution
-        pipeline = getattr(request.app.state, "pipeline", None)
-        if pipeline:
-            asyncio.create_task(pipeline.resolve_action(intent.action_id))
-
-    return {
-        "status": "submitted",
-        "action_id": intent.action_id,
-        "currentNodeId": current_pos,
-        "targetNodeId": target_node_id,
-    }

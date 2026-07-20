@@ -10,6 +10,8 @@ const IN_FLIGHT_STATUSES = new Set<ActionStatus>([
   'sync_required',
 ]);
 
+export const AUTO_CONFIRM_GRACE_MS = 2000;
+
 
 export function createConfirmIdempotencyKey(draft: ActionDraftDTO): string {
   return `confirm:${draft.draft_id}:${draft.revision}`;
@@ -17,12 +19,22 @@ export function createConfirmIdempotencyKey(draft: ActionDraftDTO): string {
 
 
 export function shouldAutoConfirmDraft(draft: ActionDraftDTO): boolean {
-  return !draft.requires_confirmation && (draft.confirmation_requirements?.length || 0) === 0;
+  return draft.status === 'awaiting_confirmation'
+    && !draft.requires_confirmation
+    && (draft.confirmation_requirements?.length || 0) === 0;
 }
 
 
 export function isActionInFlight(status: ActionStatus): boolean {
   return IN_FLIGHT_STATUSES.has(status);
+}
+
+
+export function canStartNewAction(
+  draft: ActionDraftDTO | null,
+  receipt: ActionReceiptDTO | null,
+): boolean {
+  return !draft && !(receipt && isActionInFlight(receipt.status));
 }
 
 

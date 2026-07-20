@@ -457,21 +457,36 @@ def build_player_map_view(conn, room_id: str, character_id: str) -> dict:
         ):
             tokens.append({"characterId": positioned_character_id, "nodeId": node_id})
 
+    known_locations = [
+        {
+            "nodeId": node["nodeId"],
+            "label": node["name"],
+            "description": node.get("description", ""),
+            "isCurrent": node.get("isCurrent", False),
+            "position": node.get("position", {"x": 0, "y": 0}),
+        }
+        for node in view_nodes
+    ]
+    known_connections = [
+        {
+            "fromNodeId": edge.get("from_node", edge.get("fromNode", "")),
+            "toNodeId": edge.get("to_node", edge.get("toNode", "")),
+            "label": edge.get("label", ""),
+        }
+        for edge in edges
+        if edge.get("from_node", edge.get("fromNode", "")) in visible_node_ids
+        and edge.get("to_node", edge.get("toNode", "")) in visible_node_ids
+    ]
+    current_node = next((node for node in known_locations if node["nodeId"] == current_pos), None)
+
     return {
         "roomId": room_id,
         "mapType": scenario_map.get("map_type", "graph"),
         "baseAsset": _safe_base_asset(scenario_map.get("base_asset", {})),
-        "regions": regions,
-        "paths": [
-            path for path in (scenario_map.get("paths", []) or [])
-            if _path_is_visible(path, visible_node_ids)
-        ],
-        "fogRegions": fog_regions,
-        "fogRegionAreas": fog_region_areas,
-        "tokens": tokens,
-        "nodes": view_nodes,
-        "currentNodeId": current_pos,
-        "hiddenCount": max(0, hidden_count),
+        "knownLocations": known_locations,
+        "knownConnections": known_connections,
+        "partyPosition": {"nodeId": current_node["nodeId"], "label": current_node["label"]} if current_node else None,
+        "fogOfWar": fog_region_areas or [{"regionId": region_id} for region_id in fog_regions],
         "mapStatus": state.get("status", "active") or "active",
     }
 

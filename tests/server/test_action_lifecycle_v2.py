@@ -1,12 +1,46 @@
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from src.server.engine.action_lifecycle import transition_action
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.engine.roll_receipt import verify_roll_receipt
 from src.server.engine.state_service import StateService
-from src.server.models import MechanicCompileResult, ResolutionResult
+from src.server.models import (
+    ActionDraftStepDTO,
+    DirectorActionStepDTO,
+    MechanicCompileResult,
+    PlayerIntent,
+    ResolutionResult,
+)
+from src.server.player.action_service import ActionDraftError, choose_composite_action_continuation
+
+
+def _verified_params(**extra):
+    payload = {
+        "director_plan": {
+            "context_version": 0,
+            "preconditions": [],
+            "permissions": [],
+            "state_patch": [],
+            "state_patch_authority": "advisory_only",
+        }
+    }
+    payload.update(extra)
+    return payload
+
+
+@pytest.mark.parametrize("step_type", (ActionDraftStepDTO, DirectorActionStepDTO))
+def test_composite_step_contract_rejects_mid_round_choice_policy(step_type):
+    with pytest.raises(ValidationError):
+        step_type(
+            step_id="step-2",
+            summary="进入房间",
+            declared_intent="进入房间",
+            intent_type="move",
+            on_previous_failure="ask",
+        )
 
 
 def _insert_action(test_db, *, action_id="action-v2", status="queued"):
@@ -19,10 +53,124 @@ def _insert_action(test_db, *, action_id="action-v2", status="queued"):
     )
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, draft_id, intent_type, "
-        "declared_intent, status) VALUES (%s, 'room-v2', 'char-v2', 'draft-v2', "
-        "'dialogue', '观察房间', %s)",
-        (action_id, status),
+        "declared_intent, params, status) VALUES (%s, 'room-v2', 'char-v2', 'draft-v2', "
+        "'dialogue', '观察房间', %s, %s)",
+        (action_id, json.dumps(_verified_params(), ensure_ascii=False), status),
     )
+
+
+def test_director_plan_accepts_the_same_resolving_turn_snapshot(test_db):
+    _insert_action(test_db)
+    test_db.execute(
+        "UPDATE rooms SET status = 'active', state_version = 1 WHERE room_id = 'room-v2'"
+    )
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, base_state_version) "
+        "VALUES ('turn-v2', 'room-v2', 1, 'resolving', 0)"
+    )
+    test_db.execute(
+        "UPDATE actions SET turn_id = 'turn-v2' WHERE action_id = 'action-v2'"
+    )
+
+    action = dict(
+        test_db.execute("SELECT * FROM actions WHERE action_id = 'action-v2'").fetchone()
+    )
+    room = dict(test_db.execute("SELECT * FROM rooms WHERE room_id = 'room-v2'").fetchone())
+    intent = PlayerIntent(
+        action_id="action-v2",
+        intent_type="dialogue",
+        declared_intent="观察房间",
+        params=_verified_params(),
+    )
+    pipeline = ResolutionPipeline(test_db, _DialogueCompiler())
+
+    assert pipeline._validate_director_plan(action, intent, room) is None
+
+
+def test_shared_turn_scene_arrival_is_not_rejected_as_stale(test_db):
+    _insert_action(test_db)
+    citation = {"source_ref": "module#edge", "page_number": 1}
+    analysis = {
+        "semantic_progression": {
+            "validated": True,
+            "fromNodeId": "gallery",
+            "targetNodeId": "orchid-hall",
+            "ruleCitation": citation,
+        },
+        "director_plan": {
+            "context_version": 0,
+            "preconditions": [],
+            "permissions": [],
+            "state_patch": [],
+            "state_patch_authority": "advisory_only",
+        },
+    }
+    params = {
+        "fromNodeId": "gallery",
+        "targetNodeId": "orchid-hall",
+        "analysis": analysis,
+        "director_plan": analysis["director_plan"],
+    }
+    test_db.execute(
+        "INSERT INTO scenarios (scenario_id, title) VALUES ('scenario-shared-turn', 'Shared turn')"
+    )
+    test_db.execute(
+        "INSERT INTO scenario_versions (scenario_version_id, scenario_id, version_number, created_by) "
+        "VALUES ('version-shared-turn', 'scenario-shared-turn', 1, 'test')"
+    )
+    test_db.execute(
+        "UPDATE rooms SET status = 'active', state_version = 1, scenario_id = 'scenario-shared-turn', "
+        "scenario_version_id = 'version-shared-turn' WHERE room_id = 'room-v2'"
+    )
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, "
+        "input_checksum, runtime_package, created_by) VALUES "
+        "('package-shared-turn', 'version-shared-turn', 1, 'ready', 'shared-turn', %s, 'test')",
+        (
+            json.dumps(
+                {
+                    "semantic_progression_rules": {
+                        "edges": [{
+                            "from_scene_id": "gallery",
+                            "to_scene_id": "orchid-hall",
+                            "relation_type": "transitions_to",
+                            "conditions": [],
+                            "citation": citation,
+                        }],
+                    },
+                }
+            ),
+        ),
+    )
+    test_db.execute(
+        "INSERT INTO room_scene_state (room_id, current_scene, visited_scenes, version) "
+        "VALUES ('room-v2', 'orchid-hall', '[\"gallery\", \"orchid-hall\"]', 2)"
+    )
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, base_state_version) "
+        "VALUES ('turn-shared', 'room-v2', 1, 'resolving', 0)"
+    )
+    test_db.execute(
+        "UPDATE actions SET turn_id = 'turn-shared', params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(params),),
+    )
+
+    action = dict(
+        test_db.execute("SELECT * FROM actions WHERE action_id = 'action-v2'").fetchone()
+    )
+    intent = PlayerIntent(
+        action_id="action-v2",
+        intent_type="move",
+        declared_intent="与队友一起前往兰花展厅",
+        params=params,
+    )
+    transition, error = ResolutionPipeline(
+        test_db, _DialogueCompiler()
+    )._validated_generic_scene_transition(action, intent)
+
+    assert error is None
+    assert transition["already_applied"] is True
 
 
 def test_transition_action_updates_status_and_timeline_atomically(test_db):
@@ -88,6 +236,11 @@ class _SkillCheckCompiler:
             skillName="侦查",
             difficulty="regular",
         )
+
+
+class _DialogueCompiler:
+    async def compile(self, _intent, _scenario, _character):
+        return MechanicCompileResult(triggeredMechanic="dialogue")
 
 
 class _HiddenModifierCompiler:
@@ -156,6 +309,122 @@ class _PendingSuggestionRuleExecutor:
         )
 
 
+class _CompositeChoiceRuleExecutor:
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, intent, _compiled, character, _inventory, _scenario_assets):
+        self.calls.append(intent.declared_intent)
+        return ResolutionResult(
+            actionId=intent.action_id,
+            roomId=character["room_id"],
+            characterId=character["character_id"],
+            mechanic=intent.intent_type,
+            isSuccess=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_v2_composite_action_cancels_legacy_choice_policy_without_a_mid_round_prompt(test_db):
+    _insert_action(test_db)
+    params = _verified_params(
+        composite_steps=[
+            {
+                "step_id": "step_1",
+                "summary": "先撬门",
+                "declared_intent": "先撬门",
+                "intent_type": "skill_check",
+                "params": {},
+                "on_previous_failure": "cancel",
+            },
+            {
+                "step_id": "step_2",
+                "summary": "改从窗户进入",
+                "declared_intent": "改从窗户进入",
+                "intent_type": "move",
+                "params": {},
+                "on_previous_failure": "ask",
+            },
+        ],
+    )
+    test_db.execute(
+        "UPDATE actions SET params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(params, ensure_ascii=False),),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    executor = _CompositeChoiceRuleExecutor()
+    dispatcher = _Dispatcher()
+    pipeline = ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=dispatcher,
+        rule_executor=executor,
+    )
+
+    result = await pipeline.resolve_action("action-v2")
+
+    assert result["status"] == "completed"
+    assert executor.calls == ["先撬门"]
+    phases = result["result"]["metadata"]["composite_action"]["phases"]
+    assert [phase["status"] for phase in phases] == ["failed", "canceled"]
+    assert all(event[1] != "s2c_action_choice_requested" for event in dispatcher.events)
+
+
+@pytest.mark.asyncio
+async def test_v2_composite_choice_rejects_after_legacy_policy_is_auto_canceled(test_db):
+    _insert_action(test_db)
+    params = _verified_params(
+        composite_steps=[
+            {
+                "step_id": "step_1",
+                "summary": "先撬门",
+                "declared_intent": "先撬门",
+                "intent_type": "skill_check",
+                "params": {},
+                "on_previous_failure": "cancel",
+            },
+            {
+                "step_id": "step_2",
+                "summary": "改从窗户进入",
+                "declared_intent": "改从窗户进入",
+                "intent_type": "move",
+                "params": {},
+                "on_previous_failure": "ask",
+            },
+        ],
+    )
+    test_db.execute(
+        "UPDATE actions SET params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(params, ensure_ascii=False),),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    executor = _CompositeChoiceRuleExecutor()
+    pipeline = ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        rule_executor=executor,
+    )
+
+    await pipeline.resolve_action("action-v2")
+
+    with pytest.raises(ActionDraftError) as error:
+        choose_composite_action_continuation(
+            test_db,
+            "char-v2",
+            "action-v2",
+            proceed=True,
+        )
+
+    assert error.value.detail == {"code": "composite_choice_not_pending"}
+
+
 @pytest.mark.asyncio
 async def test_v2_pipeline_records_completed_timeline_and_verifiable_rule_receipt(
     client,
@@ -171,7 +440,7 @@ async def test_v2_pipeline_records_completed_timeline_and_verifiable_rule_receip
     test_db.execute(
         "UPDATE actions SET intent_type = 'skill_check', declared_intent = '我仔细侦查房间', "
         "rule_set_version_id = 'coc7-v1', params = %s WHERE action_id = 'action-v2'",
-        (json.dumps({"skillName": "侦查"}),),
+        (json.dumps(_verified_params(skillName="侦查"), ensure_ascii=False),),
     )
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "
@@ -199,11 +468,35 @@ async def test_v2_pipeline_records_completed_timeline_and_verifiable_rule_receip
     explanation = action["receipt"]
     assert explanation["rule_set_version"] == "coc7-v1"
     assert explanation["authoritative_inputs"]["skill_value"] == 60
+    assert explanation["authoritative_inputs"]["success_level"] == "regular"
     assert explanation["formula"] == "d100 <= 60"
     assert verify_roll_receipt(
         explanation["verification_receipt"],
         secret="receipt-secret",
     ) is True
+
+    bundle = test_db.execute(
+        "SELECT canonical_result, rule_explanation, actor_projection, stage_projection, "
+        "host_console, release_status, released_at FROM resolution_bundles "
+        "WHERE action_id = 'action-v2'"
+    ).fetchone()
+    assert bundle["canonical_result"]["actionId"] == "action-v2"
+    assert bundle["rule_explanation"] == explanation
+    assert bundle["actor_projection"]["action_completed"]["actionId"] == "action-v2"
+    assert bundle["stage_projection"]["actionId"] == "action-v2"
+    assert bundle["host_console"]["actionId"] == "action-v2"
+    assert isinstance(bundle["canonical_result"]["stateVersion"], int)
+    assert bundle["release_status"] == "released"
+    assert bundle["released_at"] is not None
+
+    test_db.execute(
+        "UPDATE actions SET result = %s, receipt = %s WHERE action_id = 'action-v2'",
+        (
+            json.dumps({"tampered": "mutable result"}, ensure_ascii=False),
+            json.dumps({"tampered": "mutable receipt"}, ensure_ascii=False),
+        ),
+    )
+    test_db.commit()
 
     statuses = test_db.execute(
         "SELECT status FROM action_status_events WHERE action_id = 'action-v2' "
@@ -219,14 +512,66 @@ async def test_v2_pipeline_records_completed_timeline_and_verifiable_rule_receip
     receipt = response.json()
     assert receipt["status"] == "completed"
     assert receipt["can_review"] is True
+    assert receipt["result"]["actionId"] == "action-v2"
+    assert "tampered" not in receipt["result"]
+    assert receipt["transaction_id"] == bundle["host_console"]["transactionId"]
+    assert receipt["state_version"] == bundle["canonical_result"]["stateVersion"]
     assert receipt["rule_explanation"]["verification_receipt"]["action_id"] == "action-v2"
+
+
+@pytest.mark.asyncio
+async def test_v2_background_item_claim_adds_inventory_exactly_once(test_db):
+    _insert_action(test_db)
+    test_db.execute(
+        "UPDATE characters SET xlsx_data = %s WHERE character_id = 'char-v2'",
+        (json.dumps({"background": "宝贵之物：父亲留下的黄铜打火机"}),),
+    )
+    test_db.execute(
+        "UPDATE actions SET intent_type = 'retroactive_item_claim', declared_intent = %s, "
+        "params = %s WHERE action_id = 'action-v2'",
+        (
+            "我拿出黄铜打火机",
+            json.dumps(
+                _verified_params(
+                    **{
+                        "claimedItemName": "黄铜打火机",
+                        "justificationText": "这是父亲留下的遗物",
+                    }
+                ),
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    pipeline = ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        state_service=StateService(test_db),
+    )
+
+    first_result = await pipeline.resolve_action("action-v2")
+    second_result = await pipeline.resolve_action("action-v2")
+
+    assert first_result["status"] == "completed"
+    assert second_result["status"] == "completed"
+    items = test_db.execute(
+        "SELECT name, quantity, source FROM inventory WHERE character_id = 'char-v2'"
+    ).fetchall()
+    assert [dict(item) for item in items] == [
+        {"name": "黄铜打火机", "quantity": 1, "source": "backstory"}
+    ]
 
 
 @pytest.mark.asyncio
 async def test_v2_pipeline_does_not_complete_or_project_when_state_persistence_fails(test_db):
     _insert_action(test_db)
     test_db.execute(
-        "UPDATE actions SET intent_type = 'use_item', params = '{}' WHERE action_id = 'action-v2'"
+        "UPDATE actions SET intent_type = 'use_item', params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(_verified_params(), ensure_ascii=False),),
     )
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "
@@ -274,7 +619,7 @@ async def test_failed_v2_pushed_roll_waits_for_host_consequence_without_state_ch
     test_db.execute(
         "UPDATE actions SET intent_type = 'skill_check', params = %s "
         "WHERE action_id = 'action-v2'",
-        (json.dumps({"skillName": "侦查", "pushed": True}),),
+        (json.dumps(_verified_params(skillName="侦查", pushed=True), ensure_ascii=False),),
     )
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "
@@ -313,7 +658,8 @@ async def test_v2_rule_explanation_uses_authoritative_runtime_before_and_after_s
         (json.dumps({"skills": {}, "luck": 40}),),
     )
     test_db.execute(
-        "UPDATE actions SET intent_type = 'use_item', params = '{}' WHERE action_id = 'action-v2'"
+        "UPDATE actions SET intent_type = 'use_item', params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(_verified_params(), ensure_ascii=False),),
     )
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "
@@ -418,7 +764,7 @@ async def test_player_receipt_applies_hidden_modifier_and_never_exposes_source(
     test_db.execute(
         "UPDATE actions SET intent_type = 'skill_check', params = %s "
         "WHERE action_id = 'action-v2'",
-        (json.dumps({"skillName": "侦查"}),),
+        (json.dumps(_verified_params(skillName="侦查"), ensure_ascii=False),),
     )
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "
