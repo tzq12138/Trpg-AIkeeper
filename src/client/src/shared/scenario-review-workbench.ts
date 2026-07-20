@@ -15,3 +15,7 @@ export function summarizeReviewIssues(issues: ReviewIssueSummaryInput[]) {
     { total: 0, blocking: 0, open: 0, notApplicable: 0 },
   );
 }
+
+export function resolveAiDraftIssueId(clickedIssueId?: string, selectedIssueId?: string) {
+  return clickedIssueId || selectedIssueId || '';
+}

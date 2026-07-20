@@ -49,7 +49,11 @@ def build_narrator_context(
 ) -> dict[str, Any]:
     params = _json_object(action.get("params"))
     director_plan = _json_object(params.get("director_plan"))
-    runtime_package = _latest_runtime_package(conn, room.get("scenario_version_id"))
+    runtime_package = _latest_runtime_package(
+        conn,
+        room.get("scenario_version_id"),
+        room.get("runtime_package_version_id"),
+    )
     current_scene = _current_scene(conn, room.get("room_id"))
     current_scene_key = str(
         current_scene.get("current_scene")
@@ -263,12 +267,13 @@ def _has_scene_fact_conflict(text: str, context: dict[str, Any]) -> bool:
 
 def build_manual_action_hints(conn, character: dict[str, Any]) -> dict[str, list[str]]:
     room = conn.execute(
-        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        "SELECT scenario_version_id, runtime_package_version_id FROM rooms WHERE room_id = %s",
         (character["room_id"],),
     ).fetchone()
     runtime_package = _latest_runtime_package(
         conn,
         room.get("scenario_version_id") if room else None,
+        room.get("runtime_package_version_id") if room else None,
     )
     current_scene = _current_scene(conn, character["room_id"])
     scene_key = str(current_scene.get("current_scene") or current_scene.get("node_id") or "")
@@ -295,19 +300,35 @@ def build_manual_action_hints(conn, character: dict[str, Any]) -> dict[str, list
     return {"hints": examples[:5]}
 
 
-def _latest_runtime_package(conn, scenario_version_id: str | None) -> dict[str, Any]:
+def _latest_runtime_package(
+    conn,
+    scenario_version_id: str | None,
+    runtime_package_version_id: str | None = None,
+) -> dict[str, Any]:
     if not scenario_version_id:
         return {}
-    row = conn.execute(
-        """
-        SELECT runtime_package
-        FROM runtime_package_versions
-        WHERE scenario_version_id = %s AND gate_status = 'ready'
-        ORDER BY package_version_number DESC
-        LIMIT 1
-        """,
-        (scenario_version_id,),
-    ).fetchone()
+    if runtime_package_version_id:
+        row = conn.execute(
+            """
+            SELECT runtime_package
+            FROM runtime_package_versions
+            WHERE runtime_package_version_id = %s
+              AND scenario_version_id = %s
+              AND gate_status = 'ready'
+            """,
+            (runtime_package_version_id, scenario_version_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT runtime_package
+            FROM runtime_package_versions
+            WHERE scenario_version_id = %s AND gate_status = 'ready'
+            ORDER BY package_version_number DESC
+            LIMIT 1
+            """,
+            (scenario_version_id,),
+        ).fetchone()
     return _json_object(row.get("runtime_package") if row else None)
 
 

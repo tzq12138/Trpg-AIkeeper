@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import HostStage from './pages/HostStage';
+import HostConsole from './pages/HostConsole';
 import HostLobby from './pages/HostLobby';
 import AdminDashboard from './pages/AdminDashboard';
 import AdminAcceptancePage from './pages/AdminAcceptancePage';
@@ -27,6 +28,9 @@ export default function App() {
 
   if (route.page === 'host-stage') {
     return <HostStage roomId={route.param} />;
+  }
+  if (route.page === 'host-console') {
+    return <HostConsole roomId={route.param} />;
   }
   if (route.page === 'admin') {
     return <AdminDashboard />;

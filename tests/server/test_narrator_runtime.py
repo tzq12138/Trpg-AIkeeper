@@ -9,6 +9,7 @@ from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.player.router_player import _settle_turn_background
 from src.server.models import MechanicCompileResult, NarrationResultDTO, ResolutionResult
 from src.server.ai import narrator as narrator_module
+from src.server.ai.contracts import CombatRoundSuggestion
 from src.server.ai.narrator import (
     _visible_state_changes,
     build_narrator_context,
@@ -71,6 +72,42 @@ class _TurnPipeline:
                 },
             },
         }
+
+
+class _OrderedTurnPipeline:
+    def __init__(self):
+        self.action_ids = []
+
+    async def resolve_action(self, action_id: str):
+        self.action_ids.append(action_id)
+        return {
+            "status": "completed",
+            "action_id": action_id,
+            "result": {"narrative": f"公开结果 {action_id}"},
+        }
+
+
+class _CombatRoundGateway:
+    def __init__(self):
+        self.contexts: list[dict] = []
+
+    async def resolve_combat_round(self, context: dict, room_id: str | None = None):
+        self.contexts.append({"context": context, "room_id": room_id})
+        if len(self.contexts) > 1:
+            return CombatRoundSuggestion(
+                clusters=[
+                    {"actionIds": ["combat-slow"], "publicTitle": "North exit retreat"}
+                ],
+                dependencies=[],
+            )
+        return CombatRoundSuggestion(
+            clusters=[
+                {"actionIds": ["combat-fast"], "publicTitle": "Doorway exchange"}
+            ],
+            dependencies=[
+                {"actionId": "combat-fast", "dependsOnActionIds": []}
+            ],
+        )
 
 
 def test_solo_transition_exposes_a_safe_visible_change_without_node_number():
@@ -1281,6 +1318,117 @@ async def test_turn_settlement_uses_verified_narrator_results_without_second_pub
     turn_event = next(event for event in dispatcher.events if event[1] == "s2c_turn_resolved")
     assert "SECONDARY UNVERIFIED NARRATIVE" not in json.dumps(turn_event[3], ensure_ascii=False)
     assert "verified narrator text for batch-action-0" in json.dumps(turn_event[3], ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_combat_turn_settlement_uses_locked_plan_and_safe_round_summary(client, test_db):
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    second_character_id = f"{character_id}-second"
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token, status, xlsx_data) "
+        "VALUES (%s, %s, 'Second', 'second-token', 'ready', %s)",
+        (second_character_id, room_id, json.dumps({"name": "Ben"}, ensure_ascii=False)),
+    )
+    test_db.execute("UPDATE characters SET status = 'ready' WHERE character_id = %s", (character_id,))
+    test_db.execute(
+        "INSERT INTO encounters (encounter_id, room_id, type, status, current_round) "
+        "VALUES ('combat-settlement-encounter', %s, 'combat', 'active', 4)",
+        (room_id,),
+    )
+    for participant_id, dex in ((character_id, 35), (second_character_id, 80)):
+        test_db.execute(
+            "INSERT INTO encounter_participants (encounter_id, character_id, dex) VALUES "
+            "('combat-settlement-encounter', %s, %s)",
+            (participant_id, dex),
+        )
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode, encounter_id) "
+        "VALUES ('combat-settlement-turn', %s, 1, 'collecting', 'combat', 'combat-settlement-encounter')",
+        (room_id,),
+    )
+    for action_id, participant_id, intent, params in (
+        ('combat-slow', character_id, '我掩护安娜后退', {'depends_on_action_ids': ['combat-fast']}),
+        ('combat-fast', second_character_id, '我朝走廊中的人影开枪', {}),
+    ):
+        test_db.execute(
+            "INSERT INTO actions (action_id, room_id, character_id, turn_id, intent_type, declared_intent, params, status) "
+            "VALUES (%s, %s, %s, 'combat-settlement-turn', 'combat_action', %s, %s, 'queued')",
+            (action_id, room_id, participant_id, intent, json.dumps(params)),
+        )
+        test_db.execute(
+            "INSERT INTO resolution_bundles "
+            "(action_id, room_id, character_id, canonical_result, rule_explanation, "
+            "actor_projection, stage_projection, host_console, release_status) "
+            "VALUES (%s, %s, %s, '{}', '{}', '{}', %s, '{}', 'released')",
+            (
+                action_id,
+                room_id,
+                participant_id,
+                json.dumps({"narrativeText": f"公开结果 {action_id}"}, ensure_ascii=False),
+            ),
+        )
+    test_db.commit()
+    pipeline = _OrderedTurnPipeline()
+    dispatcher = _RecordingDispatcher()
+    gateway = _CombatRoundGateway()
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            db=test_db,
+            pg_db=None,
+            pipeline=pipeline,
+            dispatcher=dispatcher,
+            gateway=gateway,
+        )
+    )
+
+    await _settle_turn_background(app, room_id, 'combat-settlement-turn')
+
+    assert pipeline.action_ids == ['combat-fast', 'combat-slow']
+    locked = next(event for event in dispatcher.events if event[1] == 's2c_combat_round_locked')
+    assert locked[3]['round_number'] == 4
+    assert [cluster['public_title'] for cluster in locked[3]['public_clusters']] == [
+        'Doorway exchange',
+        '当前冲突',
+    ]
+    assert '我朝走廊中的人影开枪' not in json.dumps(locked[3], ensure_ascii=False)
+    assert [item['action_id'] for item in gateway.contexts[0]['context']['public_actions']] == [
+        'combat-fast',
+        'combat-slow',
+    ]
+    assert len(gateway.contexts) == 2
+    assert gateway.contexts[1]['context']['replan_after_resolution'] is True
+    assert gateway.contexts[1]['context']['public_actions'] == [
+        {
+            'action_id': 'combat-slow',
+            'global_order': 2,
+            'rule_binding': 'combat_action',
+            'declared_intent': '我掩护安娜后退',
+        }
+    ]
+    assert gateway.contexts[1]['context']['completed_public_facts'] == [
+        {'action_id': 'combat-fast', 'text': '公开结果 combat-fast'},
+    ]
+    stored_plan = test_db.execute(
+        "SELECT combat_plan FROM room_turns WHERE turn_id = 'combat-settlement-turn'"
+    ).fetchone()['combat_plan']
+    stored_plan = json.loads(stored_plan) if isinstance(stored_plan, str) else stored_plan
+    assert [step['action_id'] for step in stored_plan['steps']] == ['combat-fast', 'combat-slow']
+    assert stored_plan['resolved_public_facts'] == [
+        {'action_id': 'combat-fast', 'text': '公开结果 combat-fast'},
+        {'action_id': 'combat-slow', 'text': '公开结果 combat-slow'},
+    ]
+    turn_event = next(event for event in dispatcher.events if event[1] == 's2c_turn_resolved')
+    assert 'actions' not in turn_event[3]
+    assert turn_event[3]['combat_summary']['title'] == '第 4 轮结束'
+    encounter = test_db.execute(
+        "SELECT current_round FROM encounters WHERE encounter_id = 'combat-settlement-encounter'"
+    ).fetchone()
+    next_turn = test_db.execute(
+        "SELECT mode, encounter_id FROM room_turns WHERE room_id = %s AND turn_index = 2",
+        (room_id,),
+    ).fetchone()
+    assert encounter['current_round'] == 5
+    assert next_turn == {'mode': 'combat', 'encounter_id': 'combat-settlement-encounter'}
 
 
 @pytest.mark.asyncio

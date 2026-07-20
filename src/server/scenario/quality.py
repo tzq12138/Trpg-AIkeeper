@@ -27,7 +27,12 @@ class QualityReport(BaseModel):
 
 
 class QualityReportGenerator:
-    def evaluate(self, knowledge_graph: dict) -> QualityReport:
+    def evaluate(
+        self,
+        knowledge_graph: dict,
+        *,
+        require_complete_spoiler_boundaries: bool = False,
+    ) -> QualityReport:
         issues: list[QualityIssue] = []
 
         if not knowledge_graph:
@@ -127,6 +132,20 @@ class QualityReportGenerator:
                 code="missing_spoiler_boundaries", blocking=True,
                 target_type="spoiler_boundary", resolution_hint="定义玩家、房主和管理员可见边界",
             ))
+        if require_complete_spoiler_boundaries:
+            missing_boundaries = _missing_spoiler_boundaries(knowledge_graph)
+            if missing_boundaries:
+                labels = "、".join(missing_boundaries[:4])
+                suffix = "等" if len(missing_boundaries) > 4 else ""
+                issues.append(_issue(
+                    "spoiler",
+                    "warning",
+                    f"防剧透边界未完整覆盖：{labels}{suffix}",
+                    code="spoiler_boundary_coverage_incomplete",
+                    blocking=True,
+                    target_type="spoiler_boundary",
+                    resolution_hint="为真相、结局、隐藏 NPC 与未发现线索补充带原文引用的可见边界",
+                ))
 
         solo_adventure = knowledge_graph.get("solo_adventure")
         if isinstance(solo_adventure, dict):
@@ -167,13 +186,39 @@ class QualityReportGenerator:
                 )
             )
 
-        scenes_with_images = [s for s in scenes if s.get("image_url")]
+        scenes_with_images = [
+            scene for scene in scenes
+            if scene.get("image_url") or scene.get("image_asset_id")
+        ]
         if scenes and not scenes_with_images:
             issues.append(
                 _issue(
                     "assets", "info", "场景缺少配图",
                     code="scene_images_missing", target_type="asset",
                     resolution_hint="绑定场景配图，或在审核台声明文字场景模式",
+                )
+            )
+
+        supporting_visuals = [
+            target
+            for collection in (npcs, knowledge_graph.get("items", []), clues)
+            for target in collection
+            if isinstance(target, dict)
+        ]
+        missing_supporting_visuals = [
+            target
+            for target in supporting_visuals
+            if not target.get("image_url") and not target.get("image_asset_id")
+        ]
+        if missing_supporting_visuals:
+            issues.append(
+                _issue(
+                    "assets",
+                    "info",
+                    f"{len(missing_supporting_visuals)} 个 NPC、物品或线索缺少配图",
+                    code="supporting_images_missing",
+                    target_type="asset",
+                    resolution_hint="按需绑定 NPC、物品或线索配图，或在审核台声明采用纯文字素材模式",
                 )
             )
 
@@ -215,4 +260,75 @@ def _issue(
         target_type=target_type,
         target_key=target_key,
         resolution_hint=resolution_hint,
+    )
+
+
+def _missing_spoiler_boundaries(knowledge_graph: dict) -> list[str]:
+    required = _required_spoiler_targets(knowledge_graph)
+    boundaries = knowledge_graph.get("spoiler_boundaries") or []
+    if not isinstance(boundaries, list):
+        return [label for _, label in required]
+
+    covered: set[str] = set()
+    for boundary in boundaries:
+        if not isinstance(boundary, dict):
+            continue
+        target_type = str(boundary.get("target_type") or "").strip()
+        target_id = str(boundary.get("target_id") or "").strip()
+        if not _is_complete_spoiler_boundary(boundary):
+            continue
+        covered.add(f"{target_type}:{target_id}")
+
+    return [label for target, label in required if target not in covered]
+
+
+def _required_spoiler_targets(knowledge_graph: dict) -> list[tuple[str, str]]:
+    targets: list[tuple[str, str]] = []
+    if isinstance(knowledge_graph.get("truth"), dict) and knowledge_graph["truth"]:
+        targets.append(("truth:truth", "幕后真相"))
+    for ending in knowledge_graph.get("endings") or []:
+        if not isinstance(ending, dict):
+            continue
+        ending_id = str(ending.get("ending_id") or ending.get("id") or "").strip()
+        if ending_id:
+            targets.append((f"ending:{ending_id}", f"结局 {ending.get('name') or ending_id}"))
+    for npc in knowledge_graph.get("npcs") or []:
+        if not isinstance(npc, dict) or not npc.get("is_hidden"):
+            continue
+        npc_id = str(npc.get("npc_id") or npc.get("id") or "").strip()
+        if npc_id:
+            targets.append((f"npc:{npc_id}", f"隐藏 NPC {npc.get('name') or npc_id}"))
+    for clue in knowledge_graph.get("clues") or []:
+        if not isinstance(clue, dict) or not clue.get("is_hidden"):
+            continue
+        clue_id = str(clue.get("clue_id") or clue.get("id") or "").strip()
+        if clue_id:
+            targets.append((f"clue:{clue_id}", f"未发现线索 {clue.get('name') or clue_id}"))
+    assets = knowledge_graph.get("assets") or {}
+    asset_items = assets.get("items") if isinstance(assets, dict) else {}
+    if isinstance(asset_items, dict):
+        for asset_id, asset in asset_items.items():
+            if isinstance(asset, dict) and asset.get("is_secret"):
+                targets.append((
+                    f"asset:{asset_id}",
+                    f"私密素材 {asset.get('name') or asset_id}",
+                ))
+    return targets
+
+
+def _is_complete_spoiler_boundary(boundary: dict) -> bool:
+    citation = boundary.get("citation")
+    player_visibility = str(boundary.get("player_visibility") or "").strip()
+    unlock_clues = boundary.get("unlock_clues")
+    return (
+        str(boundary.get("id") or "").strip()
+        and str(boundary.get("target_type") or "").strip() in {"truth", "ending", "npc", "clue", "asset"}
+        and str(boundary.get("target_id") or "").strip()
+        and player_visibility in {"public", "discovered", "hidden"}
+        and str(boundary.get("host_visibility") or "").strip() in {"summary", "complete"}
+        and str(boundary.get("player_description") or "").strip()
+        and isinstance(unlock_clues, list)
+        and (player_visibility != "discovered" or any(str(clue_id).strip() for clue_id in unlock_clues))
+        and isinstance(citation, dict)
+        and str(citation.get("source_part_id") or "").strip()
     )

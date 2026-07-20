@@ -1,12 +1,20 @@
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from src.server.engine.action_lifecycle import transition_action
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.engine.roll_receipt import verify_roll_receipt
 from src.server.engine.state_service import StateService
-from src.server.models import MechanicCompileResult, PlayerIntent, ResolutionResult
+from src.server.models import (
+    ActionDraftStepDTO,
+    DirectorActionStepDTO,
+    MechanicCompileResult,
+    PlayerIntent,
+    ResolutionResult,
+)
+from src.server.player.action_service import ActionDraftError, choose_composite_action_continuation
 
 
 def _verified_params(**extra):
@@ -21,6 +29,18 @@ def _verified_params(**extra):
     }
     payload.update(extra)
     return payload
+
+
+@pytest.mark.parametrize("step_type", (ActionDraftStepDTO, DirectorActionStepDTO))
+def test_composite_step_contract_rejects_mid_round_choice_policy(step_type):
+    with pytest.raises(ValidationError):
+        step_type(
+            step_id="step-2",
+            summary="进入房间",
+            declared_intent="进入房间",
+            intent_type="move",
+            on_previous_failure="ask",
+        )
 
 
 def _insert_action(test_db, *, action_id="action-v2", status="queued"):
@@ -289,6 +309,122 @@ class _PendingSuggestionRuleExecutor:
         )
 
 
+class _CompositeChoiceRuleExecutor:
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, intent, _compiled, character, _inventory, _scenario_assets):
+        self.calls.append(intent.declared_intent)
+        return ResolutionResult(
+            actionId=intent.action_id,
+            roomId=character["room_id"],
+            characterId=character["character_id"],
+            mechanic=intent.intent_type,
+            isSuccess=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_v2_composite_action_cancels_legacy_choice_policy_without_a_mid_round_prompt(test_db):
+    _insert_action(test_db)
+    params = _verified_params(
+        composite_steps=[
+            {
+                "step_id": "step_1",
+                "summary": "先撬门",
+                "declared_intent": "先撬门",
+                "intent_type": "skill_check",
+                "params": {},
+                "on_previous_failure": "cancel",
+            },
+            {
+                "step_id": "step_2",
+                "summary": "改从窗户进入",
+                "declared_intent": "改从窗户进入",
+                "intent_type": "move",
+                "params": {},
+                "on_previous_failure": "ask",
+            },
+        ],
+    )
+    test_db.execute(
+        "UPDATE actions SET params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(params, ensure_ascii=False),),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    executor = _CompositeChoiceRuleExecutor()
+    dispatcher = _Dispatcher()
+    pipeline = ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=dispatcher,
+        rule_executor=executor,
+    )
+
+    result = await pipeline.resolve_action("action-v2")
+
+    assert result["status"] == "completed"
+    assert executor.calls == ["先撬门"]
+    phases = result["result"]["metadata"]["composite_action"]["phases"]
+    assert [phase["status"] for phase in phases] == ["failed", "canceled"]
+    assert all(event[1] != "s2c_action_choice_requested" for event in dispatcher.events)
+
+
+@pytest.mark.asyncio
+async def test_v2_composite_choice_rejects_after_legacy_policy_is_auto_canceled(test_db):
+    _insert_action(test_db)
+    params = _verified_params(
+        composite_steps=[
+            {
+                "step_id": "step_1",
+                "summary": "先撬门",
+                "declared_intent": "先撬门",
+                "intent_type": "skill_check",
+                "params": {},
+                "on_previous_failure": "cancel",
+            },
+            {
+                "step_id": "step_2",
+                "summary": "改从窗户进入",
+                "declared_intent": "改从窗户进入",
+                "intent_type": "move",
+                "params": {},
+                "on_previous_failure": "ask",
+            },
+        ],
+    )
+    test_db.execute(
+        "UPDATE actions SET params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(params, ensure_ascii=False),),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    executor = _CompositeChoiceRuleExecutor()
+    pipeline = ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        rule_executor=executor,
+    )
+
+    await pipeline.resolve_action("action-v2")
+
+    with pytest.raises(ActionDraftError) as error:
+        choose_composite_action_continuation(
+            test_db,
+            "char-v2",
+            "action-v2",
+            proceed=True,
+        )
+
+    assert error.value.detail == {"code": "composite_choice_not_pending"}
+
+
 @pytest.mark.asyncio
 async def test_v2_pipeline_records_completed_timeline_and_verifiable_rule_receipt(
     client,
@@ -339,6 +475,29 @@ async def test_v2_pipeline_records_completed_timeline_and_verifiable_rule_receip
         secret="receipt-secret",
     ) is True
 
+    bundle = test_db.execute(
+        "SELECT canonical_result, rule_explanation, actor_projection, stage_projection, "
+        "host_console, release_status, released_at FROM resolution_bundles "
+        "WHERE action_id = 'action-v2'"
+    ).fetchone()
+    assert bundle["canonical_result"]["actionId"] == "action-v2"
+    assert bundle["rule_explanation"] == explanation
+    assert bundle["actor_projection"]["action_completed"]["actionId"] == "action-v2"
+    assert bundle["stage_projection"]["actionId"] == "action-v2"
+    assert bundle["host_console"]["actionId"] == "action-v2"
+    assert isinstance(bundle["canonical_result"]["stateVersion"], int)
+    assert bundle["release_status"] == "released"
+    assert bundle["released_at"] is not None
+
+    test_db.execute(
+        "UPDATE actions SET result = %s, receipt = %s WHERE action_id = 'action-v2'",
+        (
+            json.dumps({"tampered": "mutable result"}, ensure_ascii=False),
+            json.dumps({"tampered": "mutable receipt"}, ensure_ascii=False),
+        ),
+    )
+    test_db.commit()
+
     statuses = test_db.execute(
         "SELECT status FROM action_status_events WHERE action_id = 'action-v2' "
         "ORDER BY status_event_id"
@@ -353,6 +512,10 @@ async def test_v2_pipeline_records_completed_timeline_and_verifiable_rule_receip
     receipt = response.json()
     assert receipt["status"] == "completed"
     assert receipt["can_review"] is True
+    assert receipt["result"]["actionId"] == "action-v2"
+    assert "tampered" not in receipt["result"]
+    assert receipt["transaction_id"] == bundle["host_console"]["transactionId"]
+    assert receipt["state_version"] == bundle["canonical_result"]["stateVersion"]
     assert receipt["rule_explanation"]["verification_receipt"]["action_id"] == "action-v2"
 
 

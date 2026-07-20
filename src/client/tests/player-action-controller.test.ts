@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'vitest';
 import {
   canStartNewAction,
+  AUTO_CONFIRM_GRACE_MS,
   createConfirmIdempotencyKey,
   isActionInFlight,
   mergeAuthoritativeReceipt,
   shouldAutoConfirmDraft,
 } from '../src/shared/player-action-controller';
+import { actionStatusLabel } from '../src/components/PlayerActionComposer';
 import type { ActionDraftDTO, ActionReceiptDTO } from '../src/shared/types';
 
 
@@ -34,6 +36,12 @@ describe('player action controller', () => {
     expect(shouldAutoConfirmDraft({ ...draft, requires_confirmation: false })).toBe(true);
   });
 
+  test('gives eligible low-risk drafts a two-second cancellation window', () => {
+    expect(AUTO_CONFIRM_GRACE_MS).toBe(2000);
+    expect(shouldAutoConfirmDraft({ ...draft, requires_confirmation: false })).toBe(true);
+    expect(shouldAutoConfirmDraft(draft)).toBe(false);
+  });
+
   test('does not auto-confirm a draft still awaiting clarification', () => {
     expect(shouldAutoConfirmDraft({
       ...draft,
@@ -47,6 +55,12 @@ describe('player action controller', () => {
     expect(isActionInFlight('queued')).toBe(true);
     expect(isActionInFlight('awaiting_host_exception')).toBe(true);
     expect(isActionInFlight('completed')).toBe(false);
+  });
+
+  test('keeps an armed prepared action visible without blocking a new declaration', () => {
+    expect(isActionInFlight('armed' as never)).toBe(false);
+    expect(canStartNewAction(null, { ...queuedReceipt, status: 'armed' as never })).toBe(true);
+    expect(actionStatusLabel('armed' as never)).toBe('已布防，等待公开规则事件');
   });
 
   test('allows a new action after the previous receipt is completed', () => {

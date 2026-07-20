@@ -31,14 +31,16 @@ def _insert_clue(conn, room_id, character_id, text, is_private=True):
 
 def test_private_clue_discovery(client, test_db):
     room_id, _, char_id, token = _setup_room_and_player(client, test_db)
-    _insert_clue(test_db, room_id, char_id, "A secret message")
+    clue_id = _insert_clue(test_db, room_id, char_id, "A secret message")
 
     resp = client.get("/api/player/clues", headers={"X-Room-Token": token})
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["clues"]) == 1
+    assert data["clues"][0]["id"] == clue_id
     assert data["clues"][0]["text"] == "A secret message"
     assert data["clues"][0]["is_private"] is True
+    assert data["clues"][0]["is_shared"] is False
     assert data["clues"][0]["is_owner"] is True
 
 
@@ -57,6 +59,15 @@ def test_clue_sharing_creates_public_version(client, test_db):
     assert "share_id" in data
     assert "书房的保险箱" in data["public_version"]
     assert "Important detail" in data["public_version"]
+    original = test_db.execute(
+        "SELECT text, is_private FROM clues WHERE clue_id = %s", (clue_id,)
+    ).fetchone()
+    public_copy = test_db.execute(
+        "SELECT public_version FROM clue_shares WHERE clue_id = %s", (clue_id,)
+    ).fetchone()
+    assert original["text"] == "Secret clue text"
+    assert original["is_private"] is True
+    assert "书房的保险箱" in public_copy["public_version"]
 
     # Safe default: share without public_version gives safe fallback
     room_id2, _, char_id2, token2 = _setup_room_and_player(client, test_db)

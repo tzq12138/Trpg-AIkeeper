@@ -667,6 +667,26 @@ def _asset_binding_service(request: Request):
     )
 
 
+def _scene_image_service(request: Request):
+    from .scenario.scene_image_service import SceneImageService
+
+    asset_root = getattr(request.app.state, "scenario_asset_root", None)
+    return SceneImageService(
+        request.app.state.db,
+        asset_root=Path(asset_root) if asset_root else None,
+        gateway=getattr(request.app.state, "gateway", None),
+    )
+
+
+def _scene_image_error(exc: Exception) -> HTTPException:
+    code = str(exc)
+    if code.endswith("_provider_unavailable"):
+        return HTTPException(503, code)
+    if code in {"image_scene_not_found", "scenario_review_draft_not_found"}:
+        return HTTPException(404, code)
+    return HTTPException(400, code)
+
+
 def _verify_asset_binding_version(conn, scenario_id: str, scenario_version_id: str) -> None:
     row = conn.execute(
         "SELECT 1 FROM scenario_versions WHERE scenario_version_id = %s AND scenario_id = %s",
@@ -674,6 +694,92 @@ def _verify_asset_binding_version(conn, scenario_id: str, scenario_version_id: s
     ).fetchone()
     if not row:
         raise HTTPException(404, "剧本版本不存在")
+
+
+@router.post("/scenarios/{scenario_id}/versions/{scenario_version_id}/image-generations/suggestions")
+async def suggest_scene_images(
+    request: Request,
+    scenario_id: str,
+    scenario_version_id: str,
+):
+    _require_admin(request)
+    _verify_asset_binding_version(request.app.state.db, scenario_id, scenario_version_id)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    requested_types = body.get("target_types") if isinstance(body, dict) else None
+    target_types = {
+        str(target_type).strip()
+        for target_type in requested_types
+        if str(target_type).strip()
+    } if isinstance(requested_types, list) else {"scene"}
+    try:
+        return await _scene_image_service(request).suggest(
+            scenario_id,
+            scenario_version_id,
+            target_types=target_types or {"scene"},
+        )
+    except Exception as exc:
+        from .scenario.scene_image_service import SceneImageError
+
+        if isinstance(exc, SceneImageError):
+            raise _scene_image_error(exc) from exc
+        logger.exception("Scene image suggestion failed version=%s", scenario_version_id)
+        raise HTTPException(500, "场景配图建议失败") from exc
+
+
+@router.post("/scenarios/{scenario_id}/versions/{scenario_version_id}/image-generations/preview")
+async def preview_scene_image(
+    request: Request,
+    scenario_id: str,
+    scenario_version_id: str,
+):
+    _require_admin(request)
+    _verify_asset_binding_version(request.app.state.db, scenario_id, scenario_version_id)
+    body = await request.json()
+    try:
+        return await _scene_image_service(request).preview(
+            scenario_id,
+            scenario_version_id,
+            suggestion=body.get("suggestion") if isinstance(body.get("suggestion"), dict) else {},
+            prompt=str(body.get("prompt") or ""),
+            visibility=str(body.get("visibility") or "host_only"),
+            size=str(body.get("size") or "1024x1024"),
+        )
+    except Exception as exc:
+        from .scenario.scene_image_service import SceneImageError
+
+        if isinstance(exc, SceneImageError):
+            raise _scene_image_error(exc) from exc
+        logger.exception("Scene image preview failed version=%s", scenario_version_id)
+        raise HTTPException(500, "场景配图预览失败") from exc
+
+
+@router.post("/scenarios/{scenario_id}/versions/{scenario_version_id}/image-generations/adopt")
+async def adopt_scene_image(
+    request: Request,
+    scenario_id: str,
+    scenario_version_id: str,
+):
+    _require_admin(request)
+    _verify_asset_binding_version(request.app.state.db, scenario_id, scenario_version_id)
+    body = await request.json()
+    try:
+        return _scene_image_service(request).adopt(
+            scenario_id,
+            scenario_version_id,
+            preview_token=str(body.get("preview_token") or ""),
+            data_url=str(body.get("data_url") or ""),
+            adopted_by=_get_account_id(request),
+        )
+    except Exception as exc:
+        from .scenario.scene_image_service import SceneImageError
+
+        if isinstance(exc, SceneImageError):
+            raise _scene_image_error(exc) from exc
+        logger.exception("Scene image adoption failed version=%s", scenario_version_id)
+        raise HTTPException(500, "场景配图采用失败") from exc
 
 
 @router.post("/scenarios/{scenario_id}/versions/{scenario_version_id}/asset-bindings/generate")

@@ -5,7 +5,7 @@ import uuid
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from ..ai.contracts import KpResponse, NarrativePayload
 from ..ai.mechanic_compiler import MechanicCompiler
@@ -18,6 +18,7 @@ from ..ai.narrator import (
 )
 from .action_lifecycle import complete_action, transition_action
 from .fallback_narrative import render_action_aware_fallback
+from .host_autonomy import decide_host_autonomy
 from .projection import ProjectionDispatcher
 from .retro_items import RetroactiveClaimError, RetroactiveItemService
 from .roll_receipt import create_roll_receipt
@@ -26,6 +27,13 @@ from .rule_executor import RuleExecutor
 logger = logging.getLogger(__name__)
 
 _NARRATOR_TIMEOUT_SECONDS = 30
+_SAFE_LAST_OBSERVED_DISTANCES = {
+    "engaged": "近处",
+    "near": "近距离",
+    "short": "短距离",
+    "medium": "中距离",
+    "long": "远距离",
+}
 
 
 def _rule_policy_from_metadata(value: Any) -> dict[str, Any]:
@@ -66,6 +74,7 @@ class ResolutionPipeline:
         spoiler_guard=None,
         gateway=None,
         state_service=None,
+        host_connection_checker: Callable[[str], bool] | None = None,
     ):
         self.conn = conn
         self.compiler = compiler or MechanicCompiler(api_key="")
@@ -74,6 +83,7 @@ class ResolutionPipeline:
         self.spoiler_guard = spoiler_guard
         self.gateway = gateway
         self.state_service = state_service
+        self.host_connection_checker = host_connection_checker
 
     async def resolve_queued_room(self, room_id: str) -> dict[str, Any]:
         rows = self.conn.execute(
@@ -94,6 +104,267 @@ class ResolutionPipeline:
 
         return {"room_id": room_id, "resolved": len(results), "results": results}
 
+    @staticmethod
+    def _composite_steps(params: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_steps = params.get("composite_steps") if isinstance(params, dict) else None
+        if not isinstance(raw_steps, list) or len(raw_steps) != 2:
+            return []
+        allowed_types = {
+            "dialogue",
+            "skill_check",
+            "move",
+            "use_item",
+            "show_item",
+            "combat_action",
+            "chase_action",
+        }
+        accepted: list[dict[str, Any]] = []
+        for item in raw_steps:
+            if not isinstance(item, dict):
+                return []
+            intent_type = str(item.get("intent_type") or "")
+            step_id = str(item.get("step_id") or "")
+            declared_intent = str(item.get("declared_intent") or "")
+            if (
+                intent_type not in allowed_types
+                or not step_id
+                or not declared_intent
+                or not isinstance(item.get("params") or {}, dict)
+                or any(step["step_id"] == step_id for step in accepted)
+            ):
+                return []
+            policy = str(item.get("on_previous_failure") or "cancel")
+            if policy not in {"cancel", "continue"}:
+                policy = "cancel"
+            condition = str(item.get("execution_condition") or (
+                "always" if policy == "continue" else "previous_step_success"
+            ))
+            if condition not in {"always", "previous_step_success", "previous_step_failure"}:
+                return []
+            if condition == "always":
+                policy = "continue"
+            accepted.append({
+                "step_id": step_id,
+                "summary": str(item.get("summary") or declared_intent),
+                "declared_intent": declared_intent,
+                "intent_type": intent_type,
+                "params": dict(item.get("params") or {}),
+                "execution_condition": condition if len(accepted) else "always",
+                "on_previous_failure": policy,
+            })
+        return accepted
+
+    async def _resolve_composite_action(
+        self,
+        intent: PlayerIntent,
+        initial_compiled: MechanicCompileResult,
+        steps: list[dict[str, Any]],
+        scenario: dict[str, Any],
+        character: dict[str, Any],
+        inventory: list[dict[str, Any]],
+        scenario_assets: dict[str, Any],
+    ) -> tuple[MechanicCompileResult, ResolutionResult]:
+        working_character = dict(character)
+        working_character["xlsx_data"] = dict(character.get("xlsx_data") or {})
+        phases: list[dict[str, Any]] = []
+        merged_metadata: dict[str, Any] = {}
+        mutations: list[dict[str, Any]] = []
+        reveal_steps: list[dict[str, Any]] = []
+        cascading_state_changes: list[str] = []
+        overall_success = True
+        last_compiled = initial_compiled
+        last_mechanic = initial_compiled.triggered_mechanic
+        resume_progress = intent.params.get("composite_progress")
+        resume_decision = ""
+        start_index = 0
+        if isinstance(resume_progress, dict) and resume_progress.get("decision") in {"continue", "cancel"}:
+            try:
+                first_resolution = ResolutionResult.model_validate(
+                    resume_progress["first_resolution"]
+                )
+            except (KeyError, TypeError, ValueError):
+                first_resolution = None
+            if first_resolution is not None and str(resume_progress.get("pending_step_id") or "") == steps[1]["step_id"]:
+                stored_composite = first_resolution.metadata.get("composite_action")
+                phases = list(stored_composite.get("phases") or []) if isinstance(stored_composite, dict) else []
+                phases = [phase for phase in phases if phase.get("status") != "awaiting_choice"]
+                merged_metadata = {
+                    key: value
+                    for key, value in (first_resolution.metadata or {}).items()
+                    if key != "composite_action"
+                }
+                mutations = list(first_resolution.mutations)
+                reveal_steps = list(first_resolution.reveal_steps)
+                cascading_state_changes = list(first_resolution.cascading_state_changes)
+                overall_success = first_resolution.is_success
+                last_mechanic = first_resolution.mechanic
+                resume_decision = str(resume_progress["decision"])
+                start_index = 1
+                if resume_decision == "cancel":
+                    phases.append({
+                        "stepId": steps[1]["step_id"],
+                        "summary": steps[1]["summary"],
+                        "intentType": steps[1]["intent_type"],
+                        "status": "canceled",
+                        "failurePolicy": "cancel",
+                    })
+
+        for index, step in enumerate(steps[start_index:], start=start_index):
+            if resume_decision == "cancel":
+                break
+            if index and step["execution_condition"] == "previous_step_failure" and overall_success:
+                phases.append({
+                    "stepId": step["step_id"],
+                    "summary": step["summary"],
+                    "intentType": step["intent_type"],
+                    "status": "skipped_condition",
+                    "executionCondition": step["execution_condition"],
+                })
+                break
+            if (
+                index
+                and not overall_success
+                and step["execution_condition"] == "previous_step_success"
+            ):
+                policy = step["on_previous_failure"]
+                if policy != "continue":
+                    phases.append({
+                        "stepId": step["step_id"],
+                        "summary": step["summary"],
+                        "intentType": step["intent_type"],
+                        "status": "canceled",
+                        "executionCondition": step["execution_condition"],
+                        "failurePolicy": policy,
+                    })
+                    break
+            step_intent = PlayerIntent(
+                action_id=intent.action_id,
+                intent_type=step["intent_type"],
+                declared_intent=step["declared_intent"],
+                base_state_version=intent.base_state_version,
+                params=step["params"],
+            )
+            compiled = (
+                initial_compiled
+                if index == 0
+                else await self.compiler.compile(step_intent, scenario or {}, working_character)
+            )
+            last_compiled = compiled
+            step_resolution = await self.rule_executor.execute(
+                step_intent,
+                compiled,
+                working_character,
+                inventory,
+                scenario_assets,
+            )
+            phases.append({
+                "stepId": step["step_id"],
+                "summary": step["summary"],
+                "intentType": step["intent_type"],
+                "status": "completed" if step_resolution.is_success else "failed",
+                "executionCondition": step["execution_condition"],
+                "failurePolicy": step["on_previous_failure"],
+                "mechanic": step_resolution.mechanic,
+            })
+            merged_metadata.update(step_resolution.metadata or {})
+            mutations.extend(step_resolution.mutations)
+            reveal_steps.extend(step_resolution.reveal_steps)
+            cascading_state_changes.extend(step_resolution.cascading_state_changes)
+            overall_success = overall_success and step_resolution.is_success
+            last_mechanic = step_resolution.mechanic
+            self._apply_composite_mutations(working_character, step_resolution.mutations)
+
+        composite_metadata: dict[str, Any] = {
+            "phases": phases,
+            "action_cost": 1,
+        }
+        if phases and phases[-1].get("status") == "awaiting_choice":
+            if mutations:
+                merged_metadata.setdefault("pending_rule_suggestions", []).append({
+                    "mechanic": "composite_action",
+                    "reason_code": "composite_choice_requires_host",
+                    "status": "pending_host_confirmation",
+                })
+            else:
+                composite_metadata["awaiting_choice"] = {
+                    "step_id": steps[1]["step_id"],
+                    "summary": steps[1]["summary"],
+                    "question": "第一步未成功，仍要继续下一步吗？",
+                }
+        merged_metadata["composite_action"] = composite_metadata
+        return last_compiled, ResolutionResult(
+            actionId=intent.action_id,
+            roomId=character.get("room_id", ""),
+            characterId=character.get("character_id", ""),
+            mechanic=last_mechanic,
+            isSuccess=overall_success,
+            metadata=merged_metadata,
+            mutations=mutations,
+            revealSteps=reveal_steps,
+            cascadingStateChanges=cascading_state_changes,
+        )
+
+    @staticmethod
+    def _apply_composite_mutations(character: dict[str, Any], mutations: list[dict[str, Any]]) -> None:
+        sheet = character.get("xlsx_data")
+        if not isinstance(sheet, dict):
+            sheet = {}
+            character["xlsx_data"] = sheet
+        for mutation in mutations:
+            if not isinstance(mutation, dict) or mutation.get("op") not in {"add", "replace"}:
+                continue
+            path = str(mutation.get("path") or "")
+            if not path.startswith("/character/") or "/" in path.removeprefix("/character/"):
+                continue
+            sheet[path.removeprefix("/character/")] = mutation.get("value")
+
+    async def _await_composite_choice(
+        self,
+        action: dict[str, Any],
+        resolution: ResolutionResult,
+    ) -> dict[str, Any]:
+        composite = resolution.metadata.get("composite_action") or {}
+        awaiting_choice = composite.get("awaiting_choice") if isinstance(composite, dict) else None
+        if not isinstance(awaiting_choice, dict):
+            raise ValueError("composite_choice_missing")
+        params = self._json_value(action.get("params")) or {}
+        params["composite_progress"] = {
+            "pending_step_id": awaiting_choice["step_id"],
+            "first_resolution": resolution.model_dump(by_alias=True),
+        }
+        self.conn.execute(
+            "UPDATE actions SET params = %s WHERE action_id = %s",
+            (json.dumps(params, ensure_ascii=False), action["action_id"]),
+        )
+        result_payload = resolution.model_dump(by_alias=True)
+        transitioned = transition_action(
+            self.conn,
+            action["action_id"],
+            from_statuses=("resolving",),
+            to_status="awaiting_player_choice",
+            metadata={"reason_code": "composite_follow_up_choice"},
+            result=result_payload,
+        )
+        if not transitioned:
+            return {"status": "sync_required", "action_id": action["action_id"]}
+        await self.dispatcher.emit(
+            action["room_id"],
+            "s2c_action_choice_requested",
+            "player",
+            {
+                "actionId": action["action_id"],
+                "status": "awaiting_player_choice",
+                "question": awaiting_choice["question"],
+                "stepId": awaiting_choice["step_id"],
+            },
+            character_id=action["character_id"],
+        )
+        return {
+            "status": "awaiting_player_choice",
+            "action_id": action["action_id"],
+            "result": result_payload,
+        }
+
     async def resolve_action(self, action_id: str) -> dict[str, Any]:
         action = self.conn.execute(
             "SELECT * FROM actions WHERE action_id = %s", (action_id,)
@@ -104,7 +375,14 @@ class ResolutionPipeline:
             return {"status": action["status"], "action_id": action_id}
         if action["status"] == "rejected":
             return {"status": "rejected", "action_id": action_id}
-        if action["status"] != "queued":
+        action_params = self._json_value(action.get("params")) or {}
+        composite_progress = action_params.get("composite_progress")
+        is_composite_resume = (
+            action["status"] == "awaiting_player_choice"
+            and isinstance(composite_progress, dict)
+            and composite_progress.get("decision") in {"continue", "cancel"}
+        )
+        if action["status"] not in {"queued", "batched"} and not is_composite_resume:
             return {"status": action["status"], "action_id": action_id}
 
         is_v2 = bool(action.get("draft_id"))
@@ -112,7 +390,7 @@ class ResolutionPipeline:
             won_claim = transition_action(
                 self.conn,
                 action_id,
-                from_statuses=("queued",),
+                from_statuses=("awaiting_player_choice",) if is_composite_resume else ("queued", "batched"),
                 to_status="resolving",
                 metadata={"ai_stage": "retrieving"},
             )
@@ -123,7 +401,7 @@ class ResolutionPipeline:
         else:
             claimed = self.conn.execute(
                 "UPDATE actions SET status = %s WHERE action_id = %s AND status = %s RETURNING *",
-                ("resolving", action_id, "queued"),
+                ("resolving", action_id, action["status"]),
             ).fetchone()
         if not claimed:
             current = self.conn.execute(
@@ -177,6 +455,19 @@ class ResolutionPipeline:
             declared_intent=action.get("declared_intent") or "",
             params=self._json_value(action.get("params")) or {},
         )
+        autonomy = decide_host_autonomy(
+            policy=room.get("host_autonomy_policy"),
+            host_connected=self._is_host_connected(action["room_id"]),
+            intent_type=intent.intent_type,
+            params=intent.params,
+        )
+        if autonomy.route == "deferred_host_review":
+            await self._await_host_exception(action, autonomy.reason_code or "host_offline_policy")
+            return {
+                "status": "awaiting_host_exception",
+                "action_id": action_id,
+                "reason": autonomy.reason_code or "host_offline_policy",
+            }
         solo_skill_check, solo_skill_check_error = self._validated_solo_skill_check(
             action["room_id"], intent.params, intent.declared_intent
         )
@@ -305,7 +596,29 @@ class ResolutionPipeline:
 
         try:
             await self._emit_ai_stage(action, "validating_rules")
-            if solo_skill_check:
+            composite_steps = self._composite_steps(intent.params)
+            if composite_steps:
+                initial_compiled = await self.compiler.compile(
+                    PlayerIntent(
+                        action_id=intent.action_id,
+                        intent_type=composite_steps[0]["intent_type"],
+                        declared_intent=composite_steps[0]["declared_intent"],
+                        base_state_version=intent.base_state_version,
+                        params=composite_steps[0]["params"],
+                    ),
+                    scenario or {},
+                    character_data,
+                )
+                compiled, resolution = await self._resolve_composite_action(
+                    intent,
+                    initial_compiled,
+                    composite_steps,
+                    scenario or {},
+                    character_data,
+                    [dict(i) for i in inventory],
+                    scenario_assets,
+                )
+            elif solo_skill_check:
                 if solo_skill_check.get("mechanic") == "sanity_check":
                     compiled = MechanicCompileResult(
                         triggeredMechanic="sanity_check",
@@ -326,13 +639,14 @@ class ResolutionPipeline:
                 compiled = await self.compiler.compile(intent, scenario or {}, character_data)
             if retroactive_decision and retroactive_decision.branch == "roll_required":
                 compiled = MechanicCompileResult(triggeredMechanic="luck_check")
-            resolution = await self.rule_executor.execute(
-                intent,
-                compiled,
-                character_data,
-                [dict(i) for i in inventory],
-                scenario_assets,
-            )
+            if not composite_steps:
+                resolution = await self.rule_executor.execute(
+                    intent,
+                    compiled,
+                    character_data,
+                    [dict(i) for i in inventory],
+                    scenario_assets,
+                )
             if solo_skill_check and solo_skill_check.get("damage_dice"):
                 self._apply_solo_damage(
                     resolution,
@@ -362,6 +676,13 @@ class ResolutionPipeline:
         except Exception as exc:
             await self._reject(action, f"resolution failed: {exc}")
             return {"status": "rejected", "action_id": action_id, "reason": str(exc)}
+        composite_state = (resolution.metadata or {}).get("composite_action")
+        if (
+            is_v2
+            and isinstance(composite_state, dict)
+            and isinstance(composite_state.get("awaiting_choice"), dict)
+        ):
+            return await self._await_composite_choice(action, resolution)
         resolution.narrative = self._render_fallback_narrative(intent, compiled, resolution, character_data)
 
         inventory_changes = []
@@ -474,7 +795,8 @@ class ResolutionPipeline:
                 "action_id": action_id,
                 "reason": reason_code,
             }
-        if resolution.mutations or inventory_changes or scene_change:
+        state_mutations = self._state_service_mutations(resolution.mutations)
+        if state_mutations or inventory_changes or scene_change:
             if not self.state_service:
                 if is_v2:
                     await self._await_host_exception(action, "state_service_unavailable")
@@ -490,9 +812,9 @@ class ResolutionPipeline:
                         characterMutations=[
                             CharacterMutationItem(
                                 characterId=action["character_id"],
-                                mutations=resolution.mutations,
+                                mutations=state_mutations,
                             )
-                        ] if resolution.mutations else [],
+                        ] if state_mutations else [],
                         sceneChanges=scene_change,
                         inventoryChanges=inventory_changes,
                     )
@@ -711,6 +1033,7 @@ class ResolutionPipeline:
                     state_before=state_before,
                     state_after=state_before,
                 )
+                rule_explanation_for_completion = rule_explanation
                 complete_action(
                     self.conn,
                     action_id,
@@ -732,7 +1055,29 @@ class ResolutionPipeline:
             )
             self.conn.commit()
 
-        await self._project(action, resolution)
+        rule_explanation_for_bundle = rule_explanation_for_completion or self._build_rule_explanation(
+            action,
+            character_data,
+            resolution,
+            state_before=state_before,
+            state_after=self._runtime_snapshot(
+                self.conn,
+                action["character_id"],
+                action["room_id"],
+            ) or state_before,
+        )
+        bundle = self._persist_resolution_bundle(
+            action,
+            completion_status,
+            result_payload,
+            rule_explanation_for_bundle,
+            resolution,
+        )
+        try:
+            await self._project(action, resolution, bundle)
+        except Exception:
+            logger.exception("Projection failed for completed action %s", action_id)
+            self._mark_resolution_bundle_projection_pending(bundle)
         if ending_committed:
             await self.dispatcher.emit(
                 action["room_id"],
@@ -763,8 +1108,21 @@ class ResolutionPipeline:
             await self._apply_move_result(action, resolution)
 
         # ── Post-resolution encounter updates ──
+        prepared_reactions = []
         if action["intent_type"] in ("combat_action", "chase_action", "system_skip"):
-            await self._apply_encounter_result(action, intent, resolution)
+            prepared_reactions = await self._apply_encounter_result(action, intent, resolution)
+
+        if isinstance(intent.params, dict) and intent.params.get("preparedReaction"):
+            from .prepared_rule_actions import complete_triggered_prepared_reaction
+
+            complete_triggered_prepared_reaction(
+                self.conn,
+                reaction_action_id=action_id,
+                terminal_status="completed",
+            )
+
+        for prepared_reaction in prepared_reactions:
+            await self.resolve_action(prepared_reaction["reaction_action_id"])
 
         return {"status": completion_status, "action_id": action_id, "result": result_payload}
 
@@ -901,6 +1259,15 @@ class ResolutionPipeline:
             else:
                 return "director_precondition_unsupported"
         return None
+
+    def _is_host_connected(self, room_id: str) -> bool:
+        if self.host_connection_checker is None:
+            return True
+        try:
+            return bool(self.host_connection_checker(room_id))
+        except Exception:
+            logger.warning("Host connection check failed for room=%s", room_id)
+            return False
 
     def _uses_current_turn_snapshot(
         self,
@@ -1214,6 +1581,15 @@ class ResolutionPipeline:
                 ),
             )
             self.conn.commit()
+        params = self._json_value(action.get("params")) or {}
+        if params.get("preparedReaction"):
+            from .prepared_rule_actions import complete_triggered_prepared_reaction
+
+            complete_triggered_prepared_reaction(
+                self.conn,
+                reaction_action_id=action["action_id"],
+                terminal_status="rejected",
+            )
         await self.dispatcher.emit(
             action["room_id"],
             "s2c_action_completed",
@@ -1250,6 +1626,17 @@ class ResolutionPipeline:
                 "characterId": action["character_id"],
                 "reasonCode": reason_code,
             },
+        )
+        await self.dispatcher.emit(
+            action["room_id"],
+            "s2c_action_deferred",
+            "player",
+            {
+                "actionId": action["action_id"],
+                "status": "awaiting_host_exception",
+                "reasonCode": reason_code,
+            },
+            character_id=action["character_id"],
         )
         if ai_recovery:
             await self.dispatcher.emit(
@@ -1444,7 +1831,7 @@ class ResolutionPipeline:
             for permission in permissions
         )
 
-    async def _project(self, action: dict[str, Any], resolution: ResolutionResult):
+    def _host_reveal_steps(self, resolution: ResolutionResult) -> list[dict[str, Any]]:
         host_steps = []
         for step in resolution.reveal_steps:
             if step.get("kind") == "roll":
@@ -1454,29 +1841,156 @@ class ResolutionPipeline:
         if resolution.mutations:
             host_steps.append({"kind": "status_delta", "payload": {"mutations": resolution.mutations}})
         host_steps.append({"kind": "narrative_text", "payload": {"text": resolution.narrative}})
+        return host_steps
+
+    def _persist_resolution_bundle(
+        self,
+        action: dict[str, Any],
+        status: str,
+        result_payload: dict[str, Any],
+        rule_explanation: dict[str, Any],
+        resolution: ResolutionResult,
+    ) -> dict[str, Any]:
+        state_row = self.conn.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s",
+            (action["room_id"],),
+        ).fetchone()
+        canonical_result = dict(result_payload)
+        canonical_result["stateVersion"] = int(state_row["state_version"]) if state_row else 0
+        bundle = {
+            "action_id": action["action_id"],
+            "status": status,
+            "authoritative_result": canonical_result,
+            "rule_explanation": rule_explanation,
+            "host_projection": {
+                "transactionId": str(uuid.uuid4()),
+                "actionId": action["action_id"],
+                "priority": "normal",
+                "steps": self._host_reveal_steps(resolution),
+                "summaryText": resolution.narrative,
+            },
+            "player_projection": {
+                "actionId": action["action_id"],
+                "result": self._player_result_projection(result_payload),
+                "state_patch": {
+                    "actionId": action["action_id"],
+                    "patches": resolution.mutations,
+                    "cascadingStateChanges": resolution.cascading_state_changes,
+                } if resolution.mutations else None,
+                "action_completed": self._action_completed_payload(action, resolution),
+            },
+            "party_projection": {
+                "actionId": action["action_id"],
+                "narrativeText": resolution.narrative,
+                "spoilerStatus": "none",
+                "narration": (resolution.metadata or {}).get("narration"),
+            },
+        }
+        self.conn.execute(
+            "INSERT INTO resolution_bundles "
+            "(action_id, room_id, character_id, canonical_result, rule_explanation, "
+            "actor_projection, stage_projection, host_console, release_status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                action["action_id"],
+                action["room_id"],
+                action["character_id"],
+                json.dumps(canonical_result, ensure_ascii=False, default=str),
+                json.dumps(rule_explanation, ensure_ascii=False, default=str),
+                json.dumps(bundle["player_projection"], ensure_ascii=False, default=str),
+                json.dumps(bundle["party_projection"], ensure_ascii=False, default=str),
+                json.dumps(bundle["host_projection"], ensure_ascii=False, default=str),
+                "ready",
+            ),
+        )
+        self.conn.commit()
+        return bundle
+
+    @staticmethod
+    def _player_result_projection(result_payload: dict[str, Any]) -> dict[str, Any]:
+        projected = json.loads(json.dumps(result_payload, ensure_ascii=False, default=str))
+        metadata = projected.get("metadata")
+        if not isinstance(metadata, dict):
+            return projected
+        hidden_modifiers = metadata.get("hidden_modifiers")
+        if not isinstance(hidden_modifiers, list):
+            return projected
+        metadata["hidden_modifiers"] = [
+            {key: value for key, value in modifier.items() if key != "source"} | {"source": "hidden"}
+            for modifier in hidden_modifiers
+            if isinstance(modifier, dict)
+        ]
+        return projected
+
+    def _mark_resolution_bundle_projected(self, bundle: dict[str, Any]) -> None:
+        self.conn.execute(
+            "UPDATE resolution_bundles SET actor_projection = %s, stage_projection = %s, "
+            "host_console = %s, release_status = %s, released_at = NOW() WHERE action_id = %s",
+            (
+                json.dumps(bundle["player_projection"], ensure_ascii=False, default=str),
+                json.dumps(bundle["party_projection"], ensure_ascii=False, default=str),
+                json.dumps(bundle["host_projection"], ensure_ascii=False, default=str),
+                "released",
+                bundle["action_id"],
+            ),
+        )
+        self.conn.commit()
+
+    def _mark_resolution_bundle_projection_pending(self, bundle: dict[str, Any]) -> None:
+        self.conn.execute(
+            "UPDATE resolution_bundles SET release_status = %s WHERE action_id = %s",
+            ("projection_pending", bundle["action_id"]),
+        )
+        self.conn.commit()
+
+    async def replay_projection(self, action_id: str) -> dict[str, str]:
+        """Replay saved projections without invoking AI, rules, or state mutation."""
+        action = self.conn.execute(
+            "SELECT * FROM actions WHERE action_id = %s", (action_id,)
+        ).fetchone()
+        if not action:
+            return {"status": "missing", "action_id": action_id}
+        action = dict(action)
+        bundle_row = self.conn.execute(
+            "SELECT actor_projection, stage_projection, host_console, release_status "
+            "FROM resolution_bundles WHERE action_id = %s",
+            (action_id,),
+        ).fetchone()
+        if not bundle_row:
+            return {"status": "missing_bundle", "action_id": action_id}
+        bundle_row = dict(bundle_row)
+        if bundle_row.get("release_status") == "released":
+            return {"status": "already_released", "action_id": action_id}
+        bundle = {
+            "action_id": action_id,
+            "player_projection": self._json_value(bundle_row.get("actor_projection")) or {},
+            "party_projection": self._json_value(bundle_row.get("stage_projection")) or {},
+            "host_projection": self._json_value(bundle_row.get("host_console")) or {},
+        }
+        await self._project_saved_bundle(action, bundle)
+        return {"status": "replayed", "action_id": action_id}
+
+    async def _project(
+        self,
+        action: dict[str, Any],
+        resolution: ResolutionResult,
+        bundle: dict[str, Any],
+    ):
+        host_projection = bundle["host_projection"]
 
         await self.dispatcher.emit(
             action["room_id"],
             "s2c_reveal_transaction",
             "host",
-            {
-                "transactionId": str(uuid.uuid4()),
-                "actionId": action["action_id"],
-                "priority": "normal",
-                "steps": host_steps,
-                "summaryText": resolution.narrative,
-            },
+            host_projection,
         )
-        if resolution.mutations:
+        player_projection = bundle["player_projection"]
+        if player_projection["state_patch"]:
             await self.dispatcher.emit(
                 action["room_id"],
                 "s2c_state_patch",
                 "player",
-                {
-                    "actionId": action["action_id"],
-                    "patches": resolution.mutations,
-                    "cascadingStateChanges": resolution.cascading_state_changes,
-                },
+                player_projection["state_patch"],
                 character_id=action["character_id"],
             )
 
@@ -1539,14 +2053,19 @@ class ResolutionPipeline:
                     except Exception as e:
                         logger.warning("SpoilerGuard review failed for action %s: %s", action["action_id"], e)
 
+        party_projection = bundle["party_projection"]
+        party_projection["narrativeText"] = final_text
+        party_projection["spoilerStatus"] = spoiler_status
+        public_payload = {"actionId": action["action_id"], "text": final_text}
+        if spoiler_status != "none":
+            public_payload["spoilerStatus"] = spoiler_status
         await self.dispatcher.emit(
             action["room_id"],
             "s2c_public_observation",
             "party",
-            {"actionId": action["action_id"], "text": final_text,
-             "spoilerStatus": spoiler_status} if spoiler_status != "none" else {"actionId": action["action_id"], "text": final_text},
+            public_payload,
         )
-        narration = (resolution.metadata or {}).get("narration")
+        narration = party_projection["narration"]
         if isinstance(narration, dict):
             await self.dispatcher.emit(
                 action["room_id"],
@@ -1566,9 +2085,68 @@ class ResolutionPipeline:
             action["room_id"],
             "s2c_action_completed",
             "player",
-            self._action_completed_payload(action, resolution),
+            player_projection["action_completed"],
             character_id=action["character_id"],
         )
+        self._mark_resolution_bundle_projected(bundle)
+
+    async def _project_saved_bundle(self, action: dict[str, Any], bundle: dict[str, Any]) -> None:
+        """Emit persisted view projections only; this path must never touch authority."""
+        host_projection = bundle["host_projection"]
+        await self.dispatcher.emit(
+            action["room_id"],
+            "s2c_reveal_transaction",
+            "host",
+            host_projection,
+        )
+        player_projection = bundle["player_projection"]
+        state_patch = player_projection.get("state_patch")
+        if isinstance(state_patch, dict):
+            await self.dispatcher.emit(
+                action["room_id"],
+                "s2c_state_patch",
+                "player",
+                state_patch,
+                character_id=action["character_id"],
+            )
+        party_projection = bundle["party_projection"]
+        narrative_text = str(party_projection.get("narrativeText") or "")
+        public_payload = {"actionId": action["action_id"], "text": narrative_text}
+        spoiler_status = party_projection.get("spoilerStatus")
+        if isinstance(spoiler_status, str) and spoiler_status != "none":
+            public_payload["spoilerStatus"] = spoiler_status
+        await self.dispatcher.emit(
+            action["room_id"],
+            "s2c_public_observation",
+            "party",
+            public_payload,
+        )
+        narration = party_projection.get("narration")
+        if isinstance(narration, dict):
+            await self.dispatcher.emit(
+                action["room_id"],
+                "s2c_narration_completed",
+                "party",
+                {
+                    "actionId": action["action_id"],
+                    "narrativeText": narrative_text,
+                    "environmentChanges": narration.get("environment_changes") or [],
+                    "interactableObjects": narration.get("interactable_objects") or [],
+                    "openQuestion": narration.get("open_question") or "",
+                    "stylePackVersion": narration.get("style_pack_version") or "",
+                    "redactedCitations": narration.get("redacted_citations") or [],
+                },
+            )
+        completed = player_projection.get("action_completed")
+        if isinstance(completed, dict):
+            await self.dispatcher.emit(
+                action["room_id"],
+                "s2c_action_completed",
+                "player",
+                completed,
+                character_id=action["character_id"],
+            )
+        self._mark_resolution_bundle_projected(bundle)
 
     def _action_completed_payload(
         self, action: dict[str, Any], resolution: ResolutionResult
@@ -1820,21 +2398,7 @@ class ResolutionPipeline:
             current_scene_id != from_scene_id and not shared_turn_arrival
         ):
             return None, "generic_scene_transition_stale"
-        package_row = self.conn.execute(
-            """
-            SELECT runtime_package
-            FROM runtime_package_versions
-            WHERE scenario_version_id = (
-                SELECT scenario_version_id FROM rooms WHERE room_id = %s
-            ) AND gate_status = 'ready'
-            ORDER BY package_version_number DESC
-            LIMIT 1
-            """,
-            (action["room_id"],),
-        ).fetchone()
-        runtime_package = self._json_value(
-            package_row.get("runtime_package") if package_row else None
-        ) or {}
+        runtime_package = self._runtime_package_for_room(action["room_id"])
         rules = runtime_package.get("semantic_progression_rules")
         edges = rules.get("edges") if isinstance(rules, dict) else []
         if not isinstance(edges, list):
@@ -1872,26 +2436,45 @@ class ResolutionPipeline:
     def _evaluate_verified_runtime_ending(self, room_id: str):
         from .ending_conditions import evaluate_ending_conditions
 
-        package_row = self.conn.execute(
-            """
-            SELECT runtime_package
-            FROM runtime_package_versions
-            WHERE scenario_version_id = (
-                SELECT scenario_version_id FROM rooms WHERE room_id = %s
-            ) AND gate_status = 'ready'
-            ORDER BY package_version_number DESC
-            LIMIT 1
-            """,
-            (room_id,),
-        ).fetchone()
-        runtime_package = self._json_value(
-            package_row.get("runtime_package") if package_row else None
-        ) or {}
+        runtime_package = self._runtime_package_for_room(room_id)
         return evaluate_ending_conditions(
             self.conn,
             room_id,
             runtime_package.get("ending_conditions"),
         )
+
+    def _runtime_package_for_room(self, room_id: str) -> dict[str, Any]:
+        room = self.conn.execute(
+            "SELECT scenario_version_id, runtime_package_version_id FROM rooms WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()
+        if not room or not room.get("scenario_version_id"):
+            return {}
+        if room.get("runtime_package_version_id"):
+            package_row = self.conn.execute(
+                """
+                SELECT runtime_package
+                FROM runtime_package_versions
+                WHERE runtime_package_version_id = %s
+                  AND scenario_version_id = %s
+                  AND gate_status = 'ready'
+                """,
+                (room["runtime_package_version_id"], room["scenario_version_id"]),
+            ).fetchone()
+        else:
+            package_row = self.conn.execute(
+                """
+                SELECT runtime_package
+                FROM runtime_package_versions
+                WHERE scenario_version_id = %s AND gate_status = 'ready'
+                ORDER BY package_version_number DESC
+                LIMIT 1
+                """,
+                (room["scenario_version_id"],),
+            ).fetchone()
+        return self._json_value(
+            package_row.get("runtime_package") if package_row else None
+        ) or {}
 
     async def _persist_named_runtime_clues(
         self,
@@ -1910,21 +2493,7 @@ class ResolutionPipeline:
         ).strip()
         if not current_scene_id:
             return []
-        package_row = self.conn.execute(
-            """
-            SELECT runtime_package
-            FROM runtime_package_versions
-            WHERE scenario_version_id = (
-                SELECT scenario_version_id FROM rooms WHERE room_id = %s
-            ) AND gate_status = 'ready'
-            ORDER BY package_version_number DESC
-            LIMIT 1
-            """,
-            (action["room_id"],),
-        ).fetchone()
-        runtime_package = self._json_value(
-            package_row.get("runtime_package") if package_row else None
-        ) or {}
+        runtime_package = self._runtime_package_for_room(action["room_id"])
         dependencies = runtime_package.get("clue_dependencies")
         if not isinstance(dependencies, list):
             return []
@@ -2152,16 +2721,21 @@ class ResolutionPipeline:
         )
         if not encounter_id:
             active_encounter = get_active_encounter(self.conn, room_id)
+            bootstrapped_encounter_id = ""
             if not active_encounter and intent.intent_type == "combat_action":
                 active_encounter = self._bootstrap_solo_combat_encounter(
                     room_id,
                     character_id,
                     intent.declared_intent,
                 )
+                if active_encounter and active_encounter.get("status") == "active":
+                    bootstrapped_encounter_id = str(active_encounter.get("encounter_id") or "")
             if not active_encounter:
                 return "encounterId is required"
             encounter_id = active_encounter["encounter_id"]
             intent.params["encounterId"] = encounter_id
+            if bootstrapped_encounter_id == encounter_id:
+                intent.params["combatStarted"] = encounter_id
 
         enc = get_encounter(self.conn, encounter_id)
         if not enc:
@@ -2177,7 +2751,26 @@ class ResolutionPipeline:
         if not participant:
             return "character_not_in_encounter"
 
-        if participant.get("acted_this_round") and intent.intent_type not in ("",):
+        is_authorized_prepared_reaction = False
+        if params.get("preparedReaction"):
+            prepared_action_id = params.get("preparedActionId")
+            source_action_id = params.get("sourceActionId")
+            if not isinstance(prepared_action_id, str) or not isinstance(source_action_id, str):
+                return "prepared_reaction_not_authorized"
+            prepared = self.conn.execute(
+                "SELECT 1 FROM prepared_rule_actions WHERE action_id = %s AND room_id = %s "
+                "AND character_id = %s AND source_action_id = %s AND status = 'triggered'",
+                (prepared_action_id, room_id, character_id, source_action_id),
+            ).fetchone()
+            if not prepared:
+                return "prepared_reaction_not_authorized"
+            is_authorized_prepared_reaction = True
+
+        if (
+            participant.get("acted_this_round")
+            and intent.intent_type not in ("",)
+            and not is_authorized_prepared_reaction
+        ):
             action_kind = params.get("actionKind", "")
             if action_kind not in ("wait",):
                 return "already_acted_this_round"
@@ -2291,12 +2884,14 @@ class ResolutionPipeline:
                 "第一轮双爪，第二轮爪击与啃咬，第三轮双爪。"
             ),
             display_name="黑熊",
+            public_visibility="visible",
+            public_label="黑熊",
         )
         return get_encounter(self.conn, encounter_id) or encounter
 
     async def _apply_encounter_result(
         self, action: dict[str, Any], intent: PlayerIntent, resolution: ResolutionResult,
-    ):
+    ) -> list[dict[str, str]]:
         """Post-resolution: update participant state from mutations, emit encounter events."""
         params = intent.params or {}
         encounter_id = params.get("encounterId", "")
@@ -2304,7 +2899,7 @@ class ResolutionPipeline:
         character_id = action["character_id"]
 
         if not encounter_id:
-            return
+            return []
 
         from ..encounter_persistence import (
             get_participant, update_participant, get_participants,
@@ -2313,7 +2908,25 @@ class ResolutionPipeline:
 
         participant = get_participant(self.conn, encounter_id, character_id)
         if not participant:
-            return
+            return []
+
+        from .prepared_rule_actions import (
+            PreparedRuleEvent,
+            consume_prepared_actions_for_rule_event,
+        )
+
+        prepared_reactions: list[dict[str, str]] = []
+        prepared_rule_events: list[PreparedRuleEvent] = []
+        prepared_event_kinds: set[str] = set()
+
+        def queue_prepared_rule_event(rule_event: PreparedRuleEvent) -> None:
+            if rule_event.kind not in prepared_event_kinds:
+                prepared_event_kinds.add(rule_event.kind)
+                prepared_rule_events.append(rule_event)
+
+        is_public_rule_event = str(params.get("visibility") or "public") in {"public", "party"}
+        if params.get("combatStarted") == encounter_id:
+            queue_prepared_rule_event(PreparedRuleEvent.combat_started(encounter_id))
 
         # Apply encounter mutations to the participant named in each path.
         for mutation in resolution.mutations:
@@ -2338,6 +2951,15 @@ class ResolutionPipeline:
                     status_tags.append("unconscious")
                 update_participant(self.conn, encounter_id, target_character_id,
                                    hp=new_hp, status_tags=status_tags)
+                if (
+                    is_public_rule_event
+                    and delta < 0
+                    and target_character_id != character_id
+                    and target_participant.get("side") == "player"
+                ):
+                    queue_prepared_rule_event(
+                        PreparedRuleEvent.ally_publicly_hurt(encounter_id)
+                    )
             # Apply distance band delta
             if "distance_band_delta" in path:
                 delta = mutation.get("value", 0)
@@ -2345,6 +2967,31 @@ class ResolutionPipeline:
                     current_band = target_participant.get("distance_band", "medium")
                     new_band = shift_band(current_band, delta)
                     update_participant(self.conn, encounter_id, target_character_id, distance_band=new_band)
+                    if (
+                        target_participant.get("side") == "enemy"
+                        and target_participant.get("public_visibility") == "visible"
+                        and current_band != "engaged"
+                        and new_band == "engaged"
+                    ):
+                        queue_prepared_rule_event(
+                            PreparedRuleEvent.enemy_enters_melee_range(encounter_id)
+                        )
+                    if (
+                        target_participant.get("side") == "enemy"
+                        and target_participant.get("public_visibility") == "visible"
+                        and new_band == "escaped"
+                    ):
+                        update_participant(
+                            self.conn,
+                            encounter_id,
+                            target_character_id,
+                            public_visibility="lost",
+                            last_observed_position=_SAFE_LAST_OBSERVED_DISTANCES.get(
+                                current_band,
+                                "视野边缘",
+                            ),
+                        )
+                        target_participant["public_visibility"] = "lost"
             # Apply status tag additions
             if "status_tag" in path and mutation.get("op") == "add":
                 tag = mutation.get("value", "")
@@ -2353,6 +3000,42 @@ class ResolutionPipeline:
                     if tag not in status_tags:
                         status_tags.append(tag)
                     update_participant(self.conn, encounter_id, target_character_id, status_tags=status_tags)
+            if (
+                target_participant.get("side") == "enemy"
+                and target_participant.get("public_visibility") != "visible"
+                and "hp_delta" in path
+                and mutation.get("value", 0) != 0
+            ):
+                enemies = [
+                    item for item in get_participants(self.conn, encounter_id)
+                    if item.get("side") == "enemy"
+                ]
+                enemy_ids = sorted(str(item.get("character_id") or "") for item in enemies)
+                ordinal = (
+                    enemy_ids.index(target_character_id) + 1
+                    if target_character_id in enemy_ids
+                    else 1
+                )
+                public_label = str(target_participant.get("public_label") or "").strip()
+                update_participant(
+                    self.conn,
+                    encounter_id,
+                    target_character_id,
+                    public_visibility="visible",
+                    public_label=public_label or f"敌对身影 {ordinal}",
+                )
+                target_participant["public_visibility"] = "visible"
+
+        source_action_id = str(action.get("action_id") or resolution.action_id)
+        for rule_event in prepared_rule_events:
+            prepared_reactions.extend(
+                consume_prepared_actions_for_rule_event(
+                    self.conn,
+                    room_id=room_id,
+                    source_action_id=source_action_id,
+                    rule_event=rule_event,
+                )
+            )
 
         # Mark acted_this_round
         update_participant(self.conn, encounter_id, character_id, acted_this_round=True)
@@ -2382,6 +3065,7 @@ class ResolutionPipeline:
             and intent.intent_type == "combat_action"
             and enc
             and enc.get("type") == "combat"
+            and not params.get("preparedReaction")
         ):
             from .solo_combat_reactions import (
                 queue_black_bear_reaction,
@@ -2395,6 +3079,8 @@ class ResolutionPipeline:
                 character_id=character_id,
                 source_action_id=str(action.get("action_id") or resolution.action_id),
             )
+            if pending_reaction:
+                prepared_reactions.extend(pending_reaction.get("prepared_reactions") or [])
 
         if should_resolve:
             update_encounter_status(self.conn, encounter_id, "resolved", resolve_reason)
@@ -2402,14 +3088,27 @@ class ResolutionPipeline:
         # Emit s2c_encounter_updated
         updated_enc = get_active_encounter(self.conn, room_id) or enc
         updated_parts = get_participants(self.conn, encounter_id)
+        from ..host.public_stage import (
+            build_public_combat_unit_projection,
+            build_public_encounter_event_projection,
+        )
         await self.dispatcher.emit(
             room_id,
             "s2c_encounter_updated",
             "party",
+            build_public_encounter_event_projection(
+                updated_enc,
+                build_public_combat_unit_projection(updated_parts),
+            ),
+        )
+        await self.dispatcher.emit(
+            room_id,
+            "s2c_encounter_updated",
+            "host",
             {
                 "encounterId": encounter_id,
                 "encounter": self._event_safe_record(updated_enc) if updated_enc else {},
-                "participants": [self._event_safe_record(p) for p in updated_parts],
+                "participants": [self._event_safe_record(participant) for participant in updated_parts],
             },
         )
 
@@ -2432,6 +3131,7 @@ class ResolutionPipeline:
                     "reason": resolve_reason,
                 },
             )
+        return prepared_reactions
 
     @staticmethod
     def _event_safe_record(value: Any) -> dict[str, Any]:
@@ -2440,6 +3140,14 @@ class ResolutionPipeline:
             if isinstance(item, (datetime,)):
                 record[key] = item.isoformat()
         return record
+
+    @staticmethod
+    def _state_service_mutations(mutations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            mutation
+            for mutation in mutations
+            if str(mutation.get("path") or "").startswith("/character/")
+        ]
 
     def _json_value(self, value):
         if value is None:

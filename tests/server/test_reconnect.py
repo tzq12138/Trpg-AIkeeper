@@ -1,4 +1,5 @@
 import json
+import time
 import pytest
 from tests.server.conftest import setup_auth_test_data, create_room, login
 
@@ -63,6 +64,30 @@ def test_reconnect_long_disconnect_returns_snapshot(client, test_db):
     assert len(data["recent_events"]) == 104
 
 
+def test_reconnect_replays_one_thousand_visible_events_within_three_seconds(client, test_db):
+    room_id, _, _, token = _setup_player(client, test_db)
+    for sequence in range(1, 1001):
+        _insert_event(
+            test_db,
+            room_id,
+            sequence,
+            "s2c_public_observation",
+            "party",
+            {"text": f"event-{sequence}"},
+        )
+    test_db.commit()
+
+    started_at = time.monotonic()
+    response = client.get("/api/player/reconnect", headers={"X-Room-Token": token})
+    elapsed_seconds = time.monotonic() - started_at
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["last_sequence"] == 1000
+    assert len(payload["recent_events"]) == 1000
+    assert elapsed_seconds <= 3
+
+
 def test_reconnect_invalid_token(client):
     resp = client.get("/api/player/reconnect", headers={"X-Room-Token": "bad-token"})
     assert resp.status_code == 403
@@ -102,6 +127,47 @@ def test_reconnect_first_time_returns_snapshot(client, test_db):
     assert len(data["recent_events"]) == 2
 
 
+def test_reconnect_snapshot_excludes_host_and_other_player_private_events(client, test_db):
+    room_id, _, char_id, token = _setup_player(client, test_db)
+    other = client.post(f"/api/player/rooms/{room_id}/join").json()
+
+    _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "队伍可见"})
+    _insert_event(test_db, room_id, 2, "s2c_private_notice", "player", {"characterId": char_id, "text": "本人私密"})
+    _insert_event(test_db, room_id, 3, "s2c_private_notice", "player", {"characterId": other["character_id"], "text": "他人私密"})
+    _insert_event(test_db, room_id, 4, "s2c_host_snapshot", "host", {"director": "仅房主"})
+
+    response = client.get("/api/player/reconnect", headers={"X-Room-Token": token})
+
+    assert response.status_code == 200
+    events = response.json()["recent_events"]
+    assert [event["sequence"] for event in events] == [1, 2]
+    assert "他人私密" not in json.dumps(events, ensure_ascii=False)
+    assert "仅房主" not in json.dumps(events, ensure_ascii=False)
+
+
+def test_reconnect_incremental_excludes_host_and_other_player_private_events(client, test_db):
+    room_id, _, char_id, token = _setup_player(client, test_db)
+    other = client.post(f"/api/player/rooms/{room_id}/join").json()
+
+    _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "已读公开事件"})
+    _insert_event(test_db, room_id, 2, "s2c_private_notice", "player", {"characterId": char_id, "text": "本人新私密"})
+    _insert_event(test_db, room_id, 3, "s2c_private_notice", "player", {"characterId": other["character_id"], "text": "他人新私密"})
+    _insert_event(test_db, room_id, 4, "s2c_host_snapshot", "host", {"director": "仅房主"})
+    test_db.execute(
+        "INSERT INTO player_sequences (character_id, room_id, last_delivered_sequence) VALUES (%s, %s, %s)",
+        (char_id, room_id, 1),
+    )
+    test_db.commit()
+
+    response = client.get("/api/player/reconnect", headers={"X-Room-Token": token})
+
+    assert response.status_code == 200
+    events = response.json()["recent_events"]
+    assert [event["sequence"] for event in events] == [2]
+    assert "他人新私密" not in json.dumps(events, ensure_ascii=False)
+    assert "仅房主" not in json.dumps(events, ensure_ascii=False)
+
+
 def test_reconnect_with_pending_actions(client, test_db):
     room_id, owner_token, char_id, token = _setup_player(client, test_db)
 
@@ -122,7 +188,7 @@ def test_reconnect_with_pending_actions(client, test_db):
 def test_reconnect_restores_all_nonterminal_v2_action_states(client, test_db):
     room_id, _, char_id, token = _setup_player(client, test_db)
     for index, status in enumerate(
-        ("awaiting_player_choice", "awaiting_host_exception", "sync_required"),
+        ("armed", "awaiting_player_choice", "awaiting_host_exception", "sync_required"),
         start=1,
     ):
         test_db.execute(
@@ -142,9 +208,61 @@ def test_reconnect_restores_all_nonterminal_v2_action_states(client, test_db):
 
     assert response.status_code == 200
     assert {action["status"] for action in response.json()["pending_actions"]} == {
+        "armed",
         "awaiting_player_choice",
         "awaiting_host_exception",
         "sync_required",
+    }
+
+
+def test_reconnect_restores_own_unfinished_action_submission(client, test_db):
+    room_id, _, _, token = _setup_player(client, test_db)
+    other_player = client.post(f"/api/player/rooms/{room_id}/join").json()
+    headers = {"X-Room-Token": token}
+
+    client.post(
+        "/api/player/action-submissions",
+        headers=headers,
+        json={
+            "actionId": "resume-own-action",
+            "rawText": "我想重新检查那扇门。",
+            "inputMode": "action",
+            "clientSequence": 9,
+            "baseStateVersion": 4,
+        },
+    )
+    client.post(
+        "/api/player/action-submissions",
+        headers=headers,
+        json={
+            "actionId": "recorded-private-note",
+            "rawText": "这条私人笔记不能作为行动恢复。",
+            "inputMode": "private_note",
+        },
+    )
+    client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": other_player["player_token"]},
+        json={
+            "actionId": "resume-other-action",
+            "rawText": "其他调查员的行动不能泄露。",
+            "inputMode": "action",
+        },
+    )
+
+    response = client.get("/api/player/reconnect", headers=headers)
+
+    assert response.status_code == 200
+    pending = response.json()["pending_submissions"]
+    assert len(pending) == 1
+    assert pending[0] == {
+        "action_id": "resume-own-action",
+        "input_mode": "action",
+        "raw_text": "我想重新检查那扇门。",
+        "requested_visibility": "public",
+        "client_sequence": 9,
+        "base_state_version": 4,
+        "status": "received",
     }
 
 

@@ -4,7 +4,11 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from src.server.ai.director import _validate_semantic_progression, resolve_conditional_solo_target
+from src.server.ai.director import (
+    _validate_semantic_progression,
+    apply_director_plan,
+    resolve_conditional_solo_target,
+)
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.models import ActionDraftDTO, DirectorPlanDTO, MechanicCompileResult, ResolutionResult
 from tests.server.conftest import create_room, setup_auth_test_data
@@ -129,6 +133,115 @@ def test_director_plan_dto_rejects_loose_state_patch_and_citations():
             requires_host_exception=False,
             narration_mode="summarize",
         )
+
+
+def test_director_plan_exposes_sanitized_composite_steps_to_confirmation(
+    client,
+    test_db,
+):
+    _, character_id, _ = _setup_player(client, test_db)
+    character = dict(test_db.execute(
+        "SELECT * FROM characters WHERE character_id = %s", (character_id,)
+    ).fetchone())
+    draft = ActionDraftDTO(
+        intent_type="skill_check",
+        declared_intent="我先撬锁，成功后进入房间。",
+        understanding_summary="先撬锁，再进入房间",
+        risk="medium",
+        confidence=0.8,
+        analysis_source="local_fallback",
+    )
+    plan = DirectorPlanDTO(
+        interpreted_intent="先撬锁，再进入房间",
+        intent_type="skill_check",
+        confidence=0.9,
+        requires_player_clarification=False,
+        requires_host_exception=False,
+        narration_mode="observe",
+        action_steps=[
+            {
+                "step_id": "pick-lock",
+                "summary": "尝试撬开房门",
+                "declared_intent": "我先尝试撬开房门。",
+                "intent_type": "skill_check",
+                "params": {"skillName": "Locksmith"},
+            },
+            {
+                "step_id": "enter-room",
+                "summary": "门开后进入房间",
+                "declared_intent": "如果门打开，我就进入房间。",
+                "intent_type": "move",
+                "params": {"target": "room"},
+                "execution_condition": "previous_step_success",
+                "on_previous_failure": "cancel",
+            },
+        ],
+    )
+
+    applied = apply_director_plan(test_db, character, draft, plan, {})
+
+    assert [step.step_id for step in applied.composite_steps] == [
+        "pick-lock",
+        "enter-room",
+    ]
+    assert applied.composite_steps[0].intent_type == "skill_check"
+    assert applied.composite_steps[1].execution_condition == "previous_step_success"
+    assert applied.requires_confirmation is True
+    assert applied.confirmation_requirements == ["stateful_action"]
+
+
+def test_director_analysis_returns_composite_steps_from_the_primary_gateway(
+    client,
+    test_db,
+):
+    _, _, player_token = _setup_player(client, test_db)
+    gateway = _RecordingDirectorGateway(
+        {
+            "interpreted_intent": "先制服守卫，再取走钥匙",
+            "intent_type": "combat_action",
+            "confidence": 0.9,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+            "action_steps": [
+                {
+                    "step_id": "subdue-guard",
+                    "summary": "制服守卫",
+                    "declared_intent": "我先制服守卫。",
+                    "intent_type": "combat_action",
+                    "params": {},
+                },
+                {
+                    "step_id": "take-key",
+                    "summary": "取得守卫身上的钥匙",
+                    "declared_intent": "守卫失去反抗能力后，我取走钥匙。",
+                    "intent_type": "use_item",
+                    "params": {},
+                    "execution_condition": "previous_step_success",
+                    "on_previous_failure": "cancel",
+                },
+            ],
+        }
+    )
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = gateway
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "我先制服守卫，再取走他身上的钥匙。"},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    assert gateway.contexts
+    draft = response.json()
+    assert [step["step_id"] for step in draft["composite_steps"]] == [
+        "subdue-guard",
+        "take-key",
+    ]
+    assert draft["requires_confirmation"] is True
 
 
 def test_action_analyze_sends_full_director_context_with_display_name(client, test_db):
@@ -441,6 +554,102 @@ def test_director_context_limits_generic_edges_to_current_scene(client, test_db)
         "conditions": [],
         "citation": {"page_number": 8},
     }]
+
+
+def test_director_context_uses_the_room_runtime_package_snapshot(client, test_db):
+    from src.server.ai.director import build_director_context
+
+    room_id, character_id, _ = _setup_player(client, test_db)
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    for package_id, version_number, synopsis in [
+        ("director-snapshot-v1", 1, "已固定的开团版本"),
+        ("director-snapshot-v2", 2, "后来重新编译的版本"),
+    ]:
+        test_db.execute(
+            "INSERT INTO runtime_package_versions "
+            "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, "
+            "input_checksum, runtime_package, created_by) "
+            "VALUES (%s, %s, %s, 'ready', 'sha', %s, 'test')",
+            (package_id, scenario_version_id, version_number, json.dumps({"world_book": {"synopsis": synopsis}})),
+        )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = 'director-snapshot-v1' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    character = dict(test_db.execute(
+        "SELECT * FROM characters WHERE character_id = %s",
+        (character_id,),
+    ).fetchone())
+    draft = ActionDraftDTO(
+        intent_type="dialogue",
+        declared_intent="我观察周围。",
+        understanding_summary="观察周围",
+        risk="low",
+        confidence=0.8,
+        analysis_source="local_fallback",
+    )
+
+    context = build_director_context(test_db, character, draft)
+
+    assert context["runtime_package"]["world_book"]["synopsis"] == "已固定的开团版本"
+
+
+def test_director_context_excludes_room_tokens_and_other_player_private_events(client, test_db):
+    from src.server.ai.director import build_director_context
+
+    room_id, character_id, _ = _setup_player(client, test_db)
+    other = client.post(f"/api/player/rooms/{room_id}/join").json()
+    test_db.execute(
+        "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, %s, %s)",
+        (room_id, "s2c_team_message", "party", json.dumps({"text": "队伍都看见了走廊尽头的火光。"})),
+    )
+    test_db.execute(
+        "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, %s, %s)",
+        (room_id, "s2c_private_notice", "player", json.dumps({
+            "characterId": character_id,
+            "text": "只有你看见了袖口的血迹。",
+        })),
+    )
+    test_db.execute(
+        "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, %s, %s)",
+        (room_id, "s2c_private_notice", "player", json.dumps({
+            "characterId": other["character_id"],
+            "text": "另一名玩家的私密线索。",
+        })),
+    )
+    test_db.execute(
+        "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, %s, %s)",
+        (room_id, "s2c_action_exception_requested", "host", json.dumps({
+            "text": "仅 Host 可见的异常原因。",
+        })),
+    )
+    test_db.commit()
+    character = dict(test_db.execute(
+        "SELECT * FROM characters WHERE character_id = %s", (character_id,),
+    ).fetchone())
+    draft = ActionDraftDTO(
+        intent_type="dialogue",
+        declared_intent="我观察走廊。",
+        understanding_summary="观察走廊",
+        risk="low",
+        confidence=0.8,
+        analysis_source="local_fallback",
+    )
+
+    context = build_director_context(test_db, character, draft)
+    rendered = json.dumps(context, ensure_ascii=False)
+
+    assert "队伍都看见了走廊尽头的火光。" in rendered
+    assert "只有你看见了袖口的血迹。" in rendered
+    assert "另一名玩家的私密线索。" not in rendered
+    assert "仅 Host 可见的异常原因。" not in rendered
+    assert "owner_token" not in context["room"]
+    assert "player_token" not in rendered
 
 
 def test_low_confidence_director_returns_clarification_options_and_cannot_confirm(client, test_db):

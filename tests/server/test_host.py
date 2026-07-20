@@ -1,10 +1,30 @@
 import json
 import pytest
-from src.server.models import EngineEvent, RevealTransaction, TransactionStep
+from src.server.models import EngineEvent, HostHUD, PlayerPublicStatus, RevealTransaction, TransactionStep
 from src.server.host.host_store import HostStore, HOST_VISIBLE_EVENTS, PRIVATE_EVENTS
+from src.server.host.public_stage import build_public_stage_projection
 
 
 class TestHostStoreRouting:
+    def test_host_ack_releases_only_events_allowed_by_release_gate(self):
+        from src.server.host.router_host import _events_released_by_host_ack
+
+        store = HostStore("room-1")
+        store.start_transaction(RevealTransaction(
+            transaction_id="tx-1",
+            steps=[TransactionStep(step_id="step-1", kind="narrative_text")],
+        ))
+        store.advance_step()
+        ready = {"event_type": "s2c_private_notice", "execute_after_step": 1}
+        pending = {"event_type": "s2c_action_completed", "execute_after_step": 3}
+        store.add_delayed_event(ready)
+        store.add_delayed_event(pending)
+
+        assert _events_released_by_host_ack(store, "wrong-transaction", 999, "step-1") == []
+        assert _events_released_by_host_ack(store, "tx-1", 999, "wrong-step") == []
+        assert _events_released_by_host_ack(store, "tx-1", 999, "step-1") == [ready]
+        assert store.delayed_events == [pending]
+
     def test_route_valid_host_event(self):
         store = HostStore("room-1")
         event = EngineEvent(
@@ -53,7 +73,430 @@ class TestHostStoreRouting:
         assert store.route_event(event) is True
 
 
+class TestPublicStageProjection:
+    def test_projection_limits_public_stage_to_six_players(self):
+        hud = HostHUD(
+            room_id="room-1",
+            players=[
+                PlayerPublicStatus(
+                    character_id=f"char-{index}",
+                    player_name=f"Player {index}",
+                    investigator_name=f"Investigator {index}",
+                    hp=10,
+                    hp_max=10,
+                    san=50,
+                    san_max=50,
+                )
+                for index in range(1, 8)
+            ],
+        )
+
+        projection = build_public_stage_projection(hud, [])
+
+        assert [player["characterId"] for player in projection["players"]] == [
+            "char-1",
+            "char-2",
+            "char-3",
+            "char-4",
+            "char-5",
+            "char-6",
+        ]
+
+    def test_projection_includes_only_public_team_context(self):
+        hud = HostHUD(
+            room_id="room-1",
+            team_objectives=["保护安娜并离开走廊"],
+            scene_time="1924-10-14 23:40",
+        )
+
+        projection = build_public_stage_projection(hud, [])
+
+        assert projection["teamObjectives"] == ["保护安娜并离开走廊"]
+        assert projection["sceneTime"] == "1924-10-14 23:40"
+        assert "personalObjectives" not in projection
+        assert "sceneVariables" not in projection
+
+    def test_projection_redacts_exact_resources_and_host_queue(self):
+        hud = HostHUD(
+            room_id="room-1",
+            scene_image_url="/assets/warehouse.png",
+            engine_state="thinking",
+            queue_status={"normal": 2, "urgent": 1},
+            players=[
+                PlayerPublicStatus(
+                    character_id="char-1",
+                    player_name="Alice",
+                    investigator_name="Ada",
+                    hp=2,
+                    hp_max=10,
+                    san=18,
+                    san_max=50,
+                    mp=7,
+                    mp_max=10,
+                    luck=40,
+                    status_tags=["bleeding"],
+                ),
+            ],
+        )
+
+        projection = build_public_stage_projection(
+            hud,
+            [{"text": "仓库门外传来急促脚步。", "issued_at": "2026-07-19T12:00:00Z"}],
+        )
+
+        assert projection["statusText"] == "KP 正在理解行动"
+        assert projection["players"] == [{
+            "characterId": "char-1",
+            "playerName": "Alice",
+            "investigatorName": "Ada",
+            "condition": "濒危",
+            "conditionTone": "danger",
+        }]
+        assert projection["recentEvents"] == [{
+            "text": "仓库门外传来急促脚步。",
+            "issuedAt": "2026-07-19T12:00:00Z",
+        }]
+        assert "queueStatus" not in projection
+        assert {"hp", "hpMax", "san", "sanMax", "mp", "mpMax", "luck", "statusTags"}.isdisjoint(
+            projection["players"][0],
+        )
+
+
 class TestHostStoreSnapshot:
+    def test_owner_can_advance_presentation_without_mutating_world_state(self, client, test_db):
+        from tests.server.conftest import create_room, setup_auth_test_data
+        from src.server.host.router_host import get_host_store
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        store = get_host_store(room["room_id"], test_db)
+        store.start_transaction(RevealTransaction(
+            transaction_id="presentation-transaction",
+            steps=[TransactionStep(step_id="presentation-step", kind="narrative_text")],
+        ))
+        store.save_state(test_db)
+        before = test_db.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s",
+            (room["room_id"],),
+        ).fetchone()["state_version"]
+
+        response = client.post(
+            f"/api/host/{room['room_id']}/presentation/next",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "transactionId": "presentation-transaction",
+            "currentStepIndex": 1,
+            "totalSteps": 1,
+            "paused": False,
+            "completed": True,
+            "queuedTransactions": 0,
+            "canSkipVisual": False,
+        }
+        after = test_db.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s",
+            (room["room_id"],),
+        ).fetchone()["state_version"]
+        assert after == before
+
+    def test_owner_can_start_the_next_persisted_presentation(self, client, test_db):
+        from tests.server.conftest import create_room, setup_auth_test_data
+        from src.server.host.router_host import get_host_store
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        store = get_host_store(room["room_id"], test_db)
+        store.enqueue_transaction(RevealTransaction(
+            transaction_id="queued-presentation",
+            steps=[TransactionStep(step_id="queued-step", kind="narrative_text")],
+        ))
+        store.save_state(test_db)
+
+        response = client.post(
+            f"/api/host/{room['room_id']}/presentation/play",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "transactionId": "queued-presentation",
+            "currentStepIndex": 0,
+            "totalSteps": 1,
+            "paused": False,
+            "completed": False,
+            "queuedTransactions": 0,
+            "canSkipVisual": False,
+        }
+
+    def test_presentation_status_reports_queued_transactions_before_playback(self, client, test_db):
+        from tests.server.conftest import create_room, setup_auth_test_data
+        from src.server.host.router_host import get_host_store
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        store = get_host_store(room["room_id"], test_db)
+        store.enqueue_transaction(RevealTransaction(transaction_id="waiting-presentation"))
+        store.save_state(test_db)
+
+        response = client.get(
+            f"/api/host/{room['room_id']}/presentation",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["transactionId"] is None
+        assert response.json()["queuedTransactions"] == 1
+
+    def test_presentation_step_releases_only_the_matching_saved_player_projection(self, client, test_db, monkeypatch):
+        from tests.server.conftest import create_room, setup_auth_test_data
+        from src.server.host.router_host import get_host_store
+        from src.server.host.ws_manager import manager
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        store = get_host_store(room["room_id"], test_db)
+        store.start_transaction(RevealTransaction(
+            transaction_id="release-presentation",
+            steps=[TransactionStep(step_id="release-step", kind="narrative_text")],
+        ))
+        store.add_delayed_event({
+            "room_id": room["room_id"],
+            "character_id": "release-character",
+            "event_type": "s2c_action_completed",
+            "audience": "player",
+            "payload": {"actionId": "saved-action", "status": "completed"},
+            "execute_after_step": 1,
+        })
+        store.save_state(test_db)
+        delivered = []
+
+        async def capture_delivery(room_id, connection_id, event):
+            delivered.append((room_id, connection_id, event.model_dump(by_alias=True)))
+
+        monkeypatch.setattr(manager, "send_event", capture_delivery)
+
+        response = client.post(
+            f"/api/host/{room['room_id']}/presentation/next",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+
+        assert response.status_code == 200
+        assert len(delivered) == 1
+        delivered_room, connection_id, event = delivered[0]
+        assert delivered_room == room["room_id"]
+        assert connection_id == "player:release-character"
+        assert event["roomId"] == room["room_id"]
+        assert event["type"] == "s2c_action_completed"
+        assert event["audience"] == "player"
+        assert event["payload"] == {"actionId": "saved-action", "status": "completed"}
+        assert store.delayed_events == []
+
+    def test_owner_can_skip_only_consecutive_visual_presentation_steps(self, client, test_db):
+        from tests.server.conftest import create_room, setup_auth_test_data
+        from src.server.host.router_host import get_host_store
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        store = get_host_store(room["room_id"], test_db)
+        store.start_transaction(RevealTransaction(
+            transaction_id="visual-skip-transaction",
+            steps=[
+                TransactionStep(step_id="visual-1", kind="scene_transition", payload={"secretScene": "幕后楼梯"}),
+                TransactionStep(step_id="visual-2", kind="scene_transition", payload={"secretScene": "隐藏地下室"}),
+                TransactionStep(step_id="narrative-1", kind="narrative_text", payload={"text": "不应被跳过"}),
+            ],
+        ))
+        store.add_delayed_event({
+            "room_id": room["room_id"],
+            "character_id": "visual-character",
+            "event_type": "s2c_action_completed",
+            "audience": "player",
+            "payload": {"status": "after-first-visual"},
+            "execute_after_step": 1,
+        })
+        store.add_delayed_event({
+            "room_id": room["room_id"],
+            "character_id": "visual-character",
+            "event_type": "s2c_action_completed",
+            "audience": "player",
+            "payload": {"status": "after-second-visual"},
+            "execute_after_step": 2,
+        })
+        store.save_state(test_db)
+        before = test_db.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s", (room["room_id"],)
+        ).fetchone()["state_version"]
+
+        response = client.post(
+            f"/api/host/{room['room_id']}/presentation/skip-visual",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["skippedVisualSteps"] == 2
+        assert response.json()["currentStepIndex"] == 2
+        assert response.json()["canSkipVisual"] is False
+        assert store.current_step_index == 2
+        assert store.delayed_events == []
+        assert test_db.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s", (room["room_id"],)
+        ).fetchone()["state_version"] == before
+        assert "secretScene" not in response.text
+
+        no_visual = client.post(
+            f"/api/host/{room['room_id']}/presentation/skip-visual",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+        assert no_visual.status_code == 409
+
+    def test_public_presentation_reveals_only_released_stage_narration_after_narrative_step(self, client, test_db):
+        from tests.server.conftest import create_room, setup_auth_test_data
+        from src.server.host.router_host import get_host_store
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        test_db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, status) "
+            "VALUES ('stage-presentation-character', %s, 'Player', 'stage-presentation-token', 'ready')",
+            (room["room_id"],),
+        )
+        test_db.execute(
+            "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
+            "VALUES ('stage-presentation-action', %s, 'stage-presentation-character', 'action', '私密行动原话', 'completed')",
+            (room["room_id"],),
+        )
+        test_db.execute(
+            "INSERT INTO resolution_bundles "
+            "(action_id, room_id, character_id, canonical_result, rule_explanation, actor_projection, stage_projection, host_console, release_status) "
+            "VALUES ('stage-presentation-action', %s, 'stage-presentation-character', '{}', '{}', '{}', %s, %s, 'released')",
+            (
+                room["room_id"],
+                json.dumps({"narrativeText": "雨声压过了远处的汽笛。"}),
+                json.dumps({"hiddenReason": "Host 原始内幕不得投到舞台"}),
+            ),
+        )
+        test_db.commit()
+        store = get_host_store(room["room_id"], test_db)
+        store.start_transaction(RevealTransaction(
+            transaction_id="stage-presentation-transaction",
+            action_id="stage-presentation-action",
+            steps=[
+                TransactionStep(kind="roll", payload={"secretRoll": 7}),
+                TransactionStep(kind="narrative_text", payload={"text": "Host 原始内幕不得投到舞台"}),
+            ],
+        ))
+        store.save_state(test_db)
+        headers = {"X-Owner-Token": room["owner_token"]}
+
+        initial = client.get(f"/api/host/{room['room_id']}/stage-presentation", headers=headers)
+        assert initial.status_code == 200
+        assert initial.json() == {
+            "available": False,
+            "version": 0,
+            "kind": None,
+            "narrativeText": None,
+        }
+
+        client.post(f"/api/host/{room['room_id']}/presentation/next", headers=headers)
+        before_narration = client.get(f"/api/host/{room['room_id']}/stage-presentation", headers=headers)
+        assert before_narration.status_code == 200
+        assert before_narration.json()["available"] is False
+
+        client.post(f"/api/host/{room['room_id']}/presentation/next", headers=headers)
+        public_projection = client.get(f"/api/host/{room['room_id']}/stage-presentation", headers=headers)
+
+        assert public_projection.status_code == 200
+        assert public_projection.json() == {
+            "available": True,
+            "version": 2,
+            "kind": "narrative_text",
+            "narrativeText": "雨声压过了远处的汽笛。",
+        }
+        assert "Host 原始内幕" not in public_projection.text
+        assert "secretRoll" not in public_projection.text
+        assert "stage-presentation-action" not in public_projection.text
+
+    def test_public_presentation_excludes_unreleased_bundle_and_replay_does_not_mutate_world(self, client, test_db):
+        from tests.server.conftest import create_room, setup_auth_test_data
+        from src.server.host.router_host import get_host_store
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        test_db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, status) "
+            "VALUES ('unreleased-stage-character', %s, 'Player', 'unreleased-stage-token', 'ready')",
+            (room["room_id"],),
+        )
+        test_db.execute(
+            "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
+            "VALUES ('unreleased-stage-action', %s, 'unreleased-stage-character', 'action', '私密行动原话', 'completed')",
+            (room["room_id"],),
+        )
+        test_db.execute(
+            "INSERT INTO resolution_bundles "
+            "(action_id, room_id, character_id, canonical_result, rule_explanation, actor_projection, stage_projection, host_console, release_status) "
+            "VALUES ('unreleased-stage-action', %s, 'unreleased-stage-character', '{}', '{}', '{}', %s, '{}', 'ready')",
+            (room["room_id"], json.dumps({"narrativeText": "尚未发布的叙事"})),
+        )
+        test_db.commit()
+        store = get_host_store(room["room_id"], test_db)
+        store.start_transaction(RevealTransaction(
+            action_id="unreleased-stage-action",
+            steps=[TransactionStep(kind="narrative_text", payload={"text": "Host 不能直出"})],
+        ))
+        store.save_state(test_db)
+        headers = {"X-Owner-Token": room["owner_token"]}
+        before = test_db.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s", (room["room_id"],)
+        ).fetchone()["state_version"]
+
+        client.post(f"/api/host/{room['room_id']}/presentation/next", headers=headers)
+        replay = client.post(f"/api/host/{room['room_id']}/presentation/replay", headers=headers)
+        projection = client.get(f"/api/host/{room['room_id']}/stage-presentation", headers=headers)
+
+        assert replay.status_code == 200
+        assert replay.json()["version"] == 2
+        assert projection.status_code == 200
+        assert projection.json() == {
+            "available": False,
+            "version": 2,
+            "kind": None,
+            "narrativeText": None,
+        }
+        after = test_db.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s", (room["room_id"],)
+        ).fetchone()["state_version"]
+        assert after == before
+
+    def test_restore_preserves_active_transaction_step_and_delayed_events(self, test_db):
+        test_db.execute(
+            "INSERT INTO rooms (room_id, owner_token) VALUES ('room-restore', 'owner-token')"
+        )
+        test_db.commit()
+        store = HostStore("room-restore")
+        transaction = RevealTransaction(
+            transaction_id="tx-restore",
+            steps=[
+                TransactionStep(kind="roll", payload={"dice": "1d100"}),
+                TransactionStep(kind="narrative_text", payload={"text": "恢复后的叙事"}),
+            ],
+        )
+        store.start_transaction(transaction)
+        store.advance_step()
+        store.add_delayed_event({"event_type": "s2c_private_notice", "execute_after_step": 2})
+        store.save_state(test_db)
+
+        restored = HostStore("room-restore")
+        restored.restore_from_db(test_db)
+
+        assert restored.active_transaction_id == "tx-restore"
+        assert restored.current_step_index == 1
+        assert restored.active_transaction is not None
+        assert restored.active_transaction.steps[1].payload["text"] == "恢复后的叙事"
+        assert restored.delayed_events == [{"event_type": "s2c_private_notice", "execute_after_step": 2}]
+
     def test_apply_snapshot(self):
         store = HostStore("room-1")
         store.apply_snapshot({
@@ -374,6 +817,48 @@ class TestHostStorePersistence:
 
 
 class TestHostRESTEndpoints:
+    def test_owner_can_update_public_scene_time_without_overwriting_scene_state(self, client, test_db):
+        from tests.server.conftest import setup_auth_test_data, create_room
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        test_db.execute(
+            "INSERT INTO room_scene_state (room_id, current_scene, scene_variables, version) "
+            "VALUES (%s, 'harbor', %s, 4)",
+            (room["room_id"], json.dumps({"hidden_truth": "不要公开", "weather": "rain"}, ensure_ascii=False)),
+        )
+        test_db.commit()
+
+        denied = client.put(
+            f"/api/host/{room['room_id']}/public-scene-time",
+            json={"sceneTime": "1924-10-14 23:40"},
+        )
+        response = client.put(
+            f"/api/host/{room['room_id']}/public-scene-time",
+            json={"sceneTime": "1924-10-14 23:40"},
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+
+        assert denied.status_code == 403
+        assert response.status_code == 200
+        assert response.json() == {"sceneTime": "1924-10-14 23:40", "version": 5}
+        scene = test_db.execute(
+            "SELECT scene_variables, version FROM room_scene_state WHERE room_id = %s",
+            (room["room_id"],),
+        ).fetchone()
+        assert scene["scene_variables"] == {
+            "hidden_truth": "不要公开",
+            "weather": "rain",
+            "public_time": "1924-10-14 23:40",
+        }
+        assert scene["version"] == 5
+        stage = client.get(
+            f"/api/host/{room['room_id']}/stage-projection",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+        assert stage.status_code == 200
+        assert stage.json()["sceneTime"] == "1924-10-14 23:40"
+
     def test_get_hud_endpoint(self, client, test_db):
         from tests.server.conftest import setup_auth_test_data, create_room
         setup_auth_test_data(test_db)
@@ -384,6 +869,365 @@ class TestHostRESTEndpoints:
         data = resp.json()
         assert data.get("roomId") or data.get("room_id")
         assert isinstance(data["players"], list)
+
+    def test_stage_projection_requires_owner_and_excludes_host_state(self, client, test_db):
+        from tests.server.conftest import setup_auth_test_data, create_room
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+
+        denied = client.get(f"/api/host/{room['room_id']}/stage-projection")
+        allowed = client.get(
+            f"/api/host/{room['room_id']}/stage-projection",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+
+        assert denied.status_code == 403
+        assert allowed.status_code == 200
+        payload = allowed.json()
+        assert set(payload) == {
+            "roomId", "sceneImageUrl", "statusText", "teamObjectives", "sceneTime", "players", "recentEvents"
+        }
+        assert "queueStatus" not in payload
+
+    def test_stage_projection_includes_only_public_combat_round_summary(self, client, test_db):
+        from tests.server.conftest import setup_auth_test_data, create_room
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        test_db.execute(
+            "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, 'party', %s)",
+            (
+                room['room_id'],
+                's2c_turn_resolved',
+                json.dumps({
+                    'combat_summary': {
+                        'title': '第 4 轮结束',
+                        'public_facts': ['北侧铁门已经打开'],
+                        'current_situation': '北侧铁门已经打开',
+                        'hidden_enemy_hp': 1,
+                    },
+                }, ensure_ascii=False),
+            ),
+        )
+        test_db.commit()
+
+        response = client.get(
+            f"/api/host/{room['room_id']}/stage-projection",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+
+        assert response.status_code == 200
+        events = response.json()['recentEvents']
+        assert any('第 4 轮结束' in event['text'] for event in events)
+        rendered = json.dumps(events, ensure_ascii=False)
+        assert '北侧铁门已经打开' in rendered
+        assert events[-1]['text'].count('北侧铁门已经打开') == 1
+        assert 'hidden_enemy_hp' not in rendered
+
+    def test_stage_projection_exposes_only_safe_live_combat_progress(self, client, test_db):
+        from tests.server.conftest import setup_auth_test_data, create_room
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        player = client.post(f"/api/player/rooms/{room['room_id']}/join").json()
+        test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room['room_id'],))
+        test_db.execute(
+            "UPDATE characters SET status = 'ready' WHERE character_id = %s",
+            (player['character_id'],),
+        )
+        test_db.execute(
+            "INSERT INTO encounters (encounter_id, room_id, type, status, current_round) "
+            "VALUES ('stage-live-combat', %s, 'combat', 'active', 4)",
+            (room['room_id'],),
+        )
+        test_db.execute(
+            "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode, encounter_id, combat_plan) "
+            "VALUES ('stage-live-turn', %s, 1, 'resolving', 'combat', 'stage-live-combat', %s)",
+            (
+                room['room_id'],
+                json.dumps({
+                    'presentation_clusters': [
+                        {
+                            'public_title': '走廊入口的争夺',
+                            'action_ids': ['internal-public-action'],
+                            'completed_public_facts': [],
+                        },
+                        {
+                            'public_title': '暗中的物品递交',
+                            'action_ids': ['private-action'],
+                            'visibility': 'private',
+                        },
+                    ],
+                    'steps': [{'global_order': 1, 'action_id': 'internal-public-action'}],
+                }, ensure_ascii=False),
+            ),
+        )
+        test_db.execute(
+            "INSERT INTO actions (action_id, room_id, character_id, turn_id, intent_type, declared_intent, status) "
+            "VALUES ('internal-public-action', %s, %s, 'stage-live-turn', 'combat_action', '我准备行动', 'queued')",
+            (room['room_id'], player['character_id']),
+        )
+        test_db.commit()
+
+        response = client.get(
+            f"/api/host/{room['room_id']}/stage-projection",
+            headers={'X-Owner-Token': room['owner_token']},
+        )
+
+        assert response.status_code == 200
+        assert response.json()['combatRound'] == {
+            'roundNumber': 4,
+            'phase': 'resolution',
+            'submittedCount': 1,
+            'totalPlayers': 1,
+            'currentConflict': '走廊入口的争夺',
+        }
+        rendered = json.dumps(response.json(), ensure_ascii=False)
+        assert 'internal-public-action' not in rendered
+        assert 'private-action' not in rendered
+        assert '暗中的物品递交' not in rendered
+
+    def test_public_combat_units_require_explicit_observation_and_redact_exact_values(self):
+        from src.server.host.public_stage import (
+            build_public_combat_unit_projection,
+            build_public_encounter_event_projection,
+        )
+
+        units = build_public_combat_unit_projection([
+            {
+                "character_id": "investigator-ada",
+                "side": "player",
+                "display_name": "艾达",
+                "hp": 7,
+                "hp_max": 10,
+                "distance_band": "near",
+                "dex": 80,
+            },
+            {
+                "character_id": "npc-shadow",
+                "side": "enemy",
+                "public_visibility": "visible",
+                "public_label": "走廊中的人影",
+                "hp": 3,
+                "hp_max": 9,
+                "distance_band": "near",
+                "weapon_name": "未公开的手枪",
+            },
+            {
+                "character_id": "npc-gunner",
+                "side": "enemy",
+                "public_visibility": "lost",
+                "public_label": "黑暗中的枪手",
+                "last_observed_position": "走廊北侧",
+                "hp": 1,
+                "hp_max": 12,
+                "distance_band": "engaged",
+            },
+            {
+                "character_id": "npc-secret",
+                "side": "enemy",
+                "public_visibility": "hidden",
+                "public_label": "地下室里的怪物",
+                "hp": 99,
+                "hp_max": 99,
+            },
+        ])
+
+        assert units == [
+            {
+                "label": "艾达",
+                "kind": "investigator",
+                "healthSegments": 6,
+                "condition": "受伤",
+                "distanceBand": "near",
+            },
+            {
+                "label": "走廊中的人影",
+                "kind": "observed_enemy",
+                "healthSegments": 3,
+                "condition": "重伤",
+                "distanceBand": "near",
+            },
+            {
+                "label": "黑暗中的枪手",
+                "kind": "observed_enemy",
+                "condition": "失去踪迹",
+                "lastObservedAt": "走廊北侧",
+            },
+        ]
+        rendered = json.dumps(units, ensure_ascii=False)
+        for unsafe in ("character_id", "hp", "hp_max", "dex", "weapon_name", "地下室里的怪物"):
+            assert unsafe not in rendered
+
+        event = build_public_encounter_event_projection(
+            {"encounter_id": "enc-1", "type": "combat", "status": "active", "current_round": 4, "summary": "幕后计划"},
+            units,
+        )
+        assert event == {
+            "encounterId": "enc-1",
+            "encounter": {"type": "combat", "status": "active", "currentRound": 4},
+            "publicUnits": units,
+        }
+        assert "幕后计划" not in json.dumps(event, ensure_ascii=False)
+
+    def test_stage_and_player_combat_projection_share_only_observed_units(self, client, test_db):
+        from tests.server.conftest import setup_auth_test_data, create_room
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        player = client.post(f"/api/player/rooms/{room['room_id']}/join").json()
+        test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room["room_id"],))
+        test_db.execute(
+            "UPDATE characters SET status = 'ready' WHERE character_id = %s",
+            (player["character_id"],),
+        )
+        test_db.execute(
+            "INSERT INTO encounters (encounter_id, room_id, type, status, current_round) "
+            "VALUES ('stage-observed-combat', %s, 'combat', 'active', 2)",
+            (room["room_id"],),
+        )
+        test_db.execute(
+            "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode, encounter_id) "
+            "VALUES ('stage-observed-turn', %s, 1, 'collecting', 'combat', 'stage-observed-combat')",
+            (room["room_id"],),
+        )
+        test_db.execute(
+            "INSERT INTO encounter_participants "
+            "(encounter_id, character_id, side, hp, hp_max, distance_band, display_name) "
+            "VALUES ('stage-observed-combat', %s, 'player', 9, 10, 'near', '艾达')",
+            (player["character_id"],),
+        )
+        test_db.execute(
+            "INSERT INTO encounter_participants "
+            "(encounter_id, character_id, side, hp, hp_max, distance_band, public_visibility, public_label) "
+            "VALUES ('stage-observed-combat', 'npc:visible', 'enemy', 2, 8, 'short', 'visible', '走廊中的人影')",
+        )
+        test_db.execute(
+            "INSERT INTO encounter_participants "
+            "(encounter_id, character_id, side, hp, hp_max, public_visibility, public_label) "
+            "VALUES ('stage-observed-combat', 'npc:hidden', 'enemy', 8, 8, 'hidden', '不该显示的身份')",
+        )
+        test_db.commit()
+
+        stage = client.get(
+            f"/api/host/{room['room_id']}/stage-projection",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+        player_round = client.get(
+            "/api/player/combat-round",
+            headers={"X-Room-Token": player["player_token"]},
+        )
+
+        assert stage.status_code == 200
+        assert player_round.status_code == 200
+        expected_units = [
+            {
+                "label": "艾达",
+                "kind": "investigator",
+                "healthSegments": 7,
+                "condition": "情况稳定",
+                "distanceBand": "near",
+            },
+            {
+                "label": "走廊中的人影",
+                "kind": "observed_enemy",
+                "healthSegments": 2,
+                "condition": "濒危",
+                "distanceBand": "short",
+            },
+        ]
+        assert stage.json()["combatRound"]["publicUnits"] == expected_units
+        assert player_round.json()["publicUnits"] == expected_units
+        rendered = json.dumps({"stage": stage.json(), "player": player_round.json()}, ensure_ascii=False)
+        assert "不该显示的身份" not in rendered
+        assert "npc:hidden" not in rendered
+        assert "hp_max" not in rendered
+
+    def test_host_manual_combat_advance_requires_reason_and_writes_audit(self, client, test_db):
+        from tests.server.conftest import setup_auth_test_data, create_room
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        test_db.execute(
+            "INSERT INTO encounters (encounter_id, room_id, type, status, current_round) "
+            "VALUES ('manual-combat-audit', %s, 'combat', 'active', 1)",
+            (room["room_id"],),
+        )
+        test_db.commit()
+
+        missing_reason = client.post(
+            f"/api/host/{room['room_id']}/encounter/next-round",
+            headers={"X-Owner-Token": room["owner_token"]},
+            json={},
+        )
+        approved = client.post(
+            f"/api/host/{room['room_id']}/encounter/next-round",
+            headers={"X-Owner-Token": room["owner_token"]},
+            json={"reason": "自动结算进程中断，需要人工恢复。"},
+        )
+
+        assert missing_reason.status_code == 400
+        assert approved.status_code == 200
+        audit = test_db.execute(
+            "SELECT audience, payload FROM events "
+            "WHERE room_id = %s AND event_type = 'host_encounter_intervention' "
+            "ORDER BY sequence DESC LIMIT 1",
+            (room["room_id"],),
+        ).fetchone()
+        assert audit["audience"] == "system"
+        payload = audit["payload"] if isinstance(audit["payload"], dict) else json.loads(audit["payload"])
+        assert payload["operation"] == "advance_round"
+        assert payload["reason"] == "自动结算进程中断，需要人工恢复。"
+
+    def test_other_manual_encounter_operations_require_reason_and_write_audit(self, client, test_db):
+        from tests.server.conftest import setup_auth_test_data, create_room
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        test_db.execute(
+            "INSERT INTO encounters (encounter_id, room_id, type, status, current_round) "
+            "VALUES ('manual-combat-other-audit', %s, 'combat', 'active', 1)",
+            (room["room_id"],),
+        )
+        test_db.commit()
+        headers = {"X-Owner-Token": room["owner_token"]}
+
+        assert client.post(
+            f"/api/host/{room['room_id']}/encounter/npc",
+            headers=headers,
+            json={"encounterId": "manual-combat-other-audit", "name": "临时敌人"},
+        ).status_code == 400
+        created = client.post(
+            f"/api/host/{room['room_id']}/encounter/npc",
+            headers=headers,
+            json={
+                "encounterId": "manual-combat-other-audit",
+                "name": "临时敌人",
+                "reason": "剧本勘误后需要补入已公开敌人。",
+            },
+        )
+        assert created.status_code == 200
+        assert client.post(
+            f"/api/host/{room['room_id']}/encounter/resolve",
+            headers=headers,
+            json={},
+        ).status_code == 400
+        resolved = client.post(
+            f"/api/host/{room['room_id']}/encounter/resolve",
+            headers=headers,
+            json={"reason": "规则异常已确认，结束重复遭遇。"},
+        )
+        assert resolved.status_code == 200
+
+        rows = test_db.execute(
+            "SELECT payload FROM events WHERE room_id = %s "
+            "AND event_type = 'host_encounter_intervention' ORDER BY sequence",
+            (room["room_id"],),
+        ).fetchall()
+        operations = []
+        for row in rows:
+            payload = row["payload"] if isinstance(row["payload"], dict) else json.loads(row["payload"])
+            operations.append(payload["operation"])
+        assert operations == ["create_encounter_participant", "resolve_encounter"]
 
     def test_get_hud_not_found(self, client):
         resp = client.get("/api/host/nonexistent/hud",
@@ -449,3 +1293,67 @@ class TestHostRESTEndpoints:
     def test_retry_turn_not_found(self, client):
         resp = client.post("/api/host/nonexistent/retry-turn", headers={"X-Owner-Token": "x"})
         assert resp.status_code in (403, 404)
+
+    def test_owner_can_replay_a_pending_projection_without_passing_new_content(self, client, test_db, monkeypatch):
+        from tests.server.conftest import setup_auth_test_data, create_room
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        test_db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, status) "
+            "VALUES ('projection-owner-character', %s, 'Player', 'projection-token', 'ready')",
+            (room['room_id'],),
+        )
+        test_db.execute(
+            "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
+            "VALUES ('projection-pending-action', %s, 'projection-owner-character', 'action', '检查门锁', 'completed')",
+            (room['room_id'],),
+        )
+        test_db.commit()
+
+        class ReplayOnlyPipeline:
+            async def replay_projection(self, action_id):
+                assert action_id == 'projection-pending-action'
+                return {'status': 'replayed', 'action_id': action_id}
+
+        monkeypatch.setattr(client.app.state, "pipeline", ReplayOnlyPipeline(), raising=False)
+        response = client.post(
+            f"/api/host/{room['room_id']}/actions/projection-pending-action/replay-projection",
+            headers={'X-Owner-Token': room['owner_token']},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {'status': 'replayed', 'action_id': 'projection-pending-action'}
+
+    def test_owner_lists_projection_recoveries_without_private_action_text(self, client, test_db):
+        from tests.server.conftest import setup_auth_test_data, create_room
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+        test_db.execute(
+            "INSERT INTO characters (character_id, room_id, player_name, player_token, status) "
+            "VALUES ('projection-list-character', %s, 'Player', 'projection-list-token', 'ready')",
+            (room['room_id'],),
+        )
+        test_db.execute(
+            "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
+            "VALUES ('projection-list-action', %s, 'projection-list-character', 'action', '不应显示的私密原话', 'completed')",
+            (room['room_id'],),
+        )
+        test_db.execute(
+            "INSERT INTO resolution_bundles "
+            "(action_id, room_id, character_id, canonical_result, rule_explanation, actor_projection, stage_projection, host_console, release_status) "
+            "VALUES ('projection-list-action', %s, 'projection-list-character', '{}', '{}', '{}', '{}', '{}', 'projection_pending')",
+            (room['room_id'],),
+        )
+        test_db.commit()
+
+        response = client.get(
+            f"/api/host/{room['room_id']}/projection-replays",
+            headers={'X-Owner-Token': room['owner_token']},
+        )
+
+        assert response.status_code == 200
+        assert response.json()['items'] == [{
+            'action_id': 'projection-list-action',
+            'character_id': 'projection-list-character',
+        }]
+        assert '不应显示的私密原话' not in response.text

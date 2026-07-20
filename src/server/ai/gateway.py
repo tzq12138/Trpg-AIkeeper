@@ -6,8 +6,15 @@ import time
 from typing import Any
 
 from ..config import Settings
-from .contracts import KpResponse, KnowledgeAnswer, NarrativePayload
+from .contracts import (
+    CombatRoundSuggestion,
+    HypothesisDisproofSuggestion,
+    KpResponse,
+    KnowledgeAnswer,
+    NarrativePayload,
+)
 from ..models import DirectorPlanDTO, NarrationResultDTO
+from ..player.action_service import redact_backstage_references
 from .providers import (
     BaseAiProvider,
     ConfiguredOpenAIProvider,
@@ -42,11 +49,14 @@ TASK_SCHEMAS: dict[str, Any] = {
     "generate_map": None,               # validated by caller
     "bind_scenario_assets": None,       # validated by caller
     "review_scenario": None,            # validated by scenario review service
+    "suggest_scene_images": None,       # validated by scenario review service
+    "suggest_scenario_images": None,    # validated by scenario review service
     "analyze_director_action": DirectorPlanDTO,
     "narrate_action": None,            # validated after local action_id/provider_source injection
     "query_knowledge": KnowledgeAnswer,
     "resolve_sanity": KpResponse,
-    "resolve_combat_round": KpResponse,
+    "resolve_combat_round": CombatRoundSuggestion,
+    "suggest_hypothesis_disproof": HypothesisDisproofSuggestion,
 }
 
 DIRECTOR_REQUIRED_KEYS = {
@@ -161,8 +171,12 @@ class AiGateway:
         prepared = dict(context)
         prepared["system_prompt"] = (
             "你是TRPG行动分析器。只输出JSON，不执行骰子或状态修改。"
-            "字段仅限 understanding_summary, risk, intent_type, suggested_skill, difficulty, "
+            "字段仅限 understanding_summary, risk, intent_type, suggested_skill, alternative_skills, action_steps, difficulty, "
             "resource_impacts, visibility, movement_target, confirmation_requirements, confidence, citations。"
+            "仅当玩家明确描述两个连续主步骤时提供 action_steps，最多两个；每项只能有 "
+            "step_id, summary, declared_intent, intent_type, params, execution_condition, on_previous_failure。"
+            "第二步的 on_previous_failure 只能是 cancel 或 continue；不得生成中途询问或将一个行动拆成三次行动。"
+            "execution_condition 只能是 always、previous_step_success 或 previous_step_failure。"
         )
         prepared["user_message"] = json.dumps(
             {
@@ -187,6 +201,7 @@ class AiGateway:
             "Do not directly mutate authoritative game state; state_patch is advisory only. "
             "Required fields include interpreted_intent, intent_type, confidence, "
             "requires_player_clarification, requires_host_exception, narration_mode. "
+            "Include intent_contract with target, method, object, constraints, resources, conditions, visibility, and ambiguities. "
             "intent_type must be one of voice_command, dialogue, skill_check, move, use_item, "
             "show_item, combat_action, chase_action, retroactive_item_claim. "
             "Set requires_host_exception to true only when exception_reason is a concrete, "
@@ -195,6 +210,12 @@ class AiGateway:
             "a visible semantic branch, return semantic_progression.targetNodeId with the "
             "matching supplied citation; never mention internal node or entry identifiers in "
             "interpreted_intent. "
+            "Only when the declared action explicitly contains two consecutive primary steps, "
+            "return action_steps with exactly two items. Each item must include step_id, summary, "
+            "declared_intent, intent_type, params, execution_condition, and on_previous_failure. "
+            "execution_condition must be always, previous_step_success, or previous_step_failure; "
+            "on_previous_failure must be cancel or continue, never ask for a mid-round choice; "
+            "do not return more than two steps, hidden facts, internal IDs, or authoritative state changes. "
             "Use actor_display_name for narration identity, not character_id."
         )
         prepared["user_message"] = json.dumps(context, ensure_ascii=False)
@@ -398,6 +419,119 @@ class AiGateway:
         bindings = result.get("bindings") if isinstance(result, dict) else None
         return [item for item in (bindings or []) if isinstance(item, dict)]
 
+    async def suggest_scene_images(self, context: dict) -> dict | None:
+        prepared = dict(context)
+        prepared["system_prompt"] = (
+            "你是 TRPG 备团配图策划。只返回 JSON 对象，包含 summary 和 suggestions。"
+            "每个 suggestion 必须包含 scene_id、image_summary、prompt、style、"
+            "citation.source_part_id 和 confidence。只为给定场景起草，不得生成图片，"
+            "不得虚构原文依据，不得在 prompt 中提前揭示隐藏线索、真实身份、幕后真相或结局。"
+        )
+        prepared["user_message"] = json.dumps({
+            "scenes": context.get("scenes") or [],
+            "source_parts": context.get("source_parts") or [],
+        }, ensure_ascii=False)
+        result = await self._call_providers(
+            "suggest_scene_images",
+            prepared,
+            disable_local_fallback=True,
+        )
+        return result if isinstance(result, dict) else None
+
+    async def suggest_scenario_images(self, context: dict) -> dict | None:
+        prepared = dict(context)
+        prepared["system_prompt"] = (
+            "你是 TRPG 备团配图策划。只返回 JSON 对象，包含 summary 和 suggestions。"
+            "每个 suggestion 必须包含 target_type、target_key、image_summary、prompt、style、"
+            "citation.source_part_id 和 confidence。target_type 和 target_key 只能使用给定目标。"
+            "只起草配图，不得生成图片，不得虚构原文依据，不得在 prompt 中提前揭示隐藏线索、"
+            "真实身份、幕后真相或结局。"
+        )
+        prepared["user_message"] = json.dumps({
+            "targets": context.get("targets") or [],
+            "source_parts": context.get("source_parts") or [],
+        }, ensure_ascii=False)
+        result = await self._call_providers(
+            "suggest_scenario_images",
+            prepared,
+            disable_local_fallback=True,
+        )
+        return result if isinstance(result, dict) else None
+
+    async def suggest_hypothesis_disproof(
+        self,
+        context: dict,
+        room_id: str | None = None,
+    ) -> dict | None:
+        prepared = {
+            "system_prompt": (
+                "You review one player-created shared hypothesis against only the supplied confirmed "
+                "party-visible facts. Return JSON only with suggestedStatus, reason, factIds, and confidence. "
+                "suggestedStatus must be possible_disproved only when the supplied facts directly conflict "
+                "with the hypothesis; otherwise use no_suggestion. factIds may only contain IDs from the "
+                "supplied confirmed_facts. This is advisory: do not claim any status was changed and do not "
+                "invent facts, citations, hidden information, or player actions."
+            ),
+            "user_message": json.dumps(
+                {
+                    "hypothesis": context.get("hypothesis") or {},
+                    "confirmed_facts": context.get("confirmed_facts") or [],
+                },
+                ensure_ascii=False,
+            ),
+        }
+        result = await self._call_providers(
+            "suggest_hypothesis_disproof",
+            prepared,
+            room_id,
+            disable_local_fallback=True,
+        )
+        if isinstance(result, HypothesisDisproofSuggestion):
+            result = result.model_dump(by_alias=True)
+        if not isinstance(result, dict):
+            return None
+        allowed_fact_ids = {
+            str(fact.get("evidence_card_id") or "")
+            for fact in context.get("confirmed_facts") or []
+            if isinstance(fact, dict)
+        }
+        fact_ids = [
+            str(fact_id)
+            for fact_id in result.get("factIds", result.get("fact_ids", []))
+            if str(fact_id) in allowed_fact_ids
+        ]
+        suggested_status = str(result.get("suggestedStatus", result.get("suggested_status", "")))
+        if suggested_status != "possible_disproved" or not fact_ids:
+            return None
+        return {
+            "suggestedStatus": "possible_disproved",
+            "reason": str(result.get("reason") or "")[:500],
+            "factIds": fact_ids,
+            "confidence": str(result.get("confidence") or "low"),
+        }
+
+    async def generate_scene_image(self, context: dict) -> dict | None:
+        prompt = str(context.get("prompt") or "").strip()
+        size = str(context.get("size") or "").strip()
+        if not prompt or not size:
+            return None
+        for provider in self._get_ordered_providers():
+            generate_image = getattr(provider, "generate_image", None)
+            if not callable(generate_image):
+                continue
+            try:
+                result = await generate_image(prompt=prompt, size=size)
+            except Exception as exc:
+                logger.warning(
+                    "Scene image provider failed provider=%s error=%s",
+                    getattr(provider, "name", "unknown"),
+                    type(exc).__name__,
+                )
+                continue
+            if isinstance(result, dict) and result.get("data_url"):
+                return result
+        return None
+
     async def review_scenario(self, context: dict) -> dict | None:
         prepared = dict(context)
         prepared["system_prompt"] = (
@@ -406,7 +540,10 @@ class AiGateway:
             "target_type, target_key, payload, provenance, citation, and confidence. "
             "Use provenance=source only when citation.source_part_id names a supplied excerpt; "
             "never invent facts, citations, or source IDs. Suggestions are drafts for a human "
-            "administrator and must not claim to have applied changes."
+            "administrator and must not claim to have applied changes. For target_type="
+            "spoiler_boundary, payload must include id, target_type, target_id, "
+            "player_visibility (public/discovered/hidden), host_visibility "
+            "(summary/complete), player_description, and unlock_clues."
         )
         prepared["user_message"] = json.dumps(
             {
@@ -447,11 +584,25 @@ class AiGateway:
             return result
         return KpResponse(**result) if isinstance(result, dict) else KpResponse()
 
-    async def resolve_combat_round(self, context: dict, room_id: str | None = None) -> KpResponse:
-        result = await self._call_providers("resolve_combat_round", context, room_id)
-        if isinstance(result, KpResponse):
+    async def resolve_combat_round(
+        self,
+        context: dict,
+        room_id: str | None = None,
+    ) -> CombatRoundSuggestion | None:
+        result = await self._call_providers(
+            "resolve_combat_round",
+            context,
+            room_id,
+            disable_local_fallback=True,
+        )
+        if isinstance(result, CombatRoundSuggestion):
             return result
-        return KpResponse(**result) if isinstance(result, dict) else KpResponse()
+        if isinstance(result, dict):
+            try:
+                return CombatRoundSuggestion(**result)
+            except Exception:
+                return None
+        return None
 
     async def health_check(self) -> dict:
         results = {}
@@ -738,6 +889,7 @@ def _normalize_director_provider_result(
     result.setdefault("context_version", int(context.get("context_version") or 0))
     result.setdefault("actor_display_name", str(context.get("actor_display_name") or ""))
     result.setdefault("declared_intent", str(context.get("declared_intent") or ""))
+    result.setdefault("intent_contract", local_analysis.get("intent_contract") or {})
     result.setdefault("preconditions", [])
     result.setdefault("permissions", [])
     result.setdefault("mechanic_plan", {"mechanic": "dialogue"})
@@ -765,11 +917,43 @@ def _normalize_director_provider_result(
         result.get("exception_reason") or ""
     ).strip():
         result["requires_host_exception"] = False
+    _require_primary_step_selection(result, context)
     return {
         key: value
         for key, value in result.items()
         if key in DirectorPlanDTO.model_fields
     }
+
+
+def _require_primary_step_selection(result: dict[str, Any], context: dict[str, Any]) -> None:
+    raw_steps = result.get("action_steps")
+    if not isinstance(raw_steps, list) or len(raw_steps) <= 2:
+        return
+
+    options: list[dict[str, str]] = []
+    for index, raw_step in enumerate(raw_steps[:3], start=1):
+        if not isinstance(raw_step, dict):
+            continue
+        summary = redact_backstage_references(
+            str(raw_step.get("summary") or raw_step.get("declared_intent") or "")
+        ).strip()[:160]
+        if not summary:
+            summary = f"第 {index} 项行动"
+        options.append({
+            "label": f"主要事项 {index}：{summary}",
+            "replacement_intent": (
+                f"我本回合优先{summary}。其他内容只作为行动目的，"
+                "不在本回合逐项执行。"
+            ),
+        })
+    if not options:
+        options.append({
+            "label": "选择本回合的主要事项",
+            "replacement_intent": str(context.get("declared_intent") or ""),
+        })
+    result["action_steps"] = []
+    result["requires_player_clarification"] = True
+    result["clarification_options"] = options
 
 
 def _normalize_director_citation(value: dict[str, Any]) -> dict[str, Any]:

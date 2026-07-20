@@ -3,6 +3,7 @@ import { getSlotValue } from '../shared/identity';
 import { apiFetch, authHeaders } from '../shared/api';
 import { PlayerWS } from '../shared/ws';
 import { buildPlayerLobbyChecklist } from '../shared/lobby-checklist';
+import { teamMessageChannelLabel } from '../shared/team-message';
 
 // ── types ──────────────────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ interface ChatMsg {
   investigatorName: string;
   text: string;
   createdAt: string;
+  channel?: string;
 }
 
 interface CampaignEnding {
@@ -373,7 +375,7 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
                   className={`bh-lobby-chat-msg ${m.characterId === myCharId ? 'bh-lobby-chat-msg--self' : ''}`}
                 >
                   <div style={{ fontWeight: 900, fontSize: 11, opacity: 0.6 }}>
-                    {m.playerName || '我'}
+                    {teamMessageChannelLabel(m.channel)} · {m.playerName || '我'}
                   </div>
                   <div>{m.text}</div>
                 </div>

@@ -85,6 +85,50 @@ class TestBuildSensitiveIndex:
         hidden = [i for i in items if i.category in ("hidden_clue", "hidden_npc", "truth", "ending")]
         assert len(hidden) == 0
 
+    def test_confirmed_boundary_releases_only_after_its_unlock_clue(self, test_db):
+        sg = SpoilerGuard(test_db)
+        kg = _make_kg_with_hidden()
+        kg["spoiler_boundaries"] = [{
+            "id": "truth",
+            "target_type": "truth",
+            "target_id": "truth",
+            "player_visibility": "discovered",
+            "host_visibility": "complete",
+            "player_description": "调查背后另有隐情。",
+            "unlock_clues": ["clue-secret-1"],
+            "citation": {"source_part_id": "part-1"},
+        }, {
+            "id": "npc:1",
+            "target_type": "npc",
+            "target_id": "1",
+            "player_visibility": "discovered",
+            "host_visibility": "complete",
+            "player_description": "一个神秘的身影。",
+            "unlock_clues": ["clue-secret-1"],
+            "citation": {"source_part_id": "part-1"},
+        }]
+
+        index = sg.build_sensitive_index("sc-boundary", kg)
+        truth = next(item for item in index if item.category == "truth")
+        blocked = sg.review(
+            "张教授为了复活亡妻，用邪教仪式杀害了三名村民。",
+            "party",
+            None,
+            SpoilerUnlockState(roomId="room-boundary"),
+            index,
+        )
+        released = sg.review(
+            "张教授为了复活亡妻，用邪教仪式杀害了三名村民。",
+            "party",
+            None,
+            SpoilerUnlockState(roomId="room-boundary", discoveredClueIds=["clue-secret-1"]),
+            index,
+        )
+
+        assert truth.unlock_clue_ids == ["clue-secret-1"]
+        assert blocked.allowed is False
+        assert released.allowed is True
+
     def test_persist_and_load_index(self, test_db):
         sg = SpoilerGuard(test_db)
         kg = _make_kg_with_hidden()
@@ -93,7 +137,7 @@ class TestBuildSensitiveIndex:
 
         loaded = sg.load_index("sc-persist")
         assert len(loaded) == len(items)
-        assert loaded[0].item_id == items[0].item_id
+        assert {item.item_id for item in loaded} == {item.item_id for item in items}
 
     def test_rebuild_index(self, test_db):
         # Insert a scenario first

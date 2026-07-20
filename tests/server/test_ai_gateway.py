@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from src.server.ai.contracts import KpResponse, NarrativePayload
+from src.server.ai.contracts import CombatRoundSuggestion, KpResponse, NarrativePayload
 from src.server.ai.gateway import AiGateway
 from src.server.ai.providers import BaseAiProvider
 from src.server.scenario.content_package import ContentPackage, ContentPart
@@ -42,6 +42,121 @@ class RecordingProvider(BaseAiProvider):
 
     async def health_check(self) -> bool:
         return True
+
+
+@pytest.mark.asyncio
+async def test_combat_round_planning_requires_a_dedicated_suggestion_contract():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "configured",
+        {
+            "clusters": [
+                {"actionIds": ["public-action"], "publicTitle": "Doorway exchange"}
+            ],
+            "dependencies": [
+                {"actionId": "public-action", "dependsOnActionIds": []}
+            ],
+        },
+    )
+    gateway._providers = {"configured": remote}
+    gateway._provider_order = ["configured"]
+
+    result = await gateway.resolve_combat_round(
+        {"public_actions": [{"action_id": "public-action"}]},
+        room_id="combat-room",
+    )
+
+    assert isinstance(result, CombatRoundSuggestion)
+    assert result.clusters[0].public_title == "Doorway exchange"
+    assert remote.calls[0][0] == "resolve_combat_round"
+
+
+@pytest.mark.asyncio
+async def test_combat_round_planning_rejects_generic_narrative_without_local_fallback():
+    gateway = AiGateway()
+    remote = RecordingProvider("configured", {"narrative": {"public": "Attack now"}})
+    local = RecordingProvider("local", {"clusters": [], "dependencies": []})
+    gateway._providers = {"configured": remote, "local": local}
+    gateway._provider_order = ["configured", "local"]
+
+    result = await gateway.resolve_combat_round(
+        {"public_actions": [{"action_id": "public-action"}]},
+        room_id="combat-room",
+    )
+
+    assert result is None
+    assert local.calls == []
+
+
+@pytest.mark.asyncio
+async def test_hypothesis_disproof_suggestion_only_returns_supplied_confirmed_fact_ids():
+    gateway = AiGateway()
+    remote = RecordingProvider("configured", {
+        "suggestedStatus": "possible_disproved",
+        "reason": "The confirmed fact conflicts.",
+        "factIds": ["fact-1", "invented-fact"],
+        "confidence": "medium",
+    })
+    gateway._providers = {"configured": remote}
+    gateway._provider_order = ["configured"]
+
+    result = await gateway.suggest_hypothesis_disproof(
+        {
+            "hypothesis": {"evidence_card_id": "hypothesis-1", "title": "A hypothesis"},
+            "confirmed_facts": [{"evidence_card_id": "fact-1", "title": "A confirmed fact"}],
+        },
+        room_id="room-hypothesis",
+    )
+
+    assert result == {
+        "suggestedStatus": "possible_disproved",
+        "reason": "The confirmed fact conflicts.",
+        "factIds": ["fact-1"],
+        "confidence": "medium",
+    }
+    assert remote.calls[0][0] == "suggest_hypothesis_disproof"
+
+
+@pytest.mark.asyncio
+async def test_scene_image_suggestion_uses_text_provider_and_requires_source_citations():
+    gateway = AiGateway()
+    provider = RecordingProvider("configured", {
+        "summary": "地下室需要一张场景图。",
+        "suggestions": [{"scene_id": "cellar"}],
+    })
+    gateway._providers = {"configured": provider}
+    gateway._provider_order = ["configured"]
+
+    result = await gateway.suggest_scene_images({
+        "scenes": [{"scene_id": "cellar", "description": "潮湿的地下室"}],
+        "source_parts": [{"source_part_id": "part-1", "text_content": "地下室石阶潮湿。"}],
+    })
+
+    assert result["suggestions"][0]["scene_id"] == "cellar"
+    context = provider.calls[0][1]
+    assert context["user_message"]
+    assert "citation" in context["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_scenario_image_suggestion_restricts_provider_to_given_targets():
+    gateway = AiGateway()
+    provider = RecordingProvider("configured", {
+        "summary": "图书管理员可补一张肖像。",
+        "suggestions": [{"target_type": "npc", "target_key": "librarian"}],
+    })
+    gateway._providers = {"configured": provider}
+    gateway._provider_order = ["configured"]
+
+    result = await gateway.suggest_scenario_images({
+        "targets": [{"target_type": "npc", "target_key": "librarian"}],
+        "source_parts": [{"source_part_id": "part-1", "text_content": "图书管理员神色疲惫。"}],
+    })
+
+    assert result["suggestions"][0]["target_key"] == "librarian"
+    context = provider.calls[0][1]
+    assert "target_type" in context["system_prompt"]
+    assert "librarian" in context["user_message"]
 
 
 @pytest.mark.asyncio
@@ -242,6 +357,127 @@ async def test_analyze_director_action_accepts_core_provider_fields_with_safe_de
         "rationale": None,
     }
     assert result["analysis_source"] == "fallback_provider"
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_accepts_at_most_two_composite_steps():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "先撬锁，再进入房间",
+            "intent_type": "skill_check",
+            "confidence": 0.88,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+            "intent_contract": {
+                "target": "房门",
+                "method": "开锁",
+                "object": "门锁",
+                "constraints": ["保持安静"],
+                "resources": ["开锁工具"],
+                "conditions": ["门锁完好"],
+                "visibility": "public",
+                "ambiguities": [],
+            },
+            "action_steps": [
+                {
+                    "step_id": "pick-lock",
+                    "summary": "尝试撬开房门",
+                    "declared_intent": "我先尝试撬开房门。",
+                    "intent_type": "skill_check",
+                    "params": {"skillName": "Locksmith"},
+                },
+                {
+                    "step_id": "enter-room",
+                    "summary": "门开后进入房间",
+                    "declared_intent": "如果门打开，我就进入房间。",
+                    "intent_type": "move",
+                    "params": {"target": "room"},
+                    "execution_condition": "previous_step_success",
+                    "on_previous_failure": "cancel",
+                },
+            ],
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 3,
+            "declared_intent": "我先撬锁，成功后进入房间。",
+            "actor_display_name": "Ada",
+            "local_analysis": {"draft_id": "draft-1", "visibility": "public"},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert [step["step_id"] for step in result["action_steps"]] == [
+        "pick-lock",
+        "enter-room",
+    ]
+    assert result["action_steps"][1]["execution_condition"] == "previous_step_success"
+    assert result["intent_contract"]["target"] == "房门"
+    assert result["intent_contract"]["conditions"] == ["门锁完好"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_director_action_requests_a_primary_step_when_provider_returns_three():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "射击人影、掩护同伴并检查门锁",
+            "intent_type": "combat_action",
+            "confidence": 0.91,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+            "action_steps": [
+                {
+                    "step_id": "shoot",
+                    "summary": "朝人影射击",
+                    "declared_intent": "我朝人影射击。",
+                    "intent_type": "combat_action",
+                },
+                {
+                    "step_id": "cover",
+                    "summary": "掩护同伴撤退",
+                    "declared_intent": "我掩护同伴撤退。",
+                    "intent_type": "combat_action",
+                },
+                {
+                    "step_id": "inspect-lock",
+                    "summary": "检查门锁",
+                    "declared_intent": "我检查门锁。",
+                    "intent_type": "skill_check",
+                },
+            ],
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 3,
+            "declared_intent": "我射击人影、掩护同伴，再检查门锁。",
+            "actor_display_name": "Ada",
+            "local_analysis": {"draft_id": "draft-1", "visibility": "public"},
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    assert result["action_steps"] == []
+    assert result["requires_player_clarification"] is True
+    assert len(result["clarification_options"]) == 3
+    assert "主要" in result["clarification_options"][0]["label"]
 
 
 @pytest.mark.asyncio

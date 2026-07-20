@@ -55,3 +55,32 @@ def test_blocked_no_scenes():
     graph = {"scenes": [], "npcs": [{"name": "Bob", "npc_id": "npc-bob", "personality": "可疑"}], "clues": [], "truth": {}, "endings": []}
     report = gen.evaluate(graph)
     assert report.level == QualityLevel.BLOCKED
+
+
+def test_scene_asset_binding_satisfies_image_quality_check():
+    report = QualityReportGenerator().evaluate({
+        "scenes": [{"scene_id": "study", "name": "书房", "image_asset_id": "asset-study"}],
+        "npcs": [{"name": "Bob", "npc_id": "npc-bob", "personality": "可疑"}],
+        "clues": [{"name": "letter"}],
+        "truth": {"summary": "失踪案与地下祭坛有关"},
+        "endings": [{"ending_id": "escape", "name": "逃离"}],
+    })
+
+    assert all(issue.code != "scene_images_missing" for issue in report.issues)
+
+
+def test_quality_report_surfaces_missing_npc_item_and_clue_images_as_optional_work():
+    report = QualityReportGenerator().evaluate({
+        "scenes": [{"scene_id": "study", "name": "书房", "image_asset_id": "asset-study"}],
+        "npcs": [{"npc_id": "keeper", "name": "馆长", "image_asset_id": "asset-keeper"}],
+        "items": [{"item_id": "brass-key", "name": "黄铜钥匙"}],
+        "clues": [{"clue_id": "blood-letter", "name": "血信"}],
+        "truth": {"summary": "失踪案与地下祭坛有关"},
+        "endings": [{"ending_id": "escape", "name": "逃离"}],
+    })
+
+    issue = next(item for item in report.issues if item.code == "supporting_images_missing")
+
+    assert issue.blocking is False
+    assert issue.severity == "info"
+    assert issue.target_type == "asset"

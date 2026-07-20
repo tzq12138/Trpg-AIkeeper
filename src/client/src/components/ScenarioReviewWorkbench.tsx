@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getSlotValue } from '../shared/identity';
-import { summarizeReviewIssues } from '../shared/scenario-review-workbench';
+import { resolveAiDraftIssueId, summarizeReviewIssues } from '../shared/scenario-review-workbench';
+import {
+  type ImageSuggestion,
+  imageTargetLabel,
+  normalizeImageSuggestion,
+  partyVisibleImageNotice,
+} from '../shared/scenario-review-images';
 
 type ReviewIssue = {
   issue_id: string;
@@ -49,6 +55,18 @@ type ReviewWorkbench = {
 
 type ViewMode = 'todo' | 'source' | 'timeline';
 
+function isSpoilerBoundaryIssue(issue: ReviewIssue) {
+  return issue.target_type === 'spoiler_boundary'
+    || issue.code === 'missing_spoiler_boundaries'
+    || issue.code === 'spoiler_boundary_coverage_incomplete';
+}
+
+function imageSuggestionTargetTypes(issue: ReviewIssue): Array<'scene' | 'npc' | 'item' | 'clue'> | null {
+  if (issue.code === 'scene_images_missing') return ['scene'];
+  if (issue.code === 'supporting_images_missing') return ['npc', 'item', 'clue'];
+  return null;
+}
+
 function authHeaders(): Record<string, string> {
   const token = getSlotValue('account_token') || '';
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -85,6 +103,23 @@ function extractTimeline(graph: Record<string, unknown>) {
   ];
 }
 
+function CandidatePayloadPreview({ candidate }: { candidate: PatchCandidate }) {
+  if (candidate.target_type !== 'spoiler_boundary') {
+    return <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(candidate.payload, null, 2)}</pre>;
+  }
+  const unlockClues = Array.isArray(candidate.payload.unlock_clues)
+    ? candidate.payload.unlock_clues.map(String).filter(Boolean)
+    : [];
+  return (
+    <dl style={{ display: 'grid', gap: 4, margin: '8px 0' }}>
+      <div><dt>玩家看到什么</dt><dd>{String(candidate.payload.player_description || '未提供公开描述')}</dd></div>
+      <div><dt>何时解锁</dt><dd>{String(candidate.payload.player_visibility || 'hidden')} {unlockClues.length ? `· 线索：${unlockClues.join('、')}` : ''}</dd></div>
+      <div><dt>Host 所需信息</dt><dd>{String(candidate.payload.host_visibility || 'complete')}</dd></div>
+      <div><dt>目标</dt><dd>{String(candidate.payload.target_type || '')}: {String(candidate.payload.target_id || '')}</dd></div>
+    </dl>
+  );
+}
+
 export function ScenarioReviewWorkbench({
   scenarioId,
   scenarioVersionId,
@@ -104,6 +139,8 @@ export function ScenarioReviewWorkbench({
   const [message, setMessage] = useState('');
   const [candidates, setCandidates] = useState<PatchCandidate[]>([]);
   const [aiSummary, setAiSummary] = useState('');
+  const [imageSuggestions, setImageSuggestions] = useState<ImageSuggestion[]>([]);
+  const [imageSummary, setImageSummary] = useState('');
   const [originalUrl, setOriginalUrl] = useState('');
   const [targetType, setTargetType] = useState('clue');
   const [targetKey, setTargetKey] = useState('');
@@ -237,8 +274,9 @@ export function ScenarioReviewWorkbench({
     }
   };
 
-  const askAi = async (mode: 'issue' | 'whole') => {
-    if (mode === 'issue' && !selectedIssue) return;
+  const askAi = async (mode: 'issue' | 'whole', clickedIssueId?: string) => {
+    const issueId = resolveAiDraftIssueId(clickedIssueId, selectedIssue?.issue_id);
+    if (mode === 'issue' && !issueId) return;
     setBusy(mode === 'issue' ? 'ai-issue' : 'ai-whole');
     setError('');
     try {
@@ -246,7 +284,7 @@ export function ScenarioReviewWorkbench({
         `${basePath}/review-ai/${mode === 'issue' ? 'issue' : 'reread'}`,
         {
           method: 'POST',
-          body: mode === 'issue' ? JSON.stringify({ issue_id: selectedIssue?.issue_id }) : undefined,
+          body: mode === 'issue' ? JSON.stringify({ issue_id: issueId }) : undefined,
         },
       );
       setAiSummary(String(result.summary || ''));
@@ -254,6 +292,96 @@ export function ScenarioReviewWorkbench({
       setMessage('AI 只生成了待确认候选；请逐条检查证据后采用。');
     } catch (aiError) {
       setError(aiError instanceof Error ? aiError.message : 'AI 复核暂时不可用。');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const askImageSuggestions = async (targetTypes: Array<'scene' | 'npc' | 'item' | 'clue'>) => {
+    if (!workbench?.is_review_draft) return;
+    setBusy('image-suggestions');
+    setError('');
+    try {
+      const result = await requestJson(
+        `/api/admin/scenarios/${scenarioId}/versions/${scenarioVersionId}/image-generations/suggestions`,
+        { method: 'POST', body: JSON.stringify({ target_types: targetTypes }) },
+      );
+      const suggestions = Array.isArray(result.suggestions)
+        ? result.suggestions.filter((item: unknown): item is Record<string, unknown> => !!item && typeof item === 'object').map(normalizeImageSuggestion)
+        : [];
+      setImageSummary(String(result.summary || ''));
+      setImageSuggestions(suggestions);
+      setMessage('AI 已从原文起草待补配图；请编辑后生成预览，满意后再采用并绑定。');
+    } catch (imageError) {
+      setError(imageError instanceof Error ? imageError.message : 'AI 配图建议暂时不可用。');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const imageSuggestionKey = (suggestion: ImageSuggestion) => `${suggestion.target_type}:${suggestion.target_key}`;
+
+  const updateImageSuggestion = (suggestion: ImageSuggestion, patch: Partial<ImageSuggestion>) => {
+    const key = imageSuggestionKey(suggestion);
+    setImageSuggestions((items) => items.map((item) => imageSuggestionKey(item) === key ? { ...item, ...patch } : item));
+  };
+
+  const previewSceneImage = async (suggestion: ImageSuggestion) => {
+    setBusy(`image-preview:${imageSuggestionKey(suggestion)}`);
+    setError('');
+    try {
+      const result = await requestJson(
+        `/api/admin/scenarios/${scenarioId}/versions/${scenarioVersionId}/image-generations/preview`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            suggestion: {
+              target_type: suggestion.target_type,
+              target_key: suggestion.target_key,
+              citation: suggestion.citation,
+            },
+            prompt: `${suggestion.prompt}\n风格：${suggestion.style}`,
+            visibility: suggestion.visibility,
+            size: '1024x1024',
+          }),
+        },
+      );
+      if (!result.data_url || !result.preview_token) throw new Error('图片服务没有返回可采用的预览。');
+      updateImageSuggestion(suggestion, {
+        preview: {
+          data_url: String(result.data_url),
+          preview_token: String(result.preview_token),
+          generated_prompt: String(result.generated_prompt || ''),
+          mime_type: String(result.mime_type || 'image/png'),
+        },
+      });
+      setMessage('预览只在当前审核步骤中保留；确认采用后才会写入素材库和审核草稿。');
+    } catch (previewError) {
+      setError(previewError instanceof Error ? previewError.message : '生成图片预览失败。可继续使用手动上传素材。');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const adoptSceneImage = async (suggestion: ImageSuggestion) => {
+    if (!suggestion.preview) return;
+    setBusy(`image-adopt:${imageSuggestionKey(suggestion)}`);
+    setError('');
+    try {
+      await requestJson(
+        `/api/admin/scenarios/${scenarioId}/versions/${scenarioVersionId}/image-generations/adopt`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            preview_token: suggestion.preview.preview_token,
+            data_url: suggestion.preview.data_url,
+          }),
+        },
+      );
+      setImageSuggestions((items) => items.filter((item) => imageSuggestionKey(item) !== imageSuggestionKey(suggestion)));
+      setMessage('配图已绑定到审核草稿；点击“重编译并复查”后才会进入备团包。');
+    } catch (adoptError) {
+      setError(adoptError instanceof Error ? adoptError.message : '采用配图失败。');
     } finally {
       setBusy('');
     }
@@ -321,7 +449,9 @@ export function ScenarioReviewWorkbench({
               {issue.status === 'not_applicable' && <small>理由：{issue.resolution_rationale}</small>}
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
                 <button className="bh-button" onClick={() => { setSelectedIssueId(issue.issue_id); setView('source'); }}>查看原文并补充</button>
-                {workbench.is_review_draft && <button className="bh-button" disabled={busy === 'ai-issue'} onClick={() => { setSelectedIssueId(issue.issue_id); void askAi('issue'); }}>AI 找证据并起草</button>}
+                {workbench.is_review_draft && isSpoilerBoundaryIssue(issue) && <button className="bh-button" disabled={busy === 'ai-issue'} onClick={() => { setSelectedIssueId(issue.issue_id); setView('source'); void askAi('issue', issue.issue_id); }}>AI 起草可见性边界</button>}
+                {workbench.is_review_draft && imageSuggestionTargetTypes(issue) && <button className="bh-button" disabled={busy === 'image-suggestions'} onClick={() => { setSelectedIssueId(issue.issue_id); setView('source'); void askImageSuggestions(imageSuggestionTargetTypes(issue) || ['scene']); }}>AI 从原文起草配图</button>}
+                {workbench.is_review_draft && !isSpoilerBoundaryIssue(issue) && !imageSuggestionTargetTypes(issue) && <button className="bh-button" disabled={busy === 'ai-issue'} onClick={() => { setSelectedIssueId(issue.issue_id); void askAi('issue', issue.issue_id); }}>AI 找证据并起草</button>}
                 {!issue.blocking && issue.status !== 'not_applicable' && workbench.is_review_draft && <button className="bh-button" disabled={busy === `waive-${issue.issue_id}`} onClick={() => void markNotApplicable(issue)}>标记不适用</button>}
               </div>
             </div>
@@ -330,7 +460,7 @@ export function ScenarioReviewWorkbench({
       )}
 
       {view === 'source' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(320px, 1fr)', gap: 12 }}>
+        <div className="scenario-review-source-grid">
           <div className="bh-panel" style={{ padding: 12, minWidth: 0 }}>
             <span className="bh-eyebrow">SOURCE FIRST</span>
             <select className="bh-input" value={selectedPart?.source_part_id || ''} onChange={(event) => setSelectedPartId(event.target.value)} style={{ marginTop: 8 }}>
@@ -341,9 +471,9 @@ export function ScenarioReviewWorkbench({
                 <strong>{sourceLabel(selectedPart)}</strong>
                 {originalUrl ? <a href={originalUrl} target="_blank" rel="noreferrer" style={{ marginLeft: 8 }}>打开原件</a> : <span style={{ marginLeft: 8 }}>原件不可用，显示解析文本</span>}
               </div>
-              {originalUrl && selectedPart.source_mime_type.startsWith('image/') && <img src={originalUrl} alt={selectedPart.source_filename} style={{ width: '100%', maxHeight: 420, objectFit: 'contain', marginTop: 8, border: '3px solid var(--bh-black)' }} />}
-              {originalUrl && selectedPart.source_mime_type === 'application/pdf' && <iframe title="原始 PDF" src={originalUrl} style={{ width: '100%', height: 360, marginTop: 8, border: '3px solid var(--bh-black)' }} />}
-              <pre className="bh-muted-box" style={{ marginTop: 8, whiteSpace: 'pre-wrap', maxHeight: 320, overflow: 'auto' }}>{selectedPart.text_content || '该页没有可提取文本；请打开原件查看。'}</pre>
+              {originalUrl && selectedPart.source_mime_type.startsWith('image/') && <img src={originalUrl} alt={selectedPart.source_filename} style={{ width: '100%', maxHeight: 600, objectFit: 'contain', marginTop: 8, border: '3px solid var(--bh-black)' }} />}
+              {originalUrl && selectedPart.source_mime_type === 'application/pdf' && <iframe title="原始 PDF" src={originalUrl} style={{ width: '100%', height: 560, marginTop: 8, border: '3px solid var(--bh-black)' }} />}
+              <details open style={{ marginTop: 8 }}><summary>AI 读取到的纯文本节选（核对格式与 OCR）</summary><pre className="bh-muted-box" style={{ marginTop: 8, whiteSpace: 'pre-wrap', maxHeight: 440, overflow: 'auto' }}>{selectedPart.text_content || '该页没有可提取文本；请打开原件查看。'}</pre></details>
             </>}
           </div>
           <div className="bh-panel" style={{ padding: 12, minWidth: 0 }}>
@@ -362,10 +492,12 @@ export function ScenarioReviewWorkbench({
                 <button className="bh-button bh-button--yellow" disabled={busy === 'patch'} onClick={() => void savePatch()}>加入审核草稿</button>
                 <button className="bh-button" disabled={busy === 'ai-issue'} onClick={() => void askAi('issue')}>AI 找证据并起草</button>
                 <button className="bh-button" disabled={busy === 'ai-whole'} onClick={() => void askAi('whole')}>AI 整本重读</button>
+                <button className="bh-button" disabled={busy === 'image-suggestions'} onClick={() => void askImageSuggestions(['scene', 'npc', 'item', 'clue'])}>AI 起草所有待补配图</button>
                 <button className="bh-button" disabled={busy === 'rebuild'} onClick={() => void rebuild()}>重编译并复查</button>
               </div>
             </>}
-            {(aiSummary || candidates.length > 0) && <div className="bh-muted-box" style={{ marginTop: 12 }}><strong>AI 候选（未写入）</strong><p>{aiSummary}</p>{candidates.map((candidate, index) => <div key={`${candidate.target_key}-${index}`} style={{ borderTop: '1px solid var(--bh-black)', paddingTop: 8, marginTop: 8 }}><strong>{candidate.target_type}: {candidate.target_key}</strong><small style={{ display: 'block' }}>置信度 {Math.round((candidate.confidence || 0) * 100)}% · 引用 {String(candidate.citation.source_part_id || '无')}</small><pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(candidate.payload, null, 2)}</pre><button className="bh-button" disabled={busy === 'patch'} onClick={() => void savePatch(candidate)}>采用此草稿</button></div>)}</div>}
+            {(aiSummary || candidates.length > 0) && <div className="bh-muted-box" style={{ marginTop: 12 }}><strong>AI 候选（未写入）</strong><p>{aiSummary}</p>{candidates.map((candidate, index) => <div key={`${candidate.target_key}-${index}`} style={{ borderTop: '1px solid var(--bh-black)', paddingTop: 8, marginTop: 8 }}><strong>{candidate.target_type}: {candidate.target_key}</strong><small style={{ display: 'block' }}>置信度 {Math.round((candidate.confidence || 0) * 100)}% · 引用 {String(candidate.citation.source_part_id || '无')}</small><CandidatePayloadPreview candidate={candidate} /><button className="bh-button" disabled={busy === 'patch'} onClick={() => void savePatch(candidate)}>采用此草稿</button></div>)}</div>}
+            {(imageSummary || imageSuggestions.length > 0) && <div className="bh-muted-box" style={{ marginTop: 12 }}><strong>AI 配图建议（未写入）</strong><p>{imageSummary}</p>{imageSuggestions.map((suggestion) => <div key={imageSuggestionKey(suggestion)} style={{ borderTop: '1px solid var(--bh-black)', paddingTop: 10, marginTop: 10 }}><strong>{imageTargetLabel(suggestion.target_type)}：{suggestion.target_key}</strong><small style={{ display: 'block' }}>置信度 {Math.round(suggestion.confidence * 100)}% · 原文引用 {String(suggestion.citation.source_part_id || '无')}</small><p style={{ marginTop: 6 }}>{suggestion.image_summary}</p><label style={{ display: 'grid', gap: 4, marginTop: 8 }}>图片提示词<textarea className="bh-input" aria-label={`图片提示词 ${suggestion.target_key}`} value={suggestion.prompt} onChange={(event) => updateImageSuggestion(suggestion, { prompt: event.target.value })} style={{ minHeight: 90 }} /></label><label style={{ display: 'grid', gap: 4, marginTop: 8 }}>画面风格<input className="bh-input" value={suggestion.style} onChange={(event) => updateImageSuggestion(suggestion, { style: event.target.value })} /></label><label style={{ display: 'grid', gap: 4, marginTop: 8 }}>图片可见性<select className="bh-input" value={suggestion.visibility} onChange={(event) => updateImageSuggestion(suggestion, { visibility: event.target.value === 'party' ? 'party' : 'host_only', preview: undefined })}><option value="host_only">仅 Host</option><option value="party">队伍可见</option></select></label>{partyVisibleImageNotice(suggestion.visibility) && <small style={{ display: 'block', color: 'var(--bh-red)', marginTop: 6 }}>{partyVisibleImageNotice(suggestion.visibility)}</small>}{suggestion.preview && <><img src={suggestion.preview.data_url} alt={`${suggestion.target_key} 配图预览`} style={{ width: '100%', maxHeight: 420, objectFit: 'contain', border: '3px solid var(--bh-black)', marginTop: 10 }} /><small style={{ display: 'block', marginTop: 4 }}>实际生成提示词：{suggestion.preview.generated_prompt}</small></>}<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}><button className="bh-button" disabled={busy === `image-preview:${imageSuggestionKey(suggestion)}`} onClick={() => void previewSceneImage(suggestion)}>{busy === `image-preview:${imageSuggestionKey(suggestion)}` ? '正在生成预览…' : '生成预览'}</button>{suggestion.preview && <button className="bh-button bh-button--yellow" disabled={busy === `image-adopt:${imageSuggestionKey(suggestion)}`} onClick={() => void adoptSceneImage(suggestion)}>{busy === `image-adopt:${imageSuggestionKey(suggestion)}` ? '正在采用…' : '采用并绑定'}</button>}</div></div>)}</div>}
           </div>
         </div>
       )}

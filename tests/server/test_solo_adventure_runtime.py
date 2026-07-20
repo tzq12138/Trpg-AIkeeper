@@ -2486,6 +2486,7 @@ async def test_solo_bear_scene_bootstraps_an_active_encounter_without_host(test_
     assert error is None
     encounter = get_encounter(test_db, intent.params["encounterId"])
     assert encounter["status"] == "active"
+    assert intent.params["combatStarted"] == encounter["encounter_id"]
     participants = get_participants(test_db, encounter["encounter_id"])
     enemy = next(item for item in participants if item["side"] == "enemy")
     assert enemy["display_name"] == "黑熊"
@@ -2529,7 +2530,8 @@ async def test_encounter_damage_mutation_updates_the_target_not_the_actor(test_d
             "value": -4,
         }],
     )
-    await ResolutionPipeline(test_db)._apply_encounter_result(
+    dispatcher = _RecordingDispatcher()
+    await ResolutionPipeline(test_db, dispatcher=dispatcher)._apply_encounter_result(
         {"room_id": room_id, "character_id": "solo-damage-character"},
         PlayerIntent(
             intent_type="combat_action",
@@ -2538,10 +2540,130 @@ async def test_encounter_damage_mutation_updates_the_target_not_the_actor(test_d
         resolution,
     )
 
-    assert get_participant(test_db, "solo-damage-encounter", "npc:bear")["hp"] == 16
+    enemy = get_participant(test_db, "solo-damage-encounter", "npc:bear")
+    assert enemy["hp"] == 16
+    assert enemy["public_visibility"] == "visible"
+    assert enemy["public_label"] == "敌对身影 1"
     assert get_participant(
         test_db, "solo-damage-encounter", "solo-damage-character"
     )["hp"] == 10
+    party_update = next(
+        item for item in dispatcher.events
+        if item[1] == "s2c_encounter_updated" and item[2] == "party"
+    )
+    assert party_update[3]["publicUnits"] == [
+        {
+            "label": "调查员",
+            "kind": "investigator",
+            "healthSegments": 8,
+            "condition": "情况稳定",
+            "distanceBand": "medium",
+        },
+        {
+            "label": "敌对身影 1",
+            "kind": "observed_enemy",
+            "healthSegments": 6,
+            "condition": "情况稳定",
+            "distanceBand": "medium",
+        },
+    ]
+    assert "participants" not in party_update[3]
+    host_update = next(
+        item for item in dispatcher.events
+        if item[1] == "s2c_encounter_updated" and item[2] == "host"
+    )
+    host_enemy = next(
+        participant
+        for participant in host_update[3]["participants"]
+        if participant["character_id"] == "npc:bear"
+    )
+    assert host_enemy["display_name"] == "黑熊"
+    assert host_enemy["hp"] == 16
+
+
+@pytest.mark.asyncio
+async def test_observed_enemy_becomes_lost_after_rule_moves_it_out_of_sight(test_db):
+    from src.server.encounter_persistence import (
+        add_participant,
+        create_encounter,
+        get_participant,
+    )
+
+    room_id, _ = _setup_solo_room(test_db)
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token, xlsx_data) "
+        "VALUES ('solo-chase-character', %s, '玩家', 'solo-chase-token', %s)",
+        (room_id, json.dumps({"hp": 10, "max_hp": 10})),
+    )
+    create_encounter(test_db, "solo-chase-encounter", room_id, enc_type="chase", status="active")
+    add_participant(
+        test_db, "solo-chase-encounter", "solo-chase-character",
+        side="player", hp=10, hp_max=10,
+    )
+    add_participant(
+        test_db, "solo-chase-encounter", "npc:gunner",
+        side="enemy", hp=12, hp_max=12, display_name="理查德·卡特",
+        distance_band="medium", public_visibility="visible", public_label="走廊中的人影",
+    )
+    add_participant(
+        test_db, "solo-chase-encounter", "npc:watcher",
+        side="enemy", hp=12, hp_max=12, display_name="暗中的观察者",
+        distance_band="medium", public_visibility="hidden",
+    )
+    resolution = ResolutionResult(
+        actionId="chase-action",
+        roomId=room_id,
+        characterId="solo-chase-character",
+        mechanic="chase_escape",
+        isSuccess=True,
+        mutations=[{
+            "op": "replace",
+            "path": "/encounter/solo-chase-encounter/participants/npc:gunner/distance_band_delta",
+            "value": 9,
+        }, {
+            "op": "replace",
+            "path": "/encounter/solo-chase-encounter/participants/npc:watcher/distance_band_delta",
+            "value": 9,
+        }],
+    )
+    dispatcher = _RecordingDispatcher()
+
+    await ResolutionPipeline(test_db, dispatcher=dispatcher)._apply_encounter_result(
+        {"room_id": room_id, "character_id": "solo-chase-character"},
+        PlayerIntent(
+            intent_type="chase_action",
+            params={"encounterId": "solo-chase-encounter"},
+        ),
+        resolution,
+    )
+
+    enemy = get_participant(test_db, "solo-chase-encounter", "npc:gunner")
+    assert enemy["public_visibility"] == "lost"
+    assert enemy["last_observed_position"] == "中距离"
+    assert get_participant(
+        test_db, "solo-chase-encounter", "npc:watcher"
+    )["public_visibility"] == "hidden"
+    party_update = next(
+        item for item in dispatcher.events
+        if item[1] == "s2c_encounter_updated" and item[2] == "party"
+    )
+    assert party_update[3]["publicUnits"] == [
+        {
+            "label": "调查员",
+            "kind": "investigator",
+            "healthSegments": 8,
+            "condition": "情况稳定",
+            "distanceBand": "medium",
+        },
+        {
+            "label": "走廊中的人影",
+            "kind": "observed_enemy",
+            "condition": "失去踪迹",
+            "lastObservedAt": "中距离",
+        },
+    ]
+    assert "理查德·卡特" not in str(party_update[3])
+    assert "hp" not in str(party_update[3])
 
 
 @pytest.mark.asyncio
@@ -2612,6 +2734,32 @@ async def test_solo_bear_attack_queues_a_persistent_player_reaction(test_db):
     )
     assert event[3]["reaction"]["roundNumber"] == 1
     assert event[3]["reaction"]["attackName"] == "爪击"
+    party_update = next(
+        item for item in dispatcher.events
+        if item[1] == "s2c_encounter_updated" and item[2] == "party"
+    )
+    assert party_update[3]["publicUnits"] == [
+        {
+            "label": "调查员",
+            "kind": "investigator",
+            "healthSegments": 8,
+            "condition": "情况稳定",
+            "distanceBand": "medium",
+        },
+        {
+            "label": "黑熊",
+            "kind": "observed_enemy",
+            "healthSegments": 8,
+            "condition": "情况稳定",
+            "distanceBand": "medium",
+        },
+    ]
+    assert "participants" not in party_update[3]
+    host_update = next(
+        item for item in dispatcher.events
+        if item[1] == "s2c_encounter_updated" and item[2] == "host"
+    )
+    assert len(host_update[3]["participants"]) == 2
 
 
 @pytest.mark.asyncio

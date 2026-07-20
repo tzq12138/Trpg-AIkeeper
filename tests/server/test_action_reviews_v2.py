@@ -8,6 +8,7 @@ from src.server.engine.compensation_service import (
     ActionReviewAlreadyResolved,
     resolve_action_review,
 )
+from src.server.engine.roll_receipt import create_roll_receipt
 from tests.server.conftest import create_room, setup_auth_test_data
 
 
@@ -36,6 +37,47 @@ def _setup_completed_action(client, test_db):
         ),
     )
     return room, joined
+
+
+def _setup_recalculable_review(client, test_db, monkeypatch):
+    monkeypatch.setenv("ROLL_RECEIPT_SECRET", "recalculation-test-secret")
+    room, joined = _setup_completed_action(client, test_db)
+    receipt = create_roll_receipt(
+        action_id="review-action",
+        rule_set_version="coc7-v1",
+        rolled_at="2026-07-19T12:00:00+00:00",
+        raw_rolls=[{
+            "dice": "d100",
+            "values": {
+                "ones": 2,
+                "tens": [4],
+                "candidates": [42],
+                "selected_index": 0,
+            },
+            "result": 42,
+        }],
+    )
+    explanation = {
+        "rule_set_version": "coc7-v1",
+        "authoritative_inputs": {
+            "intent_type": "skill_check",
+            "skill_value": 60,
+        },
+        "verification_receipt": receipt,
+    }
+    test_db.execute(
+        "INSERT INTO resolution_bundles "
+        "(action_id, room_id, character_id, canonical_result, rule_explanation, actor_projection, stage_projection, host_console, release_status) "
+        "VALUES ('review-action', %s, %s, '{}', %s, '{}', '{}', '{}', 'released')",
+        (room["room_id"], joined["character_id"], json.dumps(explanation, ensure_ascii=False)),
+    )
+    test_db.commit()
+    review = client.post(
+        "/api/player/actions/review-action/review-requests",
+        headers={"X-Room-Token": joined["player_token"]},
+        json={"objection": "难度参数录入错误"},
+    ).json()
+    return room, joined, review, explanation
 
 
 def test_player_review_request_creates_non_mutating_ai_suggestion(client, test_db):
@@ -124,6 +166,100 @@ def test_host_can_list_and_reject_pending_review_without_state_change(client, te
     assert test_db.execute(
         "SELECT COUNT(*) AS count FROM compensation_transactions"
     ).fetchone()["count"] == 0
+
+
+def test_host_review_list_contains_auditable_intent_rule_state_and_citation_packet(client, test_db, monkeypatch):
+    room, _joined, review, explanation = _setup_recalculable_review(client, test_db, monkeypatch)
+    explanation.update({
+        "authoritative_inputs": {
+            "intent_type": "skill_check",
+            "skill_name": "侦查",
+            "skill_value": 60,
+            "raw_rolls": [{"dice": "d100", "result": 42}],
+        },
+        "modifiers": {"difficulty": "regular", "bonus_dice": 0},
+        "formula": "d100 <= 60",
+        "state_before": {"hp": 10, "san": 50},
+        "state_after": {"hp": 10, "san": 48},
+        "citations": [{"source": "CoC7 基础规则", "page": 55, "location": "技能检定"}],
+    })
+    test_db.execute(
+        "UPDATE actions SET params = %s WHERE action_id = 'review-action'",
+        (json.dumps({
+            "analysis": {
+                "understanding_summary": "你想仔细检查门框。",
+                "risk": "high",
+                "visibility": "party",
+                "confirmation_requirements": ["dice_roll"],
+                "intent_contract": {
+                    "target": "门框",
+                    "method": "侦查",
+                    "object": None,
+                    "constraints": ["不惊动守卫"],
+                    "resources": [],
+                    "conditions": ["如果守卫未靠近"],
+                    "visibility": "party",
+                    "ambiguities": [],
+                },
+            },
+            "director_plan": {
+                "context_version": 7,
+                "interpreted_intent": "检查门框上的痕迹",
+                "mechanic_plan": {"mechanic": "skill_check", "skillName": "侦查", "difficulty": "regular"},
+                "preconditions": [{"kind": "state_version", "expected": 7}],
+                "permissions": [{"scope": "scene", "allowed": True}],
+                "citations": [{"source": "剧本", "page_number": 3, "location": "门框"}],
+            },
+        }, ensure_ascii=False),),
+    )
+    test_db.execute(
+        "UPDATE resolution_bundles SET rule_explanation = %s WHERE action_id = 'review-action'",
+        (json.dumps(explanation, ensure_ascii=False),),
+    )
+    test_db.commit()
+
+    response = client.get(
+        f"/api/host/{room['room_id']}/action-reviews",
+        headers={"X-Owner-Token": room["owner_token"]},
+    )
+
+    assert response.status_code == 200
+    packet = response.json()["items"][0]
+    assert packet["original_action_text"] == "我原本想侦查门框"
+    assert packet["intent_contract"] == {
+        "intentType": "skill_check",
+        "understandingSummary": "你想仔细检查门框。",
+        "risk": "high",
+        "visibility": "party",
+        "confirmationRequirements": ["dice_roll"],
+        "target": "门框",
+        "method": "侦查",
+        "object": None,
+        "constraints": ["不惊动守卫"],
+        "resources": [],
+        "conditions": ["如果守卫未靠近"],
+        "ambiguities": [],
+    }
+    assert packet["rule_plan"] == {
+        "ruleSetVersion": "coc7-v1",
+        "authoritativeInputs": {
+            "intentType": "skill_check",
+            "skillName": "侦查",
+            "skillValue": 60,
+            "rawRolls": [{"dice": "d100", "result": 42}],
+        },
+        "modifiers": {"difficulty": "regular", "bonus_dice": 0},
+        "formula": "d100 <= 60",
+    }
+    assert packet["state_diff"] == {
+        "before": {"hp": 10, "san": 50},
+        "after": {"hp": 10, "san": 48},
+    }
+    assert packet["citations"] == [
+        {"source": "CoC7 基础规则", "page": 55, "location": "技能检定"},
+        {"source": "剧本", "pageNumber": 3, "location": "门框"},
+    ]
+    assert "signature" not in response.text
 
 
 def test_host_accepted_compensation_uses_state_service_and_is_audited(client, test_db):
@@ -235,4 +371,82 @@ def test_host_compensation_rejects_non_allowlisted_state_path(client, test_db):
     assert test_db.execute(
         "SELECT status FROM action_review_requests WHERE review_request_id = %s",
         (created["review_request_id"],),
+    ).fetchone()["status"] == "pending"
+
+
+def test_host_recalculation_reuses_verified_original_roll_without_world_mutation(client, test_db, monkeypatch):
+    room, _joined, review, _explanation = _setup_recalculable_review(client, test_db, monkeypatch)
+    before_state_version = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s", (room["room_id"],)
+    ).fetchone()["state_version"]
+    original = test_db.execute(
+        "SELECT result FROM actions WHERE action_id = 'review-action'"
+    ).fetchone()["result"]
+
+    response = client.post(
+        f"/api/host/{room['room_id']}/action-reviews/{review['review_request_id']}/recalculate",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"difficulty": "hard", "reason": "难度参数录入错误"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "modified"
+    assert payload["recalculation"] == {
+        "roll": 42,
+        "skillValue": 60,
+        "difficulty": "hard",
+        "target": 30,
+        "successLevel": "regular",
+        "isSuccess": False,
+    }
+    transaction = test_db.execute(
+        "SELECT transaction_type, payload, status FROM compensation_transactions "
+        "WHERE transaction_id = %s",
+        (payload["compensation_transaction_id"],),
+    ).fetchone()
+    assert transaction["transaction_type"] == "roll_recalculation"
+    assert transaction["status"] == "applied"
+    assert transaction["payload"]["original_rolls"][0]["result"] == 42
+    assert transaction["payload"]["original_rolls"][0]["values"]["candidates"] == [42]
+    assert transaction["payload"]["state_version_before"] == before_state_version
+    assert transaction["payload"]["state_version_after"] == before_state_version
+    assert test_db.execute(
+        "SELECT result FROM actions WHERE action_id = 'review-action'"
+    ).fetchone()["result"] == original
+    assert test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s", (room["room_id"],)
+    ).fetchone()["state_version"] == before_state_version
+
+
+def test_recalculation_rejects_tampered_receipt_and_client_roll_fields(client, test_db, monkeypatch):
+    room, _joined, review, explanation = _setup_recalculable_review(client, test_db, monkeypatch)
+    explanation["verification_receipt"]["signature"] = "tampered"
+    test_db.execute(
+        "UPDATE resolution_bundles SET rule_explanation = %s WHERE action_id = 'review-action'",
+        (json.dumps(explanation, ensure_ascii=False),),
+    )
+    test_db.commit()
+    headers = {"X-Owner-Token": room["owner_token"]}
+
+    tampered = client.post(
+        f"/api/host/{room['room_id']}/action-reviews/{review['review_request_id']}/recalculate",
+        headers=headers,
+        json={"difficulty": "hard", "reason": "难度参数录入错误"},
+    )
+    forged_roll = client.post(
+        f"/api/host/{room['room_id']}/action-reviews/{review['review_request_id']}/recalculate",
+        headers=headers,
+        json={"difficulty": "hard", "reason": "难度参数录入错误", "roll": 1},
+    )
+
+    assert tampered.status_code == 422
+    assert tampered.json()["detail"]["code"] == "roll_receipt_invalid"
+    assert forged_roll.status_code == 422
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM compensation_transactions"
+    ).fetchone()["count"] == 0
+    assert test_db.execute(
+        "SELECT status FROM action_review_requests WHERE review_request_id = %s",
+        (review["review_request_id"],),
     ).fetchone()["status"] == "pending"

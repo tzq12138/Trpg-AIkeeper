@@ -675,6 +675,16 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
     scenario_version_id = scenario.get("published_version_id")
     if scenario.get("publish_status") != "published" or not scenario_version_id:
         raise HTTPException(409, "剧本尚未确认发布，不能开房")
+    runtime_package_row = conn.execute(
+        "SELECT runtime_package_version_id FROM runtime_package_versions "
+        "WHERE scenario_version_id = %s AND gate_status = 'ready' "
+        "ORDER BY package_version_number DESC LIMIT 1",
+        (scenario_version_id,),
+    ).fetchone()
+    runtime_package_version_id = (
+        str(runtime_package_row["runtime_package_version_id"])
+        if runtime_package_row else None
+    )
 
     # Quality gate check
     body = None
@@ -702,9 +712,16 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
     owner_token = str(uuid.uuid4())
     owner_account_id = account["account_id"]
     conn.execute(
-        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, owner_token, owner_account_id) "
-        "VALUES (%s, %s, %s, %s, %s)",
-        (room_id, scenario_id, scenario_version_id, owner_token, owner_account_id),
+        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, "
+        "owner_token, owner_account_id) VALUES (%s, %s, %s, %s, %s, %s)",
+        (
+            room_id,
+            scenario_id,
+            scenario_version_id,
+            runtime_package_version_id,
+            owner_token,
+            owner_account_id,
+        ),
     )
     conn.commit()
 
@@ -728,4 +745,5 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
         "status": "lobby",
         "quality_level": quality_level,
         "scenario_version_id": scenario_version_id,
+        "runtime_package_version_id": runtime_package_version_id,
     }

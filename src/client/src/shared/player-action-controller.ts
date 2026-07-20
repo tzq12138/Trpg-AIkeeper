@@ -10,6 +10,8 @@ const IN_FLIGHT_STATUSES = new Set<ActionStatus>([
   'sync_required',
 ]);
 
+export const AUTO_CONFIRM_GRACE_MS = 2000;
+
 
 export function createConfirmIdempotencyKey(draft: ActionDraftDTO): string {
   return `confirm:${draft.draft_id}:${draft.revision}`;

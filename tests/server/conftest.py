@@ -72,7 +72,7 @@ def test_db():
         "document_chunks, content_item_edges, content_items, content_projection_runs, "
         "runtime_package_exception_confirmations, runtime_package_versions, v2_cutover_records, "
         "import_jobs, source_parts, source_documents, "
-        "scenario_versions, clarifications, clue_shares, clues, objectives, inventory, "
+        "scenario_versions, clarifications, clue_shares, clues, objectives, inventory_transfer_requests, inventory, "
         "actions, events, player_sequences, checkpoints, campaign_archives, "
         "host_states, characters, room_rule_bindings, scenario_rule_bindings, "
         "rooms, scenarios, rule_documents, rule_set_versions, rule_sets, "
@@ -96,7 +96,9 @@ def client(test_db):
     c = TestClient(app)
     app.state.db = test_db
     app.state.engine = Engine(test_db)
-    return c
+    app.state.gateway = None
+    yield c
+    app.state.gateway = None
 
 
 # ── Shared helpers for authenticated test setup ──

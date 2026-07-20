@@ -962,7 +962,7 @@ export function AiProviderPanel({
             </label>
             <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 700 }}>
               <input type="checkbox" checked={draft.supportsImage} onChange={(event) => updateDraft('supportsImage', event.target.checked)} />
-              支持图片
+              支持图片理解与生成预览
             </label>
           </div>
 

@@ -50,6 +50,7 @@ def test_director_event_types_are_registered_and_literal_safe():
         "s2c_director_plan_validated",
         "s2c_narration_completed",
         "s2c_ai_recovery_required",
+        "s2c_combat_round_locked",
     }
 
     assert expected <= set(ALL_EVENTS)

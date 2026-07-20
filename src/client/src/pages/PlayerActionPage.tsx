@@ -6,28 +6,76 @@ import TacticalButtons from '../components/TacticalButtons';
 import PlayerTerminal from '../components/PlayerTerminal';
 import VoiceInput from '../components/VoiceInput';
 import PlayerActionComposer from '../components/PlayerActionComposer';
+import AbsentPolicyControl, { type AbsentPolicy } from '../components/AbsentPolicyControl';
 import CampaignHomePanel from '../components/CampaignHomePanel';
+import CollaborationContractPanel from '../components/CollaborationContractPanel';
 import { PlayerWS, type PlayerWSStatus } from '../ws';
 import { apiFetch, authHeaders } from '../api';
 import {
   analyzeActionDraft,
   cancelAction,
+  cancelCollaborationContract,
   claimPlayerDevice,
   confirmActionDraft,
+  createCollaborationContract,
+  declareCombatRoundIdle as declareCombatRoundIdleApi,
   deleteActionDraft,
   getActionHints,
   getActionReceipt,
+  getCampaignHome,
+  resolveCompositeActionChoice,
   getCurrentActionDraft,
+  getCollaborationContracts,
+  getCollaborationParticipants,
   getPendingEncounterReaction,
+  getPlayerCombatRound,
+  getPlayerSettings,
+  getRuleQuestions,
+  nextPlayerActionSequence,
   PlayerApiError,
+  respondToCollaborationContract,
+  type CollaborationContractDTO,
+  type CollaborationParticipantDTO,
+  type PlayerRuleQuestionDTO,
+  receiveActionSubmission,
   reconnectPlayer,
+  reviseActionDraft,
   resolveEncounterReaction,
+  updatePlayerSettings,
 } from '../shared/player-api';
+import {
+  canSendWhileStatefulActionBusy,
+  isStatefulPlayerInputMode,
+  recordedInputSummary,
+  type PlayerInputMode,
+} from '../shared/player-input-modes';
+import {
+  getPlayerPendingTaskCount,
+  getPlayerCurrentPriority,
+  type PlayerCurrentPriority,
+  type PlayerCurrentPriorityInput,
+} from '../shared/player-current-priority';
+import {
+  countUnreadPlayerNotifications,
+  readNotificationReadSequence,
+  writeNotificationReadSequence,
+  type PlayerNotificationEvent,
+} from '../shared/player-notifications';
+import { combatRoundSummaryText } from '../shared/combat-round-summary';
+import { lockCombatRoundReceipt } from '../shared/combat-round-lock';
+import {
+  getCombatTargetTags,
+  isCombatTargetOnlyDraft,
+  toggleCombatTargetTag,
+} from '../shared/combat-target-tags';
+import { formatTeamMessageText } from '../shared/team-message';
+import type { InventoryTransferDTO } from '../shared/inventory-transfer-api';
 import {
   canStartNewAction,
   createConfirmIdempotencyKey,
   isActionInFlight,
   mergeAuthoritativeReceipt,
+  AUTO_CONFIRM_GRACE_MS,
   shouldAutoConfirmDraft,
 } from '../shared/player-action-controller';
 import type {
@@ -39,6 +87,7 @@ import type {
   CharacterSheet,
   EngineEvent,
   PlayerChatMessage,
+  PlayerCombatRoundDTO,
   SemanticMapProjectionDTO,
   SkillCheckResult,
   SoloCombatReactionDTO,
@@ -47,25 +96,8 @@ import type {
 import type { PlayerTabKey } from '../navigation';
 export { default as RedactedCitationDisclosure } from '../components/RedactedCitationDisclosure';
 
-function buildEncounterActions(encounterType: string): TacticalAction[] {
-  if (encounterType === 'combat') {
-    return [
-      { action_id: 'cmb-atk', label: '⚔️ 攻击', intent_type: 'combat_action', params: { actionKind: 'attack', skillName: '斗殴' } },
-      { action_id: 'cmb-dod', label: '🛡️ 闪避', intent_type: 'combat_action', params: { actionKind: 'dodge' } },
-      { action_id: 'cmb-def', label: '🛡️ 防御', intent_type: 'combat_action', params: { actionKind: 'defend' } },
-      { action_id: 'cmb-ast', label: '🤝 协助', intent_type: 'combat_action', params: { actionKind: 'assist' } },
-      { action_id: 'cmb-fle', label: '🏃 逃跑', intent_type: 'combat_action', params: { actionKind: 'flee' } },
-      { action_id: 'cmb-wat', label: '⏳ 等待', intent_type: 'combat_action', params: { actionKind: 'wait' } },
-    ];
-  }
-  return [
-    { action_id: 'chs-pur', label: '🏃 追击', intent_type: 'chase_action', params: { actionKind: 'pursue', skillName: '运动' } },
-    { action_id: 'chs-esc', label: '💨 逃脱', intent_type: 'chase_action', params: { actionKind: 'escape', skillName: '运动' } },
-    { action_id: 'chs-blk', label: '🚧 路障', intent_type: 'chase_action', params: { actionKind: 'block' } },
-    { action_id: 'chs-det', label: '🔄 绕路', intent_type: 'chase_action', params: { actionKind: 'detour', skillName: '导航' } },
-    { action_id: 'chs-ast', label: '🤝 协助', intent_type: 'chase_action', params: { actionKind: 'assist' } },
-    { action_id: 'chs-wat', label: '⏳ 等待', intent_type: 'chase_action', params: { actionKind: 'wait' } },
-  ];
+export function getActionPanelCurrentPriority(input: PlayerCurrentPriorityInput) {
+  return getPlayerCurrentPriority(input);
 }
 
 export type NarrativeFeedItem = {
@@ -260,6 +292,7 @@ export default function PlayerActionPage({
   const [tab, setTab] = useState<PlayerTabKey>(initialTab);
   const [character, setCharacter] = useState<CharacterSheet | null>(null);
   const [inputText, setInputText] = useState('');
+  const [inputMode, setInputMode] = useState<PlayerInputMode>('action');
   const [actionStatus, setActionStatus] = useState<ActionStatus>('idle');
   const [draft, setDraft] = useState<ActionDraftDTO | null>(null);
   const [ephemeralPreview, setEphemeralPreview] = useState<ActionDraftDTO | null>(null);
@@ -272,9 +305,13 @@ export default function PlayerActionPage({
   const lastEphemeralText = useRef('');
   const analysisEpoch = useRef(0);
   const [messages, setMessages] = useState<PlayerChatMessage[]>([]);
+  const [ruleQuestions, setRuleQuestions] = useState<PlayerRuleQuestionDTO[]>([]);
   const [narrationDetails, setNarrationDetails] = useState<NarrativeFeedItem[]>([]);
   const [pendingActions, setPendingActions] = useState<TacticalAction[]>([]);
   const [pendingCombatReaction, setPendingCombatReaction] = useState<SoloCombatReactionDTO | null>(null);
+  const [combatRound, setCombatRound] = useState<PlayerCombatRoundDTO | null>(null);
+  const [absentPolicy, setAbsentPolicy] = useState<AbsentPolicy>('idle');
+  const [speechRouting, setSpeechRouting] = useState<'party_message' | 'npc_dialogue'>('party_message');
   const [claimOpen, setClaimOpen] = useState(false);
   const [claimedItemName, setClaimedItemName] = useState('');
   const [claimJustification, setClaimJustification] = useState('');
@@ -287,7 +324,17 @@ export default function PlayerActionPage({
   const [aiProgress, setAiProgress] = useState<AiStageProgress>({ stage: 'completed', status: 'idle', label: '待命' });
   const [recoveryText, setRecoveryText] = useState('');
   const [actionHints, setActionHints] = useState<string[]>([]);
+  const [hasPendingInventoryTransfer, setHasPendingInventoryTransfer] = useState(false);
+  const [hasUnresolvedPartyQuestion, setHasUnresolvedPartyQuestion] = useState(false);
+  const [unreadNotifications, setUnreadNotifications] = useState({ privateResults: 0, publicClues: 0 });
+  const [collaborationContracts, setCollaborationContracts] = useState<CollaborationContractDTO[]>([]);
+  const [collaborationParticipants, setCollaborationParticipants] = useState<CollaborationParticipantDTO[]>([]);
+  const [reconnectedRoomId, setReconnectedRoomId] = useState<string | null>(null);
+  const [autoConfirmPending, setAutoConfirmPending] = useState(false);
   const localDraftKey = `aikeeper_action_draft:${roomId}`;
+  const autoConfirmTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const notificationReadSequence = useRef<number | null>(null);
+  const latestVisibleEventSequence = useRef(0);
 
   useEffect(() => {
     try {
@@ -306,6 +353,67 @@ export default function PlayerActionPage({
     }
   }, [localDraftKey]);
 
+  useEffect(() => () => {
+    if (autoConfirmTimer.current !== null) window.clearTimeout(autoConfirmTimer.current);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getRuleQuestions()
+      .then(({ questions }) => {
+        if (!cancelled) setRuleQuestions(questions);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const [contracts, participants] = await Promise.all([
+          getCollaborationContracts(),
+          getCollaborationParticipants(),
+        ]);
+        if (!cancelled) {
+          setCollaborationContracts(contracts.items);
+          setCollaborationParticipants(participants.items);
+        }
+      } catch {
+        if (!cancelled) {
+          setCollaborationContracts([]);
+          setCollaborationParticipants([]);
+        }
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [roomId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const home = await getCampaignHome();
+        if (!cancelled) setHasUnresolvedPartyQuestion((home.unresolved_questions || []).length > 0);
+      } catch {
+        if (!cancelled) setHasUnresolvedPartyQuestion(false);
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     reconnectPlayer()
@@ -316,6 +424,24 @@ export default function PlayerActionPage({
           setMapRefresh((value) => value + 1);
         }
         restoredSequence.current = data.last_sequence || 0;
+        latestVisibleEventSequence.current = restoredSequence.current;
+        try {
+          const storedReadSequence = readNotificationReadSequence(localStorage, roomId);
+          if (storedReadSequence === null) {
+            notificationReadSequence.current = restoredSequence.current;
+            writeNotificationReadSequence(localStorage, roomId, restoredSequence.current);
+            setUnreadNotifications({ privateResults: 0, publicClues: 0 });
+          } else {
+            notificationReadSequence.current = storedReadSequence;
+            setUnreadNotifications(countUnreadPlayerNotifications(
+              (data.recent_events || []) as PlayerNotificationEvent[],
+              storedReadSequence,
+            ));
+          }
+        } catch {
+          notificationReadSequence.current = restoredSequence.current;
+          setUnreadNotifications({ privateResults: 0, publicClues: 0 });
+        }
         wsRef.current?.setLastSequence(restoredSequence.current);
         const pending = data.pending_actions?.[0];
         if (pending?.action_id) {
@@ -341,14 +467,41 @@ export default function PlayerActionPage({
             setEphemeralPreview(null);
             setInputText(currentDraft.declared_intent);
             setActionStatus(currentDraft.status);
+          } else if (!cancelled && data.pending_submissions?.[0]) {
+            const submission = data.pending_submissions[0];
+            setInputText(submission.raw_text);
+            setInputMode(submission.input_mode);
+            setActionStatus('typing');
+            setRecoveryText('已恢复上次未完成的行动输入；请重新生成预览后确认。');
           }
         }
         const pendingReaction = await getPendingEncounterReaction();
         if (!cancelled) setPendingCombatReaction(pendingReaction.reaction);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setReconnectedRoomId(roomId);
+      });
     return () => { cancelled = true; };
   }, [localDraftKey, roomId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const round = await getPlayerCombatRound();
+        if (!cancelled) setCombatRound(round);
+      } catch {
+        if (!cancelled) setCombatRound(null);
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [roomId]);
 
   useEffect(() => {
     let mounted = true;
@@ -404,8 +557,45 @@ export default function PlayerActionPage({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    getPlayerSettings()
+      .then((settings) => {
+        if (!cancelled) {
+          setAbsentPolicy(settings.absent_policy);
+          setSpeechRouting(settings.speech_routing);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const transfers = await apiFetch<{ incoming: InventoryTransferDTO[] }>('/api/player/inventory-transfers', {
+          headers: authHeaders(),
+        });
+        if (!cancelled) setHasPendingInventoryTransfer(
+          (transfers.incoming || []).some((transfer) => transfer.status === 'pending'),
+        );
+      } catch {
+        if (!cancelled) setHasPendingInventoryTransfer(false);
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 10000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     const text = inputText.trim();
-    if (!text || draft || (receipt && isActionInFlight(receipt.status))) return;
+    if (!text || !isStatefulPlayerInputMode(inputMode, speechRouting === 'npc_dialogue') || draft || (receipt && isActionInFlight(receipt.status))) return;
     if (!['idle', 'typing'].includes(actionStatus) || lastEphemeralText.current === text) return;
     const timer = window.setTimeout(async () => {
       const requestEpoch = ++analysisEpoch.current;
@@ -434,9 +624,10 @@ export default function PlayerActionPage({
       }
     }, 2000);
     return () => window.clearTimeout(timer);
-  }, [actionStatus, draft, inputText, receipt, stateVersion]);
+  }, [actionStatus, draft, inputMode, inputText, receipt, speechRouting, stateVersion]);
 
   useEffect(() => {
+    if (reconnectedRoomId !== roomId) return;
     const token = getSlotValue('player_token') || '';
     const ws = new PlayerWS(roomId);
     wsRef.current = ws;
@@ -448,6 +639,19 @@ export default function PlayerActionPage({
       }
     });
     ws.onEvent((event: EngineEvent) => {
+      if (Number.isSafeInteger(event.roomSequence) && event.roomSequence > 0) {
+        latestVisibleEventSequence.current = Math.max(latestVisibleEventSequence.current, event.roomSequence);
+        const readSequence = notificationReadSequence.current;
+        if (readSequence !== null) {
+          const incoming = countUnreadPlayerNotifications([event], readSequence);
+          if (incoming.privateResults || incoming.publicClues) {
+            setUnreadNotifications((previous) => ({
+              privateResults: previous.privateResults + incoming.privateResults,
+              publicClues: previous.publicClues + incoming.publicClues,
+            }));
+          }
+        }
+      }
       if (event.type === 's2c_tactical_prompt') {
         const payload = event.payload as { text?: string; actions?: TacticalAction[] };
         const msg: PlayerChatMessage = {
@@ -461,9 +665,22 @@ export default function PlayerActionPage({
         if (payload.actions && payload.actions.length > 0) {
           setPendingActions(payload.actions);
         }
-      } else if (event.type === 's2c_action_queued' || event.type === 's2c_action_batched') {
+      } else if (event.type === 's2c_combat_round_locked') {
+        setReceipt((current) => lockCombatRoundReceipt(current));
+        getPlayerCombatRound().then(setCombatRound).catch(() => {});
+      } else if (
+        event.type === 's2c_action_queued'
+        || event.type === 's2c_action_batched'
+        || event.type === 's2c_action_deferred'
+      ) {
         const payload = event.payload as { actionId?: string; status?: ActionStatus };
-        setActionStatus(payload.status || (event.type === 's2c_action_queued' ? 'queued' : 'batched'));
+        setActionStatus(payload.status || (
+          event.type === 's2c_action_queued'
+            ? 'queued'
+            : event.type === 's2c_action_batched'
+              ? 'batched'
+              : 'awaiting_host_exception'
+        ));
         if (payload.actionId) {
           getActionReceipt(payload.actionId)
             .then((incoming) => setReceipt((current) => mergeAuthoritativeReceipt(current, incoming)))
@@ -506,6 +723,17 @@ export default function PlayerActionPage({
             detail: String(payload.detail ?? ''),
           });
         }
+      } else if (event.type === 's2c_turn_resolved') {
+        const text = combatRoundSummaryText(event.payload);
+        if (text) {
+          setMessages((prev) => [...prev.slice(-49), {
+            id: `combat-summary:${event.roomSequence}`,
+            sender: 'system',
+            text,
+            timestamp: Date.now(),
+          }]);
+          getPlayerCombatRound().then(setCombatRound).catch(() => {});
+        }
       } else if (event.type === 's2c_public_observation') {
         const payload = event.payload as { text?: string };
         if (payload.text) {
@@ -516,6 +744,37 @@ export default function PlayerActionPage({
             timestamp: Date.now(),
           }]);
         }
+      } else if (event.type === 's2c_private_notice') {
+        const payload = event.payload as { text?: unknown };
+        const text = typeof payload.text === 'string' && payload.text.trim()
+          ? payload.text
+          : '收到一条新的私密结果。';
+        setMessages((prev) => [...prev.slice(-49), {
+          id: `private-notice:${event.roomSequence}`,
+          sender: 'system',
+          text,
+          timestamp: Date.now(),
+        }]);
+      } else if (event.type === 's2c_clue_discovered') {
+        const payload = event.payload as { name?: unknown };
+        const name = typeof payload.name === 'string' && payload.name.trim() ? payload.name : '一条个人线索';
+        setMessages((prev) => [...prev.slice(-49), {
+          id: `private-clue:${event.roomSequence}`,
+          sender: 'system',
+          text: `发现个人线索：${name}`,
+          timestamp: Date.now(),
+        }]);
+      } else if (event.type === 's2c_clue_shared') {
+        const payload = event.payload as { publicVersion?: unknown };
+        const text = typeof payload.publicVersion === 'string' && payload.publicVersion.trim()
+          ? `队伍新增公开线索：${payload.publicVersion}`
+          : '队伍新增了一条公开线索。';
+        setMessages((prev) => [...prev.slice(-49), {
+          id: `party-clue:${event.roomSequence}`,
+          sender: 'team',
+          text,
+          timestamp: Date.now(),
+        }]);
       } else if (event.type === 's2c_state_patch') {
         const payload = event.payload as {
           patches?: Array<{ op?: string; path?: string; value?: { name?: string } }>;
@@ -567,18 +826,9 @@ export default function PlayerActionPage({
         }
         setAiProgress({ stage: 'completed', status: 'completed', label: '叙事完成' });
       } else if (event.type === 's2c_encounter_started') {
-        const payload = event.payload as { encounter?: { type?: string }; participants?: any[] };
-        // Show encounter tactical buttons
-        if (payload?.encounter?.type) {
-          const actions = buildEncounterActions(payload.encounter.type);
-          setPendingActions(actions);
-        }
+        getPlayerCombatRound().then(setCombatRound).catch(() => {});
       } else if (event.type === 's2c_encounter_updated') {
-        const payload2 = event.payload as { encounter?: { type?: string } };
-        if (payload2?.encounter?.type) {
-          const actions = buildEncounterActions(payload2.encounter.type);
-          setPendingActions(actions);
-        }
+        getPlayerCombatRound().then(setCombatRound).catch(() => {});
       } else if (event.type === 's2c_encounter_resolved') {
         setPendingActions([]);
         setPendingCombatReaction(null);
@@ -594,7 +844,7 @@ export default function PlayerActionPage({
           setMessages((prev) => [...prev.slice(-49), {
             id: crypto.randomUUID(),
             sender: 'team',
-            text: `${p.playerName || p.investigatorName || '队友'}: ${p.text}`,
+            text: formatTeamMessageText(p),
             timestamp: Date.now(),
           }]);
         }
@@ -605,9 +855,18 @@ export default function PlayerActionPage({
       wsRef.current = null;
       ws.disconnect();
     };
-  }, [roomId]);
+  }, [reconnectedRoomId, roomId]);
 
-  const confirmDraft = async (nextDraft: ActionDraftDTO) => {
+  const confirmDraft = async (
+    nextDraft: ActionDraftDTO,
+    selectedSkill?: string,
+    compositeStepOrder?: string[],
+  ) => {
+    if (autoConfirmTimer.current !== null) {
+      window.clearTimeout(autoConfirmTimer.current);
+      autoConfirmTimer.current = null;
+    }
+    setAutoConfirmPending(false);
     if (!nextDraft.draft_id) return;
     if (deviceControl === false) {
       setActionError('此设备为只读。请先接管主控设备，再提交行动。');
@@ -619,6 +878,8 @@ export default function PlayerActionPage({
         nextDraft.draft_id,
         nextDraft.confirmation_requirements,
         createConfirmIdempotencyKey(nextDraft),
+        selectedSkill,
+        compositeStepOrder,
       );
       setDraft(null);
       setEphemeralPreview(null);
@@ -646,14 +907,55 @@ export default function PlayerActionPage({
     }
   };
 
+  const updateCollaborationDependencies = async (characterIds: string[]) => {
+    if (!draft?.draft_id) return;
+    setActionError('');
+    try {
+      const updated = await reviseActionDraft(draft.draft_id, {
+        declared_intent: draft.declared_intent,
+        intent_type: draft.intent_type,
+        base_state_version: draft.base_state_version,
+        params: {
+          ...draft.params,
+          dependsOnCharacterIds: characterIds,
+        },
+      });
+      setDraft(updated);
+      setActionStatus(updated.status);
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
+  const resolveCompositeChoice = async (proceed: boolean) => {
+    if (!receipt?.action_id) return;
+    setActionError('');
+    try {
+      const nextReceipt = await resolveCompositeActionChoice(receipt.action_id, proceed);
+      setReceipt(nextReceipt);
+      setActionStatus(nextReceipt.status);
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
   const submitAction = async (
     overrideText?: string,
     intentType?: string,
     params: Record<string, unknown> = {},
+    mode: PlayerInputMode = inputMode,
   ) => {
     const declaredIntent = (overrideText ?? inputText).trim();
-    if (!declaredIntent || draft || (receipt && isActionInFlight(receipt.status))) return;
-    if (pendingCombatReaction) {
+    if (isCombatTargetOnlyDraft(declaredIntent)) {
+      setActionError('已选择目标，请继续描述你想怎么做。');
+      return;
+    }
+    const statefulSubmission = !canSendWhileStatefulActionBusy(
+      mode,
+      speechRouting === 'npc_dialogue',
+    );
+    if (!declaredIntent || (statefulSubmission && (draft || (receipt && isActionInFlight(receipt.status)))) ) return;
+    if (pendingCombatReaction && statefulSubmission) {
       setActionError('黑熊正在发动攻击；请先选择闪避或反击。');
       return;
     }
@@ -663,18 +965,57 @@ export default function PlayerActionPage({
     }
     setActionError('');
     analysisEpoch.current += 1;
-    setActionStatus('analyzing');
     try {
+      const submission = await receiveActionSubmission({
+        actionId: crypto.randomUUID(),
+        rawText: declaredIntent,
+        inputMode: mode,
+        clientSequence: nextPlayerActionSequence(),
+        baseStateVersion: stateVersion,
+      });
+      if (!submission.requiresAnalysis) {
+        setEphemeralPreview(null);
+        setInputText('');
+        if (!statefulSubmission && (draft || (receipt && isActionInFlight(receipt.status)))) {
+          setActionStatus(receipt?.status || actionStatus);
+        } else {
+          setActionStatus('idle');
+          localStorage.removeItem(localDraftKey);
+        }
+        if (mode === 'rule_question') {
+          setRuleQuestions((previous) => [{
+            actionId: submission.actionId,
+            text: declaredIntent,
+            createdAt: submission.receivedAt,
+          }, ...previous.filter((question) => question.actionId !== submission.actionId)].slice(0, 50));
+        }
+        setMessages((previous) => [...previous.slice(-49), {
+          id: submission.actionId,
+          sender: 'system',
+          text: recordedInputSummary(mode, declaredIntent),
+          timestamp: Date.now(),
+        }]);
+        return;
+      }
+      setActionStatus('analyzing');
       const analyzed = await analyzeActionDraft({
         declared_intent: declaredIntent,
         intent_type: intentType,
         params,
         base_state_version: stateVersion,
         ephemeral: false,
+        submission_action_id: submission.actionId,
       });
       setEphemeralPreview(null);
       if (shouldAutoConfirmDraft(analyzed)) {
-        await confirmDraft(analyzed);
+        setDraft(analyzed);
+        setActionStatus(analyzed.status);
+        setAutoConfirmPending(true);
+        autoConfirmTimer.current = window.setTimeout(() => {
+          autoConfirmTimer.current = null;
+          setAutoConfirmPending(false);
+          void confirmDraft(analyzed);
+        }, AUTO_CONFIRM_GRACE_MS);
       } else {
         setDraft(analyzed);
         setActionStatus(analyzed.status);
@@ -685,17 +1026,24 @@ export default function PlayerActionPage({
     }
   };
 
-  const updateInputText = (value: string) => {
+  const updateInputText = (value: string, mode: PlayerInputMode = inputMode) => {
+    if (autoConfirmTimer.current !== null) {
+      window.clearTimeout(autoConfirmTimer.current);
+      autoConfirmTimer.current = null;
+    }
+    setAutoConfirmPending(false);
     analysisEpoch.current += 1;
     setInputText(value);
     setDraft(null);
     setEphemeralPreview(null);
     lastEphemeralText.current = '';
-    setActionStatus(value.trim() ? 'typing' : 'idle');
-    if (value.trim()) {
-      localStorage.setItem(localDraftKey, JSON.stringify({ text: value, updatedAt: Date.now() }));
-    } else {
-      localStorage.removeItem(localDraftKey);
+    if (isStatefulPlayerInputMode(mode, speechRouting === 'npc_dialogue')) {
+      setActionStatus(value.trim() ? 'typing' : 'idle');
+      if (value.trim()) {
+        localStorage.setItem(localDraftKey, JSON.stringify({ text: value, updatedAt: Date.now() }));
+      } else {
+        localStorage.removeItem(localDraftKey);
+      }
     }
   };
 
@@ -713,7 +1061,23 @@ export default function PlayerActionPage({
     updateInputText(result.inputText);
   };
 
+  const toggleCombatTarget = (targetLabel: string) => {
+    const next = toggleCombatTargetTag(inputText, targetLabel);
+    if (!next.changed) {
+      setActionError('本轮最多选择两个目标；请先取消一个标签。');
+      return;
+    }
+    setActionError('');
+    setInputMode('action');
+    updateInputText(next.inputText, 'action');
+  };
+
   const discardDraft = async () => {
+    if (autoConfirmTimer.current !== null) {
+      window.clearTimeout(autoConfirmTimer.current);
+      autoConfirmTimer.current = null;
+    }
+    setAutoConfirmPending(false);
     if (draft?.draft_id) {
       await deleteActionDraft(draft.draft_id).catch(() => {});
     }
@@ -739,7 +1103,7 @@ export default function PlayerActionPage({
 
   const submitTacticalAction = (action: TacticalAction) => {
     setInputText(action.label);
-    void submitAction(action.label, action.intent_type, action.params);
+    void submitAction(action.label, action.intent_type, action.params, 'combat_action');
   };
 
   const resolveCombatReaction = async (choice: 'dodge' | 'counterattack') => {
@@ -779,7 +1143,7 @@ export default function PlayerActionPage({
     void submitAction(text, 'retroactive_item_claim', {
       claimedItemName: itemName,
       justificationText: justification,
-    });
+    }, 'item_action');
   };
 
   const takeOverDevice = async () => {
@@ -792,8 +1156,110 @@ export default function PlayerActionPage({
     }
   };
 
+  const changeAbsentPolicy = async (policy: AbsentPolicy) => {
+    try {
+      const settings = await updatePlayerSettings({ absent_policy: policy });
+      setAbsentPolicy(settings.absent_policy);
+      setActionError('');
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
+  const declareCombatRoundIdle = async () => {
+    if (deviceControl === false) return;
+    setActionError('');
+    try {
+      await declareCombatRoundIdleApi();
+      setCombatRound(await getPlayerCombatRound());
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
+  const markNotificationsRead = () => {
+    const nextSequence = latestVisibleEventSequence.current;
+    if (notificationReadSequence.current === null || nextSequence <= notificationReadSequence.current) return;
+    notificationReadSequence.current = nextSequence;
+    try {
+      writeNotificationReadSequence(localStorage, roomId, nextSequence);
+    } catch {}
+    setUnreadNotifications({ privateResults: 0, publicClues: 0 });
+  };
+
+  const refreshCollaboration = async () => {
+    const [contracts, participants] = await Promise.all([
+      getCollaborationContracts(),
+      getCollaborationParticipants(),
+    ]);
+    setCollaborationContracts(contracts.items);
+    setCollaborationParticipants(participants.items);
+  };
+
+  const createCollaboration = async (sharedIntent: string, inviteeCharacterIds: string[]) => {
+    setActionError('');
+    try {
+      await createCollaborationContract(sharedIntent, inviteeCharacterIds);
+      await refreshCollaboration();
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
+  const respondToCollaboration = async (contractId: string, decision: 'accept' | 'decline') => {
+    setActionError('');
+    try {
+      const contract = await respondToCollaborationContract(contractId, decision);
+      await refreshCollaboration();
+      if (contract.status === 'accepted') {
+        const linkedDraft = await getCurrentActionDraft();
+        if (linkedDraft) {
+          setDraft(linkedDraft);
+          setEphemeralPreview(null);
+          setInputText(linkedDraft.declared_intent);
+          setActionStatus(linkedDraft.status);
+        }
+      }
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
+  const cancelCollaboration = async (contractId: string) => {
+    setActionError('');
+    try {
+      await cancelCollaborationContract(contractId);
+      await refreshCollaboration();
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
+  const navigatePlayerTab = (nextTab: PlayerTabKey) => {
+    if (nextTab === 'logs') markNotificationsRead();
+    setTab(nextTab);
+  };
+
+  const terminalPriorityInput = {
+    hasPendingCombatReaction: Boolean(pendingCombatReaction),
+    hasConfirmationDraft: Boolean(draft),
+    hasPendingInventoryTransfer,
+    hasUnresolvedPartyQuestion,
+    unreadPrivateResultCount: unreadNotifications.privateResults,
+    unreadPublicClueCount: unreadNotifications.publicClues,
+    hasCollaborationInvite: Boolean(character?.character_id) && collaborationContracts.some((contract) => (
+      contract.status === 'pending'
+      && contract.initiatorCharacterId !== character?.character_id
+      && contract.pendingCharacterIds.includes(character?.character_id || '')
+    )),
+    actionStatus,
+    hasInputText: Boolean(inputText.trim()),
+  };
+  const terminalPriority = getPlayerCurrentPriority(terminalPriorityInput);
+  const terminalPendingTaskCount = getPlayerPendingTaskCount(terminalPriorityInput);
+
   return (
-    <PlayerTerminal activeTab={tab} character={character} onTabChange={setTab} isReady={isReady} charStatus={charStatus} onToggleReady={toggleReady}>
+    <PlayerTerminal activeTab={tab} character={character} onTabChange={navigatePlayerTab} isReady={isReady} charStatus={charStatus} onToggleReady={toggleReady} currentPriority={terminalPriority} pendingTaskCount={terminalPendingTaskCount}>
       {tab === 'home' && (
         <CampaignHomePanel roomId={roomId} onContinueScene={() => setTab('action')} />
       )}
@@ -809,14 +1275,26 @@ export default function PlayerActionPage({
           claimStatus={claimStatus}
           claimedItemName={claimedItemName}
           inputText={inputText}
+          inputMode={inputMode}
           draft={draft}
           ephemeralPreview={ephemeralPreview}
           receipt={receipt}
           messages={messages}
+          ruleQuestions={ruleQuestions}
           narrationDetails={narrationDetails}
           recoveryText={recoveryText}
           pendingActions={pendingActions}
           pendingCombatReaction={pendingCombatReaction}
+          hasPendingInventoryTransfer={hasPendingInventoryTransfer}
+          hasUnresolvedPartyQuestion={hasUnresolvedPartyQuestion}
+          unreadPrivateResultCount={unreadNotifications.privateResults}
+          unreadPublicClueCount={unreadNotifications.publicClues}
+          collaborationContracts={collaborationContracts}
+          collaborationParticipants={collaborationParticipants}
+          autoConfirmPending={autoConfirmPending}
+          combatRound={combatRound}
+          absentPolicy={absentPolicy}
+          speechRoutesToDialogue={speechRouting === 'npc_dialogue'}
           deviceControl={deviceControl}
           character={character}
           onClaimJustificationChange={setClaimJustification}
@@ -824,17 +1302,31 @@ export default function PlayerActionPage({
           onClaimStatusChange={setClaimStatus}
           onClaimedItemNameChange={setClaimedItemName}
           onInputTextChange={updateInputText}
+          onToggleCombatTarget={toggleCombatTarget}
+          onInputModeChange={setInputMode}
           onSubmitAction={submitAction}
-          onConfirmAction={() => draft && void confirmDraft(draft)}
+          onConfirmAction={(selectedSkill, compositeStepOrder) => draft && void confirmDraft(
+            draft,
+            selectedSkill,
+            compositeStepOrder,
+          )}
+          onUpdateCollaborationDependencies={(characterIds) => void updateCollaborationDependencies(characterIds)}
           onDiscardAction={() => void discardDraft()}
           onCancelAction={() => void cancelSubmittedAction()}
+          onResolveCompositeChoice={(proceed) => void resolveCompositeChoice(proceed)}
           onSubmitRetroClaim={submitRetroClaim}
           onTacticalSelect={submitTacticalAction}
           onResolveCombatReaction={(choice) => void resolveCombatReaction(choice)}
+          onDeclareCombatRoundIdle={() => void declareCombatRoundIdle()}
           onTakeOverDevice={() => void takeOverDevice()}
+          onChangeAbsentPolicy={(policy) => void changeAbsentPolicy(policy)}
           onRequestActionHints={() => void requestActionHints()}
           onApplyHint={applyHint}
-          onOpenTab={setTab}
+          onNotificationsReviewed={markNotificationsRead}
+          onOpenTab={navigatePlayerTab}
+          onCreateCollaboration={createCollaboration}
+          onRespondToCollaboration={respondToCollaboration}
+          onCancelCollaboration={cancelCollaboration}
         />
       )}
       {tab === 'character' && <PlayerCharacter externalResult={lastSkillCheckResult} onResultConsumed={() => setLastSkillCheckResult(null)} />}
@@ -869,14 +1361,26 @@ interface ActionPanelProps {
   claimStatus: string;
   claimedItemName: string;
   inputText: string;
+  inputMode: PlayerInputMode;
   draft: ActionDraftDTO | null;
   ephemeralPreview: ActionDraftDTO | null;
   receipt: ActionReceiptDTO | null;
   messages: PlayerChatMessage[];
+  ruleQuestions: PlayerRuleQuestionDTO[];
   narrationDetails: NarrativeFeedItem[];
   recoveryText: string;
   pendingActions: TacticalAction[];
   pendingCombatReaction: SoloCombatReactionDTO | null;
+  hasPendingInventoryTransfer: boolean;
+  hasUnresolvedPartyQuestion: boolean;
+  unreadPrivateResultCount: number;
+  unreadPublicClueCount: number;
+  collaborationContracts: CollaborationContractDTO[];
+  collaborationParticipants: CollaborationParticipantDTO[];
+  autoConfirmPending: boolean;
+  combatRound: PlayerCombatRoundDTO | null;
+  absentPolicy: AbsentPolicy;
+  speechRoutesToDialogue: boolean;
   deviceControl: boolean | null;
   character: CharacterSheet | null;
   onClaimJustificationChange: (value: string) => void;
@@ -884,17 +1388,27 @@ interface ActionPanelProps {
   onClaimStatusChange: (value: string) => void;
   onClaimedItemNameChange: (value: string) => void;
   onInputTextChange: (value: string) => void;
+  onToggleCombatTarget: (targetLabel: string) => void;
+  onInputModeChange: (mode: PlayerInputMode) => void;
   onSubmitAction: (text?: string) => void;
-  onConfirmAction: () => void;
+  onConfirmAction: (selectedSkill?: string, compositeStepOrder?: string[]) => void;
+  onUpdateCollaborationDependencies: (characterIds: string[]) => void;
   onDiscardAction: () => void;
   onCancelAction: () => void;
+  onResolveCompositeChoice: (proceed: boolean) => void;
   onSubmitRetroClaim: () => void;
   onTacticalSelect: (action: TacticalAction) => void;
   onResolveCombatReaction: (choice: 'dodge' | 'counterattack') => void;
+  onDeclareCombatRoundIdle: () => void;
   onTakeOverDevice: () => void;
+  onChangeAbsentPolicy: (policy: AbsentPolicy) => void;
   onRequestActionHints: () => void;
   onApplyHint: (hint: string) => void;
+  onNotificationsReviewed: () => void;
   onOpenTab: (tab: PlayerTabKey) => void;
+  onCreateCollaboration: (sharedIntent: string, inviteeCharacterIds: string[]) => void;
+  onRespondToCollaboration: (contractId: string, decision: 'accept' | 'decline') => void;
+  onCancelCollaboration: (contractId: string) => void;
 }
 
 function formatPlayerApiError(error: unknown): string {
@@ -904,6 +1418,8 @@ function formatPlayerApiError(error: unknown): string {
     const messages: Record<string, string> = {
       action_already_submitted: '本回合已有一条有效行动，请先撤回或等待结算。',
       confirmation_required: '仍有风险项未确认。',
+      skill_selection_required: '请先选择采用的技能。',
+      skill_selection_invalid: '只能选择系统给出的技能候选。',
       draft_analysis_disabled: '本房间已关闭停顿分析，你仍可手动生成行动预览。',
       sync_required: '世界状态已变化，请同步后重新确认行动。',
       v2_action_draft_required: '此房间必须通过行动预览提交。',
@@ -912,6 +1428,21 @@ function formatPlayerApiError(error: unknown): string {
   }
   return `行动处理失败（${error.status}）`;
 }
+
+function combatHealthBar(segments: number | undefined): string {
+  if (typeof segments !== 'number' || !Number.isInteger(segments) || segments < 0 || segments > 8) {
+    return '';
+  }
+  return ` ${'█'.repeat(segments)}${'░'.repeat(8 - segments)}`;
+}
+
+const combatDistanceText: Record<'engaged' | 'near' | 'short' | 'medium' | 'long', string> = {
+  engaged: '贴身',
+  near: '近距离',
+  short: '短距离',
+  medium: '中距离',
+  long: '远距离',
+};
 
 function ActionPanel({
   actionStatus,
@@ -924,14 +1455,26 @@ function ActionPanel({
   claimStatus,
   claimedItemName,
   inputText,
+  inputMode,
   draft,
   ephemeralPreview,
   receipt,
   messages,
+  ruleQuestions,
   narrationDetails,
   recoveryText,
   pendingActions,
   pendingCombatReaction,
+  hasPendingInventoryTransfer,
+  hasUnresolvedPartyQuestion,
+  unreadPrivateResultCount,
+  unreadPublicClueCount,
+  collaborationContracts,
+  collaborationParticipants,
+  autoConfirmPending,
+  combatRound,
+  absentPolicy,
+  speechRoutesToDialogue,
   deviceControl,
   character,
   onClaimJustificationChange,
@@ -939,19 +1482,54 @@ function ActionPanel({
   onClaimStatusChange,
   onClaimedItemNameChange,
   onInputTextChange,
+  onToggleCombatTarget,
+  onInputModeChange,
   onSubmitAction,
   onConfirmAction,
+  onUpdateCollaborationDependencies,
   onDiscardAction,
   onCancelAction,
+  onResolveCompositeChoice,
   onSubmitRetroClaim,
   onTacticalSelect,
   onResolveCombatReaction,
+  onDeclareCombatRoundIdle,
   onTakeOverDevice,
+  onChangeAbsentPolicy,
   onRequestActionHints,
   onApplyHint,
+  onNotificationsReviewed,
   onOpenTab,
+  onCreateCollaboration,
+  onRespondToCollaboration,
+  onCancelCollaboration,
 }: ActionPanelProps) {
   const isIdle = canStartNewAction(draft, receipt);
+  const combatTargetTags = getCombatTargetTags(inputText);
+  const canEditCombatTargets = Boolean(
+    combatRound?.phase === 'declaration'
+    && !combatRound.declaration?.submitted
+    && isIdle
+    && deviceControl !== false,
+  );
+  const priorityInput = {
+    hasPendingCombatReaction: Boolean(pendingCombatReaction),
+    hasConfirmationDraft: Boolean(draft),
+    hasPendingInventoryTransfer,
+    hasUnresolvedPartyQuestion,
+    unreadPrivateResultCount,
+    unreadPublicClueCount,
+    hasCollaborationInvite: Boolean(character?.character_id) && collaborationContracts.some((contract) => (
+      contract.status === 'pending'
+      && contract.initiatorCharacterId !== character?.character_id
+      && contract.pendingCharacterIds.includes(character?.character_id || '')
+    )),
+    actionStatus,
+    hasInputText: Boolean(inputText.trim()),
+  };
+  const currentPriority = getActionPanelCurrentPriority(priorityInput);
+  const pendingTaskCount = getPlayerPendingTaskCount(priorityInput);
+  const priorityTargetTab = currentPriority.targetTab;
   const narrativeItems: NarrativeFeedItem[] = [
     ...messages.map((message) => ({
       id: message.id,
@@ -967,6 +1545,33 @@ function ActionPanel({
         className="bh-panel bh-player-narrative-layout bh-player-narrative-layout--mobile-safe"
         data-safe-widths="360 390 430"
       >
+      <section
+        className={`bh-muted-box bh-player-current bh-player-current--${currentPriority.kind}`}
+        aria-label="当前最重要的事"
+      >
+        <span className="bh-eyebrow">CURRENT PRIORITY</span>
+        <h3>{currentPriority.title}</h3>
+        <p>{currentPriority.detail}</p>
+        {pendingTaskCount > 1 && <p className="bh-hint">另有 {pendingTaskCount - 1} 项待处理。</p>}
+        {priorityTargetTab && (
+          <button className="bh-button" type="button" onClick={() => {
+            if (currentPriority.notificationKind) onNotificationsReviewed();
+            onOpenTab(priorityTargetTab);
+          }}>
+            {priorityTargetTab === 'inventory'
+              ? '查看待接收物品'
+              : priorityTargetTab === 'logs'
+                ? currentPriority.notificationKind === 'private_result' ? '查看私密结果' : '查看公共线索'
+                : currentPriority.title === '回应协同行动邀请' ? '回应邀请' : '查看队伍待调查问题'}
+          </button>
+        )}
+        {autoConfirmPending && (
+          <div className="bh-muted-box" style={{ marginTop: 8 }}>
+            <p>低风险行动将在 2 秒后进入结算。</p>
+            <button className="bh-button" type="button" onClick={onDiscardAction}>撤回预览</button>
+          </div>
+        )}
+      </section>
       <span className="bh-eyebrow">TACTICAL CHANNEL</span>
       <h2 className="bh-panel-title">自然语言行动</h2>
       <NarrativeFeed items={narrativeItems} recoveryText={recoveryText} />
@@ -987,7 +1592,8 @@ function ActionPanel({
 
       {pendingActions.length > 0 && isIdle && (
         <div className="bh-panel" style={{ marginTop: 16 }}>
-          <span className="bh-eyebrow">QUICK ACTIONS</span>
+          <span className="bh-eyebrow">RULE DECISION</span>
+          <p className="bh-hint">仅在规则明确要求你选择时显示；普通战斗请直接描述行动。</p>
           <TacticalButtons
             actions={pendingActions}
             disabled={false}
@@ -1006,6 +1612,94 @@ function ActionPanel({
             <button className="bh-button bh-button--yellow" type="button" disabled={deviceControl === false} onClick={() => onResolveCombatReaction('counterattack')}>反击</button>
           </div>
         </div>
+      )}
+
+      {character && (
+        <CollaborationContractPanel
+          currentCharacterId={character.character_id}
+          participants={collaborationParticipants}
+          contracts={collaborationContracts}
+          disabled={deviceControl === false}
+          onCreate={onCreateCollaboration}
+          onRespond={onRespondToCollaboration}
+          onCancel={onCancelCollaboration}
+        />
+      )}
+
+      {combatRound?.hasCombat && combatRound.declaration && (
+        <section className="bh-muted-box" aria-label="战斗声明进度">
+          <span className="bh-eyebrow">COMBAT ROUND</span>
+          <h3>第 {combatRound.roundNumber} 轮 · {
+            combatRound.phase === 'declaration' ? '声明行动' :
+              combatRound.phase === 'resolution' ? '统一结算中' :
+                combatRound.phase === 'summary' ? '轮末总结' : '等待处理'
+          }</h3>
+          <p>{combatRound.declaration.submitted
+            ? '你的声明已提交；锁定前可撤回当前行动。'
+            : '请用自然语言描述你本轮想做的事。'}</p>
+          <p>{combatRound.declaration.submittedCount} / {combatRound.declaration.totalPlayers} 名调查员已完成声明。</p>
+          {combatRound.phase === 'declaration' && !combatRound.declaration.submitted && (
+            <div className="bh-action-row bh-action-row--responsive">
+              <button
+                className="bh-button"
+                type="button"
+                disabled={deviceControl === false}
+                onClick={onDeclareCombatRoundIdle}
+              >
+                本轮暂不主动行动
+              </button>
+              <span className="bh-hint">正式声明：不攻击、不移动、不选目标、不消耗资源；仍可能受到外部影响。</span>
+            </div>
+          )}
+          {combatRound.publicClusters?.map((cluster) => (
+            <div key={cluster.publicTitle} className="bh-muted-box">
+              <strong>{cluster.publicTitle}</strong>
+              {cluster.completedPublicFacts.map((fact) => <p key={fact}>{fact}</p>)}
+            </div>
+          ))}
+          {combatRound.observablePreparations && combatRound.observablePreparations.length > 0 && (
+            <div className="bh-muted-box">
+              <strong>可观察到的准备</strong>
+              {combatRound.observablePreparations.map((preparation) => <p key={preparation}>{preparation}</p>)}
+            </div>
+          )}
+          {combatRound.publicUnits && combatRound.publicUnits.length > 0 && (
+            <div className="bh-muted-box" aria-label="当前可见单位">
+              <strong>当前可见</strong>
+              <p className="bh-hint">
+                {canEditCombatTargets
+                  ? '点击对象只加入本轮目标标签，不会替你选择动作或提交行动。'
+                  : '本轮目标已锁定；当前仅显示可观察对象。'}
+              </p>
+              {combatRound.publicUnits.map((unit) => (
+                <button
+                  key={`${unit.kind}-${unit.label}`}
+                  className="bh-button"
+                  type="button"
+                  aria-pressed={combatTargetTags.includes(unit.label)}
+                  disabled={
+                    !canEditCombatTargets
+                    || (!combatTargetTags.includes(unit.label) && combatTargetTags.length >= 2)
+                  }
+                  onClick={() => onToggleCombatTarget(unit.label)}
+                >
+                  {unit.label} · {unit.condition}{combatHealthBar(unit.healthSegments)}
+                  {unit.distanceBand ? ` · ${combatDistanceText[unit.distanceBand]}` : ''}
+                  {unit.lastObservedAt ? ` · 最后发现：${unit.lastObservedAt}` : ''}
+                </button>
+              ))}
+              {combatTargetTags.length > 0 && <p>本轮目标：{combatTargetTags.join('、')}</p>}
+            </div>
+          )}
+        </section>
+      )}
+
+      {combatRound?.hasCombat && (
+        <AbsentPolicyControl
+          policy={absentPolicy}
+          disabled={deviceControl === false}
+          onChange={onChangeAbsentPolicy}
+        />
       )}
 
       <VoiceInput
@@ -1038,17 +1732,34 @@ function ActionPanel({
 
       <PlayerActionComposer
         inputText={inputText}
+        inputMode={inputMode}
         phase={actionStatus}
         draft={draft}
         ephemeralPreview={ephemeralPreview}
         receipt={receipt}
         error={actionError}
+        speechRoutesToDialogue={speechRoutesToDialogue}
+        collaborationParticipants={collaborationParticipants}
+        currentCharacterId={character?.character_id}
         onInputChange={onInputTextChange}
+        onInputModeChange={onInputModeChange}
         onAnalyze={() => onSubmitAction()}
         onConfirm={onConfirmAction}
+        onUpdateCollaborationDependencies={onUpdateCollaborationDependencies}
         onDiscard={onDiscardAction}
         onCancelAction={onCancelAction}
+        onResolveCompositeChoice={onResolveCompositeChoice}
       />
+
+      {ruleQuestions.length > 0 && (
+        <section className="bh-muted-box" aria-label="我的规则问题">
+          <span className="bh-eyebrow">RULE QUESTIONS · 仅自己可见</span>
+          <p>这些问题不会改变世界状态，也不会进入队伍或 KP 叙事。</p>
+          <ul className="bh-hint-list">
+            {ruleQuestions.slice(0, 5).map((question) => <li key={question.actionId}>{question.text}</li>)}
+          </ul>
+        </section>
+      )}
 
       <div className="bh-action-box">
         <button
@@ -1090,7 +1801,12 @@ function ActionPanel({
         )}
       </div>
     </section>
-    <PlayerContextRail character={character} onOpenTab={onOpenTab} />
+    <PlayerContextRail
+      character={character}
+      currentPriority={currentPriority}
+      recentItems={narrativeItems}
+      onOpenTab={onOpenTab}
+    />
   </div>
   );
 }
@@ -1098,6 +1814,7 @@ function ActionPanel({
 function PlayerLogsPanel({ messages }: { messages: PlayerChatMessage[] }) {
   const [archive, setArchive] = useState<any[]>([]);
   const [archiveType, setArchiveType] = useState('all');
+  type LogRow = PlayerChatMessage & { citations?: Array<{ label?: string; page?: number }> };
 
   useEffect(() => {
     const token = getSlotValue('player_token') || '';
@@ -1110,14 +1827,15 @@ function PlayerLogsPanel({ messages }: { messages: PlayerChatMessage[] }) {
       .catch(() => {});
   }, [archiveType]);
 
-  const archiveRows = archive.map((e: any) => ({
+  const archiveRows: LogRow[] = archive.map((e: any) => ({
     id: String(e.sequence || Math.random()),
     sender: (e.is_public ? 'kp' : 'system') as 'kp' | 'system',
     text: e.data?.text || JSON.stringify(e.data || {}).slice(0, 80),
     timestamp: Date.now(),
+    citations: Array.isArray(e.data?.citations) ? e.data.citations : [],
   }));
 
-  const localRows = archiveRows.length > 0 ? archiveRows : messages.length > 0 ? messages.slice(-8).reverse() : [
+  const localRows: LogRow[] = archiveRows.length > 0 ? archiveRows : messages.length > 0 ? messages.slice(-8).reverse() : [
     { id: 'empty', sender: 'system' as const, text: '暂无历史记录。跑团开始后此处将显示事件日志。', timestamp: Date.now() },
   ];
 
@@ -1126,11 +1844,11 @@ function PlayerLogsPanel({ messages }: { messages: PlayerChatMessage[] }) {
       <span className="bh-eyebrow">INVESTIGATION LOGS</span>
       <h2 className="bh-panel-title">调查日志</h2>
       <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
-        {['all', 'narrative', 'actions', 'clues', 'skill_checks'].map((t) => (
+        {['all', 'narrative', 'actions', 'clues', 'skill_checks', 'citations'].map((t) => (
           <button key={t} className={`bh-button${archiveType === t ? ' bh-button--yellow' : ''}`}
                   style={{ padding: '2px 8px', fontSize: 10 }}
                   onClick={() => setArchiveType(t)}>
-            {t === 'all' ? '全部' : t === 'narrative' ? '剧情' : t === 'actions' ? '行动' : t === 'clues' ? '线索' : '检定'}
+            {t === 'all' ? '全部' : t === 'narrative' ? '剧情' : t === 'actions' ? '行动' : t === 'clues' ? '线索' : t === 'skill_checks' ? '检定' : '依据'}
           </button>
         ))}
       </div>
@@ -1139,6 +1857,15 @@ function PlayerLogsPanel({ messages }: { messages: PlayerChatMessage[] }) {
           <div key={msg.id} className="bh-log-entry">
             <strong>{msg.sender.toUpperCase()}</strong>
             <p>{msg.text}</p>
+            {(msg.citations || []).length > 0 && (
+              <small>
+                依据：{(msg.citations || []).map((citation, index) => (
+                  <span key={`${citation.label || 'citation'}-${index}`}>
+                    {index ? '；' : ''}{citation.label || '已校验依据'}{citation.page ? ` · 第 ${citation.page} 页` : ''}
+                  </span>
+                ))}
+              </small>
+            )}
           </div>
         ))}
       </div>
@@ -1265,12 +1992,23 @@ function PlayerMapPanel({
 
 export function PlayerContextRail({
   character,
+  currentPriority = null,
+  recentItems = [],
   onOpenTab,
 }: {
   character: CharacterSheet | null;
+  currentPriority?: PlayerCurrentPriority | null;
+  recentItems?: NarrativeFeedItem[];
   onOpenTab: (tab: PlayerTabKey) => void;
 }) {
-  const content = (
+  const [drawerView, setDrawerView] = useState<'pending' | 'recent'>('pending');
+  const recentVisibleItems = recentItems.slice(-5).reverse();
+  const priorityActionLabel = currentPriority?.targetTab === 'inventory'
+    ? '查看待接收物品'
+    : currentPriority?.targetTab === 'home'
+      ? '查看队伍待调查问题'
+      : '回到当前';
+  const sessionContext = (
     <>
       <span className="bh-eyebrow">SESSION CONTEXT</span>
       <h3>本局资料</h3>
@@ -1279,21 +2017,85 @@ export function PlayerContextRail({
         <div><span>理智</span><strong>{character ? `${character.san}/${character.max_san}` : '--/--'}</strong></div>
       </div>
       <p>地图只展示已知地点；移动、使用物品与检定仍通过自然语言行动确认。</p>
-      <div className="bh-context-actions">
-        <button className="bh-button" type="button" onClick={() => onOpenTab('map')}>打开地图</button>
-        <button className="bh-button" type="button" onClick={() => onOpenTab('character')}>角色与技能</button>
-        <button className="bh-button" type="button" onClick={() => onOpenTab('inventory')}>物品与线索</button>
-        <button className="bh-button" type="button" onClick={() => onOpenTab('logs')}>调查日志</button>
+    </>
+  );
+  const pendingContent = (
+    <section className="bh-context-drawer-section" aria-label="待处理">
+      <span className="bh-eyebrow">待处理</span>
+      {currentPriority ? (
+        <>
+          <strong>{currentPriority.title}</strong>
+          <p>{currentPriority.detail}</p>
+          {currentPriority.targetTab && (
+            <button className="bh-button" type="button" onClick={() => onOpenTab(currentPriority.targetTab || 'action')}>
+              {priorityActionLabel}
+            </button>
+          )}
+        </>
+      ) : <p>暂无待处理事项。</p>}
+    </section>
+  );
+  const recentContent = (
+    <section className="bh-context-drawer-section" aria-label="最近发生">
+      <span className="bh-eyebrow">最近发生</span>
+      {recentVisibleItems.length ? (
+        <ol className="bh-context-recent-list">
+          {recentVisibleItems.map((item) => <li key={item.id}>{item.text}</li>)}
+        </ol>
+      ) : <p>暂无新的可见事件。</p>}
+    </section>
+  );
+  const contextActions = (
+    <div className="bh-context-actions">
+      <button className="bh-button" type="button" onClick={() => onOpenTab('map')}>打开地图</button>
+      <button className="bh-button" type="button" onClick={() => onOpenTab('character')}>角色与技能</button>
+      <button className="bh-button" type="button" onClick={() => onOpenTab('inventory')}>物品与线索</button>
+      <button className="bh-button" type="button" onClick={() => onOpenTab('logs')}>调查日志</button>
+    </div>
+  );
+  const desktopContent = (
+    <>
+      {sessionContext}
+      {pendingContent}
+      {recentContent}
+      {contextActions}
+    </>
+  );
+  const mobileContent = (
+    <>
+      <div className="bh-context-drawer-tabs" role="tablist" aria-label="本局资料摘要">
+        <button
+          className="bh-button"
+          type="button"
+          role="tab"
+          aria-selected={drawerView === 'pending'}
+          onClick={() => setDrawerView('pending')}
+        >
+          待处理
+        </button>
+        <button
+          className="bh-button"
+          type="button"
+          role="tab"
+          aria-selected={drawerView === 'recent'}
+          onClick={() => setDrawerView('recent')}
+        >
+          最近发生
+        </button>
       </div>
+      <div role="tabpanel" hidden={drawerView !== 'pending'}>{pendingContent}</div>
+      <div role="tabpanel" hidden={drawerView !== 'recent'}>{recentContent}</div>
+      {sessionContext}
+      {contextActions}
     </>
   );
 
   return (
     <aside className="bh-player-context-rail" aria-label="本局资料">
-      <div className="bh-player-context-rail__desktop">{content}</div>
+      <div className="bh-player-context-rail__desktop">{desktopContent}</div>
       <details className="bh-player-context-rail__mobile">
         <summary>本局资料</summary>
-        <div className="bh-player-context-rail__drawer">{content}</div>
+        <div className="bh-player-context-rail__drawer">{mobileContent}</div>
       </details>
     </aside>
   );

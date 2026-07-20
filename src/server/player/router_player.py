@@ -9,10 +9,11 @@ import time
 from collections import defaultdict
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
 from starlette.responses import JSONResponse
-from ..models import PlayerIntent, SkillCheckRequest
+from ..models import InventoryTransferCreate, PlayerIntent, SkillCheckRequest
 from ..ai.mechanic_compiler import MechanicCompiler
 from ..engine.projection import ProjectionDispatcher
 from ..engine.resolution_pipeline import ResolutionPipeline
+from ..host.ws_manager import manager as ws_manager
 from ..engine.action_lifecycle import transition_action
 from ..engine.retro_items import RetroactiveClaimError, RetroactiveItemService, extract_retroactive_claim
 from ..engine.skill_check import roll_skill_check
@@ -502,26 +503,6 @@ async def speech_to_text(
     }
 
 
-# ── Simple rate limiter for team messages ──
-_team_msg_rates: dict[str, list[float]] = {}  # character_id -> [timestamps]
-
-def _check_team_msg_rate(character_id: str, max_per_sec: int = 3) -> bool:
-    import time as _time
-    now = _time.monotonic()
-    stamps = _team_msg_rates.get(character_id, [])
-    stamps = [s for s in stamps if now - s < 1.0]
-    if len(stamps) >= max_per_sec:
-        _team_msg_rates[character_id] = stamps
-        return False
-    stamps.append(now)
-    _team_msg_rates[character_id] = stamps
-    return True
-
-
-ALLOWED_SOURCES = {"text", "voice"}  # system_import is server/internal only, not player-facing
-MAX_TEAM_MSG_LENGTH = 2000
-
-
 @router.post("/team-message")
 async def team_message(request: Request):
     """Send a team chat message (not an action, not resolved by AI)."""
@@ -536,54 +517,17 @@ async def team_message(request: Request):
         raise HTTPException(403, "Invalid token")
 
     body = await request.json()
-    text = (body.get("text") or "").strip()
-    if not text:
-        raise HTTPException(400, "text is required")
-    if len(text) > MAX_TEAM_MSG_LENGTH:
-        raise HTTPException(400, f"text exceeds {MAX_TEAM_MSG_LENGTH} characters")
-    source = body.get("source", "text")
-    if source not in ALLOWED_SOURCES:
-        raise HTTPException(400, f"source must be one of: {', '.join(sorted(ALLOWED_SOURCES))}")
-
-    # Rate limit: max 3 messages per second per character
-    if not _check_team_msg_rate(char["character_id"]):
-        raise HTTPException(429, "Too many messages — slow down")
-
-    # Build payload
-    xlsx = char.get("xlsx_data") or {}
-    if isinstance(xlsx, str):
-        import json as _json
-        try:
-            xlsx = _json.loads(xlsx)
-        except Exception:
-            xlsx = {}
-
-    from ..models import EngineEvent
-    import uuid as _uuid
-    from datetime import datetime, timezone
-
-    payload = {
-        "messageId": str(_uuid.uuid4()),
-        "characterId": char["character_id"],
-        "playerName": char.get("player_name", ""),
-        "investigatorName": xlsx.get("name", ""),
-        "text": text,
-        "source": source,
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-    }
-
-    # Write + broadcast via ProjectionDispatcher (handles both DB insert and WS push)
-    from ..engine.projection import ProjectionDispatcher
-    dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
-    import asyncio
+    from .team_messages import TeamMessageError, send_team_message
     try:
-        asyncio.get_running_loop().create_task(
-            dispatcher.emit(char["room_id"], "s2c_team_message", "party", payload)
+        payload = await send_team_message(
+            conn,
+            dispatcher=getattr(request.app.state, "dispatcher", None),
+            character=dict(char),
+            text=body.get("text") or "",
+            source=body.get("source", "text"),
         )
-    except RuntimeError:
-        # No running event loop — fall back to direct event log write
-        from ..events.event_log import EventLog
-        EventLog(conn).log_event(char["room_id"], "s2c_team_message", "party", payload)
+    except TeamMessageError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
     return {"status": "sent", "messageId": payload["messageId"]}
 
@@ -623,7 +567,8 @@ async def submit_intent(request: Request, intent: PlayerIntent):
         tm = TurnManager(conn)
         turn = tm.ensure_current_turn(char["room_id"])
         existing = conn.execute(
-            "SELECT action_id FROM actions WHERE turn_id = %s AND character_id = %s AND status != 'rejected'",
+            "SELECT action_id FROM actions WHERE turn_id = %s AND character_id = %s "
+            "AND status NOT IN ('rejected', 'canceled', 'timeout')",
             (turn["turn_id"], char["character_id"]),
         ).fetchone()
         if existing:
@@ -664,12 +609,250 @@ async def submit_intent(request: Request, intent: PlayerIntent):
     return JSONResponse(content=result, status_code=202)
 
 
+@router.get("/combat-round")
+async def get_combat_round(request: Request):
+    """Return the caller's safe view of an active combat declaration round."""
+    token = request.headers.get("X-Room-Token", "")
+    if not token:
+        raise HTTPException(401, "Missing X-Room-Token")
+    conn = request.app.state.db
+    character = conn.execute(
+        "SELECT character_id, room_id FROM characters WHERE player_token = %s",
+        (token,),
+    ).fetchone()
+    if not character:
+        raise HTTPException(403, "Invalid token")
+
+    from ..encounter_persistence import get_active_encounter
+    from ..turn_manager import TurnManager
+
+    encounter = get_active_encounter(conn, character["room_id"])
+    if not encounter or encounter.get("type") != "combat":
+        return {"hasCombat": False}
+
+    snapshot = TurnManager(conn).get_turn_snapshot(character["room_id"])
+    if snapshot.get("mode") != "combat" or snapshot.get("encounter_id") != encounter["encounter_id"]:
+        return {"hasCombat": False}
+
+    players = snapshot["players"]
+    own = next(
+        (player for player in players if player["character_id"] == character["character_id"]),
+        None,
+    )
+    if not own:
+        return {"hasCombat": False}
+
+    submitted_count = sum(1 for player in players if player["submitted"])
+    payload = {
+        "hasCombat": True,
+        "encounterId": encounter["encounter_id"],
+        "roundNumber": snapshot.get("encounter_round") or 1,
+        "phase": snapshot["phase"],
+        "turnId": snapshot["turn_id"],
+        "declaration": {
+            "submitted": own["submitted"],
+            "locked": snapshot["phase"] != "declaration",
+            "submittedCount": submitted_count,
+            "totalPlayers": len(players),
+        },
+    }
+    turn_row = conn.execute(
+        "SELECT combat_plan FROM room_turns WHERE turn_id = %s",
+        (snapshot["turn_id"],),
+    ).fetchone()
+    plan = _json_val(turn_row.get("combat_plan")) if turn_row else None
+    public_clusters = _player_public_combat_clusters(plan)
+    if public_clusters:
+        payload["publicClusters"] = public_clusters
+    observable_preparations = _player_observable_preparations(plan)
+    if observable_preparations:
+        payload["observablePreparations"] = observable_preparations
+    from ..host.public_stage import build_public_combat_units_for_encounter
+    public_units = build_public_combat_units_for_encounter(conn, encounter["encounter_id"])
+    if public_units:
+        payload["publicUnits"] = public_units
+    return payload
+
+
+@router.post("/combat-round/idle")
+async def declare_combat_round_idle(request: Request):
+    """Let the current player formally declare no proactive combat action."""
+    character = _get_character(request)
+    conn = request.app.state.db
+    from ..encounter_persistence import get_active_encounter
+    from ..turn_manager import TurnManager
+
+    encounter = get_active_encounter(conn, character["room_id"])
+    if not encounter or encounter.get("type") != "combat":
+        raise HTTPException(409, "No active combat declaration round")
+
+    turn_manager = TurnManager(conn)
+    snapshot = turn_manager.get_turn_snapshot(character["room_id"])
+    if (
+        snapshot.get("mode") != "combat"
+        or snapshot.get("encounter_id") != encounter["encounter_id"]
+        or snapshot.get("phase") != "declaration"
+    ):
+        raise HTTPException(409, "Combat declarations are locked")
+
+    existing = conn.execute(
+        "SELECT action_id, intent_type, declared_intent FROM actions "
+        "WHERE turn_id = %s AND character_id = %s "
+        "AND status NOT IN ('rejected', 'canceled', 'timeout')",
+        (snapshot["turn_id"], character["character_id"]),
+    ).fetchone()
+    if existing:
+        if existing["intent_type"] == "system_skip" and existing["declared_intent"] == "本回合跳过: idle":
+            return {
+                "status": "declared_idle",
+                "turnId": snapshot["turn_id"],
+                "actionId": existing["action_id"],
+            }
+        raise HTTPException(409, "A combat declaration already exists")
+
+    result = turn_manager.skip_character(
+        character["room_id"],
+        snapshot["turn_id"],
+        character["character_id"],
+        "idle",
+    )
+    if result.get("status") != "skipped":
+        raise HTTPException(409, "Unable to declare idle")
+
+    if turn_manager.all_submitted(character["room_id"]):
+        asyncio.create_task(_settle_turn_background(request.app, character["room_id"], snapshot["turn_id"]))
+    return {
+        "status": "declared_idle",
+        "turnId": snapshot["turn_id"],
+        "actionId": result["action_id"],
+    }
+
+
+async def _enrich_combat_round_plan(app, room_id: str, turn_manager, turn_id: str, plan: dict) -> dict:
+    gateway = getattr(app.state, "gateway", None)
+    resolve_combat_round = getattr(gateway, "resolve_combat_round", None)
+    if not callable(resolve_combat_round):
+        return plan
+    from ..combat_round_planner import (
+        apply_combat_round_suggestions,
+        build_combat_round_ai_context,
+    )
+
+    try:
+        actions = turn_manager.get_pending_actions(turn_id)
+        suggestion = await resolve_combat_round(
+            build_combat_round_ai_context(plan, actions),
+            room_id=room_id,
+        )
+        if hasattr(suggestion, "model_dump"):
+            suggestion = suggestion.model_dump(by_alias=True)
+        if not isinstance(suggestion, dict):
+            return plan
+        enriched = apply_combat_round_suggestions(plan, suggestion)
+        turn_manager.save_combat_plan(turn_id, enriched)
+        return enriched
+    except Exception as exc:
+        logger.warning("Combat round AI planning failed for room=%s turn=%s: %s", room_id, turn_id, type(exc).__name__)
+        return plan
+
+
+async def _replan_combat_round_after_public_fact(
+    app,
+    room_id: str,
+    turn_manager,
+    turn_id: str,
+    plan: dict,
+    completed_action_id: str,
+) -> dict:
+    """Refresh only the public presentation for unresolved rule-dependent actions."""
+    dependent_action_ids = _dependent_combat_action_ids(plan, completed_action_id)
+    if not dependent_action_ids:
+        return plan
+    replan_history = plan.get("presentation_replan_after_action_ids")
+    completed_history = []
+    if isinstance(replan_history, list):
+        for action_id in replan_history:
+            normalized_action_id = str(action_id) if isinstance(action_id, str) else ""
+            if normalized_action_id and normalized_action_id not in completed_history:
+                completed_history.append(normalized_action_id)
+    if completed_action_id in completed_history:
+        return plan
+
+    gateway = getattr(app.state, "gateway", None)
+    resolve_combat_round = getattr(gateway, "resolve_combat_round", None)
+    if not callable(resolve_combat_round):
+        return plan
+    from ..combat_round_planner import (
+        apply_combat_round_suggestions,
+        build_combat_round_ai_context,
+    )
+
+    try:
+        actions = turn_manager.get_pending_actions(turn_id)
+        suggestion = await resolve_combat_round(
+            build_combat_round_ai_context(
+                plan,
+                actions,
+                replan_after_resolution=True,
+            ),
+            room_id=room_id,
+        )
+        if hasattr(suggestion, "model_dump"):
+            suggestion = suggestion.model_dump(by_alias=True)
+        if not isinstance(suggestion, dict):
+            return plan
+        enriched = apply_combat_round_suggestions(
+            plan,
+            suggestion,
+            eligible_action_ids=dependent_action_ids,
+        )
+        enriched["presentation_replan_after_action_ids"] = [
+            *completed_history,
+            completed_action_id,
+        ]
+        turn_manager.save_combat_plan(turn_id, enriched)
+        return enriched
+    except Exception as exc:
+        logger.warning(
+            "Combat round presentation replan failed for room=%s turn=%s action=%s: %s",
+            room_id,
+            turn_id,
+            completed_action_id,
+            type(exc).__name__,
+        )
+        return plan
+
+
+def _dependent_combat_action_ids(plan: dict, completed_action_id: str) -> set[str]:
+    if not isinstance(plan, dict):
+        return set()
+    completed_action_ids = {
+        str(fact.get("action_id"))
+        for fact in plan.get("resolved_public_facts", [])
+        if isinstance(fact, dict) and fact.get("action_id")
+    }
+    dependent_action_ids: set[str] = set()
+    for step in plan.get("steps", []):
+        if not isinstance(step, dict) or step.get("visibility") != "public":
+            continue
+        action_id = str(step.get("action_id") or "")
+        depends_on = step.get("depends_on")
+        if (
+            action_id
+            and action_id not in completed_action_ids
+            and isinstance(depends_on, list)
+            and completed_action_id in {str(value) for value in depends_on}
+        ):
+            dependent_action_ids.add(action_id)
+    return dependent_action_ids
+
+
 async def _settle_turn_background(app, room_id: str, turn_id: str):
     """Auto-settle a turn when all players have submitted."""
     logger.info("Auto-settling turn %s for room %s", turn_id, room_id)
+    pg_db = getattr(app.state, "pg_db", None)
+    conn = pg_db.get_connection() if pg_db else app.state.db
     try:
-        pg_db = getattr(app.state, "pg_db", None)
-        conn = pg_db.get_connection() if pg_db else app.state.db
         from ..turn_manager import TurnManager
         tm = TurnManager(conn)
 
@@ -678,13 +861,47 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
             logger.info("Turn %s already claimed by another worker, skipping", turn_id)
             return
 
+        combat_plan = tm.plan_combat_round(turn_id)
+        if combat_plan:
+            combat_plan = await _enrich_combat_round_plan(
+                app,
+                room_id,
+                tm,
+                turn_id,
+                combat_plan,
+            )
+        dispatcher = getattr(app.state, "dispatcher", None)
+        if combat_plan and dispatcher:
+            await dispatcher.emit(
+                room_id,
+                "s2c_combat_round_locked",
+                "party",
+                {
+                    "turn_id": turn_id,
+                    "round_number": combat_plan["round_number"],
+                    "phase": "resolution",
+                    "public_clusters": [
+                        {"public_title": cluster["public_title"]}
+                        for cluster in combat_plan["presentation_clusters"]
+                    ],
+                    "observable_preparations": _player_observable_preparations(combat_plan),
+                },
+            )
+
         # Resolve each queued action through the pipeline
         actions = tm.get_pending_actions(turn_id)
+        _mark_collaboration_batches_resolving(
+            conn,
+            [action["action_id"] for action in actions],
+        )
         results = []
         compiler = getattr(app.state, "compiler", None) or MechanicCompiler(api_key="")
         pipeline = getattr(app.state, "pipeline", None)
 
-        for action in actions:
+        blocked_action_ids: set[str] = set()
+        for index, action in enumerate(actions):
+            if action["action_id"] in blocked_action_ids:
+                continue
             try:
                 # Fetch real character name from DB — NOT declared_intent
                 char_name = "未知调查员"
@@ -704,6 +921,47 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
                         "declared_intent": action.get("declared_intent", ""),
                         "result": res,
                     })
+                    if combat_plan and res.get("status") in {"completed", "resolved"}:
+                        public_fact = _released_stage_narration(
+                            conn,
+                            room_id,
+                            action["action_id"],
+                        )
+                        if public_fact:
+                            from ..combat_round_planner import record_combat_round_public_fact
+
+                            combat_plan = record_combat_round_public_fact(
+                                combat_plan,
+                                action_id=action["action_id"],
+                                narrative_text=public_fact,
+                            )
+                            tm.save_combat_plan(turn_id, combat_plan)
+                            combat_plan = await _replan_combat_round_after_public_fact(
+                                app,
+                                room_id,
+                                tm,
+                                turn_id,
+                                combat_plan,
+                                action["action_id"],
+                            )
+                    if res.get("status") in {"rejected", "timeout"}:
+                        dependent_action_ids = _dependent_collaboration_action_ids(
+                            conn,
+                            action["action_id"],
+                            [item["action_id"] for item in actions[index + 1 :]],
+                        )
+                        if dependent_action_ids:
+                            blocked_action_ids.update(dependent_action_ids)
+                            for contract_id in _collaboration_contract_ids_for_actions(
+                                conn,
+                                [action["action_id"], *dependent_action_ids],
+                            ):
+                                _block_collaboration_batch(
+                                    conn,
+                                    contract_id,
+                                    dependent_action_ids,
+                                    "collaboration_dependency_not_met",
+                                )
             except Exception as e:
                 logger.warning("Action %s failed in turn %s: %s", action["action_id"], turn_id, e)
                 transitioned = transition_action(
@@ -752,28 +1010,114 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
                 narrative_parts.append(str(resolved["narrative"]))
         narrative = "\n".join(narrative_parts)
 
+        _complete_collaboration_batches_for_actions(
+            conn,
+            [action["action_id"] for action in actions],
+        )
         tm.mark_resolved(turn_id, narrative[:500])
+        combat_summary = _combat_round_summary(combat_plan, room_id, actions, conn)
+        if combat_summary:
+            tm.save_combat_summary(turn_id, combat_summary)
+        may_open_next_turn = tm.advance_combat_round_if_ready(turn_id) if combat_plan else True
 
         # Create next turn — only if no newer collecting turn already exists
         existing_next = conn.execute(
             "SELECT turn_id FROM room_turns WHERE room_id = %s AND status = 'collecting' AND turn_index > %s",
             (room_id, conn.execute("SELECT turn_index FROM room_turns WHERE turn_id = %s", (turn_id,)).fetchone()["turn_index"]),
         ).fetchone()
-        if not existing_next:
+        if may_open_next_turn and not existing_next:
             tm._create_turn(room_id)
-        else:
+        elif existing_next:
             logger.info("Next turn already exists for room %s (turn %s), skipping creation", room_id, existing_next["turn_id"])
 
         # Broadcast turn resolved event
-        dispatcher = getattr(app.state, "dispatcher", None)
         if dispatcher:
-            await dispatcher.emit(room_id, "s2c_turn_resolved", "party",
-                                  {"turn_id": turn_id, "narrative": narrative, "actions": results})
+            if combat_summary:
+                await dispatcher.emit(
+                    room_id,
+                    "s2c_turn_resolved",
+                    "party",
+                    {"turn_id": turn_id, "combat_summary": combat_summary},
+                )
+            else:
+                await dispatcher.emit(room_id, "s2c_turn_resolved", "party",
+                                      {"turn_id": turn_id, "narrative": narrative, "actions": results})
 
-        if pg_db:
-            conn.close()
     except Exception as e:
         logger.exception("Turn settlement failed for room %s turn %s: %s", room_id, turn_id, e)
+    finally:
+        if pg_db:
+            conn.close()
+
+
+def _player_public_combat_clusters(plan: dict | None) -> list[dict]:
+    if not isinstance(plan, dict):
+        return []
+    clusters = []
+    for cluster in plan.get("presentation_clusters", []):
+        if not isinstance(cluster, dict) or cluster.get("visibility") == "private":
+            continue
+        title = cluster.get("public_title")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        facts = cluster.get("completed_public_facts")
+        clusters.append(
+            {
+                "publicTitle": title.strip()[:80],
+                "completedPublicFacts": [
+                    fact.strip()
+                    for fact in facts
+                    if isinstance(fact, str) and fact.strip()
+                ][:5] if isinstance(facts, list) else [],
+            }
+        )
+    return clusters
+
+
+def _player_observable_preparations(plan: dict | None) -> list[str]:
+    if not isinstance(plan, dict):
+        return []
+    values = plan.get("observable_preparations")
+    if not isinstance(values, list):
+        return []
+    return [
+        value.strip()[:200]
+        for value in values
+        if isinstance(value, str) and value.strip()
+    ][:8]
+
+
+def _combat_round_summary(combat_plan, room_id: str, actions: list[dict], conn) -> dict | None:
+    if not combat_plan:
+        return None
+    recorded_facts = combat_plan.get("resolved_public_facts")
+    public_facts = [
+        str(fact["text"])
+        for fact in recorded_facts
+        if isinstance(fact, dict) and isinstance(fact.get("text"), str) and fact["text"].strip()
+    ] if isinstance(recorded_facts, list) else []
+    if not public_facts:
+        for action in actions:
+            text = _released_stage_narration(conn, room_id, action["action_id"])
+            if text:
+                public_facts.append(text)
+    return {
+        "round_number": combat_plan["round_number"],
+        "title": f"第 {combat_plan['round_number']} 轮结束",
+        "public_facts": public_facts,
+        "current_situation": public_facts[-1] if public_facts else "本轮结算完成，局势等待下一轮行动。",
+    }
+
+
+def _released_stage_narration(conn, room_id: str, action_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT stage_projection FROM resolution_bundles "
+        "WHERE action_id = %s AND room_id = %s AND release_status = 'released'",
+        (action_id, room_id),
+    ).fetchone()
+    projection = _json_val(row.get("stage_projection")) if row else None
+    text = projection.get("narrativeText") if isinstance(projection, dict) else None
+    return str(text).strip() if isinstance(text, str) and text.strip() else None
 
 
 async def _resolve_action_background(app, action_id: str):
@@ -786,6 +1130,7 @@ async def _resolve_action_background(app, action_id: str):
                 conn,
                 compiler=compiler,
                 dispatcher=ProjectionDispatcher(conn),
+                host_connection_checker=lambda room_id: ws_manager.is_connected(room_id, "host"),
             )
             await pipeline.resolve_action(action_id)
         except Exception:
@@ -801,6 +1146,175 @@ async def _resolve_action_background(app, action_id: str):
         await pipeline.resolve_action(action_id)
     except Exception:
         logger.exception("Background resolution failed for action %s", action_id)
+
+
+async def _resolve_collaboration_batch_background(app, contract_id: str):
+    pg_db = getattr(app.state, "pg_db", None)
+    conn = pg_db.get_connection() if pg_db else app.state.db
+    try:
+        batch = conn.execute(
+            "UPDATE collaboration_contract_batches SET status = 'resolving', started_at = NOW(), updated_at = NOW() "
+            "WHERE contract_id = %s AND status = 'queued' RETURNING *",
+            (contract_id,),
+        ).fetchone()
+        if not batch:
+            return
+        raw_action_ids = batch.get("action_ids") or []
+        if isinstance(raw_action_ids, str):
+            try:
+                raw_action_ids = json.loads(raw_action_ids)
+            except json.JSONDecodeError:
+                raw_action_ids = []
+        action_ids = [str(action_id) for action_id in raw_action_ids if str(action_id)]
+        if not action_ids:
+            conn.execute(
+                "UPDATE collaboration_contract_batches SET status = 'blocked', updated_at = NOW() "
+                "WHERE contract_id = %s",
+                (contract_id,),
+            )
+            return
+        if pg_db:
+            compiler = getattr(app.state, "compiler", None) or MechanicCompiler(api_key="")
+            pipeline = ResolutionPipeline(
+                conn,
+                compiler=compiler,
+                dispatcher=ProjectionDispatcher(conn),
+                host_connection_checker=lambda room_id: ws_manager.is_connected(room_id, "host"),
+            )
+        else:
+            pipeline = getattr(app.state, "pipeline", None)
+        if not pipeline:
+            _block_collaboration_batch(conn, contract_id, action_ids, "resolution_pipeline_unavailable")
+            return
+        blocked_action_ids: set[str] = set()
+        for index, action_id in enumerate(action_ids):
+            if action_id in blocked_action_ids:
+                continue
+            result = await pipeline.resolve_action(action_id)
+            if result.get("status") in {"rejected", "timeout"}:
+                dependent_action_ids = _dependent_collaboration_action_ids(
+                    conn,
+                    action_id,
+                    action_ids[index + 1 :],
+                )
+                if dependent_action_ids:
+                    blocked_action_ids.update(dependent_action_ids)
+                    _block_collaboration_batch(
+                        conn,
+                        contract_id,
+                        dependent_action_ids,
+                        "collaboration_dependency_not_met",
+                    )
+            if result.get("status") not in {"completed", "resolved", "rejected"}:
+                _block_collaboration_batch(
+                    conn,
+                    contract_id,
+                    action_ids[index + 1 :],
+                    "collaboration_batch_requires_review",
+                )
+                return
+        _complete_collaboration_batch_if_terminal(conn, contract_id)
+    except Exception:
+        logger.exception("Collaboration batch resolution failed for contract %s", contract_id)
+        _block_collaboration_batch(conn, contract_id, [], "collaboration_batch_resolution_failed")
+    finally:
+        if pg_db:
+            conn.close()
+
+
+def _block_collaboration_batch(conn, contract_id: str, action_ids: list[str], reason_code: str) -> None:
+    conn.execute(
+        "UPDATE collaboration_contract_batches SET status = 'blocked', updated_at = NOW() "
+        "WHERE contract_id = %s AND status = 'resolving'",
+        (contract_id,),
+    )
+    for action_id in action_ids:
+        cursor = conn.execute(
+            "UPDATE actions SET status = 'awaiting_host_exception' "
+            "WHERE action_id = %s AND status = 'batched'",
+            (action_id,),
+        )
+        if cursor.rowcount:
+            conn.execute(
+                "INSERT INTO action_status_events (action_id, status, metadata) VALUES (%s, 'awaiting_host_exception', %s)",
+                (action_id, json.dumps({"reason_code": reason_code}, ensure_ascii=False)),
+            )
+
+
+def _dependent_collaboration_action_ids(
+    conn,
+    prerequisite_action_id: str,
+    candidate_action_ids: list[str],
+) -> list[str]:
+    if not candidate_action_ids:
+        return []
+    placeholders = ", ".join("%s" for _ in candidate_action_ids)
+    rows = conn.execute(
+        "SELECT action_id, params FROM actions "
+        f"WHERE action_id IN ({placeholders})",
+        tuple(candidate_action_ids),
+    ).fetchall()
+    dependent_ids = {
+        str(row["action_id"])
+        for row in rows
+        if prerequisite_action_id in ((_json_val(row.get("params")) or {}).get("depends_on_action_ids") or [])
+    }
+    return [action_id for action_id in candidate_action_ids if action_id in dependent_ids]
+
+
+def _mark_collaboration_batches_resolving(conn, action_ids: list[str]) -> None:
+    contract_ids = _collaboration_contract_ids_for_actions(conn, action_ids)
+    for contract_id in contract_ids:
+        conn.execute(
+            "UPDATE collaboration_contract_batches SET status = 'resolving', started_at = NOW(), updated_at = NOW() "
+            "WHERE contract_id = %s AND status = 'queued'",
+            (contract_id,),
+        )
+
+
+def _complete_collaboration_batches_for_actions(conn, action_ids: list[str]) -> None:
+    for contract_id in _collaboration_contract_ids_for_actions(conn, action_ids):
+        _complete_collaboration_batch_if_terminal(conn, contract_id)
+
+
+def _collaboration_contract_ids_for_actions(conn, action_ids: list[str]) -> list[str]:
+    if not action_ids:
+        return []
+    placeholders = ", ".join("%s" for _ in action_ids)
+    rows = conn.execute(
+        "SELECT DISTINCT batches.contract_id "
+        "FROM collaboration_contract_batches AS batches "
+        "JOIN collaboration_contract_drafts AS links ON links.contract_id = batches.contract_id "
+        "JOIN actions ON actions.draft_id = links.draft_id "
+        f"WHERE actions.action_id IN ({placeholders}) "
+        "AND batches.status IN ('queued', 'resolving')",
+        tuple(action_ids),
+    ).fetchall()
+    return [str(row["contract_id"]) for row in rows]
+
+
+def _complete_collaboration_batch_if_terminal(conn, contract_id: str) -> bool:
+    rows = conn.execute(
+        "SELECT actions.status FROM collaboration_contract_drafts AS links "
+        "JOIN actions ON actions.draft_id = links.draft_id "
+        "WHERE links.contract_id = %s",
+        (contract_id,),
+    ).fetchall()
+    if not rows or any(row["status"] not in {"completed", "resolved", "rejected"} for row in rows):
+        return False
+    completed = conn.execute(
+        "UPDATE collaboration_contract_batches SET status = 'completed', completed_at = NOW(), updated_at = NOW() "
+        "WHERE contract_id = %s AND status IN ('queued', 'resolving')",
+        (contract_id,),
+    )
+    if not completed.rowcount:
+        return False
+    conn.execute(
+        "UPDATE collaboration_contracts SET status = 'completed', updated_at = NOW() "
+        "WHERE contract_id = %s AND status = 'accepted'",
+        (contract_id,),
+    )
+    return True
 
 
 async def _submit_retroactive_claim(request: Request, char: dict, intent: PlayerIntent):
@@ -1084,6 +1598,219 @@ async def get_inventory(request: Request):
         "SELECT * FROM inventory WHERE character_id = %s", (char["character_id"],)
     ).fetchall()
     return [dict(i) for i in items]
+
+
+def _inventory_transfer_payload(row: dict) -> dict:
+    return {
+        "transferId": row["transfer_id"],
+        "itemId": row["item_id"],
+        "itemName": row["item_name"],
+        "isSecret": bool(row.get("item_is_secret", False)),
+        "fromCharacterId": row["from_character_id"],
+        "toCharacterId": row["to_character_id"],
+        "fromPlayerName": row.get("from_player_name") or "调查员",
+        "toPlayerName": row.get("to_player_name") or "调查员",
+        "quantity": row["quantity"],
+        "status": row["status"],
+        "createdAt": str(row["created_at"]),
+        "resolvedAt": str(row["resolved_at"]) if row.get("resolved_at") else None,
+    }
+
+
+@router.get("/inventory-transfer-candidates")
+async def get_inventory_transfer_candidates(request: Request):
+    char = _get_character(request)
+    rows = request.app.state.db.execute(
+        """
+        SELECT character_id, player_name
+        FROM characters
+        WHERE room_id = %s AND character_id != %s AND status != 'left'
+        ORDER BY player_name, character_id
+        """,
+        (char["room_id"], char["character_id"]),
+    ).fetchall()
+    return {"candidates": [
+        {"characterId": row["character_id"], "playerName": row.get("player_name") or "调查员"}
+        for row in rows
+    ]}
+
+
+@router.post("/inventory/{item_id}/transfers", status_code=201)
+async def create_inventory_transfer(
+    request: Request,
+    item_id: str,
+    payload: InventoryTransferCreate,
+):
+    char = _get_character(request)
+    conn = request.app.state.db
+    if payload.to_character_id == char["character_id"]:
+        raise HTTPException(400, "不能转移给自己")
+    recipient = conn.execute(
+        "SELECT character_id FROM characters WHERE character_id = %s AND room_id = %s AND status != 'left'",
+        (payload.to_character_id, char["room_id"]),
+    ).fetchone()
+    if not recipient:
+        raise HTTPException(404, "目标调查员不在当前房间")
+    item = conn.execute(
+        "SELECT * FROM inventory WHERE id = %s AND character_id = %s AND room_id = %s",
+        (item_id, char["character_id"], char["room_id"]),
+    ).fetchone()
+    if not item:
+        raise HTTPException(404, "物品不存在或不属于当前角色")
+    pending = conn.execute(
+        "SELECT COALESCE(SUM(quantity), 0) AS quantity FROM inventory_transfer_requests "
+        "WHERE item_id = %s AND status = 'pending'",
+        (item_id,),
+    ).fetchone()
+    available_quantity = int(item.get("quantity") or 0) - int(pending.get("quantity") or 0)
+    if payload.quantity > available_quantity:
+        raise HTTPException(409, "可转移数量不足，已有待接收请求")
+
+    transfer_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO inventory_transfer_requests
+            (transfer_id, room_id, item_id, from_character_id, to_character_id,
+             item_name, item_is_secret, quantity)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            transfer_id, char["room_id"], item_id, char["character_id"], payload.to_character_id,
+            item["name"], bool(item.get("is_secret", False)), payload.quantity,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        """
+        SELECT transfer.*, sender.player_name AS from_player_name, recipient.player_name AS to_player_name
+        FROM inventory_transfer_requests AS transfer
+        LEFT JOIN characters AS sender ON sender.character_id = transfer.from_character_id
+        LEFT JOIN characters AS recipient ON recipient.character_id = transfer.to_character_id
+        WHERE transfer.transfer_id = %s
+        """,
+        (transfer_id,),
+    ).fetchone()
+    return _inventory_transfer_payload(dict(row))
+
+
+@router.get("/inventory-transfers")
+async def get_inventory_transfers(request: Request):
+    char = _get_character(request)
+    rows = request.app.state.db.execute(
+        """
+        SELECT transfer.*, sender.player_name AS from_player_name, recipient.player_name AS to_player_name
+        FROM inventory_transfer_requests AS transfer
+        LEFT JOIN characters AS sender ON sender.character_id = transfer.from_character_id
+        LEFT JOIN characters AS recipient ON recipient.character_id = transfer.to_character_id
+        WHERE transfer.from_character_id = %s OR transfer.to_character_id = %s
+        ORDER BY transfer.created_at DESC
+        """,
+        (char["character_id"], char["character_id"]),
+    ).fetchall()
+    outgoing = []
+    incoming = []
+    for row in rows:
+        transfer = _inventory_transfer_payload(dict(row))
+        if row["from_character_id"] == char["character_id"]:
+            outgoing.append(transfer)
+        else:
+            incoming.append(transfer)
+    return {"incoming": incoming, "outgoing": outgoing}
+
+
+def _resolve_inventory_transfer(request: Request, transfer_id: str, resolution: str) -> dict:
+    char = _get_character(request)
+    conn = request.app.state.db
+    transfer = conn.execute(
+        "SELECT * FROM inventory_transfer_requests WHERE transfer_id = %s FOR UPDATE",
+        (transfer_id,),
+    ).fetchone()
+    if not transfer:
+        raise HTTPException(404, "转移请求不存在")
+    transfer = dict(transfer)
+    if transfer["to_character_id"] != char["character_id"]:
+        raise HTTPException(403, "只有接收方可以处理该请求")
+    if transfer["status"] != "pending":
+        raise HTTPException(409, "转移请求已经处理")
+    if resolution == "rejected":
+        conn.execute(
+            "UPDATE inventory_transfer_requests SET status = 'rejected', resolved_at = NOW() WHERE transfer_id = %s",
+            (transfer_id,),
+        )
+        conn.commit()
+        transfer["status"] = "rejected"
+        return _inventory_transfer_payload(transfer)
+
+    source_item = conn.execute(
+        "SELECT * FROM inventory WHERE id = %s AND character_id = %s AND room_id = %s FOR UPDATE",
+        (transfer["item_id"], transfer["from_character_id"], transfer["room_id"]),
+    ).fetchone()
+    if not source_item or int(source_item.get("quantity") or 0) < int(transfer["quantity"]):
+        conn.execute(
+            "UPDATE inventory_transfer_requests SET status = 'unavailable', resolved_at = NOW() WHERE transfer_id = %s",
+            (transfer_id,),
+        )
+        conn.commit()
+        raise HTTPException(409, "物品已不可用，转移请求已关闭")
+
+    source_item = dict(source_item)
+    if int(source_item["quantity"]) == int(transfer["quantity"]):
+        result_item_id = source_item["id"]
+        conn.execute(
+            "UPDATE inventory SET character_id = %s WHERE id = %s",
+            (char["character_id"], result_item_id),
+        )
+    else:
+        result_item_id = str(uuid.uuid4())
+        conn.execute(
+            "UPDATE inventory SET quantity = quantity - %s WHERE id = %s",
+            (transfer["quantity"], source_item["id"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO inventory (id, character_id, room_id, name, description, quantity, is_secret, source)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                result_item_id, char["character_id"], transfer["room_id"], source_item["name"],
+                source_item.get("description") or "", transfer["quantity"],
+                bool(source_item.get("is_secret", False)), source_item.get("source") or "",
+            ),
+        )
+    state = conn.execute(
+        "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s RETURNING state_version",
+        (transfer["room_id"],),
+    ).fetchone()
+    conn.execute(
+        """
+        UPDATE inventory_transfer_requests
+        SET status = 'completed', result_item_id = %s, resolved_at = NOW()
+        WHERE transfer_id = %s
+        """,
+        (result_item_id, transfer_id),
+    )
+    from ..events.event_log import EventLog
+    EventLog(conn).log_event(transfer["room_id"], "inventory_transfer_completed", "system", {
+        "operation": "inventory_transfer_completed",
+        "transferId": transfer_id,
+        "fromCharacterId": transfer["from_character_id"],
+        "toCharacterId": char["character_id"],
+        "quantity": transfer["quantity"],
+        "stateVersion": state["state_version"],
+    })
+    transfer["status"] = "completed"
+    transfer["resolved_at"] = "now"
+    return _inventory_transfer_payload(transfer)
+
+
+@router.post("/inventory-transfers/{transfer_id}/accept")
+async def accept_inventory_transfer(request: Request, transfer_id: str):
+    return _resolve_inventory_transfer(request, transfer_id, "completed")
+
+
+@router.post("/inventory-transfers/{transfer_id}/reject")
+async def reject_inventory_transfer(request: Request, transfer_id: str):
+    return _resolve_inventory_transfer(request, transfer_id, "rejected")
 
 
 @router.post("/skill-check")

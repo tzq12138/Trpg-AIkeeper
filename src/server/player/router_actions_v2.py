@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import uuid
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 
@@ -8,9 +9,12 @@ from ..models import (
     ActionDraftAnalyzeRequest,
     ActionDraftConfirmRequest,
     ActionDraftDTO,
+    CompositeActionChoiceRequest,
     ActionDraftUpdateRequest,
     ActionHintsDTO,
     ActionReceiptV2,
+    PlayerActionSubmissionReceipt,
+    PlayerActionSubmissionRequest,
 )
 from ..ai.director import (
     apply_director_plan,
@@ -46,6 +50,7 @@ from .action_service import (
     analyze_action_draft,
     cancel_action,
     cancel_action_draft,
+    choose_composite_action_continuation,
     confirm_action_draft,
     get_current_action_draft,
     persist_action_draft,
@@ -53,6 +58,8 @@ from .action_service import (
 )
 from .router_player_settings import get_effective_draft_analysis_enabled
 from .router_campaign_v2 import claim_controller_device, record_campaign_activity
+from .private_data import PrivateDataDecryptionError, private_data_cipher_from_env
+from .team_messages import TeamMessageError, send_team_message
 
 
 router = APIRouter(prefix="/api/player")
@@ -61,6 +68,184 @@ logger = logging.getLogger(__name__)
 _SOLO_PROGRESS_WORDS = ("继续", "出发", "上车", "登上", "前进", "前往", "启程")
 _SOLO_BEAR_ATTACK_WORDS = ("攻击", "砍", "刺", "斗殴", "搏斗", "出刀", "小刀")
 _DIRECTOR_ANALYSIS_TIMEOUT_SECONDS = 30
+_STATEFUL_INPUT_MODES = {"action", "item_action", "map_move", "combat_action"}
+_PRIVATE_INPUT_MODE = "private_note"
+_PARTY_CHANNEL_INPUT_MODE = "party_chat"
+_OOC_INPUT_MODE = "ooc"
+_SPEECH_INPUT_MODE = "speech"
+_TEAM_CHANNEL_INPUT_MODES = {
+    _PARTY_CHANNEL_INPUT_MODE,
+    _OOC_INPUT_MODE,
+    _SPEECH_INPUT_MODE,
+}
+_RULE_QUESTION_INPUT_MODE = "rule_question"
+_SAFETY_INPUT_MODE = "safety"
+
+
+def _speech_routes_to_dialogue(conn, room_id: str) -> bool:
+    row = conn.execute(
+        "SELECT speech_routing FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    return bool(row and row.get("speech_routing") == "npc_dialogue")
+
+
+def _submission_requires_analysis(conn, input_mode: str, room_id: str) -> bool:
+    return input_mode in _STATEFUL_INPUT_MODES or (
+        input_mode == _SPEECH_INPUT_MODE and _speech_routes_to_dialogue(conn, room_id)
+    )
+
+
+def _uses_team_channel(conn, input_mode: str, room_id: str) -> bool:
+    return input_mode in _TEAM_CHANNEL_INPUT_MODES and not (
+        input_mode == _SPEECH_INPUT_MODE and _speech_routes_to_dialogue(conn, room_id)
+    )
+
+
+def _combat_declaration_is_locked(conn, room_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM room_turns WHERE room_id = %s AND mode = 'combat' "
+        "AND status IN ('resolving', 'blocked') LIMIT 1",
+        (room_id,),
+    ).fetchone()
+    return bool(row)
+
+
+def _default_submission_visibility(input_mode: str) -> str:
+    if input_mode in {_PRIVATE_INPUT_MODE, _SAFETY_INPUT_MODE}:
+        return "private"
+    if input_mode in {"speech", "party_chat", "ooc", "clue_share"}:
+        return "party"
+    return "public"
+
+
+def _submission_receipt(conn, row: dict) -> PlayerActionSubmissionReceipt:
+    return PlayerActionSubmissionReceipt(
+        action_id=row["action_id"],
+        input_mode=row["input_mode"],
+        status=row["status"],
+        requires_analysis=_submission_requires_analysis(
+            conn, row["input_mode"], row["room_id"]
+        ),
+        received_at=str(row["created_at"]),
+    )
+
+
+def _store_submission_note(conn, character: dict, action_id: str, raw_text: str) -> None:
+    note_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"aikeeper:submission-note:{action_id}"))
+    cipher = private_data_cipher_from_env()
+    conn.execute(
+        """
+        INSERT INTO player_notes (
+            note_id, room_id, character_id, title_ciphertext, body_ciphertext
+        ) VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (note_id) DO NOTHING
+        """,
+        (
+            note_id,
+            character["room_id"],
+            character["character_id"],
+            cipher.encrypt("快捷私密笔记"),
+            cipher.encrypt(raw_text),
+        ),
+    )
+
+
+async def _ensure_party_channel_delivery(
+    request: Request,
+    character: dict,
+    *,
+    action_id: str,
+    raw_text: str,
+    channel: str,
+) -> None:
+    delivered = request.app.state.db.execute(
+        """
+        SELECT 1 FROM events
+        WHERE room_id = %s
+          AND event_type = 's2c_team_message'
+          AND payload ->> 'messageId' = %s
+        LIMIT 1
+        """,
+        (character["room_id"], action_id),
+    ).fetchone()
+    if delivered:
+        return
+    try:
+        await send_team_message(
+            request.app.state.db,
+            dispatcher=getattr(request.app.state, "dispatcher", None),
+            character=character,
+            text=raw_text,
+            message_id=action_id,
+            channel=channel,
+        )
+    except TeamMessageError as exc:
+        raise HTTPException(exc.status_code, detail={"code": "team_message_delivery_failed"}) from exc
+
+
+async def _ensure_safety_request_delivery(
+    request: Request,
+    character: dict,
+    *,
+    action_id: str,
+) -> None:
+    delivered = request.app.state.db.execute(
+        """
+        SELECT 1 FROM events
+        WHERE room_id = %s
+          AND event_type = 's2c_safety_request'
+          AND payload ->> 'requestId' = %s
+        LIMIT 1
+        """,
+        (character["room_id"], action_id),
+    ).fetchone()
+    if delivered:
+        return
+    dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(
+        request.app.state.db,
+    )
+    await dispatcher.emit(
+        character["room_id"],
+        "s2c_safety_request",
+        "host",
+        {"requestId": action_id, "characterId": character["character_id"]},
+    )
+    await dispatcher.emit(
+        character["room_id"],
+        "s2c_private_notice",
+        "player",
+        {"kind": "safety_request_recorded", "requestId": action_id},
+        character_id=character["character_id"],
+    )
+
+
+def _begin_submission_analysis(conn, character: dict, body: ActionDraftAnalyzeRequest) -> None:
+    submission_action_id = body.submission_action_id
+    if not submission_action_id:
+        return
+    if body.ephemeral:
+        raise HTTPException(409, detail={"code": "submission_cannot_be_ephemeral"})
+    row = conn.execute(
+        "SELECT * FROM player_action_submissions WHERE action_id = %s AND character_id = %s",
+        (submission_action_id, character["character_id"]),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, detail={"code": "submission_not_found"})
+    row = dict(row)
+    if not _submission_requires_analysis(conn, row["input_mode"], row["room_id"]):
+        raise HTTPException(409, detail={"code": "submission_not_stateful"})
+    try:
+        received_text = private_data_cipher_from_env().decrypt(row["raw_text_ciphertext"])
+    except PrivateDataDecryptionError as exc:
+        raise HTTPException(503, detail={"code": "private_data_unavailable"}) from exc
+    if received_text != body.declared_intent.strip():
+        raise HTTPException(409, detail={"code": "submission_text_mismatch"})
+    conn.execute(
+        "UPDATE player_action_submissions SET status = 'analyzing', updated_at = NOW() WHERE action_id = %s",
+        (submission_action_id,),
+    )
+    conn.commit()
 
 
 def _require_character(request: Request) -> dict:
@@ -483,9 +668,135 @@ def _should_use_implicit_single_target_fallback(conn, character: dict, plan) -> 
     return not target or target == str(scene.get("node_id") or "")
 
 
+@router.post("/action-submissions", response_model=PlayerActionSubmissionReceipt, status_code=201)
+async def receive_action_submission(request: Request, body: PlayerActionSubmissionRequest):
+    character = _require_character(request)
+    if body.input_mode == "clue_share":
+        raise HTTPException(409, detail={"code": "clue_share_requires_selected_clue"})
+    conn = request.app.state.db
+    existing = conn.execute(
+        "SELECT * FROM player_action_submissions WHERE action_id = %s",
+        (body.action_id,),
+    ).fetchone()
+    if existing:
+        row = dict(existing)
+        if row["character_id"] != character["character_id"]:
+            raise HTTPException(409, detail={"code": "action_id_reused"})
+        try:
+            existing_text = private_data_cipher_from_env().decrypt(row["raw_text_ciphertext"])
+        except PrivateDataDecryptionError as exc:
+            raise HTTPException(503, detail={"code": "private_data_unavailable"}) from exc
+        if existing_text != body.raw_text.strip() or row["input_mode"] != body.input_mode:
+            raise HTTPException(409, detail={"code": "action_id_reused"})
+        if _uses_team_channel(conn, row["input_mode"], row["room_id"]):
+            await _ensure_party_channel_delivery(
+                request,
+                character,
+                action_id=body.action_id,
+                raw_text=existing_text,
+                channel=row["input_mode"],
+            )
+        elif row["input_mode"] == _SAFETY_INPUT_MODE:
+            await _ensure_safety_request_delivery(
+                request,
+                character,
+                action_id=body.action_id,
+            )
+        return _submission_receipt(conn, row)
+
+    if (
+        body.input_mode == _SPEECH_INPUT_MODE
+        and _speech_routes_to_dialogue(conn, character["room_id"])
+        and _combat_declaration_is_locked(conn, character["room_id"])
+    ):
+        raise HTTPException(409, detail={"code": "speech_round_locked"})
+
+    visibility = body.requested_visibility or _default_submission_visibility(body.input_mode)
+    if body.input_mode in {_PRIVATE_INPUT_MODE, _SAFETY_INPUT_MODE}:
+        visibility = "private"
+    elif _uses_team_channel(conn, body.input_mode, character["room_id"]):
+        visibility = "party"
+    elif body.input_mode == _SPEECH_INPUT_MODE:
+        visibility = "public"
+    status = "received" if _submission_requires_analysis(
+        conn, body.input_mode, character["room_id"]
+    ) else "recorded"
+    raw_text = body.raw_text.strip()
+    ciphertext = private_data_cipher_from_env().encrypt(raw_text)
+    conn.execute(
+        """INSERT INTO player_action_submissions (
+               action_id, room_id, character_id, input_mode, raw_text_ciphertext,
+               requested_visibility, client_sequence, base_state_version, status
+           ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (
+            body.action_id,
+            character["room_id"],
+            character["character_id"],
+            body.input_mode,
+            ciphertext,
+            visibility,
+            body.client_sequence,
+            body.base_state_version,
+            status,
+        ),
+    )
+    if body.input_mode == _PRIVATE_INPUT_MODE:
+        _store_submission_note(conn, character, body.action_id, raw_text)
+    conn.commit()
+    if _uses_team_channel(conn, body.input_mode, character["room_id"]):
+        await _ensure_party_channel_delivery(
+            request,
+            character,
+            action_id=body.action_id,
+            raw_text=raw_text,
+            channel=body.input_mode,
+        )
+    elif body.input_mode == _SAFETY_INPUT_MODE:
+        await _ensure_safety_request_delivery(
+            request,
+            character,
+            action_id=body.action_id,
+        )
+    row = conn.execute(
+        "SELECT * FROM player_action_submissions WHERE action_id = %s",
+        (body.action_id,),
+    ).fetchone()
+    return _submission_receipt(conn, dict(row))
+
+
+@router.get("/rule-questions")
+async def list_rule_questions(request: Request):
+    character = _require_character(request)
+    rows = request.app.state.db.execute(
+        """
+        SELECT action_id, raw_text_ciphertext, created_at
+        FROM player_action_submissions
+        WHERE room_id = %s AND character_id = %s AND input_mode = %s
+        ORDER BY created_at DESC
+        LIMIT 50
+        """,
+        (character["room_id"], character["character_id"], _RULE_QUESTION_INPUT_MODE),
+    ).fetchall()
+    cipher = private_data_cipher_from_env()
+    questions = []
+    for row in rows:
+        try:
+            text = cipher.decrypt(row["raw_text_ciphertext"])
+        except PrivateDataDecryptionError:
+            logger.warning("Skipping unreadable rule question: %s", row["action_id"])
+            continue
+        questions.append({
+            "actionId": row["action_id"],
+            "text": text,
+            "createdAt": str(row["created_at"]),
+        })
+    return {"questions": questions}
+
+
 @router.post("/action-drafts/analyze", response_model=ActionDraftDTO)
 async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
     character = _require_character(request)
+    _begin_submission_analysis(request.app.state.db, character, body)
     if body.ephemeral and not get_effective_draft_analysis_enabled(
         request.app.state.db, character
     ):
@@ -632,6 +943,12 @@ async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
     if body.ephemeral:
         return draft
     persisted = persist_action_draft(request.app.state.db, character, draft)
+    if body.submission_action_id:
+        request.app.state.db.execute(
+            "UPDATE player_action_submissions SET status = 'awaiting_confirmation', updated_at = NOW() WHERE action_id = %s",
+            (body.submission_action_id,),
+        )
+        request.app.state.db.commit()
     _emit_director_draft_events(request.app.state.db, character, persisted)
     return persisted
 
@@ -681,6 +998,8 @@ async def confirm_draft(
             draft_id,
             idempotency_key,
             body.confirmations,
+            body.selected_skill,
+            body.composite_step_order,
         )
         record_campaign_activity(request.app.state.db, character)
         if receipt.status == "queued":
@@ -689,6 +1008,17 @@ async def confirm_draft(
                 request.app.state.db,
                 receipt.action_id,
             )
+        elif receipt.status == "batched":
+            contract_id = _ready_collaboration_batch_id(
+                request.app.state.db,
+                receipt.action_id,
+            )
+            if contract_id:
+                _schedule_collaboration_batch_resolution(
+                    request.app,
+                    request.app.state.db,
+                    contract_id,
+                )
         return receipt
     except ActionDraftError as exc:
         raise HTTPException(exc.status_code, exc.detail) from exc
@@ -701,6 +1031,28 @@ async def cancel_confirmed_action(request: Request, action_id: str):
         return cancel_action(request.app.state.db, character["character_id"], action_id)
     except ActionDraftError as exc:
         raise HTTPException(exc.status_code, exc.detail) from exc
+
+
+@router.post("/actions/{action_id}/composite-choice", response_model=ActionReceiptV2)
+async def choose_composite_continuation(
+    request: Request,
+    action_id: str,
+    body: CompositeActionChoiceRequest,
+):
+    character = _require_character(request)
+    try:
+        receipt = choose_composite_action_continuation(
+            request.app.state.db,
+            character["character_id"],
+            action_id,
+            body.proceed,
+        )
+    except ActionDraftError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    from .router_player import _resolve_action_background
+
+    asyncio.create_task(_resolve_action_background(request.app, action_id))
+    return receipt
 
 
 @router.post("/action-hints", response_model=ActionHintsDTO)
@@ -740,15 +1092,28 @@ async def resolve_encounter_reaction(
     reaction = resolved["reaction"]
     encounter = get_encounter(request.app.state.db, reaction["encounter_id"])
     participants = get_participants(request.app.state.db, reaction["encounter_id"])
+    from ..host.public_stage import (
+        build_public_combat_unit_projection,
+        build_public_encounter_event_projection,
+    )
     dispatcher = ProjectionDispatcher(request.app.state.db)
     await dispatcher.emit(
         character["room_id"],
         event_type("s2c_encounter_updated"),
         "party",
+        build_public_encounter_event_projection(
+            encounter,
+            build_public_combat_unit_projection(participants),
+        ),
+    )
+    await dispatcher.emit(
+        character["room_id"],
+        event_type("s2c_encounter_updated"),
+        "host",
         {
             "encounterId": reaction["encounter_id"],
             "encounter": _event_safe_record(encounter) if encounter else {},
-            "participants": [_event_safe_record(item) for item in participants],
+            "participants": [_event_safe_record(participant) for participant in participants],
         },
     )
     next_reaction = resolved.get("next_reaction")
@@ -823,6 +1188,57 @@ def _schedule_action_resolution(app, conn, action_id: str) -> None:
             )
         return
     asyncio.create_task(_resolve_action_background(app, action_id))
+
+
+def _ready_collaboration_batch_id(conn, action_id: str) -> str | None:
+    batch = conn.execute(
+        "SELECT batches.contract_id FROM collaboration_contract_batches AS batches "
+        "JOIN collaboration_contract_drafts AS links ON links.contract_id = batches.contract_id "
+        "JOIN actions ON actions.draft_id = links.draft_id "
+        "WHERE actions.action_id = %s AND batches.status = 'queued'",
+        (action_id,),
+    ).fetchone()
+    return str(batch["contract_id"]) if batch else None
+
+
+def _schedule_collaboration_batch_resolution(app, conn, contract_id: str) -> None:
+    if not getattr(app.state, "pipeline", None) and not getattr(app.state, "pg_db", None):
+        return
+    batch = conn.execute(
+        "SELECT batches.contract_id, batches.action_ids, rooms.status AS room_status "
+        "FROM collaboration_contract_batches AS batches "
+        "JOIN rooms ON rooms.room_id = batches.room_id "
+        "WHERE batches.contract_id = %s AND batches.status = 'queued'",
+        (contract_id,),
+    ).fetchone()
+    if not batch:
+        return
+    action_ids = batch.get("action_ids") or []
+    if isinstance(action_ids, str):
+        try:
+            action_ids = json.loads(action_ids)
+        except json.JSONDecodeError:
+            action_ids = []
+    action_ids = [str(action_id) for action_id in action_ids if str(action_id)]
+    if batch.get("room_status") == "active" and action_ids:
+        placeholders = ", ".join("%s" for _ in action_ids)
+        actions = conn.execute(
+            "SELECT actions.action_id, actions.turn_id, turns.mode "
+            "FROM actions LEFT JOIN room_turns AS turns ON turns.turn_id = actions.turn_id "
+            f"WHERE actions.action_id IN ({placeholders})",
+            tuple(action_ids),
+        ).fetchall()
+        turn_ids = {row.get("turn_id") for row in actions if row.get("turn_id")}
+        if (
+            len(actions) == len(action_ids)
+            and len(turn_ids) == 1
+            and all(row.get("mode") == "combat" for row in actions)
+        ):
+            _schedule_action_resolution(app, conn, action_ids[0])
+            return
+    from .router_player import _resolve_collaboration_batch_background
+
+    asyncio.create_task(_resolve_collaboration_batch_background(app, contract_id))
 
 
 def _emit_director_draft_events(conn, character: dict, draft: ActionDraftDTO) -> None:

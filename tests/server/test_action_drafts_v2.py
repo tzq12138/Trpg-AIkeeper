@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+import json
 
 import pytest
 
@@ -14,6 +15,474 @@ def _setup_player(client, test_db):
     room_id = create_room(client)["room_id"]
     joined = client.post(f"/api/player/rooms/{room_id}/join").json()
     return room_id, joined["character_id"], joined["player_token"]
+
+
+def test_action_submission_is_received_before_ai_analysis_and_is_idempotent(client, test_db):
+    room_id, character_id, player_token = _setup_player(client, test_db)
+    payload = {
+        "actionId": "client-action-1",
+        "rawText": "我先检查车厢门锁。",
+        "inputMode": "action",
+        "clientSequence": 7,
+        "baseStateVersion": 0,
+    }
+
+    created = client.post("/api/player/action-submissions", headers={"X-Room-Token": player_token}, json=payload)
+    replayed = client.post("/api/player/action-submissions", headers={"X-Room-Token": player_token}, json=payload)
+
+    assert created.status_code == 201
+    assert replayed.status_code == 201
+    assert created.json() == replayed.json()
+    assert created.json()["actionId"] == "client-action-1"
+    assert created.json()["status"] == "received"
+    assert created.json()["requiresAnalysis"] is True
+    row = test_db.execute(
+        "SELECT room_id, character_id, input_mode, raw_text_ciphertext, client_sequence, status "
+        "FROM player_action_submissions WHERE action_id = %s",
+        ("client-action-1",),
+    ).fetchone()
+    assert {
+        key: value for key, value in dict(row).items() if key != "raw_text_ciphertext"
+    } == {
+        "room_id": room_id,
+        "character_id": character_id,
+        "input_mode": "action",
+        "client_sequence": 7,
+        "status": "received",
+    }
+    assert "我先检查车厢门锁。" not in row["raw_text_ciphertext"]
+    assert test_db.execute("SELECT COUNT(*) AS count FROM action_drafts").fetchone()["count"] == 0
+
+
+def test_non_stateful_submission_is_recorded_without_creating_world_action(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    before = test_db.execute("SELECT state_version FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
+
+    response = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json={
+            "actionId": "client-speech-1",
+            "rawText": "我对队友说：先别碰那扇门。",
+            "inputMode": "speech",
+            "requestedVisibility": "party",
+        },
+    )
+
+    after = test_db.execute("SELECT state_version FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
+    assert response.status_code == 201
+    assert response.json()["requiresAnalysis"] is False
+    assert response.json()["status"] == "recorded"
+    assert after["state_version"] == before["state_version"]
+    assert test_db.execute("SELECT COUNT(*) AS count FROM action_drafts").fetchone()["count"] == 0
+    assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()["count"] == 0
+
+
+def test_private_note_submission_keeps_its_text_encrypted_and_out_of_world_actions(client, test_db):
+    room_id, character_id, player_token = _setup_player(client, test_db)
+    response = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json={
+            "actionId": "private-note-1",
+            "rawText": "不要告诉任何人我看见了地下室的钥匙。",
+            "inputMode": "private_note",
+        },
+    )
+
+    row = test_db.execute(
+        "SELECT requested_visibility, raw_text_ciphertext FROM player_action_submissions WHERE action_id = %s",
+        ("private-note-1",),
+    ).fetchone()
+    assert response.status_code == 201
+    assert response.json()["status"] == "recorded"
+    assert row["requested_visibility"] == "private"
+    assert "不要告诉任何人" not in row["raw_text_ciphertext"]
+    note = test_db.execute(
+        "SELECT character_id, title_ciphertext, body_ciphertext FROM player_notes WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert note["character_id"] == character_id
+    assert "不要告诉任何人" not in note["body_ciphertext"]
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events WHERE room_id = %s", (room_id,)
+    ).fetchone()["count"] == 0
+
+
+def test_party_chat_submission_delivers_a_party_event_without_creating_an_action(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+
+    response = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json={
+            "actionId": "party-chat-1",
+            "rawText": "我们先查护士的办公室。",
+            "inputMode": "party_chat",
+        },
+    )
+
+    assert response.status_code == 201
+    event = test_db.execute(
+        "SELECT event_type, audience, payload FROM events WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert event["event_type"] == "s2c_team_message"
+    assert event["audience"] == "party"
+    assert event["payload"]["messageId"] == "party-chat-1"
+    assert event["payload"]["text"] == "我们先查护士的办公室。"
+    assert event["payload"]["channel"] == "party_chat"
+    assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()["count"] == 0
+
+
+def test_speech_submission_is_visible_to_the_party_without_creating_an_action(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+
+    response = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json={
+            "actionId": "speech-1",
+            "rawText": "教授，你昨晚在哪里？",
+            "inputMode": "speech",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "recorded"
+    event = test_db.execute(
+        "SELECT event_type, audience, payload FROM events WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert event["event_type"] == "s2c_team_message"
+    assert event["audience"] == "party"
+    assert event["payload"]["channel"] == "speech"
+    assert event["payload"]["text"] == "教授，你昨晚在哪里？"
+    assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()["count"] == 0
+
+
+def test_room_can_route_speech_through_dialogue_draft_without_party_leak(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET speech_routing = 'npc_dialogue' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json={
+            "actionId": "speech-dialogue-1",
+            "rawText": "教授，你昨晚在哪里？",
+            "inputMode": "speech",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "received"
+    assert response.json()["requiresAnalysis"] is True
+    submission = test_db.execute(
+        "SELECT requested_visibility, status FROM player_action_submissions WHERE action_id = %s",
+        ("speech-dialogue-1",),
+    ).fetchone()
+    assert dict(submission) == {"requested_visibility": "public", "status": "received"}
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events WHERE room_id = %s", (room_id,)
+    ).fetchone()["count"] == 0
+    assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()["count"] == 0
+
+
+def test_dialogue_speech_is_rejected_before_recording_after_combat_lock(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET status = 'active', speech_routing = 'npc_dialogue' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode) "
+        "VALUES ('locked-dialogue-turn', %s, 1, 'resolving', 'combat')",
+        (room_id,),
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json={
+            "actionId": "speech-after-lock-1",
+            "rawText": "教授，快趴下！",
+            "inputMode": "speech",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "speech_round_locked"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM player_action_submissions WHERE action_id = %s",
+        ("speech-after-lock-1",),
+    ).fetchone()["count"] == 0
+    assert test_db.execute("SELECT COUNT(*) AS count FROM events WHERE room_id = %s", (room_id,)).fetchone()["count"] == 0
+
+
+def test_locked_dialogue_speech_replay_returns_the_pre_lock_receipt(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET status = 'active', speech_routing = 'npc_dialogue' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+    payload = {
+        "actionId": "speech-before-lock-1",
+        "rawText": "教授，快趴下！",
+        "inputMode": "speech",
+    }
+
+    created = client.post("/api/player/action-submissions", headers={"X-Room-Token": player_token}, json=payload)
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode) "
+        "VALUES ('replay-dialogue-turn', %s, 1, 'resolving', 'combat')",
+        (room_id,),
+    )
+    test_db.commit()
+    replayed = client.post("/api/player/action-submissions", headers={"X-Room-Token": player_token}, json=payload)
+
+    assert created.status_code == 201
+    assert replayed.status_code == 201
+    assert replayed.json() == created.json()
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM player_action_submissions WHERE action_id = %s",
+        ("speech-before-lock-1",),
+    ).fetchone()["count"] == 1
+
+
+def test_party_chat_remains_available_after_combat_lock(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode) "
+        "VALUES ('party-chat-lock-turn', %s, 1, 'resolving', 'combat')",
+        (room_id,),
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json={
+            "actionId": "party-chat-after-lock-1",
+            "rawText": "我们先守住铁门。",
+            "inputMode": "party_chat",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "recorded"
+    event = test_db.execute(
+        "SELECT audience, payload FROM events WHERE room_id = %s AND event_type = 's2c_team_message'",
+        (room_id,),
+    ).fetchone()
+    assert event["audience"] == "party"
+    assert event["payload"]["channel"] == "party_chat"
+
+
+def test_ooc_submission_stays_out_of_actions_and_uses_its_own_team_channel(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+
+    response = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json={
+            "actionId": "ooc-1",
+            "rawText": "我去拿杯水，三分钟回来。",
+            "inputMode": "ooc",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "recorded"
+    event = test_db.execute(
+        "SELECT event_type, audience, payload FROM events WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert event["event_type"] == "s2c_team_message"
+    assert event["audience"] == "party"
+    assert event["payload"]["channel"] == "ooc"
+    assert event["payload"]["text"] == "我去拿杯水，三分钟回来。"
+    assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()["count"] == 0
+    assert test_db.execute("SELECT COUNT(*) AS count FROM action_drafts").fetchone()["count"] == 0
+
+
+def test_generic_clue_share_submission_requires_a_selected_clue_transaction(client, test_db):
+    _, _, player_token = _setup_player(client, test_db)
+
+    response = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json={
+            "actionId": "clue-share-1",
+            "rawText": "我把信件内容告诉大家。",
+            "inputMode": "clue_share",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "clue_share_requires_selected_clue"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM player_action_submissions"
+    ).fetchone()["count"] == 0
+
+
+def test_safety_submission_notifies_host_without_putting_sensitive_text_in_events(client, test_db):
+    room_id, character_id, player_token = _setup_player(client, test_db)
+    owner = test_db.execute(
+        "SELECT owner_token FROM rooms WHERE room_id = %s", (room_id,)
+    ).fetchone()
+    message = "请淡出描述中的针头和身体伤害。"
+    payload = {
+        "actionId": "safety-1",
+        "rawText": message,
+        "inputMode": "safety",
+    }
+
+    created = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json=payload,
+    )
+    replayed = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json=payload,
+    )
+    marker = test_db.execute(
+        "SELECT event_type, audience, payload FROM events WHERE room_id = %s "
+        "AND event_type = 's2c_safety_request'",
+        (room_id,),
+    ).fetchone()
+    host_view = client.get(
+        f"/api/host/{room_id}/safety-requests",
+        headers={"X-Owner-Token": owner["owner_token"]},
+    )
+
+    assert created.status_code == 201
+    assert replayed.status_code == 201
+    assert marker["audience"] == "host"
+    assert marker["payload"] == {"requestId": "safety-1", "characterId": character_id}
+    assert message not in json.dumps(marker["payload"], ensure_ascii=False)
+    assert host_view.status_code == 200
+    assert host_view.json()["items"] == [{
+        "actionId": "safety-1",
+        "characterId": character_id,
+        "text": message,
+        "createdAt": host_view.json()["items"][0]["createdAt"],
+    }]
+    assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()["count"] == 0
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events WHERE room_id = %s "
+        "AND event_type = 's2c_safety_request'",
+        (room_id,),
+    ).fetchone()["count"] == 1
+
+
+def test_rule_question_is_private_to_its_author_and_never_enters_actions(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    other_player = client.post(f"/api/player/rooms/{room_id}/join").json()["player_token"]
+    headers = {"X-Room-Token": player_token}
+
+    created = client.post(
+        "/api/player/action-submissions",
+        headers=headers,
+        json={
+            "actionId": "rule-question-1",
+            "rawText": "心理学能判断他说谎吗？",
+            "inputMode": "rule_question",
+        },
+    )
+    mine = client.get("/api/player/rule-questions", headers=headers)
+    others = client.get("/api/player/rule-questions", headers={"X-Room-Token": other_player})
+
+    assert created.status_code == 201
+    assert mine.status_code == 200
+    assert mine.json()["questions"] == [{
+        "actionId": "rule-question-1",
+        "text": "心理学能判断他说谎吗？",
+        "createdAt": mine.json()["questions"][0]["createdAt"],
+    }]
+    assert others.status_code == 200
+    assert others.json()["questions"] == []
+    assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()["count"] == 0
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events WHERE room_id = %s", (room_id,)
+    ).fetchone()["count"] == 0
+
+
+def test_action_submission_rejects_reusing_client_action_id_with_changed_text(client, test_db):
+    _, _, player_token = _setup_player(client, test_db)
+    headers = {"X-Room-Token": player_token}
+    client.post(
+        "/api/player/action-submissions",
+        headers=headers,
+        json={"actionId": "client-action-2", "rawText": "我观察大厅。", "inputMode": "action"},
+    )
+
+    conflict = client.post(
+        "/api/player/action-submissions",
+        headers=headers,
+        json={"actionId": "client-action-2", "rawText": "我放火烧掉大厅。", "inputMode": "action"},
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "action_id_reused"
+
+
+def test_action_analysis_must_match_the_received_submission_text(client, test_db):
+    _, _, player_token = _setup_player(client, test_db)
+    headers = {"X-Room-Token": player_token}
+    client.post(
+        "/api/player/action-submissions",
+        headers=headers,
+        json={"actionId": "client-action-3", "rawText": "我观察大厅。", "inputMode": "action"},
+    )
+
+    mismatch = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我放火烧掉大厅。", "submission_action_id": "client-action-3"},
+    )
+    matched = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我观察大厅。", "submission_action_id": "client-action-3"},
+    )
+
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"]["code"] == "submission_text_mismatch"
+    assert matched.status_code == 200
+    row = test_db.execute(
+        "SELECT status FROM player_action_submissions WHERE action_id = %s",
+        ("client-action-3",),
+    ).fetchone()
+    assert row["status"] == "awaiting_confirmation"
+
+
+def test_non_stateful_submission_cannot_enter_action_analysis(client, test_db):
+    _, _, player_token = _setup_player(client, test_db)
+    headers = {"X-Room-Token": player_token}
+    client.post(
+        "/api/player/action-submissions",
+        headers=headers,
+        json={"actionId": "client-speech-2", "rawText": "我提醒大家安静。", "inputMode": "speech"},
+    )
+
+    response = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我提醒大家安静。", "submission_action_id": "client-speech-2"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "submission_not_stateful"
 
 
 @pytest.mark.parametrize(
@@ -76,6 +545,50 @@ def test_analyze_stateful_action_requires_confirmation_and_persists(client, test
         "revision_number": 1,
         "declared_intent": "我用手枪射击门后的怪物",
     }
+
+
+def test_action_draft_exposes_a_complete_intent_contract(client, test_db):
+    _, _, player_token = _setup_player(client, test_db)
+
+    response = client.post(
+        "/api/player/action-drafts/analyze",
+        headers={"X-Room-Token": player_token},
+        json={"declared_intent": "如果门后的怪物靠近，我就用手枪射击它。"},
+    )
+
+    assert response.status_code == 200
+    contract = response.json()["intent_contract"]
+    assert set(contract) == {
+        "target",
+        "method",
+        "object",
+        "constraints",
+        "resources",
+        "conditions",
+        "visibility",
+        "ambiguities",
+    }
+    assert contract["method"] == "射击"
+    assert contract["visibility"] == "public"
+    assert contract["conditions"] == ["如果门后的怪物靠近"]
+
+
+def test_high_risk_ambiguous_target_requires_clarification_before_confirmation(client, test_db):
+    _, _, player_token = _setup_player(client, test_db)
+
+    response = client.post(
+        "/api/player/action-drafts/analyze",
+        headers={"X-Room-Token": player_token},
+        json={"declared_intent": "我开枪打它。"},
+    )
+
+    assert response.status_code == 200
+    draft = response.json()
+    assert draft["risk"] == "high"
+    assert draft["status"] == "analyzing"
+    assert draft["requires_confirmation"] is False
+    assert draft["adjudication_stage"] == "player_clarification_required"
+    assert draft["intent_contract"]["ambiguities"] == ["目标指代不明确"]
 
 
 def test_player_can_restore_current_awaiting_confirmation_draft(client, test_db):
@@ -594,6 +1107,165 @@ def test_configured_ai_analysis_is_structured_and_cannot_change_player_text(
     assert "mutations" not in draft
 
 
+def test_player_must_choose_an_ai_suggested_alternative_skill_before_confirming(
+    client,
+    test_db,
+):
+    _, _, player_token = _setup_player(client, test_db)
+
+    class Gateway:
+        async def analyze_action_draft(self, context, room_id=None):
+            return {
+                "understanding_summary": "你想从档案中找出与案件有关的记录。",
+                "risk": "medium",
+                "intent_type": "skill_check",
+                "suggested_skill": "侦查",
+                "alternative_skills": ["图书馆使用"],
+                "difficulty": "regular",
+                "resource_impacts": [],
+                "visibility": "public",
+                "confirmation_requirements": ["stateful_action"],
+                "confidence": 0.93,
+                "citations": [],
+            }
+
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = Gateway()
+    try:
+        draft = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "我去翻查档案"},
+        ).json()
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert draft["alternative_skills"] == ["图书馆使用"]
+    missing = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={"X-Room-Token": player_token, "Idempotency-Key": "alternative-missing"},
+        json={"confirmations": draft["confirmation_requirements"]},
+    )
+    invalid = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={"X-Room-Token": player_token, "Idempotency-Key": "alternative-invalid"},
+        json={
+            "confirmations": draft["confirmation_requirements"],
+            "selected_skill": "话术",
+        },
+    )
+    confirmed = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={"X-Room-Token": player_token, "Idempotency-Key": "alternative-confirmed"},
+        json={
+            "confirmations": draft["confirmation_requirements"],
+            "selected_skill": "图书馆使用",
+        },
+    )
+
+    assert missing.status_code == 409
+    assert missing.json()["detail"]["code"] == "skill_selection_required"
+    assert invalid.status_code == 409
+    assert invalid.json()["detail"]["code"] == "skill_selection_invalid"
+    assert confirmed.status_code == 200
+    action = test_db.execute(
+        "SELECT params FROM actions WHERE action_id = %s",
+        (confirmed.json()["action_id"],),
+    ).fetchone()
+    assert action["params"]["skillName"] == "图书馆使用"
+
+
+def test_ai_composite_action_keeps_two_steps_and_persists_player_selected_order(
+    client,
+    test_db,
+):
+    _, _, player_token = _setup_player(client, test_db)
+
+    class Gateway:
+        async def analyze_action_draft(self, context, room_id=None):
+            return {
+                "understanding_summary": "你会先开枪压制人影，再掩护安娜撤向铁门。",
+                "risk": "high",
+                "intent_type": "combat_action",
+                "suggested_skill": "射击",
+                "difficulty": "regular",
+                "resource_impacts": [{"kind": "ammo", "direction": "decrease", "amount": 1}],
+                "visibility": "public",
+                "confirmation_requirements": ["attack", "state_change"],
+                "confidence": 0.93,
+                "citations": [],
+                "action_steps": [
+                    {
+                        "step_id": "step_1",
+                        "summary": "朝走廊中的人影开枪",
+                        "declared_intent": "朝走廊中的人影开枪",
+                        "intent_type": "combat_action",
+                        "params": {"actionKind": "attack"},
+                    },
+                    {
+                        "step_id": "step_2",
+                        "summary": "掩护安娜退向北侧铁门",
+                        "declared_intent": "掩护安娜退向北侧铁门",
+                        "intent_type": "move",
+                        "params": {"targetNodeId": "north-door"},
+                        "on_previous_failure": "ask",
+                    },
+                    {
+                        "step_id": "ignored",
+                        "summary": "不应成为第三次行动",
+                        "declared_intent": "再检查门锁",
+                        "intent_type": "skill_check",
+                    },
+                ],
+            }
+
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = Gateway()
+    try:
+        draft_response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "我先朝人影开枪，再掩护安娜撤向北侧铁门"},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert draft_response.status_code == 200
+    draft = draft_response.json()
+    assert [step["step_id"] for step in draft["composite_steps"]] == ["step_1", "step_2"]
+    assert draft["composite_steps"][1]["on_previous_failure"] == "cancel"
+    assert draft["requires_confirmation"] is True
+
+    invalid = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={"X-Room-Token": player_token, "Idempotency-Key": "composite-invalid-order"},
+        json={
+            "confirmations": draft["confirmation_requirements"],
+            "composite_step_order": ["step_2"],
+        },
+    )
+    assert invalid.status_code == 409
+    assert invalid.json()["detail"]["code"] == "composite_order_invalid"
+
+    confirmed = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={"X-Room-Token": player_token, "Idempotency-Key": "composite-reversed-order"},
+        json={
+            "confirmations": draft["confirmation_requirements"],
+            "composite_step_order": ["step_2", "step_1"],
+        },
+    )
+    assert confirmed.status_code == 200
+    action = test_db.execute(
+        "SELECT params FROM actions WHERE action_id = %s",
+        (confirmed.json()["action_id"],),
+    ).fetchone()
+    assert [step["step_id"] for step in action["params"]["composite_steps"]] == [
+        "step_2",
+        "step_1",
+    ]
+
+
 def test_ai_analysis_failure_keeps_local_host_exception_fallback(client, test_db):
     _, _, player_token = _setup_player(client, test_db)
 
@@ -753,6 +1425,140 @@ def test_confirmed_local_action_is_scheduled_for_background_resolution(
     assert scheduled == [response.json()["action_id"]]
 
 
+def test_active_scene_confirmation_does_not_wait_for_every_player(
+    client,
+    test_db,
+    monkeypatch,
+):
+    room_id, _, player_token = _setup_player(client, test_db)
+    headers = {"X-Room-Token": player_token}
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode) "
+        "VALUES ('active-scene-turn', %s, 1, 'collecting', 'scene')",
+        (room_id,),
+    )
+    test_db.commit()
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我检查桌上的旧报纸"},
+    ).json()
+    scheduled = []
+    monkeypatch.setattr(
+        "src.server.player.router_actions_v2._schedule_action_resolution",
+        lambda app, conn, action_id: scheduled.append(action_id),
+        raising=False,
+    )
+
+    response = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "active-scene-direct"},
+        json={"confirmations": []},
+    )
+
+    assert response.status_code == 200
+    action_id = response.json()["action_id"]
+    action = test_db.execute(
+        "SELECT turn_id FROM actions WHERE action_id = %s", (action_id,)
+    ).fetchone()
+    assert action["turn_id"] is None
+    assert scheduled == [action_id]
+
+
+def test_stale_combat_turn_does_not_block_a_new_scene_action(
+    client,
+    test_db,
+    monkeypatch,
+):
+    room_id, _, player_token = _setup_player(client, test_db)
+    headers = {"X-Room-Token": player_token}
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.execute(
+        "INSERT INTO encounters (encounter_id, room_id, type, status, current_round) "
+        "VALUES ('finished-combat-encounter', %s, 'combat', 'resolved', 1)",
+        (room_id,),
+    )
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode, encounter_id) "
+        "VALUES ('stale-combat-turn', %s, 1, 'resolving', 'combat', 'finished-combat-encounter')",
+        (room_id,),
+    )
+    test_db.commit()
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我检查桌上的旧报纸"},
+    ).json()
+    scheduled = []
+    monkeypatch.setattr(
+        "src.server.player.router_actions_v2._schedule_action_resolution",
+        lambda app, conn, action_id: scheduled.append(action_id),
+        raising=False,
+    )
+
+    response = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "stale-combat-scene-action"},
+        json={"confirmations": []},
+    )
+
+    assert response.status_code == 200
+    action_id = response.json()["action_id"]
+    action = test_db.execute(
+        "SELECT turn_id FROM actions WHERE action_id = %s", (action_id,)
+    ).fetchone()
+    assert action["turn_id"] is None
+    assert scheduled == [action_id]
+
+
+def test_active_combat_confirmation_creates_a_combat_turn_after_scene_turn(
+    client,
+    test_db,
+    monkeypatch,
+):
+    room_id, _, player_token = _setup_player(client, test_db)
+    headers = {"X-Room-Token": player_token}
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode) "
+        "VALUES ('previous-scene-turn', %s, 1, 'collecting', 'scene')",
+        (room_id,),
+    )
+    test_db.execute(
+        "INSERT INTO encounters (encounter_id, room_id, type, status, current_round) "
+        "VALUES ('active-combat-encounter', %s, 'combat', 'active', 1)",
+        (room_id,),
+    )
+    test_db.commit()
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我检查桌上的旧报纸"},
+    ).json()
+    monkeypatch.setattr(
+        "src.server.player.router_actions_v2._schedule_action_resolution",
+        lambda *_: None,
+        raising=False,
+    )
+
+    response = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "active-combat-turn"},
+        json={"confirmations": []},
+    )
+
+    assert response.status_code == 200
+    action = test_db.execute(
+        "SELECT turn_id FROM actions WHERE action_id = %s", (response.json()["action_id"],)
+    ).fetchone()
+    assert action["turn_id"] != "previous-scene-turn"
+    turn = test_db.execute(
+        "SELECT mode, encounter_id FROM room_turns WHERE turn_id = %s", (action["turn_id"],)
+    ).fetchone()
+    assert turn == {"mode": "combat", "encounter_id": "active-combat-encounter"}
+
+
 def test_tactical_draft_preserves_server_validated_intent_params(client, test_db):
     _, _, player_token = _setup_player(client, test_db)
     headers = {"X-Room-Token": player_token}
@@ -871,6 +1677,83 @@ def test_cancel_action_is_atomic_before_resolving(client, test_db):
         headers=headers,
     )
     assert second.status_code == 409
+
+
+def test_cancel_action_is_rejected_when_its_combat_round_is_locked(client, test_db):
+    room_id, character_id, player_token = _setup_player(client, test_db)
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode) "
+        "VALUES ('combat-lock-cancel-turn', %s, 1, 'collecting', 'combat')",
+        (room_id,),
+    )
+    test_db.commit()
+    headers = {"X-Room-Token": player_token}
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我看看桌上的旧报纸"},
+    ).json()
+    receipt = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "combat-lock-cancel"},
+        json={"confirmations": []},
+    ).json()
+    assert receipt.get('action_id'), receipt
+    test_db.execute(
+        "UPDATE room_turns SET mode = 'combat', status = 'resolving' WHERE turn_id = "
+        "(SELECT turn_id FROM actions WHERE action_id = %s)",
+        (receipt['action_id'],),
+    )
+    test_db.commit()
+
+    locked_receipt = client.get(
+        f"/api/player/actions/{receipt['action_id']}",
+        headers=headers,
+    )
+    assert locked_receipt.status_code == 200
+    assert locked_receipt.json()['can_cancel'] is False
+
+    response = client.post(
+        f"/api/player/actions/{receipt['action_id']}/cancel",
+        headers=headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()['detail']['code'] == 'action_round_locked'
+    action = test_db.execute(
+        "SELECT status FROM actions WHERE action_id = %s",
+        (receipt['action_id'],),
+    ).fetchone()
+    assert action['status'] == 'queued'
+
+
+def test_confirm_draft_is_rejected_when_a_combat_round_is_already_locked(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.commit()
+    headers = {"X-Room-Token": player_token}
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我看看桌上的旧报纸"},
+    ).json()
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode) "
+        "VALUES ('combat-lock-confirm-turn', %s, 1, 'resolving', 'combat')",
+        (room_id,),
+    )
+    test_db.commit()
+
+    response = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "combat-lock-confirm"},
+        json={"confirmations": draft.get("confirmation_requirements", [])},
+    )
+
+    assert response.status_code == 409
+    assert response.json()['detail']['code'] == 'action_round_locked'
+    assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()['count'] == 0
 
 
 def test_player_can_cancel_retryable_semantic_progression_recovery(client, test_db):

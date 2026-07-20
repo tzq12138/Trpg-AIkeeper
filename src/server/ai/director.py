@@ -4,8 +4,13 @@ import json
 import re
 from typing import Any
 
+from ..events.event_log import EventLog
 from ..models import ActionDraftDTO, DirectorPlanDTO, RedactedCitation, redact_citation
-from ..player.action_service import redact_backstage_references
+from ..player.action_service import (
+    _sanitize_composite_steps,
+    _sanitize_intent_contract,
+    redact_backstage_references,
+)
 
 
 _CONDITIONAL_SOLO_BRANCH_RE = re.compile(
@@ -61,12 +66,16 @@ def build_director_context(conn, character: dict, draft: ActionDraftDTO) -> dict
     actor = _actor_context(character)
     current_scene = _current_scene(conn, character["room_id"])
     runtime_package = _compact_runtime_package(
-        _latest_runtime_package(conn, room_dict.get("scenario_version_id")),
+        _latest_runtime_package(
+            conn,
+            room_dict.get("scenario_version_id"),
+            room_dict.get("runtime_package_version_id"),
+        ),
         current_scene,
     )
     context_version = int(room_dict.get("state_version") or draft.base_state_version or 0)
     return {
-        "room": _json_safe(room_dict),
+        "room": _director_room_context(room_dict),
         "context_version": context_version,
         "actor": actor,
         "actor_display_name": actor["display_name"],
@@ -81,7 +90,11 @@ def build_director_context(conn, character: dict, draft: ActionDraftDTO) -> dict
         "semantic_map": (runtime_package.get("semantic_map") or {}),
         "npc_state": (runtime_package.get("npc_states") or []),
         "rule_version": _rule_version(conn, character["room_id"]),
-        "recent_events": _recent_events(conn, character["room_id"]),
+        "recent_events": _recent_events(
+            conn,
+            character["room_id"],
+            character["character_id"],
+        ),
         "inventory": _inventory(conn, character["character_id"]),
     }
 
@@ -118,6 +131,14 @@ def apply_director_plan(
     ]
     candidate_interpretations = _candidate_interpretations(plan)
     semantic_progression = _validate_semantic_progression(conn, character, plan, context)
+    composite_steps = _sanitize_composite_steps(
+        [step.model_dump(mode="json") for step in plan.action_steps],
+        draft,
+    )
+    intent_contract = _sanitize_intent_contract(
+        plan.intent_contract.model_dump(mode="json"),
+        draft.intent_contract,
+    )
     update: dict[str, Any] = {
         "context_version": plan.context_version,
         "intent_type": plan.intent_type or draft.intent_type,
@@ -133,6 +154,8 @@ def apply_director_plan(
         "visibility": plan.visibility,
         "analysis_source": plan.analysis_source,
         "params": params,
+        "composite_steps": composite_steps,
+        "intent_contract": intent_contract,
     }
 
     if semantic_progression.get("validated"):
@@ -179,6 +202,19 @@ def apply_director_plan(
             "adjudication_stage": "director_plan_validated",
             "resolution_route": "ai",
         })
+    if composite_steps and update.get("resolution_route") == "ai":
+        update.update({
+            "requires_confirmation": True,
+            "confirmation_requirements": ["stateful_action"],
+        })
+    if draft.risk == "high" and intent_contract.ambiguities:
+        update.update({
+            "status": "analyzing",
+            "adjudication_stage": "player_clarification_required",
+            "resolution_route": "host_exception",
+            "confirmation_requirements": [],
+            "requires_confirmation": False,
+        })
     return draft.model_copy(update=update)
 
 
@@ -199,19 +235,46 @@ def _actor_context(character: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _latest_runtime_package(conn, scenario_version_id: str | None) -> dict[str, Any]:
+def _director_room_context(room: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "room_id": str(room.get("room_id") or ""),
+        "scenario_id": str(room.get("scenario_id") or ""),
+        "scenario_version_id": str(room.get("scenario_version_id") or ""),
+        "runtime_package_version_id": str(room.get("runtime_package_version_id") or ""),
+        "status": str(room.get("status") or ""),
+        "state_version": int(room.get("state_version") or 0),
+    }
+
+
+def _latest_runtime_package(
+    conn,
+    scenario_version_id: str | None,
+    runtime_package_version_id: str | None = None,
+) -> dict[str, Any]:
     if not scenario_version_id:
         return {}
-    row = conn.execute(
-        """
-        SELECT runtime_package
-        FROM runtime_package_versions
-        WHERE scenario_version_id = %s AND gate_status = 'ready'
-        ORDER BY package_version_number DESC
-        LIMIT 1
-        """,
-        (scenario_version_id,),
-    ).fetchone()
+    if runtime_package_version_id:
+        row = conn.execute(
+            """
+            SELECT runtime_package
+            FROM runtime_package_versions
+            WHERE runtime_package_version_id = %s
+              AND scenario_version_id = %s
+              AND gate_status = 'ready'
+            """,
+            (runtime_package_version_id, scenario_version_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT runtime_package
+            FROM runtime_package_versions
+            WHERE scenario_version_id = %s AND gate_status = 'ready'
+            ORDER BY package_version_number DESC
+            LIMIT 1
+            """,
+            (scenario_version_id,),
+        ).fetchone()
     return _json_object(row.get("runtime_package") if row else None)
 
 
@@ -344,18 +407,14 @@ def _rule_version(conn, room_id: str) -> str:
     return str(row["rule_set_version_id"]) if row else "unversioned"
 
 
-def _recent_events(conn, room_id: str) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        """
-        SELECT event_type, audience, payload, sequence
-        FROM events
-        WHERE room_id = %s
-        ORDER BY sequence DESC
-        LIMIT 10
-        """,
-        (room_id,),
-    ).fetchall()
-    return [_json_safe(dict(row)) for row in rows]
+def _recent_events(conn, room_id: str, character_id: str) -> list[dict[str, Any]]:
+    events = EventLog(conn).get_events_for_player(
+        room_id,
+        character_id,
+        limit=100,
+        latest=True,
+    )
+    return [event.model_dump(mode="json") for event in events[-10:]]
 
 
 def _inventory(conn, character_id: str) -> list[dict[str, Any]]:

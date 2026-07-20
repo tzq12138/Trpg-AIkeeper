@@ -26,7 +26,8 @@ async def list_clues(request: Request):
     conn = request.app.state.db
 
     private_rows = conn.execute(
-        "SELECT c.*, STRING_AGG(cs.shared_by, ',') as shared_by_list FROM clues c "
+        "SELECT c.*, STRING_AGG(cs.shared_by, ',') as shared_by_list, "
+        "MAX(cs.share_id) AS shared_copy_id FROM clues c "
         "LEFT JOIN clue_shares cs ON c.clue_id = cs.clue_id "
         "WHERE c.room_id = %s AND c.character_id = %s "
         "GROUP BY c.clue_id",
@@ -43,10 +44,12 @@ async def list_clues(request: Request):
     clues = []
     for row in private_rows:
         clue = {
+            "id": row["clue_id"],
             "clue_id": row["clue_id"],
             "text": row["text"],
             "source": row["source"],
             "is_private": bool(row["is_private"]),
+            "is_shared": bool(row.get("shared_copy_id")),
             "discovered_at": row["discovered_at"],
             "is_owner": True,
         }
@@ -54,10 +57,12 @@ async def list_clues(request: Request):
 
     for row in shared_rows:
         clue = {
+            "id": row["clue_id"],
             "clue_id": row["clue_id"],
             "text": row["public_version"],
             "source": row["source"],
             "is_private": False,
+            "is_shared": True,
             "discovered_at": row["discovered_at"],
             "shared_by": row["shared_by"],
             "shared_at": row["shared_at"],
@@ -167,10 +172,6 @@ async def share_clue(request: Request, clue_id: str):
         "INSERT INTO clue_shares (share_id, clue_id, shared_by, shared_at, public_version, room_id) "
         "VALUES (%s, %s, %s, %s, %s, %s)",
         (share.share_id, share.clue_id, share.shared_by, share.shared_at, share.public_version, char["room_id"]),
-    )
-    # Note: is_private=FALSE means "party-visible share exists", NOT "original text is public"
-    conn.execute(
-        "UPDATE clues SET is_private = FALSE WHERE clue_id = %s", (clue_id,)
     )
     conn.commit()
 

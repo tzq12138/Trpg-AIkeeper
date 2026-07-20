@@ -65,6 +65,10 @@ ALL_EVENTS: dict[str, EventDef] = {
         "s2c_action_completed", EventDomain.ACTION, "player",
         "行动已结算，含结果 payload",
     ),
+    "s2c_action_deferred": EventDef(
+        "s2c_action_deferred", EventDomain.ACTION, "player",
+        "行动已进入 Host 异常队列，等待人工复核",
+    ),
     "s2c_action_review_requested": EventDef(
         "s2c_action_review_requested", EventDomain.ACTION, "host",
         "玩家提交行动申诉，进入 Host 异常队列",
@@ -80,6 +84,10 @@ ALL_EVENTS: dict[str, EventDef] = {
     "s2c_action_choice_requested": EventDef(
         "s2c_action_choice_requested", EventDomain.ACTION, "player",
         "Host 异常裁决要求玩家补充选择",
+    ),
+    "s2c_safety_request": EventDef(
+        "s2c_safety_request", EventDomain.ACTION, "host",
+        "玩家安全边界请求（事件不含敏感正文）",
     ),
     "s2c_tactical_prompt": EventDef(
         "s2c_tactical_prompt", EventDomain.ACTION, "player",
@@ -157,6 +165,10 @@ ALL_EVENTS: dict[str, EventDef] = {
     "s2c_turn_resolved": EventDef(
         "s2c_turn_resolved", EventDomain.ACTION, "party",
         "回合结算完成——广播给全队",
+    ),
+    "s2c_combat_round_locked": EventDef(
+        "s2c_combat_round_locked", EventDomain.ACTION, "party",
+        "战斗轮声明已锁定，进入统一结算",
     ),
 
     # ── Clue ──

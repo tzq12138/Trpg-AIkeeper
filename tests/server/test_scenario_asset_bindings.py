@@ -278,19 +278,32 @@ def test_player_can_fetch_only_confirmed_asset_for_current_solo_entry(
     image_bytes = b"\x89PNG\r\n\x1a\ncurrent-scene"
     (asset_dir / "opening.png").write_bytes(image_bytes)
     (asset_dir / "draft.png").write_bytes(image_bytes)
-    for asset_id, filename in (("opening", "opening.png"), ("draft", "draft.png")):
+    (asset_dir / "host-only.png").write_bytes(image_bytes)
+    for asset_id, filename, visibility in (
+        ("opening", "opening.png", "party"),
+        ("draft", "draft.png", "party"),
+        ("host-only", "host-only.png", "host_only"),
+    ):
         test_db.execute(
             "INSERT INTO scenario_assets "
             "(asset_id, scenario_id, filename, original_name, mime_type, file_size, relative_path, visibility) "
-            "VALUES (%s, 'sc-test', %s, %s, 'image/png', %s, %s, 'host_only')",
-            (asset_id, filename, filename, len(image_bytes), f"data/scenario_assets/sc-test/{filename}"),
+            "VALUES (%s, 'sc-test', %s, %s, 'image/png', %s, %s, %s)",
+            (
+                asset_id,
+                filename,
+                filename,
+                len(image_bytes),
+                f"data/scenario_assets/sc-test/{filename}",
+                visibility,
+            ),
         )
     test_db.execute(
         "INSERT INTO scenario_asset_bindings "
         "(binding_id, scenario_version_id, asset_id, target_type, target_key, confidence, status) "
         "VALUES ('opening-confirmed', %s, 'opening', 'branch_node', '1', 0.9, 'confirmed'), "
-        "('opening-draft', %s, 'draft', 'branch_node', '1', 0.9, 'draft')",
-        (version, version),
+        "('opening-draft', %s, 'draft', 'branch_node', '1', 0.9, 'draft'), "
+        "('opening-host-only', %s, 'host-only', 'branch_node', '1', 0.9, 'confirmed')",
+        (version, version, version),
     )
     test_db.commit()
     app.state.scenario_asset_root = tmp_path
@@ -298,7 +311,9 @@ def test_player_can_fetch_only_confirmed_asset_for_current_solo_entry(
 
     confirmed = client.get("/api/player/assets/opening", headers=headers)
     draft = client.get("/api/player/assets/draft", headers=headers)
+    host_only = client.get("/api/player/assets/host-only", headers=headers)
 
     assert confirmed.status_code == 200
     assert confirmed.content == image_bytes
     assert draft.status_code == 404
+    assert host_only.status_code == 404

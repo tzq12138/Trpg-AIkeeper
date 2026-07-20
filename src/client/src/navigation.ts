@@ -5,6 +5,7 @@ export type AppPage =
   | 'rag-test'
   | 'host-create'
   | 'host-lobby'
+  | 'host-console'
   | 'host-stage'
   | 'player-join'
   | 'player-lobby'
@@ -43,6 +44,7 @@ export function getRouteForPath(path: string): AppRoute {
   if (path === '/admin') return { page: 'admin', param: '' };
   if (path === '/rag-test') return { page: 'rag-test', param: '' };
   if (path === '/host/create') return { page: 'host-create', param: '' };
+  if (path.match(/^\/host\/[^/]+\/console$/)) return { page: 'host-console', param: path.split('/')[2] };
   if (path.match(/^\/host\/[^/]+\/stage$/)) return { page: 'host-stage', param: path.split('/')[2] };
   if (path.startsWith('/host/')) return { page: 'host-lobby', param: path.split('/')[2] };
   if (path === '/player/join') return { page: 'player-join', param: '' };

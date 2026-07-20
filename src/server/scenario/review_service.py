@@ -8,7 +8,7 @@ from typing import Any
 
 from .content_projection import ContentProjectionService
 from .module_compiler import ModuleCompiler
-from .quality import QualityReportGenerator
+from .quality import QualityReportGenerator, _is_complete_spoiler_boundary
 
 
 class ScenarioReviewError(Exception):
@@ -135,6 +135,11 @@ class ScenarioReviewService:
         ).fetchone()
         scenario_version_id = str(uuid.uuid4())
         version_number = int(next_row["version_number"])
+        draft_graph = _json_object(parent.get("knowledge_graph"))
+        draft_quality = QualityReportGenerator().evaluate(
+            draft_graph,
+            require_complete_spoiler_boundaries=True,
+        ).model_dump(mode="json")
         with self.conn.transaction() as tx:
             tx.execute(
                 """
@@ -147,8 +152,8 @@ class ScenarioReviewService:
                     scenario_version_id,
                     scenario_id,
                     version_number,
-                    json.dumps(_json_object(parent.get("knowledge_graph")), ensure_ascii=False),
-                    json.dumps(_json_object(parent.get("quality_report")), ensure_ascii=False),
+                    json.dumps(draft_graph, ensure_ascii=False),
+                    json.dumps(draft_quality, ensure_ascii=False),
                     json.dumps(_json_object(parent.get("prep_package")), ensure_ascii=False),
                     parent.get("rag_index_version"),
                     created_by,
@@ -342,7 +347,10 @@ class ScenarioReviewService:
         patches = self._accepted_patches(scenario_version_id)
         for patch in patches:
             _apply_patch(graph, patch)
-        quality_report = QualityReportGenerator().evaluate(graph).model_dump(mode="json")
+        quality_report = QualityReportGenerator().evaluate(
+            graph,
+            require_complete_spoiler_boundaries=True,
+        ).model_dump(mode="json")
         prep_package = _build_prep_package(
             version.get("title") or "",
             graph,
@@ -479,6 +487,14 @@ class ScenarioReviewService:
                 continue
             payload = _json_object(suggestion.get("payload"))
             if not payload:
+                continue
+            if (
+                suggestion_target_type == "spoiler_boundary"
+                and not _is_complete_spoiler_boundary({
+                    **payload,
+                    "citation": citation,
+                })
+            ):
                 continue
             suggestions.append({
                 "target_type": suggestion_target_type,

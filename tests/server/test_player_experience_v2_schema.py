@@ -35,7 +35,7 @@ def test_new_rooms_default_to_player_experience_v2(client, test_db):
     room_id = create_room(client)["room_id"]
     room = test_db.execute(
         "SELECT player_experience_version, action_pacing_preset, action_timing, "
-        "draft_analysis_enabled FROM rooms WHERE room_id = %s",
+        "draft_analysis_enabled, host_autonomy_policy FROM rooms WHERE room_id = %s",
         (room_id,),
     ).fetchone()
 
@@ -48,6 +48,7 @@ def test_new_rooms_default_to_player_experience_v2(client, test_db):
         "resolution_seconds": 180,
     }
     assert room["draft_analysis_enabled"] is True
+    assert room["host_autonomy_policy"] == "host_required"
 
 
 def test_schema_migration_keeps_existing_rooms_on_v1(test_db):

@@ -146,10 +146,23 @@ def queue_black_bear_reaction(
             attacks[attack_index - 1]["damage_expression"],
         ),
     )
-    return _row(conn.execute(
+    from .prepared_rule_actions import (
+        PreparedRuleEvent,
+        consume_prepared_actions_for_rule_event,
+    )
+    prepared_reactions = consume_prepared_actions_for_rule_event(
+        conn,
+        room_id=room_id,
+        source_action_id=source_action_id,
+        rule_event=PreparedRuleEvent.enemy_public_attack_declared(),
+    )
+    queued_reaction = _row(conn.execute(
         "SELECT * FROM encounter_pending_reactions WHERE reaction_id = %s",
         (reaction_id,),
     ).fetchone())
+    if queued_reaction is not None:
+        queued_reaction["prepared_reactions"] = prepared_reactions
+    return queued_reaction
 
 
 def _player_fighting_skill(conn, character_id: str) -> tuple[str, int]:

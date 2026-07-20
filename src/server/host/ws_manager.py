@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from fastapi import WebSocket
+from ..events.event_log import EventLog
 from ..models import EngineEvent
 
 logger = logging.getLogger(__name__)
@@ -9,6 +10,7 @@ WS_SEND_TIMEOUT_SECONDS = 1.0
 
 FULL_SNAPSHOT_THRESHOLD = 100
 NONTERMINAL_ACTION_STATUSES = (
+    "armed",
     "queued",
     "batched",
     "resolving",
@@ -53,6 +55,9 @@ class ConnectionManager:
         if room_id in self._connections:
             self._connections[room_id].pop(connection_id, None)
         logger.info("WS disconnect: room=%s conn=%s", room_id, connection_id)
+
+    def is_connected(self, room_id: str, connection_id: str) -> bool:
+        return connection_id in self._connections.get(room_id, {})
 
     async def send_event(self, room_id: str, connection_id: str, event: EngineEvent):
         ws = self._connections.get(room_id, {}).get(connection_id)
@@ -114,19 +119,26 @@ class ConnectionManager:
         if missed > FULL_SNAPSHOT_THRESHOLD or last_sequence == 0:
             return {"needs_snapshot": True, "reason": "too_many_missed"}
 
-        rows = conn.execute(
-            "SELECT sequence, event_type, audience, payload, issued_at FROM events "
-            "WHERE room_id = %s AND sequence > %s ORDER BY sequence ASC",
-            (room_id, last_sequence),
-        ).fetchall()
-
         pending = conn.execute(
             "SELECT action_id, intent_type, declared_intent, status, result, created_at "
             "FROM actions WHERE room_id = %s AND character_id = %s AND status = ANY(%s)",
             (room_id, character_id, list(NONTERMINAL_ACTION_STATUSES)),
         ).fetchall()
 
-        events = [dict(r) for r in rows]
+        events = [
+            {
+                "sequence": event.sequence,
+                "event_type": event.event_type,
+                "audience": event.audience,
+                "payload": event.payload,
+                "issued_at": event.issued_at,
+            }
+            for event in EventLog(conn).get_events_for_player(
+                room_id,
+                character_id,
+                since_sequence=last_sequence,
+            )
+        ]
         pending_actions = [dict(r) for r in pending]
 
         return {

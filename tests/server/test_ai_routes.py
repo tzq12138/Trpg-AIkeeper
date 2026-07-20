@@ -6,10 +6,10 @@ class DummyPipeline:
         return {"room_id": room_id, "resolved": 0, "results": []}
 
 
-def test_ai_turn_accepts_owner_token_fallback(client, test_db):
+def test_ai_turn_accepts_owner_token_fallback(client, test_db, monkeypatch):
     setup_auth_test_data(test_db)
     room = create_room(client)
-    client.app.state.pipeline = DummyPipeline()
+    monkeypatch.setattr(client.app.state, "pipeline", DummyPipeline(), raising=False)
 
     resp = client.post(
         f"/api/rooms/{room['room_id']}/ai-turn",

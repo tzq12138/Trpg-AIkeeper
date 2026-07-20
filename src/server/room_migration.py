@@ -184,15 +184,26 @@ def _export_event(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _insert_room(tx, room_id: str, room: dict[str, Any], owner_account_id: str) -> None:
+    runtime_package_version_id = str(room.get("runtime_package_version_id") or "")
+    if runtime_package_version_id:
+        runtime_package = tx.execute(
+            "SELECT 1 FROM runtime_package_versions "
+            "WHERE runtime_package_version_id = %s AND scenario_version_id = %s "
+            "AND gate_status = 'ready'",
+            (runtime_package_version_id, room.get("scenario_version_id")),
+        ).fetchone()
+        if not runtime_package:
+            runtime_package_version_id = ""
     tx.execute(
-        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, owner_token, "
+        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, owner_token, "
         "owner_account_id, status, spoiler_level, state_version, player_experience_version, "
-        "action_pacing_preset, action_timing, draft_analysis_enabled, created_at, started_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()), %s)",
+        "action_pacing_preset, action_timing, draft_analysis_enabled, speech_routing, created_at, started_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()), %s)",
         (
             room_id,
             room.get("scenario_id"),
             room.get("scenario_version_id"),
+            runtime_package_version_id or None,
             secrets.token_urlsafe(32),
             owner_account_id,
             room.get("status", "lobby"),
@@ -202,6 +213,7 @@ def _insert_room(tx, room_id: str, room: dict[str, Any], owner_account_id: str) 
             room.get("action_pacing_preset", "standard"),
             _as_json(room.get("action_timing")),
             room.get("draft_analysis_enabled", True),
+            room.get("speech_routing", "party_message"),
             room.get("created_at"),
             room.get("started_at"),
         ),

@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { getSlotValue } from '../shared/identity';
 
 interface Participant {
@@ -51,15 +50,6 @@ export default function EncounterPanel({
   encounterSuggestion,
   onEncounterConfirmed,
 }: Props) {
-  const [npcName, setNpcName] = useState('');
-  const [npcHp, setNpcHp] = useState('10');
-  const [npcDex, setNpcDex] = useState('50');
-  const [npcMov, setNpcMov] = useState('7');
-  const [npcWeapon, setNpcWeapon] = useState('');
-  const [npcDamage, setNpcDamage] = useState('1d3');
-  const [npcSkill, setNpcSkill] = useState('');
-  const [npcCreating, setNpcCreating] = useState(false);
-
   const token = getSlotValue('owner_token') || '';
 
   // ── Suggestion Card ──
@@ -125,48 +115,6 @@ export default function EncounterPanel({
     const playerParts = activeEncounter.participants.filter((p) => p.side === 'player');
     const enemyParts = activeEncounter.participants.filter((p) => p.side === 'enemy');
     const neutralParts = activeEncounter.participants.filter((p) => p.side === 'neutral');
-
-    const handleNextRound = async () => {
-      await fetch(`/api/host/${encodeURIComponent(roomId)}/encounter/next-round`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
-      });
-      onEncounterConfirmed();
-    };
-
-    const handleResolve = async () => {
-      await fetch(`/api/host/${encodeURIComponent(roomId)}/encounter/resolve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
-      });
-      onEncounterConfirmed();
-    };
-
-    const handleCreateNpc = async () => {
-      setNpcCreating(true);
-      try {
-        await fetch(`/api/host/${encodeURIComponent(roomId)}/encounter/npc`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Owner-Token': token },
-          body: JSON.stringify({
-            encounter_id: activeEncounter.encounterId,
-            name: npcName || '未命名NPC',
-            side: 'enemy',
-            hp: parseInt(npcHp) || 10,
-            dex: parseInt(npcDex) || 50,
-            mov: parseInt(npcMov) || 7,
-            weapon_name: npcWeapon,
-            damage_expression: npcDamage || '1d3',
-            main_skill: npcSkill,
-          }),
-        });
-        setNpcName(''); setNpcHp('10'); setNpcDex('50'); setNpcMov('7');
-        setNpcWeapon(''); setNpcDamage('1d3'); setNpcSkill('');
-        onEncounterConfirmed();
-      } finally {
-        setNpcCreating(false);
-      }
-    };
 
     const renderParticipant = (p: Participant) => (
       <div
@@ -256,37 +204,9 @@ export default function EncounterPanel({
           </>
         )}
 
-        {/* Quick NPC Creator */}
-        <details style={{ marginTop: 12 }}>
-          <summary className="bh-eyebrow" style={{ cursor: 'pointer' }}>+ 快速创建 NPC</summary>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 8 }}>
-            <input className="bh-input" placeholder="名称" value={npcName} onChange={(e) => setNpcName(e.target.value)} />
-            <input className="bh-input" placeholder="HP" type="number" value={npcHp} onChange={(e) => setNpcHp(e.target.value)} />
-            <input className="bh-input" placeholder="DEX" type="number" value={npcDex} onChange={(e) => setNpcDex(e.target.value)} />
-            <input className="bh-input" placeholder="MOV" type="number" value={npcMov} onChange={(e) => setNpcMov(e.target.value)} />
-            <input className="bh-input" placeholder="武器名" value={npcWeapon} onChange={(e) => setNpcWeapon(e.target.value)} />
-            <input className="bh-input" placeholder="伤害 (如 1d6)" value={npcDamage} onChange={(e) => setNpcDamage(e.target.value)} />
-            <input className="bh-input" placeholder="主要技能" value={npcSkill} onChange={(e) => setNpcSkill(e.target.value)} style={{ gridColumn: '1 / -1' }} />
-            <button
-              className="bh-button bh-button--black"
-              onClick={handleCreateNpc}
-              disabled={npcCreating}
-              style={{ gridColumn: '1 / -1' }}
-            >
-              {npcCreating ? '创建中...' : '创建 NPC'}
-            </button>
-          </div>
-        </details>
-
-        {/* Host Actions */}
-        <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-          <button className="bh-button bh-button--yellow" onClick={handleNextRound}>
-            下一回合
-          </button>
-          <button className="bh-button bh-button--red" onClick={handleResolve}>
-            强制结束
-          </button>
-        </div>
+        <p className="bh-hint" style={{ marginTop: 12 }}>
+          战斗由玩家声明、规则引擎与 AI-KP 自动推进；需要人工处理时请使用异常队列，不在此直接改写回合或单位。
+        </p>
       </section>
     );
   }

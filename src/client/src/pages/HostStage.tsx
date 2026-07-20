@@ -1,579 +1,166 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { BrutalProgress } from '../components/BauhausShell';
-import HostSkeletonPanels from '../components/HostSkeletonPanels';
-import { hostTabs, type HostTabKey } from '../navigation';
+import { useEffect, useState } from 'react';
 import { buildHostHeaders } from '../shared/host-auth';
 import { getSlotValue } from '../shared/identity';
-import { buildRoomWsUrl } from '../shared/ws-url';
-import { normalizeHud as normalizeHostStageHud } from './hostStageModel';
-import type { HostDirectorSnapshotDTO } from '../shared/types';
-import RedactedCitationDisclosure from '../components/RedactedCitationDisclosure';
+import {
+  normalizePublicStage,
+  normalizePublicStagePresentation,
+  type PublicStageData,
+  type PublicStagePresentation,
+} from './publicStageModel';
 
-interface PlayerStatus {
-  character_id: string;
-  player_name: string;
-  investigator_name: string;
-  hp: number;
-  hp_max: number;
-  san: number;
-  san_max: number;
-  mp: number;
-  mp_max: number;
-  luck: number;
-  status_tags: string[];
+function formatTime(value: string) {
+  if (!value) return '';
+  const time = new Date(value);
+  return Number.isNaN(time.valueOf()) ? '' : time.toLocaleTimeString('zh-CN', {
+    hour: '2-digit', minute: '2-digit',
+  });
 }
 
-interface HUDData {
-  room_id: string;
-  players: PlayerStatus[];
-  scene_image_url: string | null;
-  engine_state: string;
-  queue_status: { normal: number; urgent: number };
-}
-
-interface ChatMessage {
-  text?: string;
-  speaker?: string;
-  content?: string;
-}
-
-interface ActionException {
-  action_id: string;
-  character_id: string;
-  intent_type: string;
-  declared_intent: string;
-  status: 'awaiting_host_exception';
-  created_at: string;
-}
-
-type ActionExceptionDecision = 'request_player_choice' | 'rejected';
-
-function useHostWS(roomId: string, onEvent: (event: Record<string, unknown>) => void) {
-  const wsRef = useRef<WebSocket | null>(null);
-  const lastSeqRef = useRef(0);
+export default function HostStage({ roomId }: { roomId: string }) {
+  const [stage, setStage] = useState<PublicStageData | null>(null);
+  const [presentation, setPresentation] = useState<PublicStagePresentation | null>(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    let reconnectTimer: ReturnType<typeof setTimeout>;
-    let delay = 1000;
-
-    function connect() {
-      const ownerToken = getSlotValue('owner_token') || '';
-      const url = buildRoomWsUrl(window.location, {
-        roomId,
-        role: 'host',
-        ownerToken,
-        lastSequence: lastSeqRef.current,
-      });
-      const ws = new WebSocket(url);
-      wsRef.current = ws;
-
-      ws.onmessage = (msg) => {
-        try {
-          const data = JSON.parse(msg.data);
-          onEvent(data);
-        } catch {
-          // Ignore malformed events from transient reconnects.
-        }
-      };
-
-      ws.onclose = () => {
-        reconnectTimer = setTimeout(() => {
-          delay = Math.min(delay * 1.5 + Math.random() * 500, 30000);
-          connect();
-        }, delay);
-      };
-
-      ws.onopen = () => {
-        delay = 1000;
-      };
-    }
-
-    connect();
-    return () => {
-      clearTimeout(reconnectTimer);
-      wsRef.current?.close();
-    };
-  }, [roomId, onEvent]);
-}
-
-function PlayerCard({ player }: { player: PlayerStatus }) {
-  const danger = player.hp <= Math.ceil(player.hp_max * 0.25) || player.san <= Math.ceil(player.san_max * 0.4);
-
-  return (
-    <article className={`bh-player-card ${danger ? 'bh-player-card--danger' : ''}`}>
-      <h3>{player.player_name}</h3>
-      <div className="bh-subtitle">{player.investigator_name || player.character_id}</div>
-      <BrutalProgress label="HP" value={player.hp} max={player.hp_max} tone={danger ? 'red' : 'yellow'} />
-      <BrutalProgress label="SAN" value={player.san} max={player.san_max} tone={player.san < player.san_max / 2 ? 'red' : 'yellow'} />
-      {player.status_tags.length > 0 && (
-        <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {player.status_tags.map((tag) => (
-            <span className="bh-eyebrow" key={tag}>{tag}</span>
-          ))}
-        </div>
-      )}
-    </article>
-  );
-}
-
-function TypewriterText({ messages }: { messages: ChatMessage[] }) {
-  const [displayed, setDisplayed] = useState('');
-  const targetRef = useRef('');
-  const indexRef = useRef(0);
-  const rafRef = useRef<number>(0);
-
-  useEffect(() => {
-    const last = messages[messages.length - 1];
-    const text = last?.text || last?.content || '';
-    if (!text || text === targetRef.current) return;
-    targetRef.current = text;
-    indexRef.current = 0;
-    setDisplayed('');
-
-    function tick() {
-      if (indexRef.current < targetRef.current.length) {
-        indexRef.current += 1;
-        setDisplayed(targetRef.current.slice(0, indexRef.current));
-        rafRef.current = requestAnimationFrame(tick);
-      }
-    }
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [messages]);
-
-  return (
-    <p>
-      {displayed || '投影待命。等待玩家行动、公共观察或裁决叙事进入舞台。'}
-      <span className="bh-cursor">|</span>
-    </p>
-  );
-}
-
-function DiceRollDisplay({ rollEvent, onSettled }: { rollEvent: Record<string, unknown> | null; onSettled: () => void }) {
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => {
-    if (!rollEvent) return;
-    timerRef.current = setTimeout(onSettled, 15000);
-    return () => clearTimeout(timerRef.current);
-  }, [rollEvent, onSettled]);
-
-  if (!rollEvent) return null;
-
-  return (
-    <div className="bh-dice-toast">
-      <strong>骰子检定</strong>
-      <span>{String(rollEvent.skill || rollEvent.dice || 'D100')}</span>
-      {rollEvent.result ? <span>结果：{String(rollEvent.result)}</span> : null}
-    </div>
-  );
-}
-
-function NarrativeProjection({ imageUrl, messages, rollEvent, onDiceSettled }: {
-  imageUrl: string | null;
-  messages: ChatMessage[];
-  rollEvent: Record<string, unknown> | null;
-  onDiceSettled: () => void;
-}) {
-  return (
-    <div className="bh-projection">
-      {imageUrl && <div className="bh-projection-image" style={{ backgroundImage: `url(${imageUrl})` }} />}
-      <DiceRollDisplay rollEvent={rollEvent} onSettled={onDiceSettled} />
-      <div className="bh-projection-copy">
-        <h2>场景投影</h2>
-        <TypewriterText messages={messages} />
-      </div>
-    </div>
-  );
-}
-
-export function HostDirectorConsole({
-  snapshot,
-  onPause,
-  onTakeOverException,
-}: {
-  snapshot: HostDirectorSnapshotDTO;
-  onPause: () => void;
-  onTakeOverException: () => void;
-}) {
-  return (
-    <section className="bh-panel bh-host-director-console" aria-label="只读导演台">
-      <span className="bh-eyebrow">只读导演台</span>
-      <h2 className="bh-panel-title">{snapshot.currentScene || '当前场景'}</h2>
-      <div className="bh-action-row bh-action-row--responsive">
-        <button className="bh-button" type="button" onClick={onPause}>暂停</button>
-        <button className="bh-button bh-button--yellow" type="button" onClick={onTakeOverException}>异常接管</button>
-      </div>
-      <dl className="bh-action-preview__facts">
-        <div><dt>阶段</dt><dd>{snapshot.stage}</dd></div>
-        <div><dt>风险</dt><dd>{snapshot.risks.join('；') || '无'}</dd></div>
-      </dl>
-      <ReadOnlyList title="确认事实" items={snapshot.confirmedFacts} />
-      <ReadOnlyList title="待触发条件" items={snapshot.pendingTriggers} />
-      <ReadOnlyList title="异常队列" items={snapshot.exceptionQueue} />
-      <RedactedCitationDisclosure citations={snapshot.aiEvidence} />
-    </section>
-  );
-}
-
-function ReadOnlyList({ title, items }: { title: string; items: string[] }) {
-  return (
-    <div className="bh-muted-box">
-      <strong>{title}</strong>
-      {items.length ? (
-        <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul>
-      ) : <p>暂无</p>}
-    </div>
-  );
-}
-
-export function HostExceptionQueue({
-  items,
-  resolvingActionId,
-  onResolve,
-}: {
-  items: ActionException[];
-  resolvingActionId: string | null;
-  onResolve: (actionId: string, decision: ActionExceptionDecision, reason: string) => void;
-}) {
-  const [reasons, setReasons] = useState<Record<string, string>>({});
-
-  if (items.length === 0) return null;
-
-  return (
-    <section className="bh-panel" aria-label="异常行动队列">
-      <span className="bh-eyebrow">EXCEPTION ONLY</span>
-      <h2 className="bh-panel-title">异常行动队列</h2>
-      <p className="bh-subtitle">仅处理无法安全裁决的行动；普通行动仍由 AI 与规则引擎完成。</p>
-      {items.map((item) => {
-        const reason = reasons[item.action_id] || '';
-        const isResolving = resolvingActionId === item.action_id;
-        return (
-          <article className="bh-muted-box" key={item.action_id}>
-            <strong>{item.intent_type}</strong>
-            <p>{item.declared_intent}</p>
-            <textarea
-              aria-label={`处理原因 ${item.action_id}`}
-              placeholder="处理原因"
-              value={reason}
-              onChange={(event) => setReasons((previous) => ({
-                ...previous,
-                [item.action_id]: event.target.value,
-              }))}
-            />
-            <div className="bh-action-row bh-action-row--responsive">
-              <button
-                className="bh-button bh-button--yellow"
-                disabled={isResolving}
-                onClick={() => onResolve(
-                  item.action_id,
-                  'request_player_choice',
-                  reason.trim() || '请补充具体行动方式。',
-                )}
-                type="button"
-              >
-                请求玩家澄清
-              </button>
-              <button
-                className="bh-button"
-                disabled={isResolving}
-                onClick={() => onResolve(
-                  item.action_id,
-                  'rejected',
-                  reason.trim() || '当前行动无法安全裁决。',
-                )}
-                type="button"
-              >
-                拒绝行动
-              </button>
-            </div>
-          </article>
-        );
-      })}
-    </section>
-  );
-}
-
-export default function HostStage({
-  roomId,
-  initialTab = 'narrative',
-}: {
-  roomId: string;
-  initialTab?: HostTabKey;
-}) {
-  const [activeTab, setActiveTab] = useState<HostTabKey>(initialTab);
-  const [hud, setHud] = useState<HUDData | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [rollEvent, setRollEvent] = useState<Record<string, unknown> | null>(null);
-  const [atmosphere, setAtmosphere] = useState<Record<string, unknown> | null>(null);
-  const [audioUnlocked, setAudioUnlocked] = useState(false);
-  const [activeEncounter, setActiveEncounter] = useState<any>(null);
-  const [encounterSuggestion, setEncounterSuggestion] = useState<any>(null);
-  const [mapRefresh, setMapRefresh] = useState(0);
-  const [hudError, setHudError] = useState('');
-  const [actionExceptions, setActionExceptions] = useState<ActionException[]>([]);
-  const [resolvingActionId, setResolvingActionId] = useState<string | null>(null);
-
-  const handleEvent = useCallback((data: Record<string, unknown>) => {
-    if (data.type === 'host_state_update' && data.hud) {
-      setHud(normalizeHostStageHud(data.hud as Record<string, unknown>));
-    } else if (data.type === 'scene_update') {
-      setHud((prev) => prev ? { ...prev, scene_image_url: data.image_url as string | null } : prev);
-    } else if (data.type === 'chat_message') {
-      setMessages((prev) => [...prev, data.message as ChatMessage]);
-    } else if (data.type === 'atmosphere_update') {
-      setAtmosphere(data.atmosphere as Record<string, unknown>);
-    } else if (data.type === 's2c_reveal_transaction') {
-      const payload = data.payload as { steps?: Array<{ kind?: string; payload?: Record<string, unknown> }>; summaryText?: string };
-      const steps = payload.steps || [];
-      const rollStep = steps.find((step) => step.kind === 'roll')?.payload;
-      if (rollStep) {
-        setRollEvent(rollStep);
-      }
-      const narrative = steps.find((step) => step.kind === 'narrative_text')?.payload?.text || payload.summaryText;
-      if (narrative) {
-        setMessages((prev) => [...prev, { text: String(narrative), speaker: 'KP' }]);
-      }
-    } else if (data.type === 's2c_public_observation') {
-      const payload = data.payload as { text?: string };
-      if (payload.text) {
-        setMessages((prev) => [...prev, { text: payload.text, speaker: 'KP' }]);
-      }
-    } else if (data.type === 'encounter_suggested') {
-      setEncounterSuggestion(data.payload);
-    } else if (data.type === 'encounter_started') {
-      setActiveEncounter(data.payload);
-      setEncounterSuggestion(null);
-      setActiveTab('combat');
-    } else if (data.type === 'encounter_updated') {
-      setActiveEncounter(data.payload);
-    } else if (data.type === 'encounter_resolved') {
-      setActiveEncounter(null);
-    } else if (data.type === 'team_message') {
-      const p = data.payload as Record<string, unknown>;
-      if (p.text && typeof p.text === 'string') {
-        setMessages((prev) => [...prev, {
-          text: `💬 ${p.playerName || p.investigatorName || '玩家'}: ${p.text}`,
-          speaker: 'TEAM',
-        }]);
-      }
-    } else if (data.type === 'map_updated' || data.type === 'player_moved' || data.type === 'map_revealed') {
-      setMapRefresh((prev) => prev + 1);
-    }
-  }, []);
-
-  useHostWS(roomId, handleEvent);
-
-  // Fetch HUD on mount — don't wait for WS to push first data
-  useEffect(() => {
-    const fetchHud = async () => {
+    let cancelled = false;
+    const load = async () => {
       try {
-        const ownerToken = getSlotValue('owner_token') || '';
-        const accountToken = getSlotValue('account_token') || '';
-        const headers = buildHostHeaders(ownerToken, accountToken);
-        const res = await fetch(`/api/host/${roomId}/hud`, { headers });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.players) { setHud(normalizeHostStageHud(data)); setHudError(''); }
-        } else {
-          setHudError('无法加载玩家状态——请检查房主身份或刷新页面');
+        const response = await fetch(`/api/host/${encodeURIComponent(roomId)}/stage-projection`, {
+          headers: buildHostHeaders(
+            getSlotValue('owner_token') || '',
+            getSlotValue('account_token') || '',
+          ),
+        });
+        if (!response.ok) throw new Error('stage projection unavailable');
+        const payload = await response.json() as Record<string, unknown>;
+        if (!cancelled) {
+          setStage(normalizePublicStage(payload));
+          setError('');
         }
-      } catch { setHudError('网络错误——请确认后端已启动'); }
-    };
-    fetchHud();
-  }, [roomId]);
-
-  const loadActionExceptions = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/host/${roomId}/action-exceptions`, {
-        headers: buildHostHeaders(
-          getSlotValue('owner_token') || '',
-          getSlotValue('account_token') || '',
-        ),
-      });
-      if (!response.ok) return;
-      const payload = await response.json() as { items?: ActionException[] };
-      setActionExceptions(payload.items || []);
-    } catch {
-      return;
-    }
-  }, [roomId]);
-
-  useEffect(() => {
-    void loadActionExceptions();
-  }, [loadActionExceptions]);
-
-  const handleDiceSettled = useCallback(() => {
-    setRollEvent(null);
-  }, []);
-
-  const handlePause = async () => {
-    await fetch(`/api/host/${roomId}/pause`, {
-      method: 'POST',
-      headers: { 'X-Owner-Token': getSlotValue('owner_token') || '' },
-    });
-  };
-
-  const handleResolveException = useCallback(async (
-    actionId: string,
-    decision: ActionExceptionDecision,
-    reason: string,
-  ) => {
-    setResolvingActionId(actionId);
-    try {
-      const response = await fetch(`/api/host/${roomId}/action-exceptions/${actionId}/resolve`, {
-        method: 'POST',
-        headers: buildHostHeaders(
-          getSlotValue('owner_token') || '',
-          getSlotValue('account_token') || '',
-          true,
-        ),
-        body: JSON.stringify({ decision, reason }),
-      });
-      if (!response.ok) {
-        setHudError('异常行动处理失败——请刷新后重试。');
-        return;
+        const presentationResponse = await fetch(`/api/host/${encodeURIComponent(roomId)}/stage-presentation`, {
+          headers: buildHostHeaders(
+            getSlotValue('owner_token') || '',
+            getSlotValue('account_token') || '',
+          ),
+        });
+        if (!presentationResponse.ok) throw new Error('stage presentation unavailable');
+        const presentationPayload = await presentationResponse.json() as Record<string, unknown>;
+        if (!cancelled) setPresentation(normalizePublicStagePresentation(presentationPayload));
+      } catch {
+        if (!cancelled) {
+          setPresentation(null);
+          setError('公共舞台暂时无法同步，将自动重试。');
+        }
       }
-      setActionExceptions((previous) => previous.filter((item) => item.action_id !== actionId));
-    } catch {
-      setHudError('网络错误——无法处理异常行动。');
-    } finally {
-      setResolvingActionId(null);
-    }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [roomId]);
 
-  const unlockAudio = () => {
-    const ctx = new AudioContext();
-    ctx.resume().then(() => setAudioUnlocked(true));
-  };
-
-  const visual = atmosphere?.visual as Record<string, unknown> | undefined;
-  const filterStyle = visual?.filter ? `hue-rotate(${visual.filter === 'cold_blue' ? '180deg' : '0deg'}) saturate(1.5)` : undefined;
-  const shakeClass = visual?.shake ? 'bh-host-shake' : '';
-  const players = hud?.players ?? [];
-  const directorSnapshot: HostDirectorSnapshotDTO = {
-    currentScene: messages[messages.length - 1]?.text || messages[messages.length - 1]?.content || '当前场景',
-    confirmedFacts: messages.slice(-3).map((message) => message.text || message.content || '').filter(Boolean),
-    pendingTriggers: [`普通 ${hud?.queue_status?.normal ?? 0}`, `紧急 ${hud?.queue_status?.urgent ?? 0}`],
-    aiEvidence: [],
-    stage: hud?.engine_state === 'thinking' ? 'directing' : hud?.engine_state === 'busy' ? 'narrating' : 'completed',
-    risks: encounterSuggestion ? ['遭遇建议待确认'] : [],
-    exceptionQueue: actionExceptions.map((item) => item.declared_intent),
-  };
+  const recentEvents = stage?.recent_events || [];
+  const latestNarration = presentation?.available && presentation.narrative_text
+    ? presentation.narrative_text
+    : recentEvents[recentEvents.length - 1]?.text || '等待调查员行动。';
+  const combatPhaseText = {
+    declaration: '声明行动',
+    resolution: '正在结算',
+    summary: '轮末总结',
+    blocked: '等待规则决定',
+  } as const;
+  const combatDistanceText = {
+    engaged: '贴身',
+    near: '近距离',
+    short: '短距离',
+    medium: '中距离',
+    long: '远距离',
+  } as const;
 
   return (
-    <div className="bh-host">
-      {hudError && (
-        <div style={{
-          margin: 0, padding: '12px 20px',
-          border: '3px solid var(--bh-yellow)', background: 'var(--bh-paper)',
-          fontWeight: 700, fontSize: 14,
-        }}>
-          {hudError}
-          <button style={{ marginLeft: 12, fontWeight: 900, cursor: 'pointer' }} onClick={() => setHudError('')}>✕</button>
-        </div>
-      )}
+    <main className="bh-host bh-public-stage" aria-label="公共舞台">
       <header className="bh-host-topbar">
         <div className="bh-host-brand">
-          <strong className="bh-panel-title" style={{ margin: 0 }}>阿卡姆系统</strong>
-          <span className="bh-room-code">房间代码：{roomId}</span>
+          <strong className="bh-panel-title" style={{ margin: 0 }}>AI-KEEPER</strong>
+          <span className="bh-room-code">公共舞台 · 房间 {roomId}</span>
         </div>
-        <nav className="bh-host-tabs" aria-label="守密人页面">
-          {hostTabs.map((tab) => (
-            <button
-              className="bh-tab"
-              key={tab.key}
-              type="button"
-              aria-selected={activeTab === tab.key}
-              onClick={() => setActiveTab(tab.key)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
-        <div className="bh-host-actions">
-          {!audioUnlocked && (
-            <button className="bh-button bh-button--yellow" onClick={unlockAudio} type="button">解锁音频</button>
-          )}
-          <button className="bh-button" onClick={handlePause} type="button">系统锁定</button>
-        </div>
+        <span className="bh-eyebrow">{stage?.status_text || '等待调查员行动'}</span>
       </header>
 
-      <div className={`bh-host-layout ${shakeClass}`} style={{ filter: filterStyle }}>
-        <aside className="bh-host-rail">
-          <div className="bh-keeper-card">
-            <div className="bh-keeper-mark">KP</div>
-            <h2 className="bh-panel-title">KEEPER_PRIME</h2>
-            <p className="bh-subtitle">v.0.4.2_stable</p>
-          </div>
-          <div className="bh-tool-list">
-            {hostTabs.map((tab) => (
-              <button
-                className="bh-tool"
-                key={tab.key}
-                type="button"
-                aria-pressed={activeTab === tab.key}
-                onClick={() => setActiveTab(tab.key)}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-          <div className="bh-rail-footer">
-            <span className="bh-eyebrow">QUEUE</span>
-            <strong>普通 {hud?.queue_status?.normal ?? 0} / 紧急 {hud?.queue_status?.urgent ?? 0}</strong>
-            <span>{hud?.engine_state === 'thinking' ? 'KP 思考中' : hud?.engine_state === 'busy' ? 'KP 忙碌中' : '系统待命'}</span>
-          </div>
-        </aside>
-
+      {error && <p className="bh-stage-notice">{error}</p>}
+      <div className="bh-host-layout">
         <section className="bh-stage-panel">
-          <div className="bh-stage-label">{hostTabs.find((tab) => tab.key === activeTab)?.eyebrow} // 第一阶段投影</div>
-          {activeTab === 'narrative' ? (
-            <NarrativeProjection
-              imageUrl={hud?.scene_image_url ?? null}
-              messages={messages}
-              rollEvent={rollEvent}
-              onDiceSettled={handleDiceSettled}
-            />
-          ) : (
-            <div className="bh-projection" style={{ background: 'var(--bh-paper)' }}>
-              <HostSkeletonPanels
-                activeTab={activeTab}
-                queueStatus={hud?.queue_status}
-                messages={messages}
-                roomId={roomId}
-                activeEncounter={activeEncounter}
-                encounterSuggestion={encounterSuggestion}
-                onEncounterConfirmed={() => {}}
-                mapRefresh={mapRefresh}
-              />
+          <div className="bh-stage-label">PUBLIC STAGE</div>
+          <div className="bh-projection">
+            {stage?.scene_image_url && (
+              <div className="bh-projection-image" style={{ backgroundImage: `url(${stage.scene_image_url})` }} />
+            )}
+            <div className="bh-projection-copy">
+              <h1>当前场景</h1>
+              <p>{latestNarration}</p>
             </div>
-          )}
+          </div>
         </section>
 
-        <aside className="bh-monitor">
-          <div className="bh-monitor-label">调查员监控</div>
-          <HostDirectorConsole
-            snapshot={directorSnapshot}
-            onPause={() => void handlePause()}
-            onTakeOverException={() => setActiveTab('logs')}
-          />
-          <HostExceptionQueue
-            items={actionExceptions}
-            resolvingActionId={resolvingActionId}
-            onResolve={(actionId, decision, reason) => void handleResolveException(actionId, decision, reason)}
-          />
+        <aside className="bh-monitor" aria-label="队伍公开状态">
+          <section className="bh-muted-box" aria-label="公开局势">
+            <strong>公开局势</strong>
+            <p>{stage?.scene_time || '时间未定'}</p>
+            {stage?.team_objectives.length ? <ul>{stage.team_objectives.map((objective) => <li key={objective}>{objective}</li>)}</ul> : <p>暂无团队目标。</p>}
+          </section>
+          {stage?.combat_round && (
+            <section className="bh-muted-box" aria-label="战斗进度">
+              <strong>第 {stage.combat_round.round_number} 轮 · {combatPhaseText[stage.combat_round.phase]}</strong>
+              {stage.combat_round.phase === 'declaration' ? (
+                <p>已完成声明：{stage.combat_round.submitted_count} / {stage.combat_round.total_players}</p>
+              ) : stage.combat_round.current_conflict ? (
+                <p>当前冲突：{stage.combat_round.current_conflict}</p>
+              ) : <p>本轮局势正在整理。</p>}
+              {stage.combat_round.public_units?.length ? (
+                <div className="bh-hint-list" aria-label="公开参与单位">
+                  <strong>公开参与单位</strong>
+                  {stage.combat_round.public_units.map((unit) => (
+                    <p key={`${unit.kind}-${unit.label}`}>
+                      {unit.label} · {unit.condition}
+                      {typeof unit.health_segments === 'number' ? ` ${'█'.repeat(unit.health_segments)}${'░'.repeat(8 - unit.health_segments)}` : ''}
+                      {unit.distance_band ? ` · ${combatDistanceText[unit.distance_band]}` : ''}
+                      {unit.last_observed_at ? ` · 最后发现：${unit.last_observed_at}` : ''}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          )}
+          <div className="bh-monitor-label">调查员状态</div>
           <div className="bh-player-monitor-list">
-            {players.length === 0 && (
+            {stage?.players.length ? stage.players.map((player) => (
+              <article className={`bh-player-card bh-player-card--${player.condition_tone}`} key={player.character_id}>
+                <h2>{player.investigator_name || player.player_name}</h2>
+                <p className="bh-subtitle">{player.condition}</p>
+              </article>
+            )) : (
               <article className="bh-player-card">
-                <h3>等待调查员</h3>
-                <p>玩家加入后，HP / SAN 会在这里实时显示。</p>
+                <h2>等待调查员</h2>
+                <p>玩家加入后会在这里显示公开状态。</p>
               </article>
             )}
-            {players.map((player) => <PlayerCard key={player.character_id} player={player} />)}
           </div>
+          <section className="bh-muted-box" aria-label="近期公开事件">
+            <strong>近期事件</strong>
+            {stage?.recent_events.length ? (
+              <ol>
+                {stage.recent_events.slice(-5).reverse().map((event, index) => (
+                  <li key={`${event.issued_at}-${index}`}>
+                    {formatTime(event.issued_at)} {event.text}
+                  </li>
+                ))}
+              </ol>
+            ) : <p>暂无公开事件。</p>}
+          </section>
         </aside>
       </div>
-    </div>
+    </main>
   );
 }

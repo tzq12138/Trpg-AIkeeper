@@ -195,7 +195,8 @@ class ScenarioAssetBindingService:
 
     def list_bindings(self, scenario_version_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT sab.*, sa.original_name, sa.mime_type FROM scenario_asset_bindings sab "
+            "SELECT sab.*, sa.original_name, sa.mime_type, sa.visibility AS asset_visibility "
+            "FROM scenario_asset_bindings sab "
             "JOIN scenario_assets sa ON sa.asset_id = sab.asset_id "
             "WHERE sab.scenario_version_id = %s ORDER BY sa.created_at, sa.asset_id",
             (scenario_version_id,),
@@ -261,7 +262,8 @@ class ScenarioAssetBindingService:
         target_key: str,
     ) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT sab.*, sa.original_name, sa.mime_type FROM scenario_asset_bindings sab "
+            "SELECT sab.*, sa.original_name, sa.mime_type, sa.visibility AS asset_visibility "
+            "FROM scenario_asset_bindings sab "
             "JOIN scenario_assets sa ON sa.asset_id = sab.asset_id "
             "WHERE sab.scenario_version_id = %s AND sab.target_type = %s "
             "AND sab.target_key = %s AND sab.status = 'confirmed' "

@@ -4,6 +4,7 @@ import json
 import zipfile
 
 from tests.server.conftest import create_room, login, setup_auth_test_data
+from src.server.room_migration import RoomMigrationPackage, import_room_package, inspect_room_package
 
 
 def _setup_migratable_room(client, test_db):
@@ -156,6 +157,62 @@ def test_preview_does_not_write_and_confirm_creates_remapped_copy(client, test_d
     assert copied_note["character_id"] == copied_character["character_id"]
     assert copied_note["title_ciphertext"] == "encrypted-title"
     assert copied_note["body_ciphertext"] == "encrypted-body"
+
+
+def test_imported_room_keeps_its_runtime_package_snapshot(client, test_db):
+    room, host_token = _setup_migratable_room(client, test_db)
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["scenario_version_id"]
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, "
+        "input_checksum, runtime_package, created_by) "
+        "VALUES ('migration-runtime-snapshot', %s, 1, 'ready', 'sha', '{}', 'test')",
+        (scenario_version_id,),
+    )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = 'migration-runtime-snapshot' WHERE room_id = %s",
+        (room["room_id"],),
+    )
+    test_db.commit()
+    package = _export_package(client, room)
+
+    imported = client.post(
+        "/api/imports/confirm",
+        data={"confirm": "true"},
+        files={"package": ("room.zip", package, "application/zip")},
+        headers={"Authorization": f"Bearer {host_token}"},
+    )
+
+    assert imported.status_code == 200, imported.text
+    copied = test_db.execute(
+        "SELECT runtime_package_version_id FROM rooms WHERE room_id = %s",
+        (imported.json()["room_id"],),
+    ).fetchone()
+    assert copied["runtime_package_version_id"] == "migration-runtime-snapshot"
+
+
+def test_imported_room_discards_an_unavailable_runtime_package_snapshot(client, test_db):
+    room, _ = _setup_migratable_room(client, test_db)
+    package = inspect_room_package(_export_package(client, room))
+    unavailable = RoomMigrationPackage(
+        manifest=package.manifest,
+        room={**package.room, "runtime_package_version_id": "missing-runtime-package"},
+        characters=package.characters,
+        objectives=package.objectives,
+        events=package.events,
+        player_notes=package.player_notes,
+    )
+
+    copied_room_id = import_room_package(test_db, unavailable, owner_account_id="acc-host")
+
+    copied = test_db.execute(
+        "SELECT runtime_package_version_id FROM rooms WHERE room_id = %s",
+        (copied_room_id,),
+    ).fetchone()
+    assert copied["runtime_package_version_id"] is None
 
 
 def test_preview_rejects_hash_tampering_and_requires_host_or_admin(client, test_db):

@@ -11,7 +11,7 @@ from starlette.responses import FileResponse, Response
 
 from .private_data import PrivateDataDecryptionError, private_data_cipher_from_env
 from ..events.events_registry import event_type
-from ..models import CampaignHomeDTO, redact_citation
+from ..models import CampaignHomeDTO, EvidenceDetailDTO, redact_citation
 
 
 router = APIRouter(prefix="/api/player")
@@ -29,6 +29,7 @@ _PLAYER_SOURCE_MARKER_RE = re.compile(
     r"(?:七宫涟(?:个人)?汉化?|七宫(?:涟)?个人汉化?|七宫(?=\s+)|火独行|向火|宫涟(?:个人)?汉化|宫涟|人汉化|个人汉|汉化)"
 )
 _PLAYER_SOURCE_LINE_RE = re.compile(r"(?m)^\s*七宫\s*(?:\n|$)")
+_PLAYER_VISIBLE_ASSET_VISIBILITIES = {"party", "player", "public"}
 
 
 def _player_safe_solo_preview(text: object) -> str:
@@ -75,7 +76,15 @@ class EvidenceCardCreate(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     body: str = Field(default="", max_length=5000)
     card_type: Literal["clue", "person", "location", "item", "question"] = "clue"
-    visibility: Literal["party", "private"] = "party"
+    visibility: Literal["party", "private"] | None = None
+    related_evidence_card_ids: list[str] = Field(default_factory=list, max_length=8)
+
+
+class EvidenceCardShare(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=300)
+    body: str = Field(default="", max_length=5000)
 
 
 class EvidenceFactStatusUpdate(BaseModel):
@@ -84,12 +93,30 @@ class EvidenceFactStatusUpdate(BaseModel):
     fact_status: Literal["confirmed", "excluded"]
 
 
+class QuestionCloseConfirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed: bool
+
+
 class EvidenceLinkCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     from_evidence_card_id: str = Field(min_length=1, max_length=64)
     to_evidence_card_id: str = Field(min_length=1, max_length=64)
     relation_type: str = Field(min_length=1, max_length=50, pattern=r"^[a-z_]+$")
+
+
+class EvidenceCommentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class HypothesisStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis_status: Literal["discussing", "disproved", "shelved"]
 
 
 class CampaignSessionSchedule(BaseModel):
@@ -349,7 +376,7 @@ def _note_payload(note: dict, include_body: bool = True) -> dict:
 
 
 def _evidence_card_payload(card: dict) -> dict:
-    return {
+    payload = {
         "evidence_card_id": card["evidence_card_id"],
         "title": card["title"],
         "body": card["body"],
@@ -362,6 +389,217 @@ def _evidence_card_payload(card: dict) -> dict:
         "version": card["version"],
         "created_at": card["created_at"].isoformat(),
         "updated_at": card["updated_at"].isoformat(),
+    }
+    if card["card_type"] == "question":
+        payload.update({
+            "question_status": card.get("question_status") or "investigating",
+            "question_closed_by_character_id": card.get("question_closed_by_character_id"),
+            "question_closed_at": (
+                card["question_closed_at"].isoformat()
+                if card.get("question_closed_at") else None
+            ),
+            "question_undo_until": (
+                card["question_undo_until"].isoformat()
+                if card.get("question_undo_until") else None
+            ),
+        })
+    elif (
+        card.get("visibility") == "party"
+        and card.get("source") == "player"
+        and card.get("fact_status") == "hypothesis"
+    ):
+        payload.update({
+            "hypothesis_status": card.get("hypothesis_status") or "discussing",
+            "hypothesis_status_changed_by_character_id": card.get(
+                "hypothesis_status_changed_by_character_id"
+            ),
+            "hypothesis_status_changed_at": (
+                card["hypothesis_status_changed_at"].isoformat()
+                if card.get("hypothesis_status_changed_at") else None
+            ),
+            "hypothesis_status_undo_until": (
+                card["hypothesis_status_undo_until"].isoformat()
+                if card.get("hypothesis_status_undo_until") else None
+            ),
+        })
+    return payload
+
+
+def _visible_evidence_card(conn, character: dict, room_id: str, evidence_card_id: str) -> dict:
+    if character["room_id"] != room_id:
+        raise HTTPException(403, detail={"code": "room_mismatch"})
+    row = conn.execute(
+        "SELECT * FROM evidence_cards WHERE evidence_card_id = %s AND room_id = %s "
+        "AND (visibility = 'party' OR created_by_character_id = %s)",
+        (evidence_card_id, room_id, character["character_id"]),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, detail={"code": "evidence_card_not_visible"})
+    return dict(row)
+
+
+def _evidence_cognitive_tag(card: dict) -> str:
+    if card["fact_status"] == "confirmed":
+        return "已确认"
+    if card["fact_status"] == "excluded":
+        return "已证伪"
+    if card["source"] == "player":
+        return "玩家推测"
+    return "存在争议"
+
+
+def _evidence_detail_known_item(card: dict) -> dict:
+    return {
+        "evidence_card_id": card["evidence_card_id"],
+        "title": card["title"],
+        "body": card["body"],
+        "cognitive_tag": _evidence_cognitive_tag(card),
+    }
+
+
+def _load_shared_hypothesis(
+    conn,
+    character: dict,
+    room_id: str,
+    evidence_card_id: str,
+    *,
+    for_update: bool = False,
+) -> dict:
+    if character["room_id"] != room_id:
+        raise HTTPException(403, detail={"code": "room_mismatch"})
+    lock_clause = " FOR UPDATE" if for_update else ""
+    card = conn.execute(
+        "SELECT * FROM evidence_cards WHERE evidence_card_id = %s AND room_id = %s" + lock_clause,
+        (evidence_card_id, room_id),
+    ).fetchone()
+    if not card or (
+        card["visibility"] != "party"
+        or card["card_type"] == "question"
+        or card["source"] != "player"
+        or card["fact_status"] != "hypothesis"
+    ):
+        raise HTTPException(404, detail={"code": "shared_hypothesis_not_found"})
+    return dict(card)
+
+
+def _hypothesis_transition_payload(card: dict, *, undo_available: bool = False, changed: bool = False) -> dict:
+    return {
+        "card": _evidence_card_payload(card),
+        "undo_available": undo_available,
+        "changed": changed,
+    }
+
+
+def _confirmed_facts_for_shared_hypothesis(
+    conn,
+    room_id: str,
+    evidence_card_id: str,
+) -> list[dict]:
+    rows = conn.execute(
+        "SELECT DISTINCT card.evidence_card_id, card.title, card.body "
+        "FROM evidence_links link "
+        "JOIN evidence_cards card ON card.evidence_card_id = CASE "
+        "WHEN link.from_evidence_card_id = %s THEN link.to_evidence_card_id "
+        "ELSE link.from_evidence_card_id END "
+        "WHERE link.room_id = %s "
+        "AND (link.from_evidence_card_id = %s OR link.to_evidence_card_id = %s) "
+        "AND card.visibility = 'party' AND card.fact_status = 'confirmed' "
+        "ORDER BY card.evidence_card_id ASC",
+        (evidence_card_id, room_id, evidence_card_id, evidence_card_id),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+async def _emit_public_hypothesis_status(
+    request: Request,
+    room_id: str,
+    card: dict,
+    previous_status: str,
+) -> None:
+    from ..engine.projection import ProjectionDispatcher
+
+    status = card.get("hypothesis_status") or "discussing"
+    labels = {
+        "discussing": "讨论中",
+        "disproved": "已证伪",
+        "shelved": "已搁置",
+    }
+    dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(request.app.state.db)
+    await dispatcher.emit(
+        room_id,
+        "s2c_public_observation",
+        "party",
+        {
+            "text": f"队伍假说状态更新：{card['title']} · {labels[status]}",
+            "kind": "hypothesis_status",
+            "hypothesisStatus": status,
+            "previousHypothesisStatus": previous_status,
+        },
+    )
+
+
+def _load_party_question(
+    conn,
+    character: dict,
+    room_id: str,
+    evidence_card_id: str,
+    *,
+    for_update: bool = False,
+) -> dict:
+    if character["room_id"] != room_id:
+        raise HTTPException(403, detail={"code": "room_mismatch"})
+    lock_clause = " FOR UPDATE" if for_update else ""
+    card = conn.execute(
+        "SELECT * FROM evidence_cards WHERE evidence_card_id = %s AND room_id = %s" + lock_clause,
+        (evidence_card_id, room_id),
+    ).fetchone()
+    if not card or card["card_type"] != "question" or card["visibility"] != "party":
+        raise HTTPException(404, detail={"code": "party_question_not_found"})
+    return dict(card)
+
+
+def _question_related_cards(conn, room_id: str, evidence_card_id: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT DISTINCT card.evidence_card_id, card.title, card.card_type, card.fact_status, card.updated_at "
+        "FROM evidence_links link "
+        "JOIN evidence_cards card ON card.evidence_card_id = CASE "
+        "WHEN link.from_evidence_card_id = %s THEN link.to_evidence_card_id "
+        "ELSE link.from_evidence_card_id END "
+        "WHERE link.room_id = %s "
+        "AND (link.from_evidence_card_id = %s OR link.to_evidence_card_id = %s) "
+        "AND card.visibility = 'party' "
+        "ORDER BY card.updated_at DESC",
+        (evidence_card_id, room_id, evidence_card_id, evidence_card_id),
+    ).fetchall()
+    return [
+        {
+            key: value
+            for key, value in dict(row).items()
+            if key != "updated_at"
+        }
+        for row in rows
+    ]
+
+
+def _question_close_preview(card: dict, related_cards: list[dict]) -> dict:
+    hypotheses = [item for item in related_cards if item["fact_status"] == "hypothesis"]
+    return {
+        "question": _evidence_card_payload(card),
+        "related_hypotheses": hypotheses,
+        "disputed_cards": hypotheses,
+    }
+
+
+def _question_transition_payload(
+    card: dict,
+    *,
+    undo_available: bool = False,
+    undid_close: bool = False,
+) -> dict:
+    return {
+        "card": _evidence_card_payload(card),
+        "undo_available": undo_available,
+        "undid_close": undid_close,
     }
 
 
@@ -439,8 +677,46 @@ async def campaign_home(request: Request):
     unresolved_questions = conn.execute(
         "SELECT evidence_card_id, title, fact_status FROM evidence_cards "
         "WHERE room_id = %s AND card_type = 'question' AND visibility = 'party' "
-        "AND fact_status = 'hypothesis' ORDER BY updated_at DESC",
+        "AND fact_status = 'hypothesis' "
+        "AND COALESCE(question_status, 'investigating') <> 'closed' "
+        "ORDER BY updated_at DESC LIMIT 3",
         (character["room_id"],),
+    ).fetchall()
+    recent_clues = conn.execute(
+        """
+        SELECT clue_id, text, discovered_at, is_owner, is_shared
+        FROM (
+            SELECT c.clue_id, c.text, c.discovered_at,
+                   TRUE AS is_owner,
+                   EXISTS(
+                       SELECT 1 FROM clue_shares own_share
+                       WHERE own_share.clue_id = c.clue_id
+                   ) AS is_shared
+            FROM clues c
+            WHERE c.room_id = %s AND c.character_id = %s
+
+            UNION ALL
+
+            SELECT shared.clue_id, shared.public_version AS text, shared.shared_at AS discovered_at,
+                   FALSE AS is_owner, TRUE AS is_shared
+            FROM (
+                SELECT DISTINCT ON (c.clue_id)
+                       c.clue_id, cs.public_version, cs.shared_at
+                FROM clue_shares cs
+                JOIN clues c ON c.clue_id = cs.clue_id
+                WHERE c.room_id = %s AND c.character_id <> %s
+                ORDER BY c.clue_id, cs.shared_at DESC
+            ) AS shared
+        ) AS visible_clues
+        ORDER BY discovered_at DESC
+        LIMIT 5
+        """,
+        (
+            character["room_id"],
+            character["character_id"],
+            character["room_id"],
+            character["character_id"],
+        ),
     ).fetchall()
     current_scene = None
     try:
@@ -459,7 +735,13 @@ async def campaign_home(request: Request):
                 "title": "当前场景",
                 "text_preview": _player_safe_solo_preview(solo_scene.get("text")),
                 "citation": redact_citation(solo_scene.get("citation") or {}),
-                "image_asset_id": image_binding["asset_id"] if image_binding else None,
+                "choice_count": len(solo_scene.get("target_node_ids") or []),
+                "image_asset_id": (
+                    image_binding["asset_id"]
+                    if image_binding
+                    and image_binding.get("asset_visibility") in _PLAYER_VISIBLE_ASSET_VISIBILITIES
+                    else None
+                ),
             }
     except Exception:
         current_scene = None
@@ -477,7 +759,16 @@ async def campaign_home(request: Request):
             "citations": [dict(citation) for citation in summary_citations],
         } if summary else None,
         "next_session": _serialize_session(dict(next_session)) if next_session else None,
-        "recent_clues": [],
+        "recent_clues": [
+            {
+                "clue_id": row["clue_id"],
+                "text": row["text"],
+                "discovered_at": row["discovered_at"].isoformat(),
+                "is_owner": bool(row["is_owner"]),
+                "is_shared": bool(row["is_shared"]),
+            }
+            for row in recent_clues
+        ],
         "unresolved_questions": [dict(row) for row in unresolved_questions],
     }
 
@@ -497,7 +788,7 @@ async def get_current_scene_asset(request: Request, asset_id: str):
         "JOIN scenario_assets sa ON sa.asset_id = sab.asset_id "
         "WHERE sab.scenario_version_id = %s AND sab.asset_id = %s "
         "AND sab.target_type = 'branch_node' AND sab.target_key = %s "
-        "AND sab.status = 'confirmed'",
+        "AND sab.status = 'confirmed' AND sa.visibility IN ('party', 'player', 'public')",
         (current["scenario_version_id"], asset_id, current["node_id"]),
     ).fetchone()
     if not row:
@@ -544,6 +835,28 @@ async def list_notes(request: Request):
         (character["room_id"], character["character_id"]),
     ).fetchall()
     return {"notes": [_note_payload(dict(row)) for row in rows]}
+
+
+@router.patch("/notes/{note_id}")
+async def update_note(request: Request, note_id: str, body: PlayerNoteCreate):
+    character = _require_character(request)
+    conn = request.app.state.db
+    note = conn.execute(
+        "SELECT * FROM player_notes WHERE note_id = %s AND room_id = %s "
+        "AND character_id = %s AND visibility = 'private' AND is_redacted_copy = FALSE",
+        (note_id, character["room_id"], character["character_id"]),
+    ).fetchone()
+    if not note:
+        raise HTTPException(404, detail={"code": "note_not_found"})
+    cipher = private_data_cipher_from_env()
+    conn.execute(
+        "UPDATE player_notes SET title_ciphertext = %s, body_ciphertext = %s, updated_at = NOW() "
+        "WHERE note_id = %s",
+        (cipher.encrypt(body.title.strip()), cipher.encrypt(body.body.strip()), note_id),
+    )
+    conn.commit()
+    updated = conn.execute("SELECT * FROM player_notes WHERE note_id = %s", (note_id,)).fetchone()
+    return _note_payload(dict(updated))
 
 
 @router.post("/notes/{note_id}/share", status_code=201)
@@ -634,6 +947,41 @@ async def get_note_attachment(request: Request, note_id: str):
         media_type=row["content_type"],
         headers={"X-Content-Type-Options": "nosniff"},
     )
+
+
+@evidence_router.post("/rooms/{room_id}/evidence/{evidence_card_id}/notes", status_code=201)
+async def create_evidence_note(
+    request: Request,
+    room_id: str,
+    evidence_card_id: str,
+    body: PlayerNoteCreate,
+):
+    character = _require_character(request)
+    conn = request.app.state.db
+    _visible_evidence_card(conn, character, room_id, evidence_card_id)
+    cipher = private_data_cipher_from_env()
+    note_id = str(uuid.uuid4())
+    with conn.transaction() as transaction:
+        transaction.execute(
+            "INSERT INTO player_notes "
+            "(note_id, room_id, character_id, title_ciphertext, body_ciphertext) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (
+                note_id,
+                room_id,
+                character["character_id"],
+                cipher.encrypt(body.title.strip()),
+                cipher.encrypt(body.body.strip()),
+            ),
+        )
+        transaction.execute(
+            "INSERT INTO evidence_references "
+            "(evidence_reference_id, evidence_card_id, reference_type, reference_id) "
+            "VALUES (%s, %s, 'player_note', %s)",
+            (str(uuid.uuid4()), evidence_card_id, note_id),
+        )
+    note = conn.execute("SELECT * FROM player_notes WHERE note_id = %s", (note_id,)).fetchone()
+    return _note_payload(dict(note))
 
 
 @host_router.post("/{room_id}/player-notes/{note_id}/emergency-decrypt")
@@ -820,27 +1168,93 @@ async def create_evidence_card(request: Request, room_id: str, body: EvidenceCar
     character = _require_character(request)
     if character["room_id"] != room_id:
         raise HTTPException(403, detail={"code": "room_mismatch"})
+    visibility = body.visibility or ("party" if body.card_type == "question" else "private")
+    if visibility == "party" and body.card_type != "question":
+        raise HTTPException(422, detail={"code": "evidence_share_required"})
     evidence_card_id = str(uuid.uuid4())
     conn = request.app.state.db
-    conn.execute(
-        "INSERT INTO evidence_cards "
-        "(evidence_card_id, room_id, created_by_character_id, title, body, card_type, fact_status, visibility, source) "
-        "VALUES (%s, %s, %s, %s, %s, %s, 'hypothesis', %s, 'player')",
-        (
-            evidence_card_id,
-            room_id,
-            character["character_id"],
-            body.title.strip(),
-            body.body.strip(),
-            body.card_type,
-            body.visibility,
-        ),
-    )
-    conn.commit()
+    related_ids = list(dict.fromkeys(body.related_evidence_card_ids))
+    if len(related_ids) != len(body.related_evidence_card_ids):
+        raise HTTPException(422, detail={"code": "duplicate_related_evidence"})
+    with conn.transaction() as transaction:
+        if related_ids:
+            visible_cards = transaction.execute(
+                "SELECT evidence_card_id FROM evidence_cards WHERE room_id = %s "
+                "AND evidence_card_id = ANY(%s) AND (visibility = 'party' OR created_by_character_id = %s)",
+                (room_id, related_ids, character["character_id"]),
+            ).fetchall()
+            if len(visible_cards) != len(related_ids):
+                raise HTTPException(404, detail={"code": "evidence_card_not_visible"})
+        transaction.execute(
+            "INSERT INTO evidence_cards "
+            "(evidence_card_id, room_id, created_by_character_id, title, body, card_type, fact_status, visibility, source) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 'hypothesis', %s, 'player')",
+            (
+                evidence_card_id,
+                room_id,
+                character["character_id"],
+                body.title.strip(),
+                body.body.strip(),
+                body.card_type,
+                visibility,
+            ),
+        )
+        for related_id in related_ids:
+            transaction.execute(
+                "INSERT INTO evidence_links "
+                "(evidence_link_id, room_id, from_evidence_card_id, to_evidence_card_id, relation_type, created_by_character_id) "
+                "VALUES (%s, %s, %s, %s, 'related', %s)",
+                (
+                    str(uuid.uuid4()),
+                    room_id,
+                    evidence_card_id,
+                    related_id,
+                    character["character_id"],
+                ),
+            )
     card = conn.execute(
         "SELECT * FROM evidence_cards WHERE evidence_card_id = %s", (evidence_card_id,)
     ).fetchone()
     return _evidence_card_payload(dict(card))
+
+
+@evidence_router.post("/rooms/{room_id}/evidence/{evidence_card_id}/share", status_code=201)
+async def share_evidence_card(
+    request: Request,
+    room_id: str,
+    evidence_card_id: str,
+    body: EvidenceCardShare,
+):
+    character = _require_character(request)
+    if character["room_id"] != room_id:
+        raise HTTPException(403, detail={"code": "room_mismatch"})
+    conn = request.app.state.db
+    original = conn.execute(
+        "SELECT card_type FROM evidence_cards WHERE evidence_card_id = %s AND room_id = %s "
+        "AND created_by_character_id = %s AND visibility = 'private'",
+        (evidence_card_id, room_id, character["character_id"]),
+    ).fetchone()
+    if not original:
+        raise HTTPException(404, detail={"code": "private_evidence_not_found"})
+    shared_id = str(uuid.uuid4())
+    with conn.transaction() as transaction:
+        transaction.execute(
+            "INSERT INTO evidence_cards "
+            "(evidence_card_id, room_id, created_by_character_id, title, body, card_type, fact_status, visibility, source, hypothesis_status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 'hypothesis', 'party', 'player', 'discussing')",
+            (
+                shared_id,
+                room_id,
+                character["character_id"],
+                body.title.strip(),
+                body.body.strip(),
+                original["card_type"],
+            ),
+        )
+    shared = conn.execute(
+        "SELECT * FROM evidence_cards WHERE evidence_card_id = %s", (shared_id,)
+    ).fetchone()
+    return _evidence_card_payload(dict(shared))
 
 
 @library_router.get("/library")
@@ -891,7 +1305,7 @@ async def create_evidence_link(request: Request, room_id: str, body: EvidenceLin
         raise HTTPException(422, detail={"code": "evidence_link_requires_two_cards"})
     conn = request.app.state.db
     visible_cards = conn.execute(
-        "SELECT evidence_card_id FROM evidence_cards WHERE room_id = %s "
+        "SELECT evidence_card_id, card_type, fact_status, visibility, source FROM evidence_cards WHERE room_id = %s "
         "AND evidence_card_id = ANY(%s) AND (visibility = 'party' OR created_by_character_id = %s)",
         (
             room_id,
@@ -901,6 +1315,15 @@ async def create_evidence_link(request: Request, room_id: str, body: EvidenceLin
     ).fetchall()
     if len(visible_cards) != 2:
         raise HTTPException(404, detail={"code": "evidence_card_not_visible"})
+    includes_shared_hypothesis = any(
+        card["visibility"] == "party"
+        and card["card_type"] != "question"
+        and card["source"] == "player"
+        and card["fact_status"] == "hypothesis"
+        for card in visible_cards
+    )
+    if includes_shared_hypothesis and body.relation_type not in {"support", "contradict", "related"}:
+        raise HTTPException(422, detail={"code": "evidence_relation_invalid"})
     link_id = str(uuid.uuid4())
     with conn.transaction() as transaction:
         created = transaction.execute(
@@ -927,6 +1350,306 @@ async def create_evidence_link(request: Request, room_id: str, body: EvidenceLin
     }
 
 
+@evidence_router.post("/rooms/{room_id}/evidence/{evidence_card_id}/comments", status_code=201)
+async def create_evidence_comment(
+    request: Request,
+    room_id: str,
+    evidence_card_id: str,
+    body: EvidenceCommentCreate,
+):
+    character = _require_character(request)
+    if character["room_id"] != room_id:
+        raise HTTPException(403, detail={"code": "room_mismatch"})
+    conn = request.app.state.db
+    card = conn.execute(
+        "SELECT evidence_card_id FROM evidence_cards WHERE evidence_card_id = %s AND room_id = %s "
+        "AND visibility = 'party' AND card_type != 'question' AND source = 'player' "
+        "AND fact_status = 'hypothesis'",
+        (evidence_card_id, room_id),
+    ).fetchone()
+    if not card:
+        raise HTTPException(404, detail={"code": "shared_hypothesis_not_found"})
+    comment_id = str(uuid.uuid4())
+    with conn.transaction() as transaction:
+        transaction.execute(
+            "INSERT INTO evidence_comments "
+            "(evidence_comment_id, room_id, evidence_card_id, character_id, body) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (comment_id, room_id, evidence_card_id, character["character_id"], body.body.strip()),
+        )
+    comment = conn.execute(
+        "SELECT comment.evidence_card_id, comment.body, character.player_name AS author_name "
+        "FROM evidence_comments comment JOIN characters character ON character.character_id = comment.character_id "
+        "WHERE comment.evidence_comment_id = %s",
+        (comment_id,),
+    ).fetchone()
+    return dict(comment)
+
+
+@evidence_router.post("/rooms/{room_id}/evidence/{evidence_card_id}/hypothesis-status")
+async def update_shared_hypothesis_status(
+    request: Request,
+    room_id: str,
+    evidence_card_id: str,
+    body: HypothesisStatusUpdate,
+):
+    character = _require_character(request)
+    conn = request.app.state.db
+    changed = False
+    previous_status = "discussing"
+    with conn.transaction() as transaction:
+        card = _load_shared_hypothesis(
+            transaction, character, room_id, evidence_card_id, for_update=True,
+        )
+        previous_status = card.get("hypothesis_status") or "discussing"
+        if previous_status != body.hypothesis_status:
+            transaction.execute(
+                "UPDATE evidence_cards SET hypothesis_status = %s, hypothesis_previous_status = %s, "
+                "hypothesis_status_changed_by_character_id = %s, hypothesis_status_changed_at = NOW(), "
+                "hypothesis_status_undo_until = NOW() + INTERVAL '10 seconds', version = version + 1, "
+                "updated_at = NOW() WHERE evidence_card_id = %s",
+                (
+                    body.hypothesis_status,
+                    previous_status,
+                    character["character_id"],
+                    evidence_card_id,
+                ),
+            )
+            changed = True
+    updated = conn.execute(
+        "SELECT *, hypothesis_status_changed_by_character_id = %s "
+        "AND hypothesis_status_undo_until >= NOW() AS undo_available "
+        "FROM evidence_cards WHERE evidence_card_id = %s",
+        (character["character_id"], evidence_card_id),
+    ).fetchone()
+    updated_card = dict(updated)
+    if changed:
+        await _emit_public_hypothesis_status(request, room_id, updated_card, previous_status)
+    return _hypothesis_transition_payload(
+        updated_card,
+        undo_available=bool(updated_card["undo_available"]),
+        changed=changed,
+    )
+
+
+@evidence_router.post("/rooms/{room_id}/evidence/{evidence_card_id}/hypothesis-status/revert")
+async def revert_shared_hypothesis_status(
+    request: Request,
+    room_id: str,
+    evidence_card_id: str,
+):
+    character = _require_character(request)
+    conn = request.app.state.db
+    previous_status = "discussing"
+    with conn.transaction() as transaction:
+        card = _load_shared_hypothesis(
+            transaction, character, room_id, evidence_card_id, for_update=True,
+        )
+        undo = transaction.execute(
+            "SELECT hypothesis_status_changed_by_character_id = %s "
+            "AND hypothesis_status_undo_until >= NOW() AS undo_available "
+            "FROM evidence_cards WHERE evidence_card_id = %s",
+            (character["character_id"], evidence_card_id),
+        ).fetchone()
+        if not undo or not undo["undo_available"]:
+            raise HTTPException(409, detail={"code": "hypothesis_status_undo_not_available"})
+        previous_status = card.get("hypothesis_status") or "discussing"
+        restored_status = card.get("hypothesis_previous_status") or "discussing"
+        transaction.execute(
+            "UPDATE evidence_cards SET hypothesis_status = %s, hypothesis_previous_status = NULL, "
+            "hypothesis_status_changed_by_character_id = %s, hypothesis_status_changed_at = NOW(), "
+            "hypothesis_status_undo_until = NULL, version = version + 1, updated_at = NOW() "
+            "WHERE evidence_card_id = %s",
+            (restored_status, character["character_id"], evidence_card_id),
+        )
+    updated = conn.execute(
+        "SELECT * FROM evidence_cards WHERE evidence_card_id = %s", (evidence_card_id,)
+    ).fetchone()
+    updated_card = dict(updated)
+    await _emit_public_hypothesis_status(request, room_id, updated_card, previous_status)
+    return _hypothesis_transition_payload(updated_card, changed=True)
+
+
+@evidence_router.post("/rooms/{room_id}/evidence/{evidence_card_id}/hypothesis-disproof-suggestion")
+async def suggest_shared_hypothesis_disproof(
+    request: Request,
+    room_id: str,
+    evidence_card_id: str,
+):
+    character = _require_character(request)
+    conn = request.app.state.db
+    card = _load_shared_hypothesis(conn, character, room_id, evidence_card_id)
+    confirmed_facts = _confirmed_facts_for_shared_hypothesis(conn, room_id, evidence_card_id)
+    if not confirmed_facts:
+        return {"suggestion": None, "reason": "no_confirmed_linked_facts"}
+    gateway = getattr(request.app.state, "gateway", None)
+    suggest = getattr(gateway, "suggest_hypothesis_disproof", None)
+    if not callable(suggest):
+        return {"suggestion": None, "reason": "ai_unavailable"}
+    suggestion = await suggest(
+        {
+            "hypothesis": {
+                "evidence_card_id": card["evidence_card_id"],
+                "title": card["title"],
+                "body": card["body"],
+            },
+            "confirmed_facts": confirmed_facts,
+        },
+        room_id,
+    )
+    if not isinstance(suggestion, dict):
+        return {"suggestion": None, "reason": "ai_unavailable"}
+    allowed_fact_ids = {fact["evidence_card_id"] for fact in confirmed_facts}
+    fact_ids = [
+        str(fact_id)
+        for fact_id in suggestion.get("factIds", suggestion.get("fact_ids", []))
+        if str(fact_id) in allowed_fact_ids
+    ]
+    if suggestion.get("suggestedStatus", suggestion.get("suggested_status")) != "possible_disproved" or not fact_ids:
+        return {"suggestion": None, "reason": "no_supported_disproof"}
+    return {
+        "suggestion": {
+            "suggestedStatus": "possible_disproved",
+            "reason": str(suggestion.get("reason") or "")[:500],
+            "factIds": fact_ids,
+            "confidence": str(suggestion.get("confidence") or "low"),
+            "requiresPlayerConfirmation": True,
+        },
+        "reason": None,
+    }
+
+
+@evidence_router.get("/rooms/{room_id}/evidence/{evidence_card_id}/question-close-preview")
+async def preview_party_question_close(request: Request, room_id: str, evidence_card_id: str):
+    character = _require_character(request)
+    conn = request.app.state.db
+    card = _load_party_question(conn, character, room_id, evidence_card_id)
+    return _question_close_preview(card, _question_related_cards(conn, room_id, evidence_card_id))
+
+
+@evidence_router.post("/rooms/{room_id}/evidence/{evidence_card_id}/question-close")
+async def close_party_question(
+    request: Request,
+    room_id: str,
+    evidence_card_id: str,
+    body: QuestionCloseConfirmation,
+):
+    character = _require_character(request)
+    conn = request.app.state.db
+    with conn.transaction() as transaction:
+        card = _load_party_question(transaction, character, room_id, evidence_card_id, for_update=True)
+        related_cards = _question_related_cards(transaction, room_id, evidence_card_id)
+        if not body.confirmed:
+            preview = _question_close_preview(card, related_cards)
+            raise HTTPException(
+                409,
+                detail={"code": "question_close_confirmation_required", **preview},
+            )
+        if (card.get("question_status") or "investigating") != "closed":
+            transaction.execute(
+                "UPDATE evidence_cards SET question_status = 'closed', "
+                "question_closed_by_character_id = %s, question_closed_at = NOW(), "
+                "question_undo_until = NOW() + INTERVAL '10 seconds', version = version + 1, "
+                "updated_at = NOW() WHERE evidence_card_id = %s",
+                (character["character_id"], evidence_card_id),
+            )
+    updated = conn.execute(
+        "SELECT *, question_closed_by_character_id = %s AND question_undo_until >= NOW() AS undo_available "
+        "FROM evidence_cards WHERE evidence_card_id = %s",
+        (character["character_id"], evidence_card_id),
+    ).fetchone()
+    return _question_transition_payload(dict(updated), undo_available=bool(updated["undo_available"]))
+
+
+@evidence_router.post("/rooms/{room_id}/evidence/{evidence_card_id}/question-reopen")
+async def reopen_party_question(request: Request, room_id: str, evidence_card_id: str):
+    character = _require_character(request)
+    conn = request.app.state.db
+    with conn.transaction() as transaction:
+        card = _load_party_question(transaction, character, room_id, evidence_card_id, for_update=True)
+        undo_row = transaction.execute(
+            "SELECT question_closed_by_character_id = %s AND question_undo_until >= NOW() AS undo_available "
+            "FROM evidence_cards WHERE evidence_card_id = %s",
+            (character["character_id"], evidence_card_id),
+        ).fetchone()
+        undid_close = bool((undo_row or {}).get("undo_available"))
+        if (card.get("question_status") or "investigating") != "investigating":
+            transaction.execute(
+                "UPDATE evidence_cards SET question_status = 'investigating', "
+                "question_closed_by_character_id = NULL, question_closed_at = NULL, question_undo_until = NULL, "
+                "version = version + 1, updated_at = NOW() WHERE evidence_card_id = %s",
+                (evidence_card_id,),
+            )
+    updated = conn.execute(
+        "SELECT * FROM evidence_cards WHERE evidence_card_id = %s", (evidence_card_id,)
+    ).fetchone()
+    return _question_transition_payload(dict(updated), undid_close=undid_close)
+
+
+@evidence_router.post("/rooms/{room_id}/evidence/{evidence_card_id}/question-explanation")
+async def mark_party_question_explained(request: Request, room_id: str, evidence_card_id: str):
+    character = _require_character(request)
+    conn = request.app.state.db
+    with conn.transaction() as transaction:
+        card = _load_party_question(transaction, character, room_id, evidence_card_id, for_update=True)
+        if (card.get("question_status") or "investigating") == "closed":
+            raise HTTPException(409, detail={"code": "question_closed"})
+        related_cards = _question_related_cards(transaction, room_id, evidence_card_id)
+        if not any(item["fact_status"] == "hypothesis" for item in related_cards):
+            raise HTTPException(409, detail={"code": "question_explanation_requires_hypothesis"})
+        transaction.execute(
+            "UPDATE evidence_cards SET question_status = 'explained', version = version + 1, "
+            "updated_at = NOW() WHERE evidence_card_id = %s",
+            (evidence_card_id,),
+        )
+    updated = conn.execute(
+        "SELECT * FROM evidence_cards WHERE evidence_card_id = %s", (evidence_card_id,)
+    ).fetchone()
+    return _question_transition_payload(dict(updated))
+
+
+@evidence_router.get("/rooms/{room_id}/evidence/{evidence_card_id}/detail", response_model=EvidenceDetailDTO)
+async def get_evidence_detail(request: Request, room_id: str, evidence_card_id: str):
+    character = _require_character(request)
+    conn = request.app.state.db
+    card = _visible_evidence_card(conn, character, room_id, evidence_card_id)
+    related_rows = conn.execute(
+        "SELECT DISTINCT related.* FROM evidence_links link "
+        "JOIN evidence_cards related ON related.evidence_card_id = CASE "
+        "WHEN link.from_evidence_card_id = %s THEN link.to_evidence_card_id "
+        "ELSE link.from_evidence_card_id END "
+        "WHERE link.room_id = %s "
+        "AND (link.from_evidence_card_id = %s OR link.to_evidence_card_id = %s) "
+        "AND (related.visibility = 'party' OR related.created_by_character_id = %s) "
+        "ORDER BY related.updated_at DESC",
+        (
+            evidence_card_id,
+            room_id,
+            evidence_card_id,
+            evidence_card_id,
+            character["character_id"],
+        ),
+    ).fetchall()
+    note_rows = conn.execute(
+        "SELECT note.* FROM evidence_references reference "
+        "JOIN player_notes note ON note.note_id = reference.reference_id "
+        "WHERE reference.evidence_card_id = %s AND reference.reference_type = 'player_note' "
+        "AND note.room_id = %s AND note.character_id = %s "
+        "ORDER BY note.updated_at DESC",
+        (evidence_card_id, room_id, character["character_id"]),
+    ).fetchall()
+    notes = [_note_payload(dict(row)) for row in note_rows]
+    return {
+        "summary": _evidence_card_payload(card),
+        "current_known": [_evidence_detail_known_item(card)],
+        "related_materials": [_evidence_detail_known_item(dict(row)) for row in related_rows],
+        "player_notes": [
+            {"note_id": note["note_id"], "title": note["title"], "body": note["body"]}
+            for note in notes
+        ],
+    }
+
+
 @evidence_router.get("/rooms/{room_id}/evidence")
 async def list_evidence_cards(request: Request, room_id: str):
     character = _require_character(request)
@@ -940,6 +1663,7 @@ async def list_evidence_cards(request: Request, room_id: str):
     ).fetchall()
     card_ids = [card["evidence_card_id"] for card in cards]
     links = []
+    comments = []
     if card_ids:
         links = conn.execute(
             "SELECT evidence_link_id, from_evidence_card_id, to_evidence_card_id, relation_type "
@@ -947,9 +1671,19 @@ async def list_evidence_cards(request: Request, room_id: str):
             "AND to_evidence_card_id = ANY(%s) ORDER BY created_at ASC",
             (room_id, card_ids, card_ids),
         ).fetchall()
+        comments = conn.execute(
+            "SELECT comment.evidence_card_id, comment.body, character.player_name AS author_name "
+            "FROM evidence_comments comment "
+            "JOIN evidence_cards card ON card.evidence_card_id = comment.evidence_card_id "
+            "JOIN characters character ON character.character_id = comment.character_id "
+            "WHERE comment.room_id = %s AND comment.evidence_card_id = ANY(%s) "
+            "AND card.visibility = 'party' ORDER BY comment.created_at ASC",
+            (room_id, card_ids),
+        ).fetchall()
     return {
         "cards": [_evidence_card_payload(dict(card)) for card in cards],
         "links": [dict(link) for link in links],
+        "comments": [dict(comment) for comment in comments],
     }
 
 

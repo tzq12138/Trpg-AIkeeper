@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import sys
+import asyncio
 from contextlib import asynccontextmanager
 
 from .log_config import setup_logging
@@ -40,6 +41,7 @@ from .player.router_clarification import router as clarification_router
 from .player.router_reconnect import router as reconnect_router
 from .player.router_player_archive import router as player_archive_router
 from .player.router_actions_v2 import router as player_actions_v2_router
+from .player.router_collaboration_contracts import router as collaboration_contracts_router
 from .player.router_player_settings import router as player_settings_router
 from .player.router_action_reviews import router as player_action_reviews_router
 from .player.router_campaign_v2 import (
@@ -174,6 +176,7 @@ async def lifespan(app: FastAPI):
             conn, compiler=compiler, dispatcher=dispatcher,
             spoiler_guard=spoiler_guard,
             gateway=None,  # set below after Gateway init
+            host_connection_checker=lambda room_id: ws_manager.is_connected(room_id, "host"),
         )
         logger.info("Pipeline  [OK]  ready")
     except Exception as exc:
@@ -225,6 +228,14 @@ async def lifespan(app: FastAPI):
     if app.state.gateway and app.state.pipeline:
         app.state.pipeline.gateway = app.state.gateway
 
+    from .turn_timeout_worker import run_turn_timeout_worker
+    turn_timeout_stop = asyncio.Event()
+    turn_timeout_task = asyncio.create_task(
+        run_turn_timeout_worker(app, turn_timeout_stop)
+    )
+    app.state.turn_timeout_stop = turn_timeout_stop
+    app.state.turn_timeout_task = turn_timeout_task
+
     elapsed = __import__("time").monotonic() - t0
     logger.info("-" * 50)
     logger.info("Startup complete (%.1fs) -- listening on :%s", elapsed, settings.port)
@@ -233,6 +244,8 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("AI-Keeper shutting down...")
+    turn_timeout_stop.set()
+    await turn_timeout_task
     conn.close()
     pg_db.close()
     logger.info("Shutdown complete")
@@ -374,6 +387,7 @@ app.include_router(clarification_router)
 app.include_router(reconnect_router)
 app.include_router(player_archive_router)
 app.include_router(player_actions_v2_router)
+app.include_router(collaboration_contracts_router)
 app.include_router(player_settings_router)
 app.include_router(player_action_reviews_router)
 app.include_router(player_campaign_v2_router)

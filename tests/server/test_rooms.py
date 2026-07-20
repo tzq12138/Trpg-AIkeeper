@@ -140,8 +140,114 @@ class TestScenarioOptions:
         )
         assert res.status_code == 409
 
+    def test_set_room_scenario_rebinds_the_target_runtime_package_snapshot(
+        self, client_with_data, test_db
+    ):
+        room = _create_room(client_with_data)
+        test_db.execute(
+            "INSERT INTO scenarios (scenario_id, title, import_status, publish_status, published_version_id) "
+            "VALUES ('sc-switch', 'Switch Target', 'structured', 'published', 'sv-switch')"
+        )
+        test_db.execute(
+            "INSERT INTO scenario_versions (scenario_version_id, scenario_id, version_number, status, created_by) "
+            "VALUES ('sv-switch', 'sc-switch', 1, 'published', 'acc-admin')"
+        )
+        for package_id, version_number in [
+            ("switch-runtime-v1", 1),
+            ("switch-runtime-v2", 2),
+        ]:
+            test_db.execute(
+                "INSERT INTO runtime_package_versions "
+                "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, "
+                "input_checksum, runtime_package, created_by) "
+                "VALUES (%s, 'sv-switch', %s, 'ready', 'sha', '{}', 'test')",
+                (package_id, version_number),
+            )
+        test_db.commit()
+
+        response = client_with_data.patch(
+            f"/api/rooms/{room['room_id']}/scenario",
+            json={"scenario_id": "sc-switch"},
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+
+        assert response.status_code == 200, response.text
+        stored = test_db.execute(
+            "SELECT scenario_id, scenario_version_id, runtime_package_version_id "
+            "FROM rooms WHERE room_id = %s",
+            (room["room_id"],),
+        ).fetchone()
+        assert dict(stored) == {
+            "scenario_id": "sc-switch",
+            "scenario_version_id": "sv-switch",
+            "runtime_package_version_id": "switch-runtime-v2",
+        }
+
+    def test_generic_room_update_rebinds_the_target_runtime_package_snapshot(
+        self, client_with_data, test_db
+    ):
+        room = _create_room(client_with_data)
+        test_db.execute(
+            "INSERT INTO scenarios (scenario_id, title, import_status, publish_status, published_version_id) "
+            "VALUES ('sc-generic-switch', 'Generic Switch Target', 'structured', 'published', 'sv-generic-switch')"
+        )
+        test_db.execute(
+            "INSERT INTO scenario_versions (scenario_version_id, scenario_id, version_number, status, created_by) "
+            "VALUES ('sv-generic-switch', 'sc-generic-switch', 1, 'published', 'acc-admin')"
+        )
+        test_db.execute(
+            "INSERT INTO runtime_package_versions "
+            "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, "
+            "input_checksum, runtime_package, created_by) "
+            "VALUES ('generic-switch-runtime', 'sv-generic-switch', 1, 'ready', 'sha', '{}', 'test')"
+        )
+        test_db.commit()
+
+        response = client_with_data.patch(
+            f"/api/rooms/{room['room_id']}",
+            json={"scenario_id": "sc-generic-switch"},
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+
+        assert response.status_code == 200, response.text
+        stored = test_db.execute(
+            "SELECT runtime_package_version_id FROM rooms WHERE room_id = %s",
+            (room["room_id"],),
+        ).fetchone()
+        assert stored["runtime_package_version_id"] == "generic-switch-runtime"
+
 
 class TestPublishedScenarioRequirement:
+    def test_scenario_create_room_binds_latest_ready_runtime_package_snapshot(
+        self, client_with_data, test_db
+    ):
+        for package_id, version_number in [
+            ("scenario-route-runtime-v1", 1),
+            ("scenario-route-runtime-v2", 2),
+        ]:
+            test_db.execute(
+                "INSERT INTO runtime_package_versions "
+                "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, "
+                "input_checksum, runtime_package, created_by) "
+                "VALUES (%s, 'sv-test', %s, 'ready', 'sha', '{}', 'test')",
+                (package_id, version_number),
+            )
+        test_db.commit()
+
+        response = client_with_data.post(
+            "/api/scenarios/sc-test/create-room",
+            json={},
+            headers={"Authorization": f"Bearer {_login(client_with_data)}"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["runtime_package_version_id"] == "scenario-route-runtime-v2"
+        stored = test_db.execute(
+            "SELECT runtime_package_version_id FROM rooms WHERE room_id = %s",
+            (response.json()["room_id"],),
+        ).fetchone()
+        assert stored["runtime_package_version_id"] == "scenario-route-runtime-v2"
+
     def test_create_room_rejects_unpublished_structured_scenario(
         self, client_with_data, test_db
     ):

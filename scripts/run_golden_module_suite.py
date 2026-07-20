@@ -86,6 +86,7 @@ class DeterministicGoldenGateway:
                 "name": "完成来源核验",
                 "description": "调查员完成必要调查并结束本次黄金样本验收。",
                 "type": "victory",
+                "completion_conditions": {"all_clues": ["golden-source-clue"]},
                 "citation": citation,
             }],
             "spoiler_boundaries": [{"id": "truth", "level": "keeper"}],
@@ -764,7 +765,10 @@ def _ensure_database_exists(url: str) -> None:
 
 
 def _reset_database(conn) -> None:
-    conn.execute("TRUNCATE TABLE scenarios, accounts RESTART IDENTITY CASCADE")
+    conn.execute(
+        "TRUNCATE TABLE scenarios, accounts, rule_sets, rule_documents, "
+        "document_chunks RESTART IDENTITY CASCADE"
+    )
     conn.commit()
 
 

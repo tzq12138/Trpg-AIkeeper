@@ -376,6 +376,50 @@ class ConfiguredOpenAIProvider(BaseAiProvider):
             )
             return None
 
+    async def generate_image(self, *, prompt: str, size: str) -> dict | None:
+        """Generate a preview image through the active OpenAI-compatible provider.
+
+        Only base64 data is accepted so the server never follows a provider-returned URL.
+        """
+        if not self.api_key or "image" not in self.capabilities:
+            return None
+        try:
+            assert_api_target_safe(self.api_base_url)
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=False,
+            ) as client:
+                response = await client.post(
+                    f"{self.api_base_url}/images/generations",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "size": size,
+                        "response_format": "b64_json",
+                    },
+                )
+            response.raise_for_status()
+            data = response.json().get("data") or []
+            first = data[0] if data and isinstance(data[0], dict) else {}
+            encoded = str(first.get("b64_json") or "").strip()
+            if not encoded:
+                return None
+            return {
+                "data_url": f"data:image/png;base64,{encoded}",
+                "mime_type": "image/png",
+            }
+        except Exception as exc:
+            logger.warning(
+                "Configured image provider failed provider=%s error=%s",
+                self.provider_config_id,
+                type(exc).__name__,
+            )
+            return None
+
     def _request_timeout(self, task_type: str, context: dict) -> int:
         if task_type != "structure_scenario":
             return self.timeout
@@ -565,7 +609,7 @@ def _parse_configured_response(data: dict, protocol: str) -> dict:
 
 
 def _unwrap_runtime_json_envelope(task_type: str, value: dict) -> dict:
-    if task_type not in {"analyze_director_action", "narrate_action"}:
+    if task_type not in {"analyze_director_action", "narrate_action", "resolve_combat_round"}:
         return value
     narrative = value.get("narrative") if isinstance(value, dict) else None
     public = narrative.get("public") if isinstance(narrative, dict) else None

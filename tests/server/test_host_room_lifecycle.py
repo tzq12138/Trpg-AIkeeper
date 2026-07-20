@@ -80,6 +80,32 @@ class TestHostCreateRoom:
         assert data["owner_account_id"] == "acc-host"
         assert data["scenario_id"] == "sc-life"
 
+    def test_create_room_binds_latest_ready_runtime_package_snapshot(self, client_with_data, test_db):
+        scenario_version_id = test_db.execute(
+            "SELECT published_version_id FROM scenarios WHERE scenario_id = 'sc-life'"
+        ).fetchone()["published_version_id"]
+        for package_id, version_number, synopsis in [
+            ("runtime-snapshot-v1", 1, "旧版运行包"),
+            ("runtime-snapshot-v2", 2, "新版运行包"),
+        ]:
+            test_db.execute(
+                "INSERT INTO runtime_package_versions "
+                "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, "
+                "input_checksum, runtime_package, created_by) "
+                "VALUES (%s, %s, %s, 'ready', 'sha', %s, 'test')",
+                (package_id, scenario_version_id, version_number, json.dumps({"world_book": {"synopsis": synopsis}})),
+            )
+        test_db.commit()
+
+        room = _create_room(client_with_data, _login(client_with_data, "hostlife"))
+
+        assert room["runtime_package_version_id"] == "runtime-snapshot-v2"
+        persisted = test_db.execute(
+            "SELECT runtime_package_version_id FROM rooms WHERE room_id = %s",
+            (room["room_id"],),
+        ).fetchone()
+        assert persisted["runtime_package_version_id"] == "runtime-snapshot-v2"
+
 
 class TestStartRoom:
     def _setup_room_with_player(self, client_with_data, test_db, ready=True):
