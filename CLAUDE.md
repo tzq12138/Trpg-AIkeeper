@@ -77,6 +77,10 @@ Host Big Screen (React) ◀──WebSocket──┘         │
 - **ResolutionPipeline** 是意图→结算的主链路：`MechanicCompiler` 将自然语言编译为游戏机制 → `RuleExecutor` 执行 COC 规则处理器 → `ProjectionDispatcher` 拆分事件按 audience 分发（写 DB + 推 WebSocket + 写 Redis 缓存）。
 - **StateService**（`engine/state_service.py`）是新权威状态变更路径：`apply_change()` 接收 JSON Patch 风格的 mutations，通过 `MUTATION_PATH_HANDLERS` 映射到具体列（`/character/hp` → `character_runtime_state.hp`），含钳制（HP/SAN/MP 夹在 `[0, max]`）、版本递增和 no-op 检测。
 - **SpoilerGuard**（`engine/spoiler_guard.py`）是输出侧反剧透安全网：构建敏感项索引（真相/结局/隐藏 NPC/隐藏线索）→ 确定性匹配 → 发现违规时生成重试 prompt → 二次违规回退到模板化安全叙述。被 Pipeline、ProjectionDispatcher、clue share 等多处调用。
+- **AiGateway**（`ai/gateway.py`）是统一 AI 调用入口。Provider 链路：MCP → DeepSeek → 管理员配置的 OpenAI-compatible → 本地回退。每个 task type（`analyze_director_action`、`narrate_action`、`resolve_turn` 等）有对应的校验 schema。本地回退不可用时 Gateway 仍会返回空 dict 继续结算，不抛异常。
+- **Director**（`ai/director.py`）分析玩家意图 → 产出 `DirectorPlanDTO`（含解读后意图、机制计划、state_patch（仅 advisory_only）、citations、置信度、语义推进校验）。低置信度或模糊意图触发 `player_clarification_required`，路由到 `host_exception`；高置信度推进到 `director_plan_validated`。Director 输出的 `state_patch` 标记为 `advisory_only`，必须经 Engine → StateService 验证。
+- **Narrator**（`ai/narrator.py`）基于已验证 Director plan + 确定性规则结果生成公开叙事。严格 fact-ref 校验：叙事只能引用 runtime package 中声明的 `allowed_facts`。校验失败回退到 `build_verified_narration()`，直接从场景文本渲染，不调用 AI。
+- **Contracts**（`ai/contracts.py`）定义 AI 输出 schema（`KpResponse`、`DirectorPlanDTO`、`NarrationResultDTO`、`CombatRoundSuggestion` 等）和 AI 权限矩阵。
 - **TurnManager**（`turn_manager.py`）管理回合生命周期：`collecting → resolving → resolved`。`ensure_current_turn()` 获取或创建当前回合，`submit_action()` 关联动作到回合并抑制同角色重复提交。`mark_resolving()` 使用条件 UPDATE（`WHERE status='collecting'`）保证幂等。
 - **REST 负责写入**，WebSocket 负责服务器→客户端事件推送。
 - **ProjectionDispatcher** 按 `audience` 拆分：`host` / `player` / `party`（复制为 host+player 两份）/ `system`。投影前经过 SpoilerGuard 安全网扫描。
@@ -102,9 +106,9 @@ Host Big Screen (React) ◀──WebSocket──┘         │
 | 子包 | 路径 | 内容 |
 |------|------|------|
 | `engine/` | `src/server/engine/` | Engine、ResolutionPipeline、ProjectionDispatcher、RuleExecutor、StateService、SpoilerGuard、SkillCheck、BatchCollector、RetroItems |
-| `ai/` | `src/server/ai/` | AiKp、MechanicCompiler、SpoilerControl、RAGStore、HybridEmbedding、AiGateway、MapGenerator、KpMcpClient |
+| `ai/` | `src/server/ai/` | AiKp、MechanicCompiler、Director、Narrator、AiGateway、ProviderConfig、SpoilerControl、RAGStore、HybridEmbedding、MapGenerator、KpMcpClient |
 | `events/` | `src/server/events/` | EventBus（内存 pub/sub）、EventLog（持久化+检查点+可见性过滤）、事件注册表 |
-| `player/` | `src/server/player/` | 6 个 player router（主路由、线索、目标、澄清、重连、档案） |
+| `player/` | `src/server/player/` | 11 个 player router（主路由、actions_v2、campaign_v2、collaboration_contracts、settings、action_reviews、线索、目标、澄清、重连、档案） |
 | `host/` | `src/server/host/` | Host router、WebSocket ConnectionManager、HostStore（内存状态）、HudBuilder |
 | `scenario/` | `src/server/scenario/` | Scenario router、PDF 解析器、XLSX 解析器、质量报告、角色预设 |
 | `rules/` | `src/server/rules/` | COC 规则处理器（技能/理智/战斗/幸运/遭遇）、触发器评估、注册表 |
@@ -181,12 +185,23 @@ NPC 使用稳定的 `npc_id`（SHA-256 哈希 `"{name}:{role}"` 取前 8 位，�
 | `LOG_LEVEL` | `INFO` | 日志级别 |
 | `LOG_FILE` | `""` | 日志文件路径 |
 | `PORT` | `3001` | 服务端口 |
+| `AI_CONFIG_MASTER_KEY` | `""` | 管理员 AI provider 配置加密主密钥（回退到 `JWT_SECRET`） |
+| `OPENAI_API_KEY` | `""` | KP MCP Server 使用的 OpenAI-compatible API 密钥 |
+| `OPENAI_MODEL` | `""` | KP MCP Server 使用的模型名 |
+
+### AI Provider Config 管理
+
+Admin 面板（`router_admin.py`）管理存储在 `ai_provider_configs` 表的外部 AI provider 配置：
+- API 密钥经 Fernet 加密静态存储（HKDF 从 `AI_CONFIG_MASTER_KEY` 或 `JWT_SECRET` 派生密钥）
+- SSRF 防护：校验 API base URL，阻止云 metadata 地址（`100.100.100.200`、`192.0.0.192`），非 localhost HTTP 目标被拒绝
+- `AiProviderConfigStore`（`ai/provider_config.py`）处理 CRUD、激活（同时只有一个 active）、连通性测试和审计日志（`ai_provider_config_audits` 表）
+- Provider 链路顺序由 `AI_PROVIDER_ORDER` 控制（默认 `mcp,deepseek,local`）——运行时逐个尝试，失败则跳过到下一个
 
 ### 应用启动（`main.py` lifespan）
 
-8 步顺序初始化：Database → Embedding → RAGStore → Engine → MechanicCompiler → Redis（可选）→ ResolutionPipeline → SpoilerGuard → GameAgent+GameLoop（可选，需 `AGENT_ENABLED`）。
+11 步顺序初始化：Database → Auth（确保预留 admin 账号）→ Embedding → RAG → Engine → MechanicCompiler → Redis（可选）→ SpoilerGuard → ResolutionPipeline → StateService → GameAgent+GameLoop（可选，需 `AGENT_ENABLED`）。
 
-注册 14 个 router：rooms、player、scenarios、clues、objectives、clarification、reconnect、player_archive、host、ai、rag、auth、map、admin。
+注册 20+ 个 router：rooms、player（含 actions_v2 / campaign_v2 / collaboration_contracts / settings / action_reviews / clues / objectives / clarification / reconnect / archive）、host（含 action_reviews）、scenarios、ai、rag、auth、map、maps、admin、archive、migration。
 
 WebSocket 端点 `/ws?room=&role=&token=&lastSequence=`：`role=host` 走 host handler，`role=player` 走 player handler（含断线重连 catch-up，使用 `_can_player_see_event()` 过滤）。
 
@@ -200,9 +215,15 @@ WebSocket 端点 `/ws?room=&role=&token=&lastSequence=`：`role=host` 走 host h
   → [Host 手动触发 OR 自动批次收集 OR GameLoop.process_turn()]
   → TurnManager.mark_resolving()（条件 UPDATE，幂等）
   → ResolutionPipeline.resolve_action()
+    → Director.build_director_context()：构建完整上下文（角色、场景、runtime package、recent events）
+    → AiGateway.analyze_director_action()：AI 理解意图 → normalize_director_plan() 构建 DirectorPlanDTO
+      → 低置信度（<0.6）或模糊意图 → player_clarification_required → host_exception 路由
+      → 高置信度 → director_plan_validated → 继续结算
     → MechanicCompiler.compile()（DeepSeek API / 本地规则兜底）
     → RuleExecutor.execute()（匹配 trigger mechanics + 执行 COC handler）
     → StateService.apply_change()（结构化状态变更）
+    → AiGateway.narrate_action() → Narrator.validate_narration_result()：严格 fact-ref 校验
+      → 校验失败 → build_verified_narration() 本地回退（直接从场景文本渲染，不调用 AI）
     → SpoilerGuard.review()（输出侧反剧透检查）
     → 写 actions(status='resolved', result=JSON) + INSERT events + Redis 缓存
     → ProjectionDispatcher 推送 s2c_reveal_transaction(host) + s2c_state_patch(player) + s2c_public_observation(party) + s2c_action_completed(player)
@@ -273,6 +294,23 @@ WebSocket 端点 `/ws?room=&role=&token=&lastSequence=`：`role=host` 走 host h
 - **后端：** `tests/server/conftest.py`——`test_db`（连接真实 PG + TRUNCATE 所有表 + RESTART IDENTITY CASCADE）、`engine`、`client`（FastAPI TestClient）fixture。自动重置速率限制器。**需要 PostgreSQL 运行中**（`DATABASE_URL` 环境变量可覆盖）。48 个测试文件覆盖 engine/ai/events/player/host/scenario/rules 各层。
 - **前端：** `src/client/tests/` 使用 vitest。当前覆盖 navigation 路由解析和 tabs 配置。
 
+### Golden Modules（`data/golden_modules/`）
+
+三套原创结构化剧本黄金样本，用于验证剧本导入、RAG、文字地图、预设角色和开房前质量检查：
+
+| 模块 | 人数 | 类型 |
+|------|------|------|
+| `01-solo-tutorial-tide-letter` | 1 人 | 单人教学 |
+| `02-short-team-glass-rain` | 2–4 人 | 短团 |
+| `03-investigation-sandbox-lost-property` | 3–5 人 | 调查沙盒 |
+
+每个模块包含 `module.json`（`ScenarioKnowledgeGraph` + `character_templates` + `quality_report`）和 `README.md`。验证命令：
+
+```bash
+python scripts/run_golden_module_suite.py          # 完整 suite（需 PostgreSQL 运行中）
+python scripts/run_golden_module_suite.py --spec 01-solo-tutorial-tide-letter  # 单个模块
+```
+
 ## 关键设计约束
 
 1. **AI 不写状态**：AI 只输出建议，HP/SAN/物品/线索/场景进度必须 Engine 校验后写入。
@@ -288,3 +326,6 @@ WebSocket 端点 `/ws?room=&role=&token=&lastSequence=`：`role=host` 走 host h
 11. **state_version 仅世界状态变更递增**：动作入队、ready_toggle、空变更不递增版本号。用于客户端乐观锁冲突检测。
 12. **character_runtime_state 是权威来源**：HP/SAN/MP/Luck 以 `character_runtime_state` 为准，`xlsx_data` 仅作初始值导入源。
 13. **事件按 audience 严格过滤**：`_can_player_see_event()` 是唯一可见性判定入口。system 事件仅白名单内对玩家可见。
+14. **AI 叙事必须通过 fact-ref 验证**：Narrator 输出只能引用 runtime_package 中声明的 `allowed_facts`，未声明的 fact_ref 触发本地回退叙事（`build_verified_narration()`），不调用 AI。
+15. **AI Provider 配置加密存储**：管理员添加的外部 AI 提供商 API 密钥必须经 Fernet 加密后存储，且激活前必须通过连通性测试（`test_status = 'passed'`）。
+16. **Director 不写状态**：Director 输出的 `state_patch` 标记为 `advisory_only`，必须经 Engine → StateService 验证后才能生效。
