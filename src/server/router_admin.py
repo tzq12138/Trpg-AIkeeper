@@ -75,6 +75,612 @@ def _require_admin(request: Request) -> dict:
     return dict(account)
 
 
+async def _get_id_list(request: Request, key: str) -> list[str]:
+    payload = await _safe_json(request)
+    value = payload.get(key, [])
+    return _normalize_id_list(value, key)
+
+
+def _normalize_id_list(value: object, field_name: str) -> list[str]:
+    if not isinstance(value, list):
+        raise HTTPException(400, f"{field_name} must be a non-empty list")
+    ids: list[str] = []
+    seen: set[str] = set()
+    for raw_id in value:
+        if not isinstance(raw_id, str):
+            raise HTTPException(400, f"{field_name} entries must be strings")
+        normalized = raw_id.strip()
+        if not normalized:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ids.append(normalized)
+    if not ids:
+        raise HTTPException(400, f"{field_name} must contain at least one non-empty id")
+    return ids
+
+
+def _table_exists(conn, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT to_regclass(%s) IS NOT NULL AS exists",
+        (f"public.{table_name}",),
+    ).fetchone()
+    return bool(row and row.get("exists"))
+
+
+def _in_clause(ids: list[str]) -> tuple[str, tuple[str, ...]]:
+    return "(" + ",".join(["%s"] * len(ids)) + ")", tuple(ids)
+
+
+def _delete_rows_by_ids(
+    conn,
+    table: str,
+    column: str,
+    ids: list[str],
+) -> int:
+    if not ids:
+        return 0
+    if not _table_exists(conn, table):
+        return 0
+    cond, params = _in_clause(ids)
+    conn.execute(f"DELETE FROM {table} WHERE {column} IN {cond}", params)
+    return int(conn.rowcount)
+
+
+def _delete_rows_with_filter(conn, table: str, where_sql: str, params: tuple) -> int:
+    if not _table_exists(conn, table):
+        return 0
+    conn.execute(f"DELETE FROM {table} WHERE {where_sql}", params)
+    return int(conn.rowcount)
+
+
+def _in_chunks(ids: list[str], chunk_size: int = 500) -> list[tuple[str, tuple[str, ...]]]:
+    result = []
+    for idx in range(0, len(ids), chunk_size):
+        part = ids[idx: idx + chunk_size]
+        clause = "(" + ",".join(["%s"] * len(part)) + ")"
+        result.append((clause, tuple(part)))
+    return result
+
+
+def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if not room_ids:
+        return counts
+
+    room_filter = "(" + ",".join(["%s"] * len(room_ids)) + ")"
+    params = tuple(room_ids)
+
+    character_ids = [
+        str(row["character_id"])
+        for row in conn.execute(
+            f"SELECT character_id FROM characters WHERE room_id IN {room_filter}",
+            params,
+        ).fetchall()
+    ]
+    action_ids = [
+        str(row["action_id"])
+        for row in conn.execute(
+            f"SELECT action_id FROM actions WHERE room_id IN {room_filter}",
+            params,
+        ).fetchall()
+    ]
+    encounter_rows = conn.execute(
+        f"SELECT encounter_id FROM encounters WHERE room_id IN {room_filter}",
+        params,
+    ).fetchall()
+    encounter_ids = [str(row["encounter_id"]) for row in encounter_rows]
+    clue_rows = conn.execute(
+        f"SELECT clue_id FROM clues WHERE room_id IN {room_filter}",
+        params,
+    ).fetchall()
+    clue_ids = [str(row["clue_id"]) for row in clue_rows]
+
+    if action_ids:
+        action_filter = "(" + ",".join(["%s"] * len(action_ids)) + ")"
+        action_params = tuple(action_ids)
+        counts["action_review_requests"] = _delete_rows_by_ids(
+            conn, "action_review_requests", "action_id", action_ids
+        )
+        counts["action_status_events"] = _delete_rows_by_ids(
+            conn, "action_status_events", "action_id", action_ids
+        )
+
+    for table in (
+        "compensation_transactions",
+        "room_player_settings",
+        "player_device_sessions",
+        "session_summaries",
+        "session_zero_confirmations",
+        "player_notes",
+        "private_data_access_audits",
+        "evidence_cards",
+        "evidence_links",
+        "action_drafts",
+        "campaign_sessions",
+        "room_scene_state",
+        "room_map_state",
+        "character_map_positions",
+        "character_runtime_state",
+        "document_chunks",
+        "clarifications",
+        "inventory",
+        "objectives",
+        "spoiler_audits",
+        "ai_call_logs",
+        "player_sequences",
+        "checkpoints",
+        "campaign_archives",
+        "events",
+        "actions",
+        "room_turns",
+        "host_states",
+        "room_rule_bindings",
+        "prepared_rule_actions",
+        "resolution_bundles",
+        "player_action_submissions",
+        "collaboration_contracts",
+        "collaboration_contract_participants",
+        "collaboration_contract_drafts",
+        "collaboration_contract_batches",
+        "inventory_transfer_requests",
+        "session_attendance",
+        "session_summary_citations",
+        "evidence_comments",
+        "evidence_references",
+        "encounter_pending_reactions",
+    ):
+        counts[table] = _delete_rows_with_filter(
+            conn, table, f"room_id IN {room_filter}", params
+        )
+
+    if encounter_ids:
+        encounter_filter = "(" + ",".join(["%s"] * len(encounter_ids)) + ")"
+        counts["encounter_participants"] = _delete_rows_with_filter(
+            conn,
+            "encounter_participants",
+            f"encounter_id IN {encounter_filter}",
+            tuple(encounter_ids),
+        )
+
+    if clue_ids:
+        clue_filter = "(" + ",".join(["%s"] * len(clue_ids)) + ")"
+        counts["clue_shares"] = _delete_rows_with_filter(
+            conn,
+            "clue_shares",
+            f"clue_id IN {clue_filter}",
+            tuple(clue_ids),
+        )
+
+    counts["clues"] = _delete_rows_with_filter(
+        conn, "clues", f"room_id IN {room_filter}", params
+    )
+    if character_ids:
+        counts["characters"] = _delete_rows_by_ids(
+            conn, "characters", "character_id", character_ids
+        )
+    counts["rooms"] = _delete_rows_by_ids(conn, "rooms", "room_id", room_ids)
+    return counts
+
+
+def _delete_scenario_rows(conn, scenario_ids: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if not scenario_ids:
+        return counts
+
+    scenario_filter = "(" + ",".join(["%s"] * len(scenario_ids)) + ")"
+    scenario_params = tuple(scenario_ids)
+
+    # Block scenarios currently used by active/in-process rooms.
+    room_rows = conn.execute(
+        f"SELECT room_id FROM rooms WHERE scenario_id IN {scenario_filter}",
+        scenario_params,
+    ).fetchall()
+    room_ids = [str(row["room_id"]) for row in room_rows]
+    if room_ids:
+        raise HTTPException(
+            409,
+            f"scenario in use by room_id={', '.join(room_ids)}",
+        )
+
+    source_doc_rows = conn.execute(
+        f"SELECT source_document_id FROM source_documents WHERE scenario_id IN {scenario_filter}",
+        scenario_params,
+    ).fetchall()
+    source_doc_ids = [str(row["source_document_id"]) for row in source_doc_rows]
+    version_rows = conn.execute(
+        f"SELECT scenario_version_id FROM scenario_versions WHERE scenario_id IN {scenario_filter}",
+        scenario_params,
+    ).fetchall()
+    scenario_version_ids = [str(row["scenario_version_id"]) for row in version_rows]
+
+    if source_doc_ids:
+        source_doc_filter = "(" + ",".join(["%s"] * len(source_doc_ids)) + ")"
+        _delete_rows_with_filter(
+            conn,
+            "source_parts",
+            f"source_document_id IN {source_doc_filter}",
+            tuple(source_doc_ids),
+        )
+        _delete_rows_with_filter(
+            conn,
+            "rule_documents",
+            f"source_document_id IN {source_doc_filter}",
+            tuple(source_doc_ids),
+        )
+
+    if scenario_version_ids:
+        version_filter = "(" + ",".join(["%s"] * len(scenario_version_ids)) + ")"
+        for table in (
+            "scenario_version_sources",
+            "scenario_review_drafts",
+            "scenario_review_patches",
+            "scenario_review_issue_resolutions",
+            "scenario_asset_bindings",
+            "scenario_rule_bindings",
+        ):
+            counts[table] = _delete_rows_with_filter(
+                conn, table, f"scenario_version_id IN {version_filter}", tuple(scenario_version_ids)
+            )
+
+    for table in (
+        "scenario_maps",
+        "character_templates",
+        "import_jobs",
+        "scenario_assets",
+        "spoiler_sensitive_items",
+    ):
+        counts[table] = _delete_rows_with_filter(
+            conn, table, f"scenario_id IN {scenario_filter}", scenario_params
+        )
+    counts["scenario_versions"] = _delete_rows_with_filter(
+        conn, "scenario_versions", "scenario_id IN %s" % scenario_filter, scenario_params
+    )
+
+    counts["source_documents"] = _delete_rows_with_filter(
+        conn, "source_documents", f"scenario_id IN {scenario_filter}", scenario_params
+    )
+    counts["scenarios"] = _delete_rows_with_filter(
+        conn, "scenarios", f"scenario_id IN {scenario_filter}", scenario_params
+    )
+    return counts
+
+
+def _delete_character_rows(conn, character_ids: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if not character_ids:
+        return counts
+    char_filter = "(" + ",".join(["%s"] * len(character_ids)) + ")"
+    char_params = tuple(character_ids)
+
+    action_rows = conn.execute(
+        f"SELECT action_id FROM actions WHERE character_id IN {char_filter}",
+        char_params,
+    ).fetchall()
+    action_ids = [str(row["action_id"]) for row in action_rows]
+
+    if action_ids:
+        action_filter = "(" + ",".join(["%s"] * len(action_ids)) + ")"
+        counts["action_review_requests"] = _delete_rows_with_filter(
+            conn, "action_review_requests", f"action_id IN {action_filter}", tuple(action_ids)
+        )
+        counts["action_status_events"] = _delete_rows_with_filter(
+            conn, "action_status_events", f"action_id IN {action_filter}", tuple(action_ids)
+        )
+
+    clue_rows = conn.execute(
+        f"SELECT clue_id FROM clues WHERE character_id IN {char_filter}",
+        char_params,
+    ).fetchall()
+    clue_ids = [str(row["clue_id"]) for row in clue_rows]
+    if clue_ids:
+        clue_filter = "(" + ",".join(["%s"] * len(clue_ids)) + ")"
+        counts["clue_shares"] = _delete_rows_with_filter(
+            conn,
+            "clue_shares",
+            f"clue_id IN {clue_filter}",
+            tuple(clue_ids),
+        )
+
+    for table in (
+        "actions",
+        "prepared_rule_actions",
+        "resolution_bundles",
+        "action_drafts",
+        "player_action_submissions",
+        "compensation_transactions",
+        "room_player_settings",
+        "player_device_sessions",
+        "campaign_sessions",
+        "session_summaries",
+        "session_attendance",
+        "session_zero_confirmations",
+        "player_notes",
+        "private_data_access_audits",
+        "evidence_cards",
+        "evidence_links",
+        "evidence_comments",
+        "evidence_references",
+        "character_runtime_state",
+        "character_map_positions",
+        "player_sequences",
+        "inventory",
+        "inventory_transfer_requests",
+        "clarifications",
+        "clues",
+        "action_review_requests",
+        "campaign_archives",
+        "objectives",
+        "session_summary_citations",
+        "spoiler_audits",
+        "room_scene_state",
+        "encounter_pending_reactions",
+        "collaboration_contracts",
+        "collaboration_contract_participants",
+        "collaboration_contract_drafts",
+        "collaboration_contract_batches",
+    ):
+        counts[table] = _delete_rows_with_filter(
+            conn, table, f"character_id IN {char_filter}", char_params
+        )
+
+    if clue_ids:
+        clue_filter = "(" + ",".join(["%s"] * len(clue_ids)) + ")"
+        counts["clues"] = _delete_rows_by_ids(
+            conn, "clues", "clue_id", [str(r["clue_id"]) for r in clue_rows]
+        )
+    counts["characters"] = _delete_rows_by_ids(conn, "characters", "character_id", character_ids)
+    return counts
+
+
+def _delete_account_rows(conn, account_ids: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if not account_ids:
+        return counts
+    account_filter = "(" + ",".join(["%s"] * len(account_ids)) + ")"
+    account_params = tuple(account_ids)
+
+    blocked_room_rows = conn.execute(
+        f"SELECT room_id FROM rooms WHERE owner_account_id IN {account_filter}",
+        account_params,
+    ).fetchall()
+    if blocked_room_rows:
+        room_ids = [str(r["room_id"]) for r in blocked_room_rows]
+        raise HTTPException(
+            409,
+            f"account currently owns room(s): {', '.join(room_ids)}"
+        )
+
+    counts["private_data_access_audits"] = _delete_rows_with_filter(
+        conn, "private_data_access_audits", f"host_account_id IN {account_filter}", account_params
+    )
+    counts["characters"] = _delete_rows_with_filter(
+        conn,
+        "characters",
+        "account_id IN " + account_filter,
+        account_params,
+    )
+    counts["rooms"] = _delete_rows_with_filter(
+        conn,
+        "rooms",
+        "owner_account_id IN " + account_filter,
+        account_params,
+    )
+
+    for table in (
+        "ai_provider_config_audits",
+        "action_review_requests",
+        "room_player_settings",
+    ):
+        counts[table] = _delete_rows_with_filter(
+            conn, table, f"created_by IN {account_filter}", account_params
+        )
+
+    counts["accounts"] = _delete_rows_by_ids(conn, "accounts", "account_id", account_ids)
+    return counts
+
+
+def _merge_delete_counts(
+    target: dict[str, int],
+    source: dict[str, int],
+) -> None:
+    for key, value in source.items():
+        target[key] = target.get(key, 0) + value
+
+
+def _batch_delete_response(
+    requested_ids: list[str],
+    deleted_ids: list[str],
+    not_found_ids: list[str],
+    counts: dict[str, int],
+    errors: list[dict[str, str]],
+):
+    return {
+        "requested_ids": requested_ids,
+        "deleted_ids": deleted_ids,
+        "not_found_ids": not_found_ids,
+        "deleted": counts,
+        "errors": errors,
+    }
+
+
+# 鈹€鈹€ Admin Entity Delete 鈹€鈹€
+
+@router.delete("/rooms/{room_id}")
+async def delete_room(request: Request, room_id: str):
+    _require_admin(request)
+    conn = request.app.state.db
+    room = conn.execute("SELECT 1 FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
+    if not room:
+        raise HTTPException(404, "銆婏oom涓嶅瓨鍦ㄦ瘡")
+    with conn.transaction() as tx:
+        counts = _delete_room_rows(tx, [room_id])
+    return {"status": "deleted", "deleted_ids": [room_id], "counts": counts}
+
+
+@router.post("/rooms/batch-delete")
+async def delete_rooms(request: Request):
+    _require_admin(request)
+    ids = await _get_id_list(request, "ids")
+    conn = request.app.state.db
+    found_ids, not_found_ids = _split_found_and_missing(conn, "rooms", "room_id", ids)
+
+    deleted_ids: list[str] = []
+    deleted_counts: dict[str, int] = {}
+    errors: list[dict[str, str]] = []
+    for room_id in found_ids:
+        try:
+            with conn.transaction() as tx:
+                counts = _delete_room_rows(tx, [room_id])
+            _merge_delete_counts(deleted_counts, counts)
+            deleted_ids.append(room_id)
+        except HTTPException as exc:
+            errors.append({"id": room_id, "error": str(exc.detail), "status": str(exc.status_code)})
+        except Exception as exc:
+            logger.exception("Failed to delete room %s", room_id)
+            errors.append({"id": room_id, "error": str(exc), "status": "500"})
+
+    return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
+
+
+@router.delete("/scenarios/{scenario_id}")
+async def delete_scenario(request: Request, scenario_id: str):
+    _require_admin(request)
+    conn = request.app.state.db
+    scenario = conn.execute("SELECT 1 FROM scenarios WHERE scenario_id = %s", (scenario_id,)).fetchone()
+    if not scenario:
+        raise HTTPException(404, "鍓ф湰涓嶅瓨鍦?")
+    with conn.transaction() as tx:
+        counts = _delete_scenario_rows(tx, [scenario_id])
+    return {"status": "deleted", "deleted_ids": [scenario_id], "counts": counts}
+
+
+@router.post("/scenarios/batch-delete")
+async def delete_scenarios(request: Request):
+    _require_admin(request)
+    ids = await _get_id_list(request, "ids")
+    conn = request.app.state.db
+    found_ids, not_found_ids = _split_found_and_missing(conn, "scenarios", "scenario_id", ids)
+
+    deleted_ids: list[str] = []
+    deleted_counts: dict[str, int] = {}
+    errors: list[dict[str, str]] = []
+    for scenario_id in found_ids:
+        try:
+            with conn.transaction() as tx:
+                counts = _delete_scenario_rows(tx, [scenario_id])
+            _merge_delete_counts(deleted_counts, counts)
+            deleted_ids.append(scenario_id)
+        except HTTPException as exc:
+            errors.append({"id": scenario_id, "error": str(exc.detail), "status": str(exc.status_code)})
+        except Exception as exc:
+            logger.exception("Failed to delete scenario %s", scenario_id)
+            errors.append({"id": scenario_id, "error": str(exc), "status": "500"})
+
+    return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
+
+
+@router.delete("/characters/{character_id}")
+async def delete_character(request: Request, character_id: str):
+    _require_admin(request)
+    conn = request.app.state.db
+    row = conn.execute("SELECT 1 FROM characters WHERE character_id = %s", (character_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "瑙掕壊涓嶅瓨鍦?")
+    with conn.transaction() as tx:
+        counts = _delete_character_rows(tx, [character_id])
+    return {"status": "deleted", "deleted_ids": [character_id], "counts": counts}
+
+
+@router.post("/characters/batch-delete")
+async def delete_characters(request: Request):
+    _require_admin(request)
+    ids = await _get_id_list(request, "ids")
+    conn = request.app.state.db
+    found_ids, not_found_ids = _split_found_and_missing(conn, "characters", "character_id", ids)
+
+    deleted_ids: list[str] = []
+    deleted_counts: dict[str, int] = {}
+    errors: list[dict[str, str]] = []
+    for character_id in found_ids:
+        try:
+            with conn.transaction() as tx:
+                counts = _delete_character_rows(tx, [character_id])
+            _merge_delete_counts(deleted_counts, counts)
+            deleted_ids.append(character_id)
+        except HTTPException as exc:
+            errors.append({"id": character_id, "error": str(exc.detail), "status": str(exc.status_code)})
+        except Exception as exc:
+            logger.exception("Failed to delete character %s", character_id)
+            errors.append({"id": character_id, "error": str(exc), "status": "500"})
+
+    return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
+
+
+@router.delete("/accounts/{account_id}")
+async def delete_account(request: Request, account_id: str):
+    _require_admin(request)
+    conn = request.app.state.db
+    row = conn.execute(
+        "SELECT account_id, username FROM accounts WHERE account_id = %s",
+        (account_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "璐﹀彿涓嶅瓨鍦ㄣ?")
+    if row.get("username") == "admin":
+        raise HTTPException(409, "涓氬姟绠＄悊鍛樿处鍙蜂簡鍙琚")
+    with conn.transaction() as tx:
+        counts = _delete_account_rows(tx, [account_id])
+    return {"status": "deleted", "deleted_ids": [account_id], "counts": counts}
+
+
+@router.post("/accounts/batch-delete")
+async def delete_accounts(request: Request):
+    _require_admin(request)
+    ids = await _get_id_list(request, "ids")
+    conn = request.app.state.db
+    found_ids, not_found_ids = _split_found_and_missing(conn, "accounts", "account_id", ids)
+    found_rows = conn.execute(
+        f"SELECT account_id, username FROM accounts WHERE account_id IN { '(' + ','.join(['%s'] * len(found_ids)) + ')' if found_ids else '()' }",
+        tuple(found_ids),
+    ).fetchall() if found_ids else []
+    protected_accounts = {row["account_id"] for row in found_rows if row.get("username") == "admin"}
+
+    deleted_ids: list[str] = []
+    deleted_counts: dict[str, int] = {}
+    errors: list[dict[str, str]] = []
+    for account_id in found_ids:
+        if account_id in protected_accounts:
+            errors.append({"id": account_id, "error": "涓氬姟绠＄悊鍛樿处鍙蜂緭鍏ョ紪鐮佹妧", "status": "409"})
+            continue
+        try:
+            with conn.transaction() as tx:
+                counts = _delete_account_rows(tx, [account_id])
+            _merge_delete_counts(deleted_counts, counts)
+            deleted_ids.append(account_id)
+        except HTTPException as exc:
+            errors.append({"id": account_id, "error": str(exc.detail), "status": str(exc.status_code)})
+        except Exception as exc:
+            logger.exception("Failed to delete account %s", account_id)
+            errors.append({"id": account_id, "error": str(exc), "status": "500"})
+
+    return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
+
+
+def _split_found_and_missing(conn, table: str, id_field: str, ids: list[str]) -> tuple[list[str], list[str]]:
+    if not ids:
+        return [], []
+    placeholder = "(" + ",".join(["%s"] * len(ids)) + ")"
+    rows = conn.execute(
+        f"SELECT {id_field} FROM {table} WHERE {id_field} IN {placeholder}",
+        tuple(ids),
+    ).fetchall()
+    found = [str(row[id_field]) for row in rows]
+    missing = [id_ for id_ in ids if id_ not in found]
+    return found, missing
+
+
 # ── Overview ──
 
 @router.get("/acceptance")
