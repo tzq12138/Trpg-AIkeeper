@@ -151,6 +151,149 @@ def _in_chunks(ids: list[str], chunk_size: int = 500) -> list[tuple[str, tuple[s
     return result
 
 
+def _json_value(value, fallback):
+    if isinstance(value, (dict, list)):
+        return value
+    if value in (None, ""):
+        return fallback
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _replace_archive_identifiers(value, replacements: dict[str, str]):
+    if isinstance(value, str):
+        result = value
+        for source, replacement in replacements.items():
+            result = result.replace(source, replacement)
+        return result
+    if isinstance(value, list):
+        return [
+            _replace_archive_identifiers(item, replacements)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _replace_archive_identifiers(item, replacements)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _pseudonymize_account_archives(conn, characters: list[dict]) -> int:
+    if not characters or not _table_exists(conn, "campaign_archives"):
+        return 0
+    room_ids = sorted({str(item["room_id"]) for item in characters})
+    room_filter, room_params = _in_clause(room_ids)
+    archives = conn.execute(
+        "SELECT archive_id, summary, highlights, character_arcs "
+        f"FROM campaign_archives WHERE room_id IN {room_filter}",
+        room_params,
+    ).fetchall()
+    replacements: dict[str, str] = {}
+    deleted_characters: dict[str, dict[str, str]] = {}
+    for character in characters:
+        character_id = str(character["character_id"])
+        player_name = str(character.get("player_name") or "").strip()
+        deleted_characters[character_id] = {
+            "player_name": player_name,
+            "pseudonym": f"deleted-character:{uuid.uuid4().hex}",
+        }
+        replacements[character_id] = "已删除玩家"
+        if player_name:
+            replacements[player_name] = "已删除玩家"
+
+    updated = 0
+    for archive in archives:
+        highlights = _json_value(archive.get("highlights"), [])
+        character_arcs = _json_value(archive.get("character_arcs"), [])
+        sanitized_arcs = []
+        for raw_arc in character_arcs if isinstance(character_arcs, list) else []:
+            if not isinstance(raw_arc, dict):
+                sanitized_arcs.append(
+                    _replace_archive_identifiers(raw_arc, replacements)
+                )
+                continue
+            arc_character_id = str(raw_arc.get("character_id") or "")
+            target = deleted_characters.get(arc_character_id)
+            if target is None and not arc_character_id:
+                arc_player_name = str(raw_arc.get("player_name") or "")
+                target = next(
+                    (
+                        item
+                        for item in deleted_characters.values()
+                        if item["player_name"]
+                        and item["player_name"] == arc_player_name
+                    ),
+                    None,
+                )
+            if target is None:
+                sanitized_arcs.append(
+                    _replace_archive_identifiers(raw_arc, replacements)
+                )
+                continue
+            public_arc = {
+                "character_id": target["pseudonym"],
+                "player_name": "已删除玩家",
+            }
+            if "total_actions" in raw_arc:
+                public_arc["total_actions"] = int(raw_arc.get("total_actions") or 0)
+            sanitized_arcs.append(public_arc)
+
+        conn.execute(
+            """
+            UPDATE campaign_archives
+            SET summary = %s, highlights = %s, character_arcs = %s
+            WHERE archive_id = %s
+            """,
+            (
+                _replace_archive_identifiers(
+                    str(archive.get("summary") or ""),
+                    replacements,
+                ),
+                json.dumps(
+                    _replace_archive_identifiers(highlights, replacements),
+                    ensure_ascii=False,
+                ),
+                json.dumps(sanitized_arcs, ensure_ascii=False),
+                archive["archive_id"],
+            ),
+        )
+        updated += int(conn.rowcount)
+    return updated
+
+
+def _unlink_action_audits(conn, action_ids: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if not action_ids:
+        return counts
+    action_filter, action_params = _in_clause(action_ids)
+    if _table_exists(conn, "spoiler_audits"):
+        conn.execute(
+            f"""
+            UPDATE spoiler_audits
+            SET action_id = '', original_text = '', final_text = '',
+                violations = %s, unlock_snapshot = %s
+            WHERE action_id IN {action_filter}
+            """,
+            (json.dumps([]), json.dumps({}), *action_params),
+        )
+        counts["spoiler_audits_scrubbed"] = int(conn.rowcount)
+    if _table_exists(conn, "ai_call_logs"):
+        conn.execute(
+            f"""
+            UPDATE ai_call_logs
+            SET action_id = NULL, response_summary = '', error_message = '',
+                spoiler_hit_items = %s
+            WHERE action_id IN {action_filter}
+            """,
+            (json.dumps([]), *action_params),
+        )
+        counts["ai_call_logs_minimized"] = int(conn.rowcount)
+    return counts
+
+
 def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     if not room_ids:
@@ -188,7 +331,11 @@ def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
     # character-level cleanup so transfers and collaboration records that use
     # character ids are not left behind.
     if character_ids:
-        for table, count in _delete_character_rows(conn, character_ids).items():
+        for table, count in _delete_character_rows(
+            conn,
+            character_ids,
+            preserve_audits=True,
+        ).items():
             counts[table] = counts.get(table, 0) + count
 
     if action_ids:
@@ -197,6 +344,34 @@ def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
         )
         counts["action_status_events"] = _delete_rows_by_ids(
             conn, "action_status_events", "action_id", action_ids
+        )
+    if _table_exists(conn, "spoiler_audits"):
+        conn.execute(
+            f"""
+            UPDATE spoiler_audits
+            SET original_text = '', final_text = '',
+                violations = %s, unlock_snapshot = %s
+            WHERE room_id IN {room_filter}
+            """,
+            (json.dumps([]), json.dumps({}), *params),
+        )
+        counts["spoiler_audits_scrubbed"] = max(
+            counts.get("spoiler_audits_scrubbed", 0),
+            int(conn.rowcount),
+        )
+    if _table_exists(conn, "ai_call_logs"):
+        conn.execute(
+            f"""
+            UPDATE ai_call_logs
+            SET action_id = NULL, response_summary = '', error_message = '',
+                spoiler_hit_items = %s
+            WHERE room_id IN {room_filter}
+            """,
+            (json.dumps([]), *params),
+        )
+        counts["ai_call_logs_minimized"] = max(
+            counts.get("ai_call_logs_minimized", 0),
+            int(conn.rowcount),
         )
 
     for table in (
@@ -219,11 +394,8 @@ def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
         "clarifications",
         "inventory",
         "objectives",
-        "spoiler_audits",
-        "ai_call_logs",
         "player_sequences",
         "checkpoints",
-        "campaign_archives",
         "events",
         "actions",
         "room_turns",
@@ -353,7 +525,12 @@ def _delete_scenario_rows(conn, scenario_ids: list[str]) -> dict[str, int]:
     return counts
 
 
-def _delete_character_rows(conn, character_ids: list[str]) -> dict[str, int]:
+def _delete_character_rows(
+    conn,
+    character_ids: list[str],
+    *,
+    preserve_audits: bool = False,
+) -> dict[str, int]:
     counts: dict[str, int] = {}
     if not character_ids:
         return counts
@@ -453,12 +630,15 @@ def _delete_character_rows(conn, character_ids: list[str]) -> dict[str, int]:
     if action_ids:
         action_filter = "(" + ",".join(["%s"] * len(action_ids)) + ")"
         action_params = tuple(action_ids)
-        counts["spoiler_audits"] = _delete_rows_with_filter(
-            conn, "spoiler_audits", f"action_id IN {action_filter}", action_params
-        )
-        counts["ai_call_logs"] = _delete_rows_with_filter(
-            conn, "ai_call_logs", f"action_id IN {action_filter}", action_params
-        )
+        if preserve_audits:
+            _merge_delete_counts(counts, _unlink_action_audits(conn, action_ids))
+        else:
+            counts["spoiler_audits"] = _delete_rows_with_filter(
+                conn, "spoiler_audits", f"action_id IN {action_filter}", action_params
+            )
+            counts["ai_call_logs"] = _delete_rows_with_filter(
+                conn, "ai_call_logs", f"action_id IN {action_filter}", action_params
+            )
         counts["encounter_pending_reactions"] += _delete_rows_with_filter(
             conn,
             "encounter_pending_reactions",
@@ -493,22 +673,65 @@ def _delete_account_rows(conn, account_ids: list[str]) -> dict[str, int]:
             f"account currently owns room(s): {', '.join(room_ids)}"
         )
 
-    character_ids = [
-        str(row["character_id"])
+    character_rows = [
+        dict(row)
         for row in conn.execute(
-            f"SELECT character_id FROM characters WHERE account_id IN {account_filter}",
+            f"SELECT character_id, room_id, player_name "
+            f"FROM characters WHERE account_id IN {account_filter}",
             account_params,
         ).fetchall()
     ]
+    character_ids = [str(row["character_id"]) for row in character_rows]
+    counts["campaign_archives_pseudonymized"] = _pseudonymize_account_archives(
+        conn,
+        character_rows,
+    )
     if character_ids:
-        for table, count in _delete_character_rows(conn, character_ids).items():
+        for table, count in _delete_character_rows(
+            conn,
+            character_ids,
+            preserve_audits=True,
+        ).items():
             counts[table] = counts.get(table, 0) + count
 
     counts["private_data_access_audits"] = _delete_rows_with_filter(
         conn, "private_data_access_audits", f"host_account_id IN {account_filter}", account_params
     )
-    # Provider configuration audits record actor_id but deliberately do not
-    # reference accounts. Keep those audit records after the account is gone.
+    for account_id in account_ids:
+        tombstone = f"deleted-account:{uuid.uuid4().hex}"
+        if _table_exists(conn, "ai_provider_config_audits"):
+            conn.execute(
+                "UPDATE ai_provider_config_audits SET actor_id = %s WHERE actor_id = %s",
+                (tombstone, account_id),
+            )
+            counts["ai_provider_config_audits_tombstoned"] = (
+                counts.get("ai_provider_config_audits_tombstoned", 0)
+                + int(conn.rowcount)
+            )
+        if _table_exists(conn, "ai_provider_configs"):
+            conn.execute(
+                "UPDATE ai_provider_configs SET created_by = %s WHERE created_by = %s",
+                (tombstone, account_id),
+            )
+            config_rows = int(conn.rowcount)
+            conn.execute(
+                "UPDATE ai_provider_configs SET updated_by = %s WHERE updated_by = %s",
+                (tombstone, account_id),
+            )
+            counts["ai_provider_configs_tombstoned"] = (
+                counts.get("ai_provider_configs_tombstoned", 0)
+                + config_rows
+                + int(conn.rowcount)
+            )
+        if _table_exists(conn, "admin_data_purge_audits"):
+            conn.execute(
+                "UPDATE admin_data_purge_audits SET actor_id = %s WHERE actor_id = %s",
+                (tombstone, account_id),
+            )
+            counts["admin_data_purge_audits_tombstoned"] = (
+                counts.get("admin_data_purge_audits_tombstoned", 0)
+                + int(conn.rowcount)
+            )
     counts["accounts"] = _delete_rows_by_ids(conn, "accounts", "account_id", account_ids)
     return counts
 
@@ -698,6 +921,73 @@ async def delete_accounts(request: Request):
             errors.append({"id": account_id, "error": str(exc), "status": "500"})
 
     return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
+
+
+@router.post("/campaign-archives/purge")
+async def purge_campaign_archives(request: Request):
+    admin = _require_admin(request)
+    payload = await _safe_json(request)
+    if payload.get("confirm") is not True:
+        raise HTTPException(400, "请确认后再执行彻底清除")
+    if payload.get("purge_confirmation") != "PURGE_ARCHIVES":
+        raise HTTPException(400, "请输入 PURGE_ARCHIVES 完成二次确认")
+    reason = str(payload.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "彻底清除必须填写原因")
+    archive_ids = _normalize_id_list(payload.get("archive_ids", []), "archive_ids")
+    audit_reason = reason[:500]
+    for archive_id in sorted(archive_ids, key=len, reverse=True):
+        audit_reason = audit_reason.replace(archive_id, "[redacted-archive]")
+    conn = request.app.state.db
+    found_ids, not_found_ids = _split_found_and_missing(
+        conn,
+        "campaign_archives",
+        "archive_id",
+        archive_ids,
+    )
+    deleted_count = 0
+    if found_ids:
+        archive_filter, archive_params = _in_clause(found_ids)
+        with conn.transaction() as tx:
+            tx.execute(
+                f"DELETE FROM campaign_archives WHERE archive_id IN {archive_filter}",
+                archive_params,
+            )
+            deleted_count = int(tx.rowcount)
+            target_hashes = [
+                hashlib.sha256(
+                    f"{uuid.uuid4().hex}:{archive_id}".encode("utf-8")
+                ).hexdigest()
+                for archive_id in found_ids
+            ]
+            tx.execute(
+                """
+                INSERT INTO admin_data_purge_audits (
+                    audit_id, action, actor_id, target_count, details
+                ) VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    f"purge-audit-{uuid.uuid4().hex}",
+                    "campaign_archive_full_purge",
+                    admin["account_id"],
+                    deleted_count,
+                    json.dumps(
+                        {
+                            "reason": audit_reason,
+                            "target_hashes": target_hashes,
+                            "retention_days": 365,
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+    return _batch_delete_response(
+        archive_ids,
+        found_ids,
+        not_found_ids,
+        {"campaign_archives": deleted_count},
+        [],
+    )
 
 
 def _split_found_and_missing(conn, table: str, id_field: str, ids: list[str]) -> tuple[list[str], list[str]]:

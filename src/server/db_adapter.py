@@ -1344,6 +1344,19 @@ CREATE TABLE IF NOT EXISTS ai_provider_config_audits (
 CREATE INDEX IF NOT EXISTS idx_ai_provider_config_audits_created
     ON ai_provider_config_audits(created_at);
 
+CREATE TABLE IF NOT EXISTS admin_data_purge_audits (
+    audit_id TEXT PRIMARY KEY,
+    action TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    target_count INTEGER NOT NULL DEFAULT 0,
+    details JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMP NOT NULL DEFAULT (NOW() + INTERVAL '365 days')
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_data_purge_audits_created
+    ON admin_data_purge_audits(created_at);
+
 CREATE TABLE IF NOT EXISTS spoiler_sensitive_items (
     item_id TEXT PRIMARY KEY,
     scenario_id TEXT NOT NULL,

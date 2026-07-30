@@ -593,6 +593,19 @@ CREATE TABLE IF NOT EXISTS ai_provider_config_audits (
 CREATE INDEX IF NOT EXISTS idx_ai_provider_config_audits_created
     ON ai_provider_config_audits(created_at);
 
+CREATE TABLE IF NOT EXISTS admin_data_purge_audits (
+    audit_id TEXT PRIMARY KEY,
+    action TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    target_count INTEGER NOT NULL DEFAULT 0,
+    details JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMP NOT NULL DEFAULT (NOW() + INTERVAL '365 days')
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_data_purge_audits_created
+    ON admin_data_purge_audits(created_at);
+
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON document_chunks(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_room ON document_chunks(room_id);
 CREATE INDEX IF NOT EXISTS idx_scenario_versions_scenario_status ON scenario_versions(scenario_id, status);

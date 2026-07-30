@@ -272,6 +272,73 @@ class DirectorCitationDTO(BaseModel):
     location: str | None = None
 
 
+_DIRECTOR_NESTED_DENIED_KEYS = {
+    "absolutepath",
+    "accountid",
+    "actionid",
+    "apikey",
+    "authorization",
+    "characterid",
+    "fulltext",
+    "ownertoken",
+    "passwordhash",
+    "playerid",
+    "playername",
+    "playertoken",
+    "rawboundarytext",
+    "rawsafetytext",
+    "roomid",
+    "safetyreason",
+    "scenarioversionid",
+    "sourcepartid",
+    "storagepath",
+}
+
+
+def _validate_director_nested_value(value: Any, *, depth: int = 0) -> Any:
+    if depth > 6:
+        raise ValueError("director nested payload exceeds maximum depth")
+    if isinstance(value, dict):
+        if len(value) > 40:
+            raise ValueError("director nested object is too large")
+        result = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            if len(key) > 80:
+                raise ValueError("director nested key is too long")
+            normalized = "".join(
+                character
+                for character in key.lower()
+                if character.isalnum()
+            )
+            if (
+                normalized in _DIRECTOR_NESTED_DENIED_KEYS
+                or normalized.endswith("token")
+                or normalized.endswith("secret")
+                or normalized.endswith("ciphertext")
+            ):
+                raise ValueError("director nested payload contains sensitive key")
+            result[key] = _validate_director_nested_value(
+                item,
+                depth=depth + 1,
+            )
+        return result
+    if isinstance(value, list):
+        if len(value) > 40:
+            raise ValueError("director nested list is too large")
+        return [
+            _validate_director_nested_value(item, depth=depth + 1)
+            for item in value
+        ]
+    if isinstance(value, str):
+        if len(value) > 4000:
+            raise ValueError("director nested string is too long")
+        return value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    raise ValueError("director nested payload must be JSON-compatible")
+
+
 class DirectorBasisRefDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source: str
@@ -284,6 +351,11 @@ class DirectorPreconditionDTO(BaseModel):
     expected: Any = None
     path: str | None = None
     scope: str | None = None
+
+    @field_validator("expected")
+    @classmethod
+    def _expected_is_safe_json(cls, value):
+        return _validate_director_nested_value(value)
 
 
 class DirectorPermissionDTO(BaseModel):
@@ -300,6 +372,11 @@ class DirectorMechanicPlanDTO(BaseModel):
     difficulty: str | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("parameters")
+    @classmethod
+    def _parameters_are_safe_json(cls, value):
+        return _validate_director_nested_value(value)
+
 
 class DirectorStatePatchDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -307,12 +384,22 @@ class DirectorStatePatchDTO(BaseModel):
     path: str = Field(min_length=1)
     value: Any = None
 
+    @field_validator("value")
+    @classmethod
+    def _value_is_safe_json(cls, value):
+        return _validate_director_nested_value(value)
+
 
 class DirectorEventPlanDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: EngineEventType
     audience: Audience | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("payload")
+    @classmethod
+    def _payload_is_safe_json(cls, value):
+        return _validate_director_nested_value(value)
 
 
 class DirectorSemanticProgressionDTO(BaseModel):
@@ -334,6 +421,11 @@ class DirectorActionStepDTO(BaseModel):
         "always", "previous_step_success", "previous_step_failure"
     ] = "previous_step_success"
     on_previous_failure: Literal["cancel", "continue"] = "cancel"
+
+    @field_validator("params")
+    @classmethod
+    def _params_are_safe_json(cls, value):
+        return _validate_director_nested_value(value)
 
 
 class DirectorPlanDTO(BaseModel):
@@ -364,6 +456,15 @@ class DirectorPlanDTO(BaseModel):
     exception_reason: str | None = None
     narration_mode: str = "summarize"
     analysis_source: Literal["configured_provider", "fallback_provider", "local_fallback"] = "fallback_provider"
+
+    @field_validator(
+        "npc_reactions",
+        "time_impact",
+        "clarification_options",
+    )
+    @classmethod
+    def _nested_output_is_safe_json(cls, value):
+        return _validate_director_nested_value(value)
 
 
 class NarrationResultDTO(BaseModel):

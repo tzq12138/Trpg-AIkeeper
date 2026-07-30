@@ -711,19 +711,26 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
     room_id = str(uuid.uuid4())[:8]
     owner_token = str(uuid.uuid4())
     owner_account_id = account["account_id"]
-    conn.execute(
-        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, "
-        "owner_token, owner_account_id) VALUES (%s, %s, %s, %s, %s, %s)",
-        (
+    from ..ai.ai_config import pin_room_ai_runtime
+    with conn.transaction() as tx:
+        tx.execute(
+            "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, "
+            "owner_token, owner_account_id) VALUES (%s, %s, %s, %s, %s, %s)",
+            (
+                room_id,
+                scenario_id,
+                scenario_version_id,
+                runtime_package_version_id,
+                owner_token,
+                owner_account_id,
+            ),
+        )
+        pin_room_ai_runtime(
+            tx,
             room_id,
-            scenario_id,
-            scenario_version_id,
-            runtime_package_version_id,
-            owner_token,
-            owner_account_id,
-        ),
-    )
-    conn.commit()
+            scenario_version_id=scenario_version_id,
+            runtime_package_version_id=runtime_package_version_id,
+        )
 
     # Write audit event for highRisk/blocked override
     if quality_level in ("highRisk", "blocked") and role == "admin":

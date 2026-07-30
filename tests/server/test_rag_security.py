@@ -542,6 +542,25 @@ class TestRuleSetLifecycle:
             ("rag-room", rule_set_version_id),
         ).fetchone()
         assert binding["priority"] == 250
+        test_db.execute(
+            "INSERT INTO host_states (room_id, state) VALUES ('rag-room', ?) "
+            "ON CONFLICT (room_id) DO UPDATE SET state = EXCLUDED.state",
+            (json.dumps({"ai_config": {"runtime_binding": {"locked": True}}}),),
+        )
+
+        rejected_change = client_with_data.post(
+            "/api/rag/rule-bindings/rooms/rag-room",
+            json={"rule_set_version_id": rule_set_version_id, "priority": 300},
+            headers={"Authorization": f"Bearer {host_token}"},
+        )
+
+        assert rejected_change.status_code == 409
+        assert rejected_change.json()["detail"] == "房间规则运行版本已固定，不能静默切换"
+        assert test_db.execute(
+            "SELECT priority FROM room_rule_bindings "
+            "WHERE room_id = ? AND rule_set_version_id = ?",
+            ("rag-room", rule_set_version_id),
+        ).fetchone()["priority"] == 250
 
     def test_rule_set_rejects_unverified_license(self, client_with_data):
         token = _login(client_with_data, "admin", "test123")

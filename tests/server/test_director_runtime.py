@@ -135,6 +135,60 @@ def test_director_plan_dto_rejects_loose_state_patch_and_citations():
         )
 
 
+def test_director_plan_dto_rejects_sensitive_nested_provider_output():
+    with pytest.raises(ValidationError):
+        DirectorPlanDTO(
+            interpreted_intent="inspect the visible station",
+            intent_type="dialogue",
+            npc_reactions=[{
+                "summary": "ordinary reaction",
+                "storage_path": "C:/private/provider-output.txt",
+            }],
+        )
+
+
+def test_director_rule_version_only_uses_live_binding_for_explicit_v1(test_db):
+    from src.server.ai.director import _rule_version
+
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token, player_experience_version) "
+        "VALUES ('director-missing-binding-room', 'token', 'v2')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_sets "
+        "(rule_set_id, name, slug, system, description, is_base, "
+        "license_type, status, created_by) "
+        "VALUES ('director-live-rules', 'Live', 'director-live-rules', "
+        "'coc7', '', FALSE, 'open', 'published', 'tester')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_set_versions "
+        "(rule_set_version_id, rule_set_id, version_number, label, status, "
+        "metadata, created_by) VALUES ('director-live-v1', "
+        "'director-live-rules', 1, 'v1', 'published', '{}', 'tester')"
+    )
+    test_db.execute(
+        "INSERT INTO room_rule_bindings "
+        "(room_id, rule_set_version_id, priority) "
+        "VALUES ('director-missing-binding-room', 'director-live-v1', 100)"
+    )
+
+    assert _rule_version(
+        test_db,
+        "director-missing-binding-room",
+    ) == "unversioned"
+
+    test_db.execute(
+        "UPDATE rooms SET player_experience_version = 'v1' "
+        "WHERE room_id = 'director-missing-binding-room'"
+    )
+
+    assert _rule_version(
+        test_db,
+        "director-missing-binding-room",
+    ) == "director-live-v1"
+
+
 def test_director_plan_exposes_sanitized_composite_steps_to_confirmation(
     client,
     test_db,
@@ -650,6 +704,63 @@ def test_director_context_excludes_room_tokens_and_other_player_private_events(c
     assert "仅 Host 可见的异常原因。" not in rendered
     assert "owner_token" not in context["room"]
     assert "player_token" not in rendered
+
+
+def test_director_context_only_includes_hidden_facts_relevant_to_current_scene(
+    client,
+    test_db,
+):
+    from src.server.ai.director import build_director_context
+
+    room_id, character_id, _ = _setup_player(client, test_db)
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    test_db.execute(
+        "INSERT INTO room_scene_state "
+        "(room_id, current_scene, visited_scenes, version) "
+        "VALUES (%s, 'station', '[\"station\"]', 1)",
+        (room_id,),
+    )
+    for content_item_id, logical_key, title in [
+        ("hidden-current", "station", "站台管理员隐瞒了末班车时间"),
+        ("hidden-remote", "sealed-vault", "遥远保险库中的幕后真相"),
+    ]:
+        test_db.execute(
+            "INSERT INTO content_items "
+            "(content_item_id, scenario_version_id, item_type, logical_key, "
+            "title, visibility, checksum) "
+            "VALUES (%s, %s, 'fact', %s, %s, 'hidden', %s)",
+            (
+                content_item_id,
+                scenario_version_id,
+                logical_key,
+                title,
+                f"sha-{content_item_id}",
+            ),
+        )
+    test_db.commit()
+    character = dict(test_db.execute(
+        "SELECT * FROM characters WHERE character_id = %s",
+        (character_id,),
+    ).fetchone())
+    draft = ActionDraftDTO(
+        intent_type="dialogue",
+        declared_intent="我询问站台管理员末班车时间。",
+        understanding_summary="询问末班车时间",
+        risk="low",
+        confidence=0.8,
+        analysis_source="local_fallback",
+    )
+
+    context = build_director_context(test_db, character, draft)
+
+    assert [fact["logical_key"] for fact in context["hidden_facts"]] == ["station"]
+    assert "遥远保险库中的幕后真相" not in json.dumps(
+        context,
+        ensure_ascii=False,
+    )
 
 
 def test_low_confidence_director_returns_clarification_options_and_cannot_confirm(client, test_db):

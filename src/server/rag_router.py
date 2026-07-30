@@ -322,6 +322,12 @@ async def publish_rule_set_version(request: Request, rule_set_version_id: str):
 @router.post('/rule-bindings/rooms/{room_id}')
 async def bind_room_rule_version(request: Request, room_id: str, body: dict):
     _require_auth_for_room(request, room_id, write=True)
+    from .ai.ai_config import get_room_ai_config
+
+    room_ai_config = get_room_ai_config(request.app.state.db, room_id) or {}
+    runtime_binding = room_ai_config.get("runtime_binding")
+    if isinstance(runtime_binding, dict) and runtime_binding.get("locked") is True:
+        raise HTTPException(409, "房间规则运行版本已固定，不能静默切换")
     rule_set_version_id = str(body.get("rule_set_version_id") or "").strip()
     version = request.app.state.db.execute(
         "SELECT status FROM rule_set_versions WHERE rule_set_version_id = %s",

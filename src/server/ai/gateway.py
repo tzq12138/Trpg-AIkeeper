@@ -1,5 +1,6 @@
 """AiGateway — unified AI call entry point with per-task validation and provider chain."""
 
+import hashlib
 import json
 import logging
 import time
@@ -39,6 +40,91 @@ RUNTIME_CONTRACT_REPAIR_PROMPT = """你是TRPG剧本运行时证据契约修复�
 每个 ending 必须使用已有 ending_id，citation 必须是 {"source_ref":"page:N","page_number":N} 形式的对象。
 completion_conditions 只能使用 all_clues、any_clues、entered_scenes、event_types、room_status；数组必须非空，room_status 只能为 active，event_types 只能为 s2c_clue_discovered、s2c_scene_sync、s2c_action_completed 或 s2c_encounter_resolved。
 无法从来源验证的字段必须省略，绝不能用文字引用、虚构事件名或猜测路径。"""
+
+_DIRECTOR_M0_RUNTIME_V1_PROMPT = (
+    "You are AI-Keeper Director. Return structured JSON only. "
+    "Do not directly mutate authoritative game state; state_patch is advisory only. "
+    "Required fields include interpreted_intent, intent_type, confidence, "
+    "requires_player_clarification, requires_host_exception, narration_mode. "
+    "Include intent_contract with target, method, object, constraints, resources, conditions, visibility, and ambiguities. "
+    "intent_type must be one of voice_command, dialogue, skill_check, move, use_item, "
+    "show_item, combat_action, chase_action, retroactive_item_claim. "
+    "Set requires_host_exception to true only when exception_reason is a concrete, "
+    "player-safe reason that cannot be resolved by the supplied evidence. "
+    "For a normal visible action, set it to false. When the declared action selects "
+    "a visible semantic branch, return semantic_progression.targetNodeId with the "
+    "matching supplied citation; never mention internal node or entry identifiers in "
+    "interpreted_intent. "
+    "Only when the declared action explicitly contains two consecutive primary steps, "
+    "return action_steps with exactly two items. Each item must include step_id, summary, "
+    "declared_intent, intent_type, params, execution_condition, and on_previous_failure. "
+    "execution_condition must be always, previous_step_success, or previous_step_failure; "
+    "on_previous_failure must be cancel or continue, never ask for a mid-round choice; "
+    "do not return more than two steps, hidden facts, internal IDs, or authoritative state changes. "
+    "Use actor_display_name for narration identity, not character_id."
+)
+
+_NARRATOR_M0_RUNTIME_V1_PROMPT = (
+    "You are AI-Keeper Narrator. Return JSON only. "
+    "Narrate only from allowed_facts and deterministic_rule_outcome. "
+    "Do not create state_patch, mutations, hidden facts, room_id, character_id, action_id, or internal IDs. "
+    "Required fields: context_version, director_plan_digest, narrative_text, "
+    "environment_changes, interactable_objects, open_question, redacted_citations, "
+    "style_pack_version, fact_refs, status. status must be exactly 'completed'. "
+    "fact_refs must be an object with exactly narrative_text, environment_changes, "
+    "interactable_objects, and open_question keys; every value must be a non-empty "
+    "list of fact_ref values copied from allowed_facts. Do not return provider_source."
+)
+
+_ACTION_DRAFT_M0_RUNTIME_V1_PROMPT = (
+    "你是TRPG行动分析器。只输出JSON，不执行骰子或状态修改。"
+    "字段仅限 understanding_summary, risk, intent_type, suggested_skill, "
+    "alternative_skills, action_steps, difficulty, resource_impacts, visibility, "
+    "movement_target, confirmation_requirements, confidence, citations。"
+    "仅当玩家明确描述两个连续主步骤时提供 action_steps，最多两个；每项只能有 "
+    "step_id, summary, declared_intent, intent_type, params, execution_condition, "
+    "on_previous_failure。第二步的 on_previous_failure 只能是 cancel 或 continue；"
+    "不得生成中途询问或将一个行动拆成三次行动。execution_condition 只能是 "
+    "always、previous_step_success 或 previous_step_failure。"
+)
+
+_HYPOTHESIS_M0_RUNTIME_V1_PROMPT = (
+    "You review one player-created shared hypothesis against only the supplied confirmed "
+    "party-visible facts. Return JSON only with suggestedStatus, reason, factIds, and confidence. "
+    "suggestedStatus must be possible_disproved only when the supplied facts directly conflict "
+    "with the hypothesis; otherwise use no_suggestion. factIds may only contain IDs from the "
+    "supplied confirmed_facts. This is advisory: do not claim any status was changed and do not "
+    "invent facts, citations, hidden information, or player actions."
+)
+
+_KNOWLEDGE_M0_RUNTIME_V1_PROMPT = (
+    "你是TRPG知识库。从当前房间已固定的剧本与规则依据中回答。"
+    "只返回 answer, citations, confidence，不得编造未提供的事实或引用。"
+)
+
+_RUNTIME_PROMPT_TEMPLATES = {
+    "m0-runtime-v1": {
+        "action_draft": _ACTION_DRAFT_M0_RUNTIME_V1_PROMPT,
+        "director": _DIRECTOR_M0_RUNTIME_V1_PROMPT,
+        "hypothesis_disproof": _HYPOTHESIS_M0_RUNTIME_V1_PROMPT,
+        "knowledge": _KNOWLEDGE_M0_RUNTIME_V1_PROMPT,
+        "narrator": _NARRATOR_M0_RUNTIME_V1_PROMPT,
+    },
+}
+
+
+def runtime_prompt_template_signature(version: str) -> str:
+    bundle = _RUNTIME_PROMPT_TEMPLATES.get(version)
+    if not bundle:
+        return ""
+    canonical = json.dumps(
+        bundle,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
 
 # Per-task expected return shapes for validation (fallback to raw dict if no schema)
 TASK_SCHEMAS: dict[str, Any] = {
@@ -128,14 +214,19 @@ class AiGateway:
 
     def _get_ordered_providers(self, room_id: str | None = None) -> list[BaseAiProvider]:
         order = self._provider_order
+        runtime_binding: dict[str, Any] = {}
         if room_id and self.db:
             try:
                 from .ai_config import get_room_ai_config
                 room_cfg = get_room_ai_config(self.db, room_id)
+                if room_cfg and isinstance(room_cfg.get("runtime_binding"), dict):
+                    runtime_binding = dict(room_cfg["runtime_binding"])
                 if room_cfg and room_cfg.get("provider_order"):
                     order = [p.strip() for p in room_cfg["provider_order"].split(",") if p.strip() in self._providers]
             except Exception as exc:
                 logger.warning("Failed to load room AI config for room=%s: %s", room_id, exc)
+        if runtime_binding.get("locked") is True:
+            return self._get_runtime_bound_providers(runtime_binding)
         providers = [self._providers[p] for p in order]
         if self.db:
             try:
@@ -157,6 +248,123 @@ class AiGateway:
                 )
         return providers
 
+    def _get_runtime_bound_providers(
+        self,
+        binding: dict[str, Any],
+    ) -> list[BaseAiProvider]:
+        primary_name = str(binding.get("primary_provider") or "")
+        expected_model = str(binding.get("primary_model") or "")
+        providers: list[BaseAiProvider] = []
+        if primary_name.startswith("configured:") and self.db:
+            provider_config_id = str(
+                binding.get("configured_provider_id")
+                or primary_name.partition(":")[2]
+            )
+            expected_signature = str(
+                binding.get("configured_provider_signature") or ""
+            )
+            try:
+                from .ai_config import configured_provider_signature
+                from .provider_config import AiProviderConfigStore
+
+                raw_config = self.db.execute(
+                    "SELECT api_base_url, protocol, model, supports_image, "
+                    "api_key_ciphertext FROM ai_provider_configs "
+                    "WHERE provider_config_id = %s",
+                    (provider_config_id,),
+                ).fetchone()
+                config = AiProviderConfigStore(self.db).get_internal(
+                    provider_config_id
+                )
+                if (
+                    config.get("test_status") == "passed"
+                    and str(config.get("model") or "") == expected_model
+                    and (
+                        not expected_signature
+                        or (
+                            raw_config is not None
+                            and configured_provider_signature(
+                                dict(raw_config)
+                            )
+                            == expected_signature
+                        )
+                    )
+                ):
+                    providers.append(
+                        ConfiguredOpenAIProvider(
+                            config,
+                            timeout=self.settings.ai_timeout_seconds,
+                        )
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Pinned configured provider unavailable provider=%s error=%s",
+                    provider_config_id,
+                    type(exc).__name__,
+                )
+        else:
+            primary = self._providers.get(primary_name)
+            actual_model = str(getattr(primary, "model", "") or "")
+            model_matches = (
+                not expected_model
+                or expected_model in {"mcp-managed", "deterministic-local"}
+                or actual_model == expected_model
+            )
+            if primary is not None and model_matches:
+                providers.append(primary)
+
+        local = self._providers.get("local")
+        if local is not None and all(provider.name != "local" for provider in providers):
+            providers.append(local)
+        return providers
+
+    def _get_runtime_prompt_template(
+        self,
+        room_id: str | None,
+        role: str,
+    ) -> str | None:
+        version = "m0-runtime-v1"
+        if room_id and self.db:
+            try:
+                from .ai_config import get_room_ai_config
+
+                room_config = get_room_ai_config(self.db, room_id) or {}
+                binding = room_config.get("runtime_binding")
+                if isinstance(binding, dict) and binding.get("locked") is True:
+                    version = str(
+                        binding.get("prompt_template_version") or ""
+                    )
+                    expected_signature = str(
+                        binding.get("prompt_template_signature") or ""
+                    )
+                    if (
+                        not expected_signature
+                        or runtime_prompt_template_signature(version)
+                        != expected_signature
+                    ):
+                        logger.error(
+                            "Pinned prompt content changed room=%s version=%s",
+                            room_id,
+                            version,
+                        )
+                        return None
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load pinned prompt room=%s error=%s",
+                    room_id,
+                    type(exc).__name__,
+                )
+                return None
+        template = _RUNTIME_PROMPT_TEMPLATES.get(version, {}).get(role)
+        if template is None:
+            logger.error(
+                "Pinned prompt template unavailable room=%s version=%s role=%s",
+                room_id,
+                version,
+                role,
+            )
+        return template
+
     # ── Public API ──
 
     async def generate_narrative(self, context: dict, room_id: str | None = None) -> NarrativePayload:
@@ -169,15 +377,13 @@ class AiGateway:
 
     async def analyze_action_draft(self, context: dict, room_id: str | None = None) -> dict | None:
         prepared = dict(context)
-        prepared["system_prompt"] = (
-            "你是TRPG行动分析器。只输出JSON，不执行骰子或状态修改。"
-            "字段仅限 understanding_summary, risk, intent_type, suggested_skill, alternative_skills, action_steps, difficulty, "
-            "resource_impacts, visibility, movement_target, confirmation_requirements, confidence, citations。"
-            "仅当玩家明确描述两个连续主步骤时提供 action_steps，最多两个；每项只能有 "
-            "step_id, summary, declared_intent, intent_type, params, execution_condition, on_previous_failure。"
-            "第二步的 on_previous_failure 只能是 cancel 或 continue；不得生成中途询问或将一个行动拆成三次行动。"
-            "execution_condition 只能是 always、previous_step_success 或 previous_step_failure。"
+        system_prompt = self._get_runtime_prompt_template(
+            room_id,
+            "action_draft",
         )
+        if system_prompt is None:
+            return None
+        prepared["system_prompt"] = system_prompt
         prepared["user_message"] = json.dumps(
             {
                 "declared_intent": context.get("declared_intent", ""),
@@ -195,30 +401,25 @@ class AiGateway:
         return result if isinstance(result, dict) else None
 
     async def analyze_director_action(self, context: dict, room_id: str | None = None) -> dict | None:
-        prepared = dict(context)
-        prepared["system_prompt"] = (
-            "You are AI-Keeper Director. Return structured JSON only. "
-            "Do not directly mutate authoritative game state; state_patch is advisory only. "
-            "Required fields include interpreted_intent, intent_type, confidence, "
-            "requires_player_clarification, requires_host_exception, narration_mode. "
-            "Include intent_contract with target, method, object, constraints, resources, conditions, visibility, and ambiguities. "
-            "intent_type must be one of voice_command, dialogue, skill_check, move, use_item, "
-            "show_item, combat_action, chase_action, retroactive_item_claim. "
-            "Set requires_host_exception to true only when exception_reason is a concrete, "
-            "player-safe reason that cannot be resolved by the supplied evidence. "
-            "For a normal visible action, set it to false. When the declared action selects "
-            "a visible semantic branch, return semantic_progression.targetNodeId with the "
-            "matching supplied citation; never mention internal node or entry identifiers in "
-            "interpreted_intent. "
-            "Only when the declared action explicitly contains two consecutive primary steps, "
-            "return action_steps with exactly two items. Each item must include step_id, summary, "
-            "declared_intent, intent_type, params, execution_condition, and on_previous_failure. "
-            "execution_condition must be always, previous_step_success, or previous_step_failure; "
-            "on_previous_failure must be cancel or continue, never ask for a mid-round choice; "
-            "do not return more than two steps, hidden facts, internal IDs, or authoritative state changes. "
-            "Use actor_display_name for narration identity, not character_id."
+        local_analysis = (
+            context.get("local_analysis")
+            if isinstance(context.get("local_analysis"), dict)
+            else {}
         )
-        prepared["user_message"] = json.dumps(context, ensure_ascii=False)
+        local_action_id = str(local_analysis.get("draft_id") or "")
+        provider_context = _minimal_director_provider_payload(context)
+        prepared = dict(provider_context)
+        system_prompt = self._get_runtime_prompt_template(
+            room_id,
+            "director",
+        )
+        if system_prompt is None:
+            return None
+        prepared["system_prompt"] = system_prompt
+        prepared["user_message"] = json.dumps(
+            provider_context,
+            ensure_ascii=False,
+        )
         result = await self._call_providers(
             "analyze_director_action",
             prepared,
@@ -226,9 +427,15 @@ class AiGateway:
             disable_local_fallback=True,
         )
         if isinstance(result, DirectorPlanDTO):
+            if local_action_id:
+                result = result.model_copy(
+                    update={"action_id": local_action_id}
+                )
             return result.model_dump(mode="json", by_alias=True)
         if not isinstance(result, dict):
             return None
+        if local_action_id:
+            result = {**result, "action_id": local_action_id}
         try:
             validated = DirectorPlanDTO(**result)
         except Exception:
@@ -244,17 +451,13 @@ class AiGateway:
     ) -> dict | None:
         local_action_id = str(action_id or context.get("local_action_id") or context.get("action_id") or "")
         prepared = _scrub_narrator_provider_payload(context)
-        prepared["system_prompt"] = (
-            "You are AI-Keeper Narrator. Return JSON only. "
-            "Narrate only from allowed_facts and deterministic_rule_outcome. "
-            "Do not create state_patch, mutations, hidden facts, room_id, character_id, action_id, or internal IDs. "
-            "Required fields: context_version, director_plan_digest, narrative_text, "
-            "environment_changes, interactable_objects, open_question, redacted_citations, "
-            "style_pack_version, fact_refs, status. status must be exactly 'completed'. "
-            "fact_refs must be an object with exactly narrative_text, environment_changes, "
-            "interactable_objects, and open_question keys; every value must be a non-empty "
-            "list of fact_ref values copied from allowed_facts. Do not return provider_source."
+        system_prompt = self._get_runtime_prompt_template(
+            room_id,
+            "narrator",
         )
+        if system_prompt is None:
+            return None
+        prepared["system_prompt"] = system_prompt
         prepared["user_message"] = json.dumps(
             _scrub_narrator_provider_payload(context),
             ensure_ascii=False,
@@ -463,15 +666,14 @@ class AiGateway:
         context: dict,
         room_id: str | None = None,
     ) -> dict | None:
+        system_prompt = self._get_runtime_prompt_template(
+            room_id,
+            "hypothesis_disproof",
+        )
+        if system_prompt is None:
+            return None
         prepared = {
-            "system_prompt": (
-                "You review one player-created shared hypothesis against only the supplied confirmed "
-                "party-visible facts. Return JSON only with suggestedStatus, reason, factIds, and confidence. "
-                "suggestedStatus must be possible_disproved only when the supplied facts directly conflict "
-                "with the hypothesis; otherwise use no_suggestion. factIds may only contain IDs from the "
-                "supplied confirmed_facts. This is advisory: do not claim any status was changed and do not "
-                "invent facts, citations, hidden information, or player actions."
-            ),
+            "system_prompt": system_prompt,
             "user_message": json.dumps(
                 {
                     "hypothesis": context.get("hypothesis") or {},
@@ -562,8 +764,14 @@ class AiGateway:
         return result if isinstance(result, dict) else None
 
     async def query_knowledge(self, query: str, room_id: str, sources: str = "both") -> KnowledgeAnswer:
+        system_prompt = self._get_runtime_prompt_template(
+            room_id,
+            "knowledge",
+        )
+        if system_prompt is None:
+            return KnowledgeAnswer(answer="", citations=[], confidence="low")
         context = {"query": query, "roomId": room_id, "sources": sources,
-                   "system_prompt": "你是TRPG知识库。从剧本和规则书中检索回答。返回 answer, citations, confidence。",
+                   "system_prompt": system_prompt,
                    "user_message": json.dumps({"query": query, "sources": sources}, ensure_ascii=False)}
         result = await self._call_providers("query_knowledge", context, room_id)
         if isinstance(result, KnowledgeAnswer):
@@ -1190,6 +1398,528 @@ _NARRATOR_PROVIDER_DENIED_KEYS = {
     "state_patch",
     "mutations",
 }
+
+
+_DIRECTOR_PROVIDER_DENIED_KEY_NAMES = {
+    "accountid",
+    "actionid",
+    "authorization",
+    "apikey",
+    "characterid",
+    "contentitemid",
+    "draftid",
+    "eventid",
+    "inventoryid",
+    "itemid",
+    "ownertoken",
+    "playerid",
+    "playername",
+    "playertoken",
+    "privatenote",
+    "privatenotes",
+    "rawboundarytext",
+    "rawsafetytext",
+    "roomid",
+    "safetyreason",
+    "scenarioid",
+    "scenarioversionid",
+    "sourcepartid",
+    "suppressresponselog",
+}
+
+_DIRECTOR_SHEET_ALLOWED_KEYS = {
+    "occupation",
+    "attributes",
+    "skills",
+    "hp",
+    "max_hp",
+    "san",
+    "luck",
+    "status_tags",
+    "temp_modifiers",
+}
+
+_DIRECTOR_LOCAL_ANALYSIS_ALLOWED_KEYS = {
+    "intent_type",
+    "declared_intent",
+    "params",
+    "understanding_summary",
+    "risk",
+    "intent_contract",
+    "suggested_skill",
+    "alternative_skills",
+    "composite_steps",
+    "difficulty",
+    "resource_impacts",
+    "visibility",
+    "movement_target",
+    "confirmation_requirements",
+    "requires_confirmation",
+    "confidence",
+    "citations",
+    "semantic_progression",
+    "npc_reactions",
+    "time_impact",
+}
+
+_DIRECTOR_SCENE_ALLOWED_KEYS = {
+    "current_scene",
+    "node_id",
+    "scene_id",
+    "title",
+    "text",
+    "citation",
+    "target_node_ids",
+    "scene_version",
+}
+
+_DIRECTOR_SCENE_VARIABLE_ALLOWED_KEYS = {
+    "public_time",
+    "solo_skill_bonus_dice",
+}
+
+_DIRECTOR_EVENT_PAYLOAD_ALLOWED_KEYS = {
+    "description",
+    "message",
+    "name",
+    "narration",
+    "outcome",
+    "quantity",
+    "result",
+    "status",
+    "summary",
+    "text",
+    "title",
+}
+
+_DIRECTOR_ACTION_PARAM_ALLOWED_KEYS = {
+    "actionKind",
+    "action_kind",
+    "difficulty",
+    "failure_loss",
+    "itemName",
+    "item_name",
+    "method",
+    "object",
+    "quantity",
+    "skillName",
+    "skill_name",
+    "success_loss",
+    "target",
+    "targetNodeId",
+    "target_node_id",
+    "visibility",
+}
+
+_DIRECTOR_SANITY_STATE_ALLOWED_KEYS = {
+    "schema_version",
+    "day_key",
+    "day_start_san",
+    "day_loss",
+    "insanity_type",
+    "phase",
+    "retriggered",
+}
+
+_DIRECTOR_CITATION_ALLOWED_KEYS = {
+    "label",
+    "page",
+    "page_number",
+    "scene",
+    "verified",
+}
+
+
+def _minimal_director_provider_payload(context: dict[str, Any]) -> dict[str, Any]:
+    actor = context.get("actor")
+    if not isinstance(actor, dict):
+        actor = context.get("character")
+    actor = actor if isinstance(actor, dict) else {}
+    sheet = actor.get("sheet") if isinstance(actor.get("sheet"), dict) else {}
+    local_analysis = (
+        context.get("local_analysis")
+        if isinstance(context.get("local_analysis"), dict)
+        else {}
+    )
+    runtime_package = (
+        context.get("runtime_package")
+        if isinstance(context.get("runtime_package"), dict)
+        else {}
+    )
+    current_scene = (
+        context.get("current_scene")
+        if isinstance(context.get("current_scene"), dict)
+        else {}
+    )
+    projected_scene = {
+        key: current_scene[key]
+        for key in _DIRECTOR_SCENE_ALLOWED_KEYS
+        if key in current_scene and key != "citation"
+    }
+    projected_scene_citation = _project_director_citation(
+        current_scene.get("citation")
+    )
+    if projected_scene_citation:
+        projected_scene["citation"] = projected_scene_citation
+    scene_variables = (
+        current_scene.get("scene_variables")
+        if isinstance(current_scene.get("scene_variables"), dict)
+        else {}
+    )
+    projected_scene_variables = {
+        key: value
+        for key, value in scene_variables.items()
+        if key in _DIRECTOR_SCENE_VARIABLE_ALLOWED_KEYS
+        and _is_director_public_scalar(value)
+    }
+    if projected_scene_variables:
+        projected_scene["scene_variables"] = projected_scene_variables
+
+    recent_events = []
+    for event in context.get("recent_events") or []:
+        if not isinstance(event, dict):
+            continue
+        projected_event = {
+            key: event[key]
+            for key in ("event_type", "audience", "issued_at")
+            if key in event
+        }
+        event_payload = (
+            event.get("payload")
+            if isinstance(event.get("payload"), dict)
+            else {}
+        )
+        public_event_payload = {
+            key: value
+            for key, value in event_payload.items()
+            if key in _DIRECTOR_EVENT_PAYLOAD_ALLOWED_KEYS
+            and _is_director_public_scalar(value)
+        }
+        if public_event_payload:
+            projected_event["payload"] = public_event_payload
+        recent_events.append(projected_event)
+    inventory = []
+    for item in context.get("inventory") or []:
+        if not isinstance(item, dict):
+            continue
+        inventory.append({
+            key: item[key]
+            for key in ("name", "description", "quantity")
+            if key in item
+        })
+    payload: dict[str, Any] = {
+        key: context[key]
+        for key in (
+            "context_version",
+            "actor_display_name",
+            "declared_intent",
+            "intent_type",
+            "rule_version",
+        )
+        if key in context
+    }
+    for visibility in ("public_facts", "hidden_facts"):
+        projected_facts = [
+            projected
+            for fact in context.get(visibility) or []
+            if isinstance(fact, dict)
+            if (projected := _project_director_fact(fact))
+        ]
+        if projected_facts:
+            payload[visibility] = projected_facts
+    if projected_scene:
+        payload["current_scene"] = projected_scene
+
+    projected_sheet: dict[str, Any] = {}
+    for key in ("occupation", "hp", "max_hp", "san", "luck"):
+        value = sheet.get(key)
+        if _is_director_public_scalar(value):
+            projected_sheet[key] = value
+    for key in ("attributes", "skills"):
+        value = sheet.get(key)
+        if not isinstance(value, dict):
+            continue
+        projected_sheet[key] = {
+            str(item_key): item_value
+            for item_key, item_value in list(value.items())[:100]
+            if _is_director_public_scalar(item_value)
+        }
+    status_tags = sheet.get("status_tags")
+    if _is_director_public_scalar(status_tags):
+        projected_sheet["status_tags"] = status_tags
+    temp_modifiers = (
+        sheet.get("temp_modifiers")
+        if isinstance(sheet.get("temp_modifiers"), dict)
+        else {}
+    )
+    sanity_state = (
+        temp_modifiers.get("coc7_sanity")
+        if isinstance(temp_modifiers.get("coc7_sanity"), dict)
+        else {}
+    )
+    projected_sanity = {
+        key: value
+        for key, value in sanity_state.items()
+        if key in _DIRECTOR_SANITY_STATE_ALLOWED_KEYS
+        and _is_director_public_scalar(value)
+    }
+    if projected_sanity:
+        projected_sheet["temp_modifiers"] = {
+            "coc7_sanity": projected_sanity,
+        }
+    payload["actor"] = {
+        "display_name": str(
+            actor.get("display_name")
+            or context.get("actor_display_name")
+            or ""
+        ),
+        "sheet": projected_sheet,
+    }
+    payload["local_analysis"] = _project_director_local_analysis(
+        local_analysis
+    )
+    payload["runtime_package"] = _project_director_runtime_package(
+        runtime_package
+    )
+    if recent_events:
+        payload["recent_events"] = recent_events
+    if inventory:
+        payload["inventory"] = inventory
+    return _scrub_director_provider_payload(payload)
+
+
+def _is_director_public_scalar(value: Any) -> bool:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    return (
+        isinstance(value, list)
+        and len(value) <= 20
+        and all(
+            item is None or isinstance(item, (str, int, float, bool))
+            for item in value
+        )
+    )
+
+
+def _project_director_citation(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: item
+        for key, item in value.items()
+        if key in _DIRECTOR_CITATION_ALLOWED_KEYS
+        and _is_director_public_scalar(item)
+    }
+
+
+def _project_director_fact(value: dict[str, Any]) -> dict[str, Any]:
+    projected = {
+        key: item
+        for key, item in value.items()
+        if key in {"item_type", "logical_key", "title"}
+        and _is_director_public_scalar(item)
+    }
+    citation = _project_director_citation(value.get("citation"))
+    if citation:
+        projected["citation"] = citation
+    return projected
+
+
+def _project_director_params(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: item
+        for key, item in value.items()
+        if key in _DIRECTOR_ACTION_PARAM_ALLOWED_KEYS
+        and _is_director_public_scalar(item)
+    }
+
+
+def _project_director_local_analysis(
+    local_analysis: dict[str, Any],
+) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for key in (
+        "intent_type",
+        "declared_intent",
+        "understanding_summary",
+        "risk",
+        "suggested_skill",
+        "difficulty",
+        "visibility",
+        "movement_target",
+        "requires_confirmation",
+        "confidence",
+    ):
+        value = local_analysis.get(key)
+        if _is_director_public_scalar(value):
+            projected[key] = value
+    for key in ("alternative_skills", "confirmation_requirements"):
+        value = local_analysis.get(key)
+        if _is_director_public_scalar(value):
+            projected[key] = value
+    params = _project_director_params(local_analysis.get("params"))
+    if params:
+        projected["params"] = params
+    intent_contract = local_analysis.get("intent_contract")
+    if isinstance(intent_contract, dict):
+        projected["intent_contract"] = {
+            key: value
+            for key, value in intent_contract.items()
+            if key in {
+                "target",
+                "method",
+                "object",
+                "constraints",
+                "resources",
+                "conditions",
+                "visibility",
+                "ambiguities",
+            }
+            and _is_director_public_scalar(value)
+        }
+    steps = []
+    for step in local_analysis.get("composite_steps") or []:
+        if not isinstance(step, dict):
+            continue
+        projected_step = {
+            key: value
+            for key, value in step.items()
+            if key in {
+                "step_id",
+                "summary",
+                "declared_intent",
+                "intent_type",
+                "execution_condition",
+                "on_previous_failure",
+            }
+            and _is_director_public_scalar(value)
+        }
+        step_params = _project_director_params(step.get("params"))
+        if step_params:
+            projected_step["params"] = step_params
+        steps.append(projected_step)
+    if steps:
+        projected["composite_steps"] = steps[:2]
+    citations = [
+        citation
+        for value in local_analysis.get("citations") or []
+        if (citation := _project_director_citation(value))
+    ]
+    if citations:
+        projected["citations"] = citations[:10]
+    return projected
+
+
+def _project_director_runtime_package(
+    runtime_package: dict[str, Any],
+) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    scenario_title = runtime_package.get("scenario_title")
+    if _is_director_public_scalar(scenario_title):
+        projected["scenario_title"] = scenario_title
+    evidence = [
+        fact
+        for value in runtime_package.get("story_evidence_nodes") or []
+        if isinstance(value, dict)
+        if (fact := _project_director_fact(value))
+    ]
+    if evidence:
+        projected["story_evidence_nodes"] = evidence[:20]
+    progression = runtime_package.get("semantic_progression_rules")
+    if not isinstance(progression, dict):
+        return projected
+    edges = []
+    for edge in progression.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        projected_edge = {
+            key: value
+            for key, value in edge.items()
+            if key in {
+                "from_scene_id",
+                "to_scene_id",
+                "relation_type",
+            }
+            and _is_director_public_scalar(value)
+        }
+        conditions = []
+        for condition in edge.get("conditions") or []:
+            if not isinstance(condition, dict):
+                continue
+            conditions.append({
+                key: value
+                for key, value in condition.items()
+                if key in {"kind", "id", "operator", "value"}
+                and _is_director_public_scalar(value)
+            })
+        if conditions:
+            projected_edge["conditions"] = conditions[:20]
+        citation = _project_director_citation(edge.get("citation"))
+        if citation:
+            projected_edge["citation"] = citation
+        edges.append(projected_edge)
+    solo = progression.get("solo_adventure")
+    projected_solo: dict[str, Any] = {}
+    if isinstance(solo, dict):
+        root_node_id = solo.get("root_node_id")
+        if _is_director_public_scalar(root_node_id):
+            projected_solo["root_node_id"] = root_node_id
+        nodes = []
+        for node in solo.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            projected_node = {
+                key: value
+                for key, value in node.items()
+                if key in {
+                    "node_id",
+                    "title",
+                    "text",
+                    "target_node_ids",
+                }
+                and _is_director_public_scalar(value)
+            }
+            citation = _project_director_citation(node.get("citation"))
+            if citation:
+                projected_node["citation"] = citation
+            nodes.append(projected_node)
+        if nodes:
+            projected_solo["nodes"] = nodes[:20]
+    projected["semantic_progression_rules"] = {
+        "edges": edges[:20],
+        "solo_adventure": projected_solo,
+    }
+    return projected
+
+
+def _scrub_director_provider_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        result = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            normalized = "".join(
+                character
+                for character in key.lower()
+                if character.isalnum()
+            )
+            if (
+                normalized in _DIRECTOR_PROVIDER_DENIED_KEY_NAMES
+                or normalized in {
+                    "absolutepath",
+                    "fulltext",
+                    "storagepath",
+                }
+                or normalized.endswith("token")
+                or normalized.endswith("secret")
+            ):
+                continue
+            result[key] = _scrub_director_provider_payload(item)
+        return result
+    if isinstance(value, list):
+        return [_scrub_director_provider_payload(item) for item in value]
+    return value
 
 
 def _scrub_narrator_provider_payload(value: Any) -> Any:

@@ -183,15 +183,22 @@ async def create_room(request: Request):
 
     room_id = str(uuid.uuid4())[:8]
     owner_token = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, "
-        "owner_token, owner_account_id, spoiler_level) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (
-            room_id, scenario_id, scenario_version_id, runtime_package_version_id, owner_token,
-            owner_account_id, body.get("spoiler_level", "standard"),
-        ),
-    )
-    conn.commit()
+    from .ai.ai_config import pin_room_ai_runtime
+    with conn.transaction() as tx:
+        tx.execute(
+            "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, "
+            "owner_token, owner_account_id, spoiler_level) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (
+                room_id, scenario_id, scenario_version_id, runtime_package_version_id, owner_token,
+                owner_account_id, body.get("spoiler_level", "standard"),
+            ),
+        )
+        pin_room_ai_runtime(
+            tx,
+            room_id,
+            scenario_version_id=scenario_version_id,
+            runtime_package_version_id=runtime_package_version_id,
+        )
     return {
         "room_id": room_id, "owner_token": owner_token,
         "status": "lobby", "scenario_title": sc["title"],
@@ -783,6 +790,9 @@ async def update_room_ai_config(request: Request, room_id: str):
     """Set room-level AI config override."""
     _verify_owner_or_admin(request, room_id, request.app.state.db)
     body = await request.json()
-    from .ai.ai_config import update_room_ai_config
-    update_room_ai_config(request.app.state.db, room_id, body)
+    from .ai.ai_config import RoomAiConfigLockedError, update_room_ai_config
+    try:
+        update_room_ai_config(request.app.state.db, room_id, body)
+    except RoomAiConfigLockedError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {"status": "updated", "room_id": room_id}

@@ -3,7 +3,6 @@ import json
 import re
 import uuid
 import logging
-import re
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -1575,6 +1574,101 @@ class ResolutionPipeline:
         merged: dict[str, Any] = {}
         sources: list[dict[str, Any]] = []
         scenario_version_id = room.get("scenario_version_id")
+        room_id = str(room.get("room_id") or "")
+        player_experience_version = str(
+            room.get("player_experience_version") or ""
+        )
+        if room_id and not player_experience_version:
+            try:
+                version_row = self.conn.execute(
+                    "SELECT player_experience_version FROM rooms "
+                    "WHERE room_id = %s",
+                    (room_id,),
+                ).fetchone()
+                player_experience_version = str(
+                    version_row.get("player_experience_version") or ""
+                ) if version_row else ""
+            except Exception:
+                player_experience_version = ""
+        if room_id:
+            try:
+                from ..ai.ai_config import get_room_ai_config
+                from ..ai.rule_policy_compiler import (
+                    validate_compiled_rule_artifact,
+                )
+
+                room_ai_config = get_room_ai_config(self.conn, room_id) or {}
+                runtime_binding = room_ai_config.get("runtime_binding")
+                if (
+                    isinstance(runtime_binding, dict)
+                    and runtime_binding.get("locked") is True
+                ):
+                    frozen_sources = runtime_binding.get(
+                        "rule_policy_sources"
+                    )
+                    compiled = runtime_binding.get("compiled_rule_policy")
+                    runtime_package_artifact_id = str(
+                        runtime_binding.get("runtime_package_artifact_id")
+                        or ""
+                    )
+                    artifact_id = str(
+                        runtime_binding.get("compiled_rule_artifact_id")
+                        or ""
+                    )
+                    if not (
+                        isinstance(frozen_sources, list)
+                        and isinstance(compiled, dict)
+                        and validate_compiled_rule_artifact(
+                            runtime_package_artifact_id=(
+                                runtime_package_artifact_id
+                            ),
+                            sources=frozen_sources,
+                            compiled_rule_policy=compiled,
+                            artifact_id=artifact_id,
+                        )
+                    ):
+                        logger.error(
+                            "Frozen rule artifact invalid room=%s",
+                            room_id,
+                        )
+                        return {}
+                    policy = compiled.get("policy")
+                    compiled_sources = compiled.get("sources")
+                    if not (
+                        isinstance(policy, dict)
+                        and isinstance(compiled_sources, list)
+                    ):
+                        return {}
+                    merged = dict(policy)
+                    if compiled_sources:
+                        merged["_sources"] = [
+                            {
+                                "scope": str(
+                                    source.get("scope") or "room"
+                                ),
+                                "rule_set_version_id": str(
+                                    source.get("rule_set_version_id") or ""
+                                ),
+                            }
+                            for source in compiled_sources
+                            if isinstance(source, dict)
+                        ]
+                    return merged
+                if player_experience_version != "v1":
+                    logger.error(
+                        "Non-legacy room missing locked rule artifact room=%s",
+                        room_id,
+                    )
+                    return {}
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load frozen rule policy room=%s: %s",
+                    room_id,
+                    exc,
+                )
+                return {}
+        elif player_experience_version != "v1":
+            return {}
         try:
             if scenario_version_id:
                 rows = self.conn.execute(
@@ -1620,7 +1714,6 @@ class ResolutionPipeline:
                             "rule_set_version_id": row["rule_set_version_id"],
                         })
 
-            room_id = room.get("room_id")
             if room_id:
                 rows = self.conn.execute(
                     """

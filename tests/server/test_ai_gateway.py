@@ -360,6 +360,379 @@ async def test_analyze_director_action_accepts_core_provider_fields_with_safe_de
 
 
 @pytest.mark.asyncio
+async def test_director_provider_payload_removes_account_tokens_and_raw_safety_text():
+    gateway = AiGateway()
+    remote = RecordingProvider(
+        "mcp",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "inspect the visible station",
+            "intent_type": "dialogue",
+            "confidence": 0.88,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+        },
+    )
+    gateway._providers = {"mcp": remote}
+    gateway._provider_order = ["mcp"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 3,
+            "declared_intent": "I look around",
+            "actor_display_name": "Ada",
+            "account_id": "account-secret",
+            "owner_token": "owner-secret",
+            "player_token": "player-secret",
+            "raw_safety_text": "private-boundary-text",
+            "safety_reason": "private-safety-reason",
+            "private_note": "private-player-note",
+            "room": {
+                "room_id": "room-internal-id",
+                "state_version": 3,
+            },
+            "actor": {
+                "character_id": "character-internal-id",
+                "display_name": "Ada",
+                "sheet": {
+                    "occupation": "记者",
+                    "player_token": "nested-player-secret",
+                    "backstory": "irrelevant-private-backstory",
+                },
+            },
+            "local_analysis": {"draft_id": "draft-minimal"},
+            "current_scene": {
+                "node_id": "station",
+                "text": "站台当前可见。",
+                "room_id": "nested-room-internal-id",
+                "citation": {
+                    "page_number": 7,
+                    "storage_path": "current-scene-storage-secret",
+                    "full_text": "current-scene-full-text-secret",
+                },
+                "scene_variables": {
+                    "solo_skill_bonus_dice": -1,
+                    "solo_adventure_version": "scene-variable-version-secret",
+                    "requestId": "scene-variable-action-secret",
+                },
+            },
+            "runtime_package": {
+                "scenario_version_id": "scenario-version-internal-id",
+                "world_book": {"truth": "irrelevant-world-secret"},
+                "semantic_scenes": [{"id": "remote-scene-internal-id"}],
+                "story_evidence_nodes": [
+                    {
+                        "logical_key": "station",
+                        "title": "站台管理员知道末班车时间",
+                        "citation": {
+                            "page_number": 8,
+                            "absolute_path": "evidence-absolute-path-secret",
+                        },
+                    }
+                ],
+                "semantic_progression_rules": {
+                    "edges": [{
+                        "from_scene_id": "station",
+                        "to_scene_id": "platform",
+                        "relation_type": "transitions_to",
+                        "conditions": [{
+                            "kind": "scene",
+                            "id": "station",
+                            "full_text": "condition-full-text-secret",
+                        }],
+                        "citation": {
+                            "page_number": 9,
+                            "storage_path": "edge-storage-secret",
+                        },
+                    }],
+                    "solo_adventure": {"nodes": []},
+                },
+            },
+            "recent_events": [
+                {
+                    "event_id": "event-internal-id",
+                    "event_type": "s2c_public_observation",
+                    "audience": "party",
+                    "payload": {
+                        "text": "站台仍然开放。",
+                        "requestId": "event-request-action-secret",
+                        "nested": {"account": "event-nested-secret"},
+                    },
+                }
+            ],
+            "inventory": [
+                {
+                    "id": "inventory-internal-id",
+                    "character_id": "character-internal-id",
+                    "name": "记者证",
+                    "quantity": 1,
+                    "source": "scenario_purchase:inventory-source-node-secret",
+                }
+            ],
+        },
+        room_id="room-director",
+    )
+
+    assert result is not None
+    payload = remote.calls[0][1]
+    rendered = json.dumps(payload, ensure_ascii=False)
+    assert "I look around" in rendered
+    assert "Ada" in rendered
+    assert "记者" in rendered
+    assert "站台管理员知道末班车时间" in rendered
+    assert "记者证" in rendered
+    for forbidden in (
+        "account-secret",
+        "owner-secret",
+        "player-secret",
+        "nested-player-secret",
+        "private-boundary-text",
+        "private-safety-reason",
+        "private-player-note",
+        "room-internal-id",
+        "character-internal-id",
+        "nested-room-internal-id",
+        "scenario-version-internal-id",
+        "remote-scene-internal-id",
+        "irrelevant-world-secret",
+        "irrelevant-private-backstory",
+        "draft-minimal",
+        "event-internal-id",
+        "inventory-internal-id",
+        "scene-variable-version-secret",
+        "scene-variable-action-secret",
+        "event-request-action-secret",
+        "event-nested-secret",
+        "inventory-source-node-secret",
+        "current-scene-storage-secret",
+        "current-scene-full-text-secret",
+        "evidence-absolute-path-secret",
+        "condition-full-text-secret",
+        "edge-storage-secret",
+    ):
+        assert forbidden not in rendered
+    assert payload["current_scene"]["scene_variables"] == {
+        "solo_skill_bonus_dice": -1,
+    }
+    assert payload["current_scene"]["citation"] == {"page_number": 7}
+
+
+@pytest.mark.asyncio
+async def test_room_runtime_binding_prevents_silent_remote_provider_switch(test_db):
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token) VALUES ('pinned-ai-room', 'owner')"
+    )
+    test_db.execute(
+        "INSERT INTO host_states (room_id, state) VALUES ('pinned-ai-room', %s)",
+        (
+            json.dumps({
+                "ai_config": {
+                    "provider_order": "other,pinned,local",
+                    "runtime_binding": {
+                        "locked": True,
+                        "primary_provider": "pinned",
+                        "primary_model": "model-a",
+                        "prompt_template_version": "m0-runtime-v1",
+                        "rule_compiler_version": "rules-v1",
+                    },
+                },
+            }),
+        ),
+    )
+    test_db.commit()
+    gateway = AiGateway(db_conn=test_db)
+    pinned = RecordingProvider(
+        "pinned",
+        {"narrative": {"public": "pinned result"}},
+    )
+    pinned.model = "model-a"
+    other = RecordingProvider(
+        "other",
+        {"narrative": {"public": "silently switched result"}},
+    )
+    other.model = "model-b"
+    local = RecordingProvider(
+        "local",
+        {"narrative": {"public": "deterministic fallback"}},
+    )
+    gateway._providers = {
+        "pinned": pinned,
+        "other": other,
+        "local": local,
+    }
+    gateway._provider_order = ["other", "pinned", "local"]
+
+    result = await gateway.resolve_turn(
+        {"declared_intent": "I inspect the station."},
+        room_id="pinned-ai-room",
+    )
+
+    assert result.narrative.public == "pinned result"
+    assert len(pinned.calls) == 1
+    assert other.calls == []
+    assert local.calls == []
+
+
+@pytest.mark.asyncio
+async def test_locked_room_does_not_silently_use_a_different_prompt_template(
+    test_db,
+):
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token) "
+        "VALUES ('missing-prompt-room', 'owner')"
+    )
+    test_db.execute(
+        "INSERT INTO host_states (room_id, state) VALUES ('missing-prompt-room', %s)",
+        (
+            json.dumps({
+                "ai_config": {
+                    "runtime_binding": {
+                        "locked": True,
+                        "primary_provider": "pinned",
+                        "primary_model": "model-a",
+                        "prompt_template_version": "removed-prompt-version",
+                    },
+                },
+            }),
+        ),
+    )
+    test_db.commit()
+    gateway = AiGateway(db_conn=test_db)
+    pinned = RecordingProvider(
+        "pinned",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "inspect",
+            "intent_type": "dialogue",
+            "confidence": 0.8,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+        },
+    )
+    pinned.model = "model-a"
+    gateway._providers = {"pinned": pinned}
+    gateway._provider_order = ["pinned"]
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 1,
+            "declared_intent": "I inspect.",
+            "actor_display_name": "Ada",
+        },
+        room_id="missing-prompt-room",
+    )
+
+    assert result is None
+    assert pinned.calls == []
+
+
+@pytest.mark.asyncio
+async def test_locked_room_rejects_prompt_content_signature_mismatch(test_db):
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token) "
+        "VALUES ('changed-prompt-room', 'owner')"
+    )
+    test_db.execute(
+        "INSERT INTO host_states (room_id, state) VALUES ('changed-prompt-room', %s)",
+        (
+            json.dumps({
+                "ai_config": {
+                    "runtime_binding": {
+                        "locked": True,
+                        "primary_provider": "pinned",
+                        "primary_model": "model-a",
+                        "prompt_template_version": "m0-runtime-v1",
+                        "prompt_template_signature": "stale-content-signature",
+                    },
+                },
+            }),
+        ),
+    )
+    test_db.commit()
+    gateway = AiGateway(db_conn=test_db)
+    pinned = RecordingProvider(
+        "pinned",
+        {
+            "actor_display_name": "Ada",
+            "interpreted_intent": "inspect",
+            "intent_type": "dialogue",
+            "confidence": 0.8,
+            "requires_player_clarification": False,
+            "requires_host_exception": False,
+            "narration_mode": "observe",
+        },
+    )
+    pinned.model = "model-a"
+    gateway._providers = {"pinned": pinned}
+
+    result = await gateway.analyze_director_action(
+        {
+            "context_version": 1,
+            "declared_intent": "I inspect.",
+            "actor_display_name": "Ada",
+        },
+        room_id="changed-prompt-room",
+    )
+
+    assert result is None
+    assert pinned.calls == []
+
+
+@pytest.mark.asyncio
+async def test_locked_room_action_draft_rejects_prompt_signature_mismatch(
+    test_db,
+):
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token) "
+        "VALUES ('changed-draft-prompt-room', 'owner')"
+    )
+    test_db.execute(
+        "INSERT INTO host_states "
+        "(room_id, state) VALUES ('changed-draft-prompt-room', %s)",
+        (
+            json.dumps({
+                "ai_config": {
+                    "runtime_binding": {
+                        "locked": True,
+                        "primary_provider": "pinned",
+                        "primary_model": "model-a",
+                        "prompt_template_version": "m0-runtime-v1",
+                        "prompt_template_signature": "stale-content-signature",
+                    },
+                },
+            }),
+        ),
+    )
+    test_db.commit()
+    gateway = AiGateway(db_conn=test_db)
+    pinned = RecordingProvider(
+        "pinned",
+        {
+            "understanding_summary": "inspect",
+            "risk": "low",
+            "intent_type": "dialogue",
+            "confidence": 0.8,
+        },
+    )
+    pinned.model = "model-a"
+    gateway._providers = {"pinned": pinned}
+
+    result = await gateway.analyze_action_draft(
+        {
+            "declared_intent": "I inspect.",
+            "intent_type": "dialogue",
+            "base_state_version": 1,
+        },
+        room_id="changed-draft-prompt-room",
+    )
+
+    assert result is None
+    assert pinned.calls == []
+
+
+@pytest.mark.asyncio
 async def test_analyze_director_action_accepts_at_most_two_composite_steps():
     gateway = AiGateway()
     remote = RecordingProvider(

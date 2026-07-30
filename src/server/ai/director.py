@@ -73,6 +73,7 @@ def build_director_context(conn, character: dict, draft: ActionDraftDTO) -> dict
         ),
         current_scene,
     )
+    relevant_content_keys = _relevant_content_keys(current_scene, runtime_package)
     context_version = int(room_dict.get("state_version") or draft.base_state_version or 0)
     return {
         "room": _director_room_context(room_dict),
@@ -85,8 +86,18 @@ def build_director_context(conn, character: dict, draft: ActionDraftDTO) -> dict
         "local_analysis": draft.model_dump(mode="json"),
         "current_scene": current_scene,
         "runtime_package": runtime_package,
-        "public_facts": _content_facts(conn, room_dict.get("scenario_version_id"), "public"),
-        "hidden_facts": _content_facts(conn, room_dict.get("scenario_version_id"), "hidden"),
+        "public_facts": _content_facts(
+            conn,
+            room_dict.get("scenario_version_id"),
+            "public",
+            relevant_content_keys,
+        ),
+        "hidden_facts": _content_facts(
+            conn,
+            room_dict.get("scenario_version_id"),
+            "hidden",
+            relevant_content_keys,
+        ),
         "semantic_map": (runtime_package.get("semantic_map") or {}),
         "npc_state": (runtime_package.get("npc_states") or []),
         "rule_version": _rule_version(conn, character["room_id"]),
@@ -377,23 +388,95 @@ def _current_scene(conn, room_id: str) -> dict[str, Any]:
     return _json_safe(dict(row)) if row else {}
 
 
-def _content_facts(conn, scenario_version_id: str | None, visibility: str) -> list[dict[str, Any]]:
-    if not scenario_version_id:
+def _relevant_content_keys(
+    current_scene: dict[str, Any],
+    runtime_package: dict[str, Any],
+) -> list[str]:
+    keys = {
+        str(current_scene.get(field) or "").strip()
+        for field in ("current_scene", "scene_id", "node_id")
+    }
+    progression = _json_object(runtime_package.get("semantic_progression_rules"))
+    solo = _json_object(progression.get("solo_adventure"))
+    for node in solo.get("nodes") or []:
+        if isinstance(node, dict):
+            keys.add(str(node.get("node_id") or "").strip())
+    for edge in progression.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        keys.add(str(edge.get("from_scene_id") or "").strip())
+        keys.add(str(edge.get("to_scene_id") or "").strip())
+    for item in runtime_package.get("story_evidence_nodes") or []:
+        if isinstance(item, dict):
+            keys.add(str(item.get("logical_key") or "").strip())
+    return sorted(key for key in keys if key)
+
+
+def _content_facts(
+    conn,
+    scenario_version_id: str | None,
+    visibility: str,
+    logical_keys: list[str],
+) -> list[dict[str, Any]]:
+    if not scenario_version_id or not logical_keys:
         return []
+    key_filter = "(" + ",".join(["%s"] * len(logical_keys)) + ")"
     rows = conn.execute(
-        """
+        f"""
         SELECT item_type, logical_key, title, citation
         FROM content_items
-        WHERE scenario_version_id = %s AND visibility = %s
+        WHERE scenario_version_id = %s
+          AND visibility = %s
+          AND logical_key IN {key_filter}
         ORDER BY ordinal, logical_key
         LIMIT 40
         """,
-        (scenario_version_id, visibility),
+        (scenario_version_id, visibility, *logical_keys),
     ).fetchall()
     return [_json_safe(dict(row)) for row in rows]
 
 
 def _rule_version(conn, room_id: str) -> str:
+    try:
+        from .ai_config import get_room_ai_config
+        from .rule_policy_compiler import validate_compiled_rule_artifact
+
+        room_ai_config = get_room_ai_config(conn, room_id) or {}
+        binding = room_ai_config.get("runtime_binding")
+        if isinstance(binding, dict) and binding.get("locked") is True:
+            sources = binding.get("rule_policy_sources")
+            compiled = binding.get("compiled_rule_policy")
+            artifact_id = str(
+                binding.get("compiled_rule_artifact_id") or ""
+            )
+            if (
+                isinstance(sources, list)
+                and isinstance(compiled, dict)
+                and validate_compiled_rule_artifact(
+                    runtime_package_artifact_id=str(
+                        binding.get("runtime_package_artifact_id") or ""
+                    ),
+                    sources=sources,
+                    compiled_rule_policy=compiled,
+                    artifact_id=artifact_id,
+                )
+            ):
+                return artifact_id
+            return "unversioned"
+    except Exception:
+        return "unversioned"
+    try:
+        version_row = conn.execute(
+            "SELECT player_experience_version FROM rooms WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()
+    except Exception:
+        return "unversioned"
+    if (
+        not version_row
+        or str(version_row.get("player_experience_version") or "") != "v1"
+    ):
+        return "unversioned"
     row = conn.execute(
         """
         SELECT rule_set_version_id

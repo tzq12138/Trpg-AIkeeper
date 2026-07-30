@@ -1,5 +1,7 @@
 """Room lifecycle tests — authenticated game flow (plan21 v2)."""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from src.server.main import app
@@ -74,6 +76,78 @@ class TestCreateRoom:
         data = _create_room(client_with_data, token)
         assert data["status"] == "lobby"
         assert data["owner_account_id"] == "acc-admin"
+
+
+class TestRoomAiRuntimeBinding:
+    def test_create_room_pins_ai_prompt_provider_and_rule_versions(
+        self,
+        client_with_data,
+        test_db,
+    ):
+        room = _create_room(client_with_data)
+
+        row = test_db.execute(
+            "SELECT state FROM host_states WHERE room_id = %s",
+            (room["room_id"],),
+        ).fetchone()
+        assert row is not None
+        state = row["state"] if isinstance(row["state"], dict) else json.loads(row["state"])
+        binding = state["ai_config"]["runtime_binding"]
+
+        assert binding["locked"] is True
+        assert binding["prompt_template_version"]
+        assert len(binding["prompt_template_signature"]) == 64
+        assert binding["rule_compiler_version"] == "module-compiler-v1"
+        assert len(binding["compiled_rule_artifact_id"]) == 64
+        assert binding["runtime_package_artifact_id"] == "sv-test"
+        assert len(binding["rule_policy_signature"]) == 64
+        assert isinstance(binding["rule_policy_sources"], list)
+        assert binding["compiled_rule_policy"]["compiler_version"] == (
+            "module-compiler-v1"
+        )
+        assert isinstance(binding["compiled_rule_policy"]["policy"], dict)
+        assert binding["primary_provider"]
+        assert "provider_order" in state["ai_config"]
+
+    def test_create_room_rolls_back_when_runtime_binding_cannot_be_pinned(
+        self,
+        client_with_data,
+        test_db,
+        monkeypatch,
+    ):
+        before = test_db.execute(
+            "SELECT COUNT(*) AS count FROM rooms"
+        ).fetchone()["count"]
+
+        def fail_to_pin(*_args, **_kwargs):
+            raise RuntimeError("simulated binding failure")
+
+        monkeypatch.setattr(
+            "src.server.ai.ai_config.pin_room_ai_runtime",
+            fail_to_pin,
+        )
+
+        with pytest.raises(RuntimeError, match="simulated binding failure"):
+            _create_room(client_with_data)
+
+        assert test_db.execute(
+            "SELECT COUNT(*) AS count FROM rooms"
+        ).fetchone()["count"] == before
+
+    def test_room_ai_config_cannot_be_changed_after_runtime_binding_is_pinned(
+        self,
+        client_with_data,
+    ):
+        room = _create_room(client_with_data)
+
+        response = client_with_data.patch(
+            f"/api/rooms/{room['room_id']}/ai-config",
+            headers={"X-Owner-Token": room["owner_token"]},
+            json={"provider_order": "mcp,local"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "房间 AI 运行版本已固定，不能静默切换"
 
 
 class TestGetRoom:
