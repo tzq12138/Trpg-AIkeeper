@@ -18,9 +18,11 @@ describe('recorded input summaries', () => {
     expect(recordedInputSummary('ooc', '我去拿杯水。')).toBe('已发送场外信息，不会进入剧情、规则或世界状态。');
   });
 
-  test('sends safety requests privately to the Host without treating them as a world action', () => {
+  test('anonymously pauses the engine and reserves resume authority for the triggering player', () => {
     expect(inputModeSubmitLabel('safety')).toBe('发送安全请求');
-    expect(recordedInputSummary('safety', '淡出针头描写')).toBe('已私密发送安全请求，不会进入剧情或改变世界状态。');
+    expect(recordedInputSummary('safety', '淡出针头描写')).toBe(
+      '已匿名暂停引擎；只有你能恢复本次暂停，期间不会结算新的剧情行动。',
+    );
   });
 
   test('allows non-state inputs while a formal action is resolving', () => {

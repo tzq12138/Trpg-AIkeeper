@@ -112,6 +112,25 @@ describe('PlayerActionComposer', () => {
     expect(html).toContain('记录发言');
   });
 
+  test('disables stateful input during an anonymous safety pause', () => {
+    const html = renderToStaticMarkup(
+      <PlayerActionComposer
+        inputText="我继续调查"
+        inputMode="action"
+        phase="typing"
+        safetyPaused
+        onInputChange={() => {}}
+        onAnalyze={() => {}}
+        onConfirm={() => {}}
+        onDiscard={() => {}}
+        onCancelAction={() => {}}
+      />,
+    );
+
+    expect(html).toContain('textarea');
+    expect(html).toContain('disabled');
+  });
+
   test('renders explicit high-risk confirmation preview', () => {
     const html = renderToStaticMarkup(
       <PlayerActionComposer

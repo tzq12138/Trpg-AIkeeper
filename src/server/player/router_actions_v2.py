@@ -82,6 +82,36 @@ _RULE_QUESTION_INPUT_MODE = "rule_question"
 _SAFETY_INPUT_MODE = "safety"
 
 
+def _active_safety_pauses(conn, room_id: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT action_id, character_id, created_at
+        FROM player_action_submissions
+        WHERE room_id = %s
+          AND input_mode = 'safety'
+          AND status = 'safety_paused'
+        ORDER BY created_at, action_id
+        """,
+        (room_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _safety_state_for_character(conn, character: dict) -> dict:
+    active = _active_safety_pauses(conn, character["room_id"])
+    own_request_ids = [
+        row["action_id"]
+        for row in active
+        if row["character_id"] == character["character_id"]
+    ]
+    return {
+        "status": "safety_paused" if active else "active",
+        "activePauseCount": len(active),
+        "canResume": bool(own_request_ids),
+        "ownRequestIds": own_request_ids,
+    }
+
+
 def _speech_routes_to_dialogue(conn, room_id: str) -> bool:
     row = conn.execute(
         "SELECT speech_routing FROM rooms WHERE room_id = %s",
@@ -190,7 +220,8 @@ async def _ensure_safety_request_delivery(
     *,
     action_id: str,
 ) -> None:
-    delivered = request.app.state.db.execute(
+    conn = request.app.state.db
+    delivered = conn.execute(
         """
         SELECT 1 FROM events
         WHERE room_id = %s
@@ -209,7 +240,18 @@ async def _ensure_safety_request_delivery(
         character["room_id"],
         "s2c_safety_request",
         "host",
-        {"requestId": action_id, "characterId": character["character_id"]},
+        {"requestId": action_id},
+    )
+    await dispatcher.emit(
+        character["room_id"],
+        "s2c_safety_state_changed",
+        "party",
+        {
+            "status": "safety_paused",
+            "activePauseCount": len(
+                _active_safety_pauses(conn, character["room_id"])
+            ),
+        },
     )
     await dispatcher.emit(
         character["room_id"],
@@ -710,6 +752,11 @@ async def receive_action_submission(request: Request, body: PlayerActionSubmissi
         and _combat_declaration_is_locked(conn, character["room_id"])
     ):
         raise HTTPException(409, detail={"code": "speech_round_locked"})
+    if (
+        _submission_requires_analysis(conn, body.input_mode, character["room_id"])
+        and _active_safety_pauses(conn, character["room_id"])
+    ):
+        raise HTTPException(409, detail={"code": "safety_paused"})
 
     visibility = body.requested_visibility or _default_submission_visibility(body.input_mode)
     if body.input_mode in {_PRIVATE_INPUT_MODE, _SAFETY_INPUT_MODE}:
@@ -718,9 +765,12 @@ async def receive_action_submission(request: Request, body: PlayerActionSubmissi
         visibility = "party"
     elif body.input_mode == _SPEECH_INPUT_MODE:
         visibility = "public"
-    status = "received" if _submission_requires_analysis(
-        conn, body.input_mode, character["room_id"]
-    ) else "recorded"
+    if body.input_mode == _SAFETY_INPUT_MODE:
+        status = "safety_paused"
+    else:
+        status = "received" if _submission_requires_analysis(
+            conn, body.input_mode, character["room_id"]
+        ) else "recorded"
     raw_text = body.raw_text.strip()
     ciphertext = private_data_cipher_from_env().encrypt(raw_text)
     conn.execute(
@@ -762,6 +812,65 @@ async def receive_action_submission(request: Request, body: PlayerActionSubmissi
         (body.action_id,),
     ).fetchone()
     return _submission_receipt(conn, dict(row))
+
+
+@router.get("/safety-state")
+async def get_safety_state(request: Request):
+    character = _require_character(request)
+    return _safety_state_for_character(request.app.state.db, character)
+
+
+@router.post("/safety-pauses/{request_id}/resume")
+async def resume_safety_pause(request: Request, request_id: str):
+    character = _require_character(request)
+    conn = request.app.state.db
+    row = conn.execute(
+        """
+        SELECT action_id, room_id, character_id, status
+        FROM player_action_submissions
+        WHERE action_id = %s
+          AND room_id = %s
+          AND input_mode = 'safety'
+        """,
+        (request_id, character["room_id"]),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, detail={"code": "safety_pause_not_found"})
+    if row["character_id"] != character["character_id"]:
+        raise HTTPException(403, detail={"code": "safety_resume_forbidden"})
+    if row["status"] == "safety_resumed":
+        return _safety_state_for_character(conn, character)
+    if row["status"] != "safety_paused":
+        raise HTTPException(409, detail={"code": "safety_pause_not_active"})
+
+    conn.execute(
+        "UPDATE player_action_submissions "
+        "SET status = 'safety_resumed', updated_at = NOW() "
+        "WHERE action_id = %s AND status = 'safety_paused'",
+        (request_id,),
+    )
+    conn.commit()
+    state = _safety_state_for_character(conn, character)
+    dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(
+        conn,
+    )
+    await dispatcher.emit(
+        character["room_id"],
+        "s2c_safety_state_changed",
+        "party",
+        {
+            "status": state["status"],
+            "activePauseCount": state["activePauseCount"],
+        },
+    )
+    await dispatcher.emit(
+        character["room_id"],
+        "s2c_private_notice",
+        "player",
+        {"kind": "safety_pause_resumed", "requestId": request_id},
+        character_id=character["character_id"],
+    )
+    return state
 
 
 @router.get("/rule-questions")

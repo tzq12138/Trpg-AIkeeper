@@ -14,7 +14,7 @@ EngineEventType = Literal[
     "s2c_action_review_requested", "s2c_action_review_resolved",
     "s2c_action_exception_requested",
     "s2c_action_choice_requested",
-    "s2c_safety_request",
+    "s2c_safety_request", "s2c_safety_state_changed",
     "s2c_clarification_prompt", "s2c_clarification_result",
     "s2c_ready_toggled",
     "s2c_map_updated", "s2c_player_moved", "s2c_map_revealed",
@@ -115,7 +115,14 @@ class PlayerActionSubmissionReceipt(BaseModel):
 
     action_id: str = Field(alias="actionId")
     input_mode: PlayerInputMode = Field(alias="inputMode")
-    status: Literal["received", "recorded", "analyzing", "awaiting_confirmation"]
+    status: Literal[
+        "received",
+        "recorded",
+        "analyzing",
+        "awaiting_confirmation",
+        "safety_paused",
+        "safety_resumed",
+    ]
     requires_analysis: bool = Field(alias="requiresAnalysis")
     received_at: str = Field(alias="receivedAt")
 
@@ -881,7 +888,7 @@ class ScenarioAssets(BaseModel):
 class MechanicCompileResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     triggered_mechanic: Literal[
-        "skill_check", "sanity_check", "combat_damage", "luck_check",
+        "skill_check", "sanity_check", "sanity_advance", "combat_damage", "luck_check",
         "opposed_check", "healing", "status_change",
         "auto_success", "auto_failure", "dialogue", "move",
         "combat_attack", "combat_dodge", "combat_defend",

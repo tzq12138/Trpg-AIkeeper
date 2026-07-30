@@ -353,20 +353,22 @@ describe('HostPresentationControls', () => {
 });
 
 describe('HostSafetyRequests', () => {
-  test('renders sensitive safety text only in the host-side panel', async () => {
+  test('renders an anonymous pause without exposing player identity or raw text', async () => {
     const { HostSafetyRequests } = await import('../src/pages/HostConsole');
     const html = renderToStaticMarkup(React.createElement(HostSafetyRequests, {
       items: [{
         actionId: 'safety-1',
-        characterId: 'character-1',
-        text: '请淡出针头描写。',
         createdAt: '2026-07-19T00:00:00Z',
       }],
       onRefresh: () => {},
+      onExtend: () => {},
+      onEndSession: () => {},
     }));
 
-    expect(html).toContain('安全请求');
-    expect(html).toContain('请淡出针头描写。');
+    expect(html).toContain('匿名安全暂停');
+    expect(html).toContain('只有触发者可以恢复');
+    expect(html).not.toContain('character-1');
+    expect(html).not.toContain('请淡出针头描写。');
   });
 });
 

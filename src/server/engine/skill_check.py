@@ -93,14 +93,15 @@ def _determine_success(
         return "critical"
     if roll == 100:
         return "fumble"
-    # CoC 7e: low-skill characters fumble on 96-100
+    # CoC 7e uses the required upper limit after difficulty is applied.
+    # Example: skill 55 at Hard difficulty has target 27, so 96-100 fumbles.
     try:
         low_skill_fumble_min = max(
             96, min(100, int(policy.get("low_skill_fumble_min", 96)))
         )
     except (TypeError, ValueError):
         low_skill_fumble_min = 96
-    if skill_value < 50 and roll >= low_skill_fumble_min:
+    if threshold < 50 and roll >= low_skill_fumble_min:
         return "fumble"
     if roll <= skill_value // 5:
         return "extreme"

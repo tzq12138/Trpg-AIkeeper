@@ -81,6 +81,13 @@ async def _get_id_list(request: Request, key: str) -> list[str]:
     return _normalize_id_list(value, key)
 
 
+async def _get_confirmed_id_list(request: Request, key: str) -> list[str]:
+    payload = await _safe_json(request)
+    if payload.get("confirm") is not True:
+        raise HTTPException(400, "请确认后再执行删除")
+    return _normalize_id_list(payload.get(key, []), key)
+
+
 def _normalize_id_list(value: object, field_name: str) -> list[str]:
     if not isinstance(value, list):
         raise HTTPException(400, f"{field_name} must be a non-empty list")
@@ -177,9 +184,14 @@ def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
     ).fetchall()
     clue_ids = [str(row["clue_id"]) for row in clue_rows]
 
+    # Characters reference rooms with a non-cascading foreign key. Reuse the
+    # character-level cleanup so transfers and collaboration records that use
+    # character ids are not left behind.
+    if character_ids:
+        for table, count in _delete_character_rows(conn, character_ids).items():
+            counts[table] = counts.get(table, 0) + count
+
     if action_ids:
-        action_filter = "(" + ",".join(["%s"] * len(action_ids)) + ")"
-        action_params = tuple(action_ids)
         counts["action_review_requests"] = _delete_rows_by_ids(
             conn, "action_review_requests", "action_id", action_ids
         )
@@ -221,14 +233,9 @@ def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
         "resolution_bundles",
         "player_action_submissions",
         "collaboration_contracts",
-        "collaboration_contract_participants",
-        "collaboration_contract_drafts",
         "collaboration_contract_batches",
         "inventory_transfer_requests",
-        "session_attendance",
-        "session_summary_citations",
         "evidence_comments",
-        "evidence_references",
         "encounter_pending_reactions",
     ):
         counts[table] = _delete_rows_with_filter(
@@ -243,6 +250,9 @@ def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
             f"encounter_id IN {encounter_filter}",
             tuple(encounter_ids),
         )
+        counts["encounters"] = _delete_rows_by_ids(
+            conn, "encounters", "encounter_id", encounter_ids
+        )
 
     if clue_ids:
         clue_filter = "(" + ",".join(["%s"] * len(clue_ids)) + ")"
@@ -256,10 +266,6 @@ def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
     counts["clues"] = _delete_rows_with_filter(
         conn, "clues", f"room_id IN {room_filter}", params
     )
-    if character_ids:
-        counts["characters"] = _delete_rows_by_ids(
-            conn, "characters", "character_id", character_ids
-        )
     counts["rooms"] = _delete_rows_by_ids(conn, "rooms", "room_id", room_ids)
     return counts
 
@@ -383,8 +389,23 @@ def _delete_character_rows(conn, character_ids: list[str]) -> dict[str, int]:
             tuple(clue_ids),
         )
 
+    initiated_contract_ids = [
+        str(row["contract_id"])
+        for row in conn.execute(
+            f"SELECT contract_id FROM collaboration_contracts "
+            f"WHERE initiator_character_id IN {char_filter}",
+            char_params,
+        ).fetchall()
+    ]
+    if initiated_contract_ids:
+        counts["collaboration_contracts"] = _delete_rows_by_ids(
+            conn,
+            "collaboration_contracts",
+            "contract_id",
+            initiated_contract_ids,
+        )
+
     for table in (
-        "actions",
         "prepared_rule_actions",
         "resolution_bundles",
         "action_drafts",
@@ -392,41 +413,61 @@ def _delete_character_rows(conn, character_ids: list[str]) -> dict[str, int]:
         "compensation_transactions",
         "room_player_settings",
         "player_device_sessions",
-        "campaign_sessions",
-        "session_summaries",
         "session_attendance",
         "session_zero_confirmations",
         "player_notes",
-        "private_data_access_audits",
-        "evidence_cards",
-        "evidence_links",
         "evidence_comments",
-        "evidence_references",
         "character_runtime_state",
         "character_map_positions",
         "player_sequences",
         "inventory",
-        "inventory_transfer_requests",
         "clarifications",
-        "clues",
         "action_review_requests",
-        "campaign_archives",
         "objectives",
-        "session_summary_citations",
-        "spoiler_audits",
-        "room_scene_state",
-        "encounter_pending_reactions",
-        "collaboration_contracts",
         "collaboration_contract_participants",
         "collaboration_contract_drafts",
-        "collaboration_contract_batches",
     ):
         counts[table] = _delete_rows_with_filter(
             conn, table, f"character_id IN {char_filter}", char_params
         )
 
+    counts["private_data_access_audits"] = _delete_rows_with_filter(
+        conn,
+        "private_data_access_audits",
+        f"owner_character_id IN {char_filter}",
+        char_params,
+    )
+    counts["inventory_transfer_requests"] = _delete_rows_with_filter(
+        conn,
+        "inventory_transfer_requests",
+        f"from_character_id IN {char_filter} OR to_character_id IN {char_filter}",
+        char_params * 2,
+    )
+    counts["encounter_pending_reactions"] = _delete_rows_with_filter(
+        conn,
+        "encounter_pending_reactions",
+        f"character_id IN {char_filter} OR attacker_id IN {char_filter}",
+        char_params * 2,
+    )
+
+    if action_ids:
+        action_filter = "(" + ",".join(["%s"] * len(action_ids)) + ")"
+        action_params = tuple(action_ids)
+        counts["spoiler_audits"] = _delete_rows_with_filter(
+            conn, "spoiler_audits", f"action_id IN {action_filter}", action_params
+        )
+        counts["ai_call_logs"] = _delete_rows_with_filter(
+            conn, "ai_call_logs", f"action_id IN {action_filter}", action_params
+        )
+        counts["encounter_pending_reactions"] += _delete_rows_with_filter(
+            conn,
+            "encounter_pending_reactions",
+            f"source_action_id IN {action_filter}",
+            action_params,
+        )
+        counts["actions"] = _delete_rows_by_ids(conn, "actions", "action_id", action_ids)
+
     if clue_ids:
-        clue_filter = "(" + ",".join(["%s"] * len(clue_ids)) + ")"
         counts["clues"] = _delete_rows_by_ids(
             conn, "clues", "clue_id", [str(r["clue_id"]) for r in clue_rows]
         )
@@ -452,31 +493,22 @@ def _delete_account_rows(conn, account_ids: list[str]) -> dict[str, int]:
             f"account currently owns room(s): {', '.join(room_ids)}"
         )
 
+    character_ids = [
+        str(row["character_id"])
+        for row in conn.execute(
+            f"SELECT character_id FROM characters WHERE account_id IN {account_filter}",
+            account_params,
+        ).fetchall()
+    ]
+    if character_ids:
+        for table, count in _delete_character_rows(conn, character_ids).items():
+            counts[table] = counts.get(table, 0) + count
+
     counts["private_data_access_audits"] = _delete_rows_with_filter(
         conn, "private_data_access_audits", f"host_account_id IN {account_filter}", account_params
     )
-    counts["characters"] = _delete_rows_with_filter(
-        conn,
-        "characters",
-        "account_id IN " + account_filter,
-        account_params,
-    )
-    counts["rooms"] = _delete_rows_with_filter(
-        conn,
-        "rooms",
-        "owner_account_id IN " + account_filter,
-        account_params,
-    )
-
-    for table in (
-        "ai_provider_config_audits",
-        "action_review_requests",
-        "room_player_settings",
-    ):
-        counts[table] = _delete_rows_with_filter(
-            conn, table, f"created_by IN {account_filter}", account_params
-        )
-
+    # Provider configuration audits record actor_id but deliberately do not
+    # reference accounts. Keep those audit records after the account is gone.
     counts["accounts"] = _delete_rows_by_ids(conn, "accounts", "account_id", account_ids)
     return counts
 
@@ -522,7 +554,7 @@ async def delete_room(request: Request, room_id: str):
 @router.post("/rooms/batch-delete")
 async def delete_rooms(request: Request):
     _require_admin(request)
-    ids = await _get_id_list(request, "ids")
+    ids = await _get_confirmed_id_list(request, "ids")
     conn = request.app.state.db
     found_ids, not_found_ids = _split_found_and_missing(conn, "rooms", "room_id", ids)
 
@@ -559,7 +591,7 @@ async def delete_scenario(request: Request, scenario_id: str):
 @router.post("/scenarios/batch-delete")
 async def delete_scenarios(request: Request):
     _require_admin(request)
-    ids = await _get_id_list(request, "ids")
+    ids = await _get_confirmed_id_list(request, "ids")
     conn = request.app.state.db
     found_ids, not_found_ids = _split_found_and_missing(conn, "scenarios", "scenario_id", ids)
 
@@ -596,7 +628,7 @@ async def delete_character(request: Request, character_id: str):
 @router.post("/characters/batch-delete")
 async def delete_characters(request: Request):
     _require_admin(request)
-    ids = await _get_id_list(request, "ids")
+    ids = await _get_confirmed_id_list(request, "ids")
     conn = request.app.state.db
     found_ids, not_found_ids = _split_found_and_missing(conn, "characters", "character_id", ids)
 
@@ -629,7 +661,7 @@ async def delete_account(request: Request, account_id: str):
     if not row:
         raise HTTPException(404, "璐﹀彿涓嶅瓨鍦ㄣ?")
     if row.get("username") == "admin":
-        raise HTTPException(409, "涓氬姟绠＄悊鍛樿处鍙蜂簡鍙琚")
+        raise HTTPException(409, "管理员账号受保护，无法删除")
     with conn.transaction() as tx:
         counts = _delete_account_rows(tx, [account_id])
     return {"status": "deleted", "deleted_ids": [account_id], "counts": counts}
@@ -638,7 +670,7 @@ async def delete_account(request: Request, account_id: str):
 @router.post("/accounts/batch-delete")
 async def delete_accounts(request: Request):
     _require_admin(request)
-    ids = await _get_id_list(request, "ids")
+    ids = await _get_confirmed_id_list(request, "ids")
     conn = request.app.state.db
     found_ids, not_found_ids = _split_found_and_missing(conn, "accounts", "account_id", ids)
     found_rows = conn.execute(
@@ -652,7 +684,7 @@ async def delete_accounts(request: Request):
     errors: list[dict[str, str]] = []
     for account_id in found_ids:
         if account_id in protected_accounts:
-            errors.append({"id": account_id, "error": "涓氬姟绠＄悊鍛樿处鍙蜂緭鍏ョ紪鐮佹妧", "status": "409"})
+            errors.append({"id": account_id, "error": "管理员账号受保护，无法删除", "status": "409"})
             continue
         try:
             with conn.transaction() as tx:

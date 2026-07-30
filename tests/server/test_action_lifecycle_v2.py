@@ -300,12 +300,55 @@ class _PendingSuggestionRuleExecutor:
                 "pending_rule_suggestions": [
                     {
                         "mechanic": "unsupported_rule",
-                        "status": "pending_host_confirmation",
+                        "status": "rejected",
                         "reason_code": "rule_handler_not_found",
                         "citation": {"source_ref": "module#p12"},
                     }
                 ]
             },
+        )
+
+
+class _SanityStateRuleExecutor:
+    async def execute(self, intent, compiled, character, inventory, scenario_assets):
+        return ResolutionResult(
+            actionId=intent.action_id,
+            roomId=character["room_id"],
+            characterId=character["character_id"],
+            mechanic="sanity_check",
+            isSuccess=True,
+            mutations=[
+                {
+                    "op": "add",
+                    "path": "/character/status_tag",
+                    "value": "temporary_insanity",
+                },
+                {
+                    "op": "replace",
+                    "path": "/character/temp_modifier/coc7_sanity",
+                    "value": {
+                        "schema_version": 1,
+                        "insanity_type": "temporary",
+                        "phase": "bout",
+                        "control": "ai_keeper",
+                    },
+                },
+            ],
+        )
+
+
+class _CaptureAssetsRuleExecutor:
+    def __init__(self):
+        self.assets = None
+
+    async def execute(self, intent, compiled, character, inventory, scenario_assets):
+        self.assets = scenario_assets
+        return ResolutionResult(
+            actionId=intent.action_id,
+            roomId=character["room_id"],
+            characterId=character["character_id"],
+            mechanic="luck_check",
+            isSuccess=True,
         )
 
 
@@ -607,7 +650,7 @@ async def test_v2_pipeline_does_not_complete_or_project_when_state_persistence_f
 
 
 @pytest.mark.asyncio
-async def test_failed_v2_pushed_roll_waits_for_host_consequence_without_state_change(
+async def test_failed_v2_pushed_roll_uses_engine_consequence_without_human_host(
     test_db,
     monkeypatch,
 ):
@@ -639,12 +682,13 @@ async def test_failed_v2_pushed_roll_waits_for_host_consequence_without_state_ch
 
     result = await pipeline.resolve_action("action-v2")
 
-    assert result["status"] == "awaiting_host_exception"
+    assert result["status"] == "completed"
     action = test_db.execute(
         "SELECT status, result FROM actions WHERE action_id = 'action-v2'"
     ).fetchone()
-    assert action["status"] == "awaiting_host_exception"
-    assert action["result"]["metadata"]["pending_consequence"]["reason"] == "pushed_check_failed"
+    assert action["status"] == "completed"
+    assert action["result"]["metadata"]["pending_consequence"] is None
+    assert action["result"]["metadata"]["pushed_consequence"]["status"] == "resolved_by_engine"
     assert test_db.execute(
         "SELECT state_version FROM rooms WHERE room_id = 'room-v2'"
     ).fetchone()["state_version"] == 0
@@ -668,8 +712,20 @@ async def test_v2_rule_explanation_uses_authoritative_runtime_before_and_after_s
     state_service = StateService(test_db)
     state_service.initialize_character_state("char-v2", "room-v2")
     test_db.execute(
-        "UPDATE character_runtime_state SET luck = 35 "
+        "UPDATE character_runtime_state SET luck = 35, status_tags = %s, temp_modifiers = %s "
         "WHERE character_id = 'char-v2' AND room_id = 'room-v2'"
+        ,
+        (
+            json.dumps(["temporary_insanity"]),
+            json.dumps(
+                {
+                    "coc7_sanity": {
+                        "insanity_type": "temporary",
+                        "phase": "underlying",
+                    }
+                }
+            ),
+        ),
     )
     pipeline = ResolutionPipeline(
         conn=test_db,
@@ -687,10 +743,12 @@ async def test_v2_rule_explanation_uses_authoritative_runtime_before_and_after_s
     ).fetchone()["receipt"]
     assert receipt["state_before"]["luck"] == 35
     assert receipt["state_after"]["luck"] == 20
+    assert receipt["state_before"]["status_tags"] == ["temporary_insanity"]
+    assert receipt["state_before"]["temp_modifiers"]["coc7_sanity"]["phase"] == "underlying"
 
 
 @pytest.mark.asyncio
-async def test_unimplemented_v2_rule_waits_for_host_without_completing_action(test_db):
+async def test_unimplemented_v2_rule_is_rejected_without_human_host(test_db):
     _insert_action(test_db)
     test_db.execute(
         "INSERT INTO action_status_events (action_id, status, metadata) "
@@ -706,15 +764,202 @@ async def test_unimplemented_v2_rule_waits_for_host_without_completing_action(te
 
     result = await pipeline.resolve_action("action-v2")
 
-    assert result["status"] == "awaiting_host_exception"
+    assert result["status"] == "completed"
     action = test_db.execute(
         "SELECT status, result FROM actions WHERE action_id = 'action-v2'"
     ).fetchone()
-    assert action["status"] == "awaiting_host_exception"
+    assert action["status"] == "completed"
     assert action["result"]["metadata"]["pending_rule_suggestions"][0][
         "reason_code"
     ] == "rule_handler_not_found"
-    assert "s2c_action_completed" not in [event[1] for event in dispatcher.events]
+    assert "s2c_action_completed" in [event[1] for event in dispatcher.events]
+
+
+@pytest.mark.asyncio
+async def test_v2_pipeline_persists_room_scoped_sanity_state(test_db):
+    _insert_action(test_db)
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    state_service = StateService(test_db)
+    state_service.initialize_character_state("char-v2", "room-v2")
+    pipeline = ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        rule_executor=_SanityStateRuleExecutor(),
+        state_service=state_service,
+    )
+
+    result = await pipeline.resolve_action("action-v2")
+
+    assert result["status"] == "completed"
+    runtime = test_db.execute(
+        "SELECT status_tags, temp_modifiers FROM character_runtime_state "
+        "WHERE character_id = 'char-v2' AND room_id = 'room-v2'"
+    ).fetchone()
+    assert runtime["status_tags"] == ["temporary_insanity"]
+    assert runtime["temp_modifiers"]["coc7_sanity"]["phase"] == "bout"
+
+
+@pytest.mark.asyncio
+async def test_permanently_insane_investigator_cannot_submit_another_action(test_db):
+    _insert_action(test_db)
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    state_service = StateService(test_db)
+    state_service.initialize_character_state("char-v2", "room-v2")
+    test_db.execute(
+        "UPDATE character_runtime_state SET status_tags = %s, temp_modifiers = %s "
+        "WHERE character_id = 'char-v2' AND room_id = 'room-v2'",
+        (
+            json.dumps(["permanent_insanity"]),
+            json.dumps(
+                {
+                    "coc7_sanity": {
+                        "insanity_type": "permanent",
+                        "phase": "permanent",
+                        "control": "ai_keeper",
+                    }
+                }
+            ),
+        ),
+    )
+
+    result = await ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        state_service=state_service,
+    ).resolve_action("action-v2")
+
+    assert result == {
+        "status": "rejected",
+        "action_id": "action-v2",
+        "reason": "investigator_not_player_controlled",
+    }
+
+
+@pytest.mark.asyncio
+async def test_pipeline_injects_lowest_party_luck_from_authoritative_room_state(test_db):
+    _insert_action(test_db)
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token, xlsx_data) "
+        "VALUES ('char-low-luck', 'room-v2', '低幸运玩家', 'low-token', %s)",
+        (json.dumps({"luck": 20}),),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    state_service = StateService(test_db)
+    state_service.initialize_character_state("char-v2", "room-v2")
+    state_service.initialize_character_state("char-low-luck", "room-v2")
+    test_db.execute(
+        "UPDATE character_runtime_state SET luck = 60 "
+        "WHERE character_id = 'char-v2' AND room_id = 'room-v2'"
+    )
+    capture = _CaptureAssetsRuleExecutor()
+
+    result = await ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        rule_executor=capture,
+        state_service=state_service,
+    ).resolve_action("action-v2")
+
+    assert result["status"] == "completed"
+    assert capture.assets["_party_luck_values"] == [20, 60]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_merges_pinned_runtime_rule_triggers_into_rule_assets(test_db):
+    _insert_action(test_db)
+    legacy_trigger = {
+        "condition": {"$action": "dialogue", "itemId": "legacy"},
+        "mechanics": [{"type": "auto_success"}],
+    }
+    runtime_trigger = {
+        "condition": {"$action": "dialogue", "itemId": "glass-rain"},
+        "mechanics": [
+            {
+                "type": "sanity_check",
+                "params": {"success_loss": 0, "failure_loss": "1d4"},
+            }
+        ],
+        "citation": {"source_ref": "module.json#/knowledge_graph/rule_triggers/0"},
+    }
+    test_db.execute(
+        "INSERT INTO scenarios "
+        "(scenario_id, title, scenario_assets, import_status, publish_status) "
+        "VALUES ('glass-rain', 'Glass Rain', %s, 'structured', 'published')",
+        (json.dumps({"triggers": [legacy_trigger]}),),
+    )
+    test_db.execute(
+        "INSERT INTO scenario_versions "
+        "(scenario_version_id, scenario_id, version_number, status, created_by) "
+        "VALUES ('glass-rain-v2', 'glass-rain', 2, 'published', 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, "
+        "gate_status, input_checksum, runtime_package, created_by) "
+        "VALUES ('glass-rain-runtime-v2', 'glass-rain-v2', 1, 'ready', "
+        "'checksum', %s, 'test')",
+        (json.dumps({"rule_triggers": [runtime_trigger]}),),
+    )
+    test_db.execute(
+        "UPDATE rooms SET scenario_id = 'glass-rain', "
+        "scenario_version_id = 'glass-rain-v2', "
+        "runtime_package_version_id = 'glass-rain-runtime-v2' "
+        "WHERE room_id = 'room-v2'"
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    capture = _CaptureAssetsRuleExecutor()
+
+    result = await ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        rule_executor=capture,
+    ).resolve_action("action-v2")
+
+    assert result["status"] == "completed"
+    assert capture.assets["triggers"] == [legacy_trigger, runtime_trigger]
+
+
+@pytest.mark.asyncio
+async def test_engine_leaves_queued_actions_untouched_while_safety_paused(test_db):
+    _insert_action(test_db)
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    test_db.execute(
+        "INSERT INTO player_action_submissions "
+        "(action_id, room_id, character_id, input_mode, raw_text_ciphertext, "
+        "requested_visibility, status) "
+        "VALUES ('safety-pause', 'room-v2', 'char-v2', 'safety', 'encrypted', "
+        "'private', 'safety_paused')"
+    )
+
+    result = await ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+    ).resolve_action("action-v2")
+
+    assert result == {"status": "safety_paused", "action_id": "action-v2"}
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'action-v2'"
+    ).fetchone()["status"] == "queued"
 
 
 def test_rule_explanation_hides_modifier_source_but_keeps_mechanical_effect():

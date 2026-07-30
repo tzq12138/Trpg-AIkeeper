@@ -1,7 +1,8 @@
 {
   "manifest": {
     "format": "aikeeper-golden-module",
-    "schema_version": "1.0",
+    "schema_version": "2.0",
+    "runtime_version": "v2",
     "module_id": "golden-team-glass-rain",
     "title": "玻璃雨夜",
     "module_type": "short_team_investigation",
@@ -33,7 +34,7 @@
     },
     "readiness": {
       "expected_status": "ready",
-      "required_components": ["scenes", "npcs", "clues", "truth", "endings", "preset_characters", "text_map", "coc7_binding", "citations"],
+      "required_components": ["scenes", "npcs", "clues", "truth", "endings", "preset_characters", "text_map", "coc7_binding", "citations", "runtime_policy", "sanity_trigger", "safety"],
       "known_risk": "含温室坍塌和伤者场景；Session Zero 应确认对灾害描写的接受度。"
     }
   },
@@ -43,6 +44,60 @@
     "synopsis": "2–4 人合作短团：在封闭温室中平衡救援、调查和设备处置，验证多人行动批次、资源消耗和分歧后的共同结局。",
     "recommended_tags": ["2-4人", "短团", "调查", "救援", "天气灾害"],
     "key_skills": ["侦查", "急救", "机械维修", "电气维修", "说服", "潜水"],
+    "runtime_policy": {
+      "runtime_version": "v2",
+      "session_mode": "ai_only",
+      "state_scope": "room_run",
+      "archive_on_end": true,
+      "fresh_state_on_new_room": true,
+      "in_game_time": {
+        "day_key": "glass-rain-night-1",
+        "expected_duration_hours": 3
+      },
+      "safety": {
+        "anonymous_pause": true,
+        "resume_authority": "triggering_player",
+        "table_steward_actions": ["extend", "end_session"],
+        "safe_abort_ending_id": "glass-safe-abort"
+      },
+      "ai_failure_policy": {
+        "pre_commit": "deterministic_fallback",
+        "post_commit": "preserve_state_template_narration"
+      }
+    },
+    "rule_triggers": [
+      {
+        "trigger_id": "glass-cistern-sanity",
+        "condition": {
+          "$action": "move",
+          "targetNodeId": "cistern"
+        },
+        "mechanics": [
+          {
+            "type": "sanity_check",
+            "blocking": false,
+            "params": {
+              "success_loss": "0",
+              "failure_loss": "1d4",
+              "sourceId": "glass-cistern-rising-water",
+              "in_game_day": "glass-rain-night-1",
+              "companionsPresent": true,
+              "manifestation": {
+                "symptom_id": 1
+              },
+              "safeReplacement": {
+                "symptom_id": 2
+              },
+              "ruleCitation": {
+                "source_ref": "configured:coc7:configured-published-version#sanity"
+              }
+            }
+          }
+        ],
+        "citation_id": "rule-coc7-glass-sanity",
+        "source_ref": "configured:coc7:configured-published-version#sanity"
+      }
+    ],
     "rule_citations": [
       {
         "citation_id": "rule-coc7-team-checks",
@@ -235,6 +290,17 @@
           "all_clues": ["g17-test-sheet"]
         },
         "citation_ids": ["cit-glass-ending-timeout"]
+      },
+      {
+        "ending_id": "glass-safe-abort",
+        "name": "安全中止并撤离",
+        "description": "触发安全暂停后，由桌务协助者结束本次游戏。已发生的房间状态与角色结局被归档，新房间不会继承本次 SAN 或疯狂状态。",
+        "type": "safe_abort",
+        "completion_mode": "table_steward_safety_end",
+        "completion_conditions": {
+          "room_status": "completed"
+        },
+        "citation_ids": ["cit-glass-ending-safe-abort"]
       }
     ]
   },
@@ -323,7 +389,9 @@
     {"citation_id": "cit-glass-truth", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/truth", "visibility": "host_ai", "label": "G-17 真相"},
     {"citation_id": "cit-glass-ending-rescue", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/0", "visibility": "host_ai", "label": "协作停机与救援"},
     {"citation_id": "cit-glass-ending-power", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/1", "visibility": "host_ai", "label": "先断电的代价"},
-    {"citation_id": "cit-glass-ending-timeout", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/2", "visibility": "host_ai", "label": "错过倒计时"}
+    {"citation_id": "cit-glass-ending-timeout", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/2", "visibility": "host_ai", "label": "错过倒计时"},
+    {"citation_id": "cit-glass-ending-safe-abort", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/3", "visibility": "host_ai", "label": "安全中止并撤离"},
+    {"citation_id": "rule-coc7-glass-sanity", "source_type": "rule_set_version", "source_ref": "configured:coc7:configured-published-version#sanity", "visibility": "host_ai", "label": "进入蓄水池时的理智检定"}
   ],
   "rag_expectations": [
     {"query": "G-17 是什么？", "expected_citation_ids": ["cit-glass-clue-number", "cit-glass-clue-sheet"], "forbidden_citation_ids": ["cit-glass-truth"]},
@@ -340,10 +408,10 @@
       "scenes": "pass: 4",
       "npcs": "pass: 4 stable ids, all hidden NPCs have public descriptions",
       "clues": "pass: 5 with source anchors",
-      "truth_and_endings": "pass: host-only truth and 3 endings",
+      "truth_and_endings": "pass: host-only truth and victory, mixed, defeat, safe-abort endings",
       "characters": "pass: 4 presets for 2-4 players",
       "map": "pass: explicit text graph",
-      "rules": "pass: CoC7 binding without rule text",
+      "rules": "pass: CoC7 binding, structured SAN trigger, room-scoped runtime state and safety contract without rule text",
       "citations_and_license": "pass: self-anchored citations and private-use license"
     }
   }

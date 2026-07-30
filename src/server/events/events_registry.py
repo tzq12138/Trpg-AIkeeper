@@ -89,6 +89,10 @@ ALL_EVENTS: dict[str, EventDef] = {
         "s2c_safety_request", EventDomain.ACTION, "host",
         "玩家安全边界请求（事件不含敏感正文）",
     ),
+    "s2c_safety_state_changed": EventDef(
+        "s2c_safety_state_changed", EventDomain.ACTION, "party",
+        "匿名安全暂停状态发生变化",
+    ),
     "s2c_tactical_prompt": EventDef(
         "s2c_tactical_prompt", EventDomain.ACTION, "player",
         "战术行动提示（AI 生成的快捷按钮）",

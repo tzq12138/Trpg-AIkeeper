@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from src.server.engine import resolution_pipeline
 from src.server.engine.resolution_pipeline import ResolutionPipeline
+from src.server.engine.state_service import StateService
 from src.server.player.router_player import _settle_turn_background
 from src.server.models import MechanicCompileResult, NarrationResultDTO, ResolutionResult
 from src.server.ai import narrator as narrator_module
@@ -1012,6 +1013,26 @@ async def test_named_runtime_clue_is_persisted_and_can_complete_an_ending(client
 @pytest.mark.asyncio
 async def test_verified_generic_ending_completes_room_only_after_condition_match(client, test_db):
     room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    state_service = StateService(test_db)
+    state_service.initialize_character_state(character_id, room_id)
+    test_db.execute(
+        "UPDATE character_runtime_state SET san = 42, status_tags = %s, temp_modifiers = %s "
+        "WHERE character_id = %s AND room_id = %s",
+        (
+            json.dumps(["temporary_insanity"]),
+            json.dumps(
+                {
+                    "coc7_sanity": {
+                        "insanity_type": "temporary",
+                        "phase": "underlying",
+                        "control": "player",
+                    }
+                }
+            ),
+            character_id,
+            room_id,
+        ),
+    )
     runtime_row = test_db.execute(
         "SELECT runtime_package FROM runtime_package_versions WHERE scenario_version_id = "
         "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
@@ -1041,6 +1062,7 @@ async def test_verified_generic_ending_completes_room_only_after_condition_match
         compiler=_StaticCompiler("auto_success"),
         rule_executor=_StaticRuleExecutor(),
         gateway=gateway,
+        state_service=state_service,
     ).resolve_action("narrator-action")
 
     assert result["status"] == "completed"
@@ -1054,11 +1076,25 @@ async def test_verified_generic_ending_completes_room_only_after_condition_match
     ).fetchone()
     assert event["payload"]["completion_source"] == "verified_runtime_ending"
     archive = test_db.execute(
-        "SELECT ending_type, summary FROM campaign_archives WHERE room_id = %s",
+        "SELECT ending_type, summary, character_arcs FROM campaign_archives WHERE room_id = %s",
         (room_id,),
     ).fetchone()
     assert archive["ending_type"] == "victory"
     assert archive["summary"]
+    assert archive["character_arcs"] == [
+        {
+            "character_id": character_id,
+            "player_name": "Player",
+            "total_actions": 1,
+            "final_san": 42,
+            "sanity_outcome": {
+                "insanity_type": "temporary",
+                "phase": "underlying",
+                "control": "player",
+                "archive_required": False,
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

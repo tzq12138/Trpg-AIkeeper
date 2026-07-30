@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getSlotValue, setSlotValue } from '../shared/identity';
 import { canExecuteGlobalReset } from '../shared/reset-workflow';
 import { getScenarioPublishGate } from '../shared/scenario-publish-gate';
@@ -125,9 +125,116 @@ export function getScenarioStatusMeta(status?: string): ScenarioStatusMeta {
 }
 
 function coerceErrorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : '';
+  if (/(failed to fetch|networkerror|network request failed|load failed)/i.test(message)) {
+    return '无法连接后端服务，请确认本地服务已启动后重试。';
+  }
+  if (message) return message;
   return '操作失败，请稍后重试';
+}
+
+type BatchDeleteResult = {
+  deleted_ids?: string[];
+  not_found_ids?: string[];
+  errors?: Array<{ id?: string; error?: string; status?: string | number }>;
+};
+
+export function formatBatchDeleteFeedback(entityName: string, result: BatchDeleteResult): string {
+  const deletedIds = Array.isArray(result.deleted_ids) ? result.deleted_ids : [];
+  const missingIds = Array.isArray(result.not_found_ids) ? result.not_found_ids : [];
+  const errors = Array.isArray(result.errors) ? result.errors : [];
+  const blocked = errors.filter((item) => String(item.status) === '409');
+  const systemErrors = errors.filter((item) => String(item.status) !== '409');
+  const describe = (item: { id?: string; error?: string }) => `${item.id || '未知对象'}（${item.error || '未知错误'}）`;
+  const messages: string[] = [];
+
+  if (deletedIds.length > 0) messages.push(`成功删除：${deletedIds.join('、')}`);
+  if (missingIds.length > 0) messages.push(`未找到：${missingIds.join('、')}`);
+  if (blocked.length > 0) messages.push(`依赖阻止：${blocked.map(describe).join('、')}`);
+  if (systemErrors.length > 0) messages.push(`系统错误：${systemErrors.map(describe).join('、')}`);
+
+  return messages.length > 0 ? messages.join('；') : `未删除任何${entityName}`;
+}
+
+export function buildConfirmedBatchDeletePayload(ids: string[]) {
+  return { ids, confirm: true };
+}
+
+export function BatchDeleteConfirmation({
+  entityName,
+  selectedCount,
+  deleting,
+  onConfirm,
+  onCancel,
+}: {
+  entityName: string;
+  selectedCount: number;
+  deleting: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="bh-batch-toolbar__confirmation" aria-live="polite">
+      <span>请确认后再执行删除</span>
+      <button className="bh-button bh-button--red" type="button" onClick={onConfirm} disabled={deleting}>
+        {deleting ? '删除中...' : `确认删除（${selectedCount}）`}
+      </button>
+      <button className="bh-button" type="button" onClick={onCancel} disabled={deleting}>取消</button>
+    </div>
+  );
+}
+
+export function BatchDeleteToolbar({
+  entityName,
+  selectedCount,
+  deleting,
+  disabled = false,
+  onDelete,
+}: {
+  entityName: string;
+  selectedCount: number;
+  deleting: boolean;
+  disabled?: boolean;
+  onDelete: () => void | Promise<void>;
+}) {
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
+
+  useEffect(() => {
+    setAwaitingConfirmation(false);
+  }, [selectedCount]);
+
+  const unavailable = disabled || deleting || selectedCount === 0;
+
+  return (
+    <div className="bh-batch-toolbar">
+      <span className="bh-batch-toolbar__count" aria-live="polite">已选择 {selectedCount} 个{entityName}</span>
+      {awaitingConfirmation ? (
+        <BatchDeleteConfirmation
+          entityName={entityName}
+          selectedCount={selectedCount}
+          deleting={deleting}
+          onConfirm={() => {
+            setAwaitingConfirmation(false);
+            void onDelete();
+          }}
+          onCancel={() => setAwaitingConfirmation(false)}
+        />
+      ) : (
+        <button
+          className="bh-button bh-button--red"
+          type="button"
+          onClick={() => setAwaitingConfirmation(true)}
+          disabled={unavailable}
+        >
+          {deleting ? '删除中...' : `批量删除（${selectedCount}）`}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function sanitizeAdminScenarioError(error: unknown) {
@@ -568,24 +675,156 @@ function OverviewPanel() {
 
 // ── Rooms ──
 
+const ROOM_STATUS_COLORS: Record<string, string> = {
+  draft: 'var(--bh-muted)',
+  lobby: 'var(--bh-blue)',
+  active: 'var(--bh-yellow-dim)',
+  paused: 'var(--bh-yellow)',
+  completed: 'var(--bh-red)',
+  archived: 'var(--bh-paper-3)',
+};
+
+const ROOM_STATUS_LABELS: Record<string, string> = {
+  draft: '草稿',
+  lobby: '大厅等待',
+  active: '进行中',
+  paused: '已暂停',
+  completed: '已完成',
+  archived: '已归档',
+};
+
+type RoomDetailStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+export function RoomDetailPanel({
+  selectedRoomId,
+  status,
+  detail,
+  error,
+  onRetry,
+  onPatch,
+}: {
+  selectedRoomId: string;
+  status: RoomDetailStatus;
+  detail: any;
+  error: string;
+  onRetry: () => void;
+  onPatch: (roomId: string, nextStatus: string) => void;
+}) {
+  return (
+    <aside className="bh-preview-box bh-admin-room-detail" aria-live="polite">
+      <span className="bh-eyebrow">房间详情</span>
+      {!selectedRoomId && <p>选择一个房间以查看详情。</p>}
+      {selectedRoomId && status === 'loading' && (
+        <div className="bh-muted-box">正在加载房间详情...</div>
+      )}
+      {selectedRoomId && status === 'error' && (
+        <>
+          <div className="bh-error">加载失败：{error || '请稍后重试'}</div>
+          <button className="bh-button" type="button" onClick={onRetry}>重试</button>
+        </>
+      )}
+      {selectedRoomId && status === 'ready' && detail && (
+        <>
+          <h3>{detail.room_id}</h3>
+          <p>剧本：{detail.scenario_title || '未指定'}</p>
+          <p>
+            状态：
+            <strong style={{ color: ROOM_STATUS_COLORS[detail.status] || 'var(--bh-muted)' }}>
+              {ROOM_STATUS_LABELS[detail.status] || detail.status}
+            </strong>
+          </p>
+          <p>创建时间：{detail.created_at}</p>
+          {detail.started_at && <p>开始时间：{detail.started_at}</p>}
+
+          <div className="bh-admin-room-detail__actions">
+            {['draft', 'lobby', 'active', 'paused', 'completed', 'archived'].map((nextStatus) => (
+              <button
+                key={nextStatus}
+                className="bh-button"
+                type="button"
+                style={{ minHeight: 32, padding: '4px 10px', fontSize: 12 }}
+                disabled={detail.status === nextStatus}
+                onClick={() => onPatch(selectedRoomId, nextStatus)}
+              >
+                {ROOM_STATUS_LABELS[nextStatus] || nextStatus}
+              </button>
+            ))}
+          </div>
+
+          <div className="bh-admin-room-detail__players">
+            <strong>玩家 ({detail.characters?.length || 0})</strong>
+            {detail.characters?.map((character: any) => {
+              const playerStatusLabels: Record<string, string> = {
+                joined: '已加入',
+                active: '在线',
+                pending_approval: '待审批',
+                removed: '已移除',
+                left: '已离开',
+              };
+              return (
+                <div key={character.character_id} className="bh-skill-row" style={{ padding: '4px 0' }}>
+                  <span>{character.investigator_name || character.player_name}</span>
+                  <span style={{ fontSize: 11 }}>HP {character.hp}/{character.max_hp}</span>
+                  <span style={{ fontSize: 11 }}>
+                    {character.is_ready ? '[OK]' : '[--]'} {playerStatusLabels[character.status] || character.status}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="bh-action-row" style={{ marginTop: 12 }}>
+            <a className="bh-button bh-button--yellow" href={`/host/${detail.room_id}`}>房主大厅</a>
+            <a className="bh-button bh-button--yellow" href={`/host/${detail.room_id}/stage`}>房主舞台</a>
+            <a className="bh-button" href={`/player/${detail.room_id}`}>玩家入口</a>
+          </div>
+        </>
+      )}
+    </aside>
+  );
+}
+
 function RoomsPanel() {
   const [rooms, setRooms] = useState<any[]>([]);
   const [selected, setSelected] = useState<string>('');
   const [detail, setDetail] = useState<any>(null);
+  const [detailStatus, setDetailStatus] = useState<RoomDetailStatus>('idle');
+  const [detailError, setDetailError] = useState('');
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [deleteMessage, setDeleteMessage] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const detailRequestId = useRef(0);
 
-  const load = () => {
+  const load = async () => {
     setLoading(true);
-    api('/api/admin/rooms').then(setRooms).finally(() => setLoading(false));
+    try {
+      setRooms(await api('/api/admin/rooms'));
+    } finally {
+      setLoading(false);
+    }
   };
-  useEffect(load, []);
+  useEffect(() => { void load(); }, []);
 
   const showDetail = (id: string) => {
+    const requestId = detailRequestId.current + 1;
+    detailRequestId.current = requestId;
     setSelected(id);
-    api(`/api/admin/rooms/${id}`).then(setDetail).catch(() => setDetail(null));
+    setDetail(null);
+    setDetailStatus('loading');
+    setDetailError('');
+    void api(`/api/admin/rooms/${id}`)
+      .then((nextDetail) => {
+        if (detailRequestId.current !== requestId) return;
+        setDetail(nextDetail);
+        setDetailStatus('ready');
+      })
+      .catch((error) => {
+        if (detailRequestId.current !== requestId) return;
+        setDetail(null);
+        setDetailError(coerceErrorMessage(error));
+        setDetailStatus('error');
+      });
   };
 
   const patchRoom = async (id: string, status: string) => {
@@ -607,8 +846,11 @@ function RoomsPanel() {
     try {
       await api(`/api/admin/rooms/${id}`, { method: 'DELETE' });
       if (selected === id) {
+        detailRequestId.current += 1;
         setSelected('');
         setDetail(null);
+        setDetailStatus('idle');
+        setDetailError('');
       }
       setSelectedIds((prev) => prev.filter((roomId) => roomId !== id));
       setDeleteMessage(`已删除房间 ${id}`);
@@ -622,41 +864,29 @@ function RoomsPanel() {
 
   const batchDeleteRooms = async () => {
     if (selectedIds.length === 0) return;
-    if (!window.confirm(`确定要删除 ${selectedIds.length} 个房间吗？`)) return;
     setDeleting(true);
     setDeleteMessage('');
     try {
       const result = await api('/api/admin/rooms/batch-delete', {
         method: 'POST',
-        body: JSON.stringify({ ids: selectedIds }),
-      }) as Record<string, any>;
+        body: JSON.stringify(buildConfirmedBatchDeletePayload(selectedIds)),
+      }) as BatchDeleteResult;
       const deletedIds = Array.isArray(result.deleted_ids) ? result.deleted_ids : [];
-      const errors = Array.isArray(result.errors) ? result.errors : [];
       setSelectedIds((prev) => prev.filter((id) => !deletedIds.includes(id)));
       if (deletedIds.includes(selected)) {
+        detailRequestId.current += 1;
         setSelected('');
         setDetail(null);
+        setDetailStatus('idle');
+        setDetailError('');
       }
-      if (errors.length > 0) {
-        const failed = errors.map((item: any) => `${item.id}:${item.error}`).join('；');
-        setDeleteMessage(`已删除 ${deletedIds.length} 个，失败 ${errors.length} 个：${failed}`);
-      } else {
-        setDeleteMessage(`已删除 ${deletedIds.length} 个房间`);
-      }
+      setDeleteMessage(formatBatchDeleteFeedback('房间', result));
       await load();
     } catch (error) {
       setDeleteMessage(coerceErrorMessage(error));
     } finally {
       setDeleting(false);
     }
-  };
-
-  const statusColors: Record<string, string> = {
-    draft: 'var(--bh-muted)', lobby: 'var(--bh-blue)', active: 'var(--bh-yellow-dim)',
-    paused: 'var(--bh-yellow)', completed: 'var(--bh-red)', archived: 'var(--bh-paper-3)',
-  };
-  const statusLabel: Record<string, string> = {
-    draft: '草稿', lobby: '大厅等待', active: '进行中', paused: '已暂停', completed: '已完成', archived: '已归档',
   };
 
   const [showCreate, setShowCreate] = useState(false);
@@ -687,14 +917,16 @@ function RoomsPanel() {
 
   return (
     <section>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="bh-admin-toolbar">
         <h2 className="bh-panel-title">房间管理</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {selectedIds.length > 0 && (
-            <button className="bh-button bh-button--red" onClick={batchDeleteRooms} disabled={deleting || loading}>
-              批量删除（{selectedIds.length}）
-            </button>
-          )}
+        <div className="bh-admin-toolbar__actions">
+          <BatchDeleteToolbar
+            entityName="房间"
+            selectedCount={selectedIds.length}
+            deleting={deleting}
+            disabled={loading}
+            onDelete={batchDeleteRooms}
+          />
           <button className="bh-button bh-button--yellow" onClick={() => { setShowCreate(!showCreate); if (!showCreate) { api(SCENARIO_ROOM_OPTIONS_ENDPOINT).then(setScenarioList); api('/api/admin/accounts').then(setAccountList); } }}>{showCreate ? '取消' : '新建房间'}</button>
           <button className="bh-button" onClick={load} disabled={loading}>刷新</button>
         </div>
@@ -721,7 +953,7 @@ function RoomsPanel() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: selected ? '1fr 1fr' : '1fr', gap: 16, marginTop: 16 }}>
+      <div className="bh-admin-room-layout">
         <div className="bh-preset-list">
           {rooms.map((r) => (
             <div
@@ -730,21 +962,24 @@ function RoomsPanel() {
               style={{ position: 'relative', cursor: 'pointer' }}
               onClick={() => showDetail(r.room_id)}
             >
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, position: 'absolute', left: 10, top: 10 }}>
-                <input
-                  type="checkbox"
-                  checked={isChecked(r.room_id)}
-                  onClick={(event) => event.stopPropagation()}
-                  onChange={(event) => toggleSelected(r.room_id, event.target.checked)}
-                />
-                <span style={{ fontSize: 11 }}>选择</span>
-              </label>
-              <strong style={{ marginLeft: 56 }}>{r.room_id}</strong>
+              <div className="bh-admin-card-header">
+                <label className="bh-admin-card-select" onClick={(event) => event.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={isChecked(r.room_id)}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => toggleSelected(r.room_id, event.target.checked)}
+                  />
+                  <span>选择</span>
+                </label>
+                <strong className="bh-admin-card-title">{r.room_id}</strong>
+              </div>
               <span>{r.scenario_title || '无剧本'}</span>
-              <small style={{ color: statusColors[r.status] || 'var(--bh-muted)' }}>{r.status}</small>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+              <small style={{ color: ROOM_STATUS_COLORS[r.status] || 'var(--bh-muted)' }}>{r.status}</small>
+              <div className="bh-admin-card-actions">
                 <button
                   className="bh-button bh-button--red"
+                  type="button"
                   style={{ padding: '2px 8px', fontSize: 11 }}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -759,45 +994,14 @@ function RoomsPanel() {
           ))}
         </div>
 
-        {selected && detail && (
-          <div className="bh-preview-box">
-            <span className="bh-eyebrow">房间详情</span>
-            <h3>{detail.room_id}</h3>
-            <p>剧本：{detail.scenario_title || '未指定'}</p>
-            <p>状态：<strong style={{ color: statusColors[detail.status] }}>{statusLabel[detail.status] || detail.status}</strong></p>
-            <p>创建时间：{detail.created_at}</p>
-            {detail.started_at && <p>开始时间：{detail.started_at}</p>}
-
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-              {['draft', 'lobby', 'active', 'paused', 'completed', 'archived'].map((s) => (
-                <button key={s} className="bh-button" style={{ minHeight: 32, padding: '4px 10px', fontSize: 12 }}
-                  disabled={detail.status === s} onClick={() => patchRoom(selected, s)}>
-                  {statusLabel[s] || s}
-                </button>
-              ))}
-            </div>
-
-            <div style={{ marginTop: 12, borderTop: '3px solid var(--bh-black)', paddingTop: 8 }}>
-              <strong>玩家 ({detail.characters?.length || 0})</strong>
-              {detail.characters?.map((c: any) => {
-                const pStatusLabels: Record<string, string> = { joined: '已加入', active: '在线', pending_approval: '待审批', removed: '已移除', left: '已离开' };
-                return (
-                <div key={c.character_id} className="bh-skill-row" style={{ padding: '4px 0' }}>
-                  <span>{c.investigator_name || c.player_name}</span>
-                  <span style={{ fontSize: 11 }}>HP {c.hp}/{c.max_hp}</span>
-                  <span style={{ fontSize: 11 }}>{c.is_ready ? '[OK]' : '[--]'} {pStatusLabels[c.status] || c.status}</span>
-                </div>
-                );
-              })}
-            </div>
-
-            <div className="bh-action-row" style={{ marginTop: 12 }}>
-              <a className="bh-button bh-button--yellow" href={`/host/${detail.room_id}`}>房主大厅</a>
-              <a className="bh-button bh-button--yellow" href={`/host/${detail.room_id}/stage`}>房主舞台</a>
-              <a className="bh-button" href={`/player/${detail.room_id}`}>玩家入口</a>
-            </div>
-          </div>
-        )}
+        <RoomDetailPanel
+          selectedRoomId={selected}
+          status={detailStatus}
+          detail={detail}
+          error={detailError}
+          onRetry={() => { if (selected) showDetail(selected); }}
+          onPatch={patchRoom}
+        />
       </div>
     </section>
   );
@@ -1779,16 +1983,14 @@ export function ScenariosPanel() {
 
   const batchDeleteScenarios = async () => {
     if (selectedIds.length === 0) return;
-    if (!window.confirm(`确定要删除 ${selectedIds.length} 个剧本吗？`)) return;
     setDeleting(true);
     setDeleteMessage('');
     try {
       const result = await api('/api/admin/scenarios/batch-delete', {
         method: 'POST',
-        body: JSON.stringify({ ids: selectedIds }),
-      }) as Record<string, any>;
+        body: JSON.stringify(buildConfirmedBatchDeletePayload(selectedIds)),
+      }) as BatchDeleteResult;
       const deletedIds = Array.isArray(result.deleted_ids) ? result.deleted_ids : [];
-      const errors = Array.isArray(result.errors) ? result.errors : [];
       const nextIds = selectedIds.filter((id) => !deletedIds.includes(id));
       setSelectedIds(nextIds);
       if (deletedIds.includes(selectedId)) {
@@ -1800,12 +2002,7 @@ export function ScenariosPanel() {
       if (nextIds.length === 0 && selectedId && deletedIds.includes(selectedId)) {
         setSelectedId('');
       }
-      if (errors.length > 0) {
-        const failed = errors.map((item: any) => `${item.id}:${item.error}`).join('；');
-        setDeleteMessage(`已删除 ${deletedIds.length} 个，失败 ${errors.length} 个：${failed}`);
-      } else {
-        setDeleteMessage(`已删除 ${deletedIds.length} 个剧本`);
-      }
+      setDeleteMessage(formatBatchDeleteFeedback('剧本', result));
     } catch (error) {
       setDeleteMessage(coerceErrorMessage(error));
     } finally {
@@ -2018,14 +2215,15 @@ export function ScenariosPanel() {
 
   return (
     <section>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+      <div className="bh-admin-toolbar">
         <h2 className="bh-panel-title">剧本 & 素材</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {selectedIds.length > 0 && (
-            <button className="bh-button bh-button--red" onClick={batchDeleteScenarios} disabled={deleting}>
-              批量删除（{selectedIds.length}）
-            </button>
-          )}
+        <div className="bh-admin-toolbar__actions">
+          <BatchDeleteToolbar
+            entityName="剧本"
+            selectedCount={selectedIds.length}
+            deleting={deleting}
+            onDelete={batchDeleteScenarios}
+          />
           <button className="bh-button" onClick={() => { loadScenarios().then((list) => { if (!selectedId && list[0]) selectScenario(list[0].scenario_id); }); }}>刷新</button>
         </div>
       </div>
@@ -2101,7 +2299,7 @@ export function ScenariosPanel() {
               return (
                 <div
                   key={scenario.scenario_id}
-                  className={`bh-preset-card ${selectedId === scenario.scenario_id ? 'bh-preset-card--selected' : ''}`}
+                  className={`bh-preset-card bh-admin-selectable-card ${selectedId === scenario.scenario_id ? 'bh-preset-card--selected' : ''}`}
                   style={{ position: 'relative' }}
                   onClick={() => selectScenario(scenario.scenario_id)}
                 >
@@ -2109,7 +2307,7 @@ export function ScenariosPanel() {
                   <span style={{ fontSize: 10, opacity: 0.8, color: status.color }}>
                     {status.label} ({getScenarioDisplayStatus(scenario)})
                   </span>
-                  <label style={{ position: 'absolute', right: 10, top: 10, display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 11 }}>
+                  <label className="bh-admin-card-select" onClick={(event) => event.stopPropagation()}>
                     <span>选择</span>
                     <input
                       type="checkbox"
@@ -2289,24 +2487,17 @@ function CharactersPanel() {
 
   const batchDelete = async () => {
     if (selectedIds.length === 0) return;
-    if (!window.confirm(`确定要删除 ${selectedIds.length} 个角色吗？`)) return;
     setDeleting(true);
     setDeleteMessage('');
     try {
       const result = await api('/api/admin/characters/batch-delete', {
         method: 'POST',
-        body: JSON.stringify({ ids: selectedIds }),
-      }) as Record<string, any>;
+        body: JSON.stringify(buildConfirmedBatchDeletePayload(selectedIds)),
+      }) as BatchDeleteResult;
       const deletedIds = Array.isArray(result.deleted_ids) ? result.deleted_ids : [];
-      const errors = Array.isArray(result.errors) ? result.errors : [];
       setSelectedIds((prev) => prev.filter((id) => !deletedIds.includes(id)));
       load();
-      if (errors.length > 0) {
-        const failed = errors.map((item: any) => `${item.id}:${item.error}`).join('；');
-        setDeleteMessage(`已删除 ${deletedIds.length} 个，失败 ${errors.length} 个：${failed}`);
-      } else {
-        setDeleteMessage(`已删除 ${deletedIds.length} 个角色`);
-      }
+      setDeleteMessage(formatBatchDeleteFeedback('角色', result));
     } catch (error) {
       setDeleteMessage(coerceErrorMessage(error));
     } finally {
@@ -2317,19 +2508,24 @@ function CharactersPanel() {
   return (
     <section>
       <h2 className="bh-panel-title">角色管理</h2>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+      <div className="bh-admin-toolbar" style={{ marginBottom: 12 }}>
         <input className="bh-input" placeholder="按房间码过滤" value={roomFilter} onChange={(e) => setRoomFilter(e.target.value)} style={{ width: 200 }} />
-        {selectedIds.length > 0 && (
-          <button className="bh-button bh-button--red" onClick={batchDelete} disabled={deleting}>批量删除（{selectedIds.length}）</button>
-        )}
-        <button className="bh-button" onClick={load}>刷新</button>
+        <div className="bh-admin-toolbar__actions">
+          <BatchDeleteToolbar
+            entityName="角色"
+            selectedCount={selectedIds.length}
+            deleting={deleting}
+            onDelete={batchDelete}
+          />
+          <button className="bh-button" onClick={load}>刷新</button>
+        </div>
       </div>
       {deleteMessage && <div className="bh-muted-box" style={{ marginBottom: 12 }}>{deleteMessage}</div>}
 
       <div className="bh-preset-list">
         {chars.map((c) => (
-          <div key={c.character_id} className="bh-preset-card" style={{ textAlign: 'left', position: 'relative' }}>
-            <label style={{ position: 'absolute', right: 10, top: 10, display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 11 }}>
+          <div key={c.character_id} className="bh-preset-card bh-admin-selectable-card" style={{ textAlign: 'left', position: 'relative' }}>
+            <label className="bh-admin-card-select" onClick={(event) => event.stopPropagation()}>
               <span>选择</span>
               <input
                 type="checkbox"
@@ -2420,24 +2616,17 @@ function AccountsPanel() {
 
   const batchDelete = async () => {
     if (selectedIds.length === 0) return;
-    if (!window.confirm(`确定要删除 ${selectedIds.length} 个账号吗？`)) return;
     setDeleting(true);
     setDeleteMessage('');
     try {
       const result = await api('/api/admin/accounts/batch-delete', {
         method: 'POST',
-        body: JSON.stringify({ ids: selectedIds }),
-      }) as Record<string, any>;
+        body: JSON.stringify(buildConfirmedBatchDeletePayload(selectedIds)),
+      }) as BatchDeleteResult;
       const deletedIds = Array.isArray(result.deleted_ids) ? result.deleted_ids : [];
-      const errors = Array.isArray(result.errors) ? result.errors : [];
       setSelectedIds((prev) => prev.filter((id) => !deletedIds.includes(id)));
       load();
-      if (errors.length > 0) {
-        const failed = errors.map((item: any) => `${item.id}:${item.error}`).join('；');
-        setDeleteMessage(`已删除 ${deletedIds.length} 个，失败 ${errors.length} 个：${failed}`);
-      } else {
-        setDeleteMessage(`已删除 ${deletedIds.length} 个账号`);
-      }
+      setDeleteMessage(formatBatchDeleteFeedback('账号', result));
     } catch (error) {
       setDeleteMessage(coerceErrorMessage(error));
     } finally {
@@ -2447,22 +2636,23 @@ function AccountsPanel() {
 
   return (
     <section>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="bh-admin-toolbar">
         <h2 className="bh-panel-title">账号管理</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {selectedIds.length > 0 && (
-            <button className="bh-button bh-button--red" onClick={batchDelete} disabled={deleting}>
-              批量删除（{selectedIds.length}）
-            </button>
-          )}
-        <button className="bh-button" onClick={load}>刷新</button>
+        <div className="bh-admin-toolbar__actions">
+          <BatchDeleteToolbar
+            entityName="账号"
+            selectedCount={selectedIds.length}
+            deleting={deleting}
+            onDelete={batchDelete}
+          />
+          <button className="bh-button" onClick={load}>刷新</button>
         </div>
       </div>
       {deleteMessage && <div className="bh-muted-box" style={{ marginTop: 8, marginBottom: 8 }}>{deleteMessage}</div>}
       <div className="bh-preset-list" style={{ marginTop: 16 }}>
         {accounts.map((a) => (
-          <div key={a.account_id} className="bh-preset-card" style={{ textAlign: 'left', position: 'relative' }}>
-            <label style={{ position: 'absolute', right: 10, top: 10, display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 11 }}>
+          <div key={a.account_id} className="bh-preset-card bh-admin-selectable-card" style={{ textAlign: 'left', position: 'relative' }}>
+            <label className="bh-admin-card-select" onClick={(event) => event.stopPropagation()}>
               <span>选择</span>
               <input
                 type="checkbox"

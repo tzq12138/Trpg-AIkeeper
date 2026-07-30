@@ -31,14 +31,17 @@ import {
   getPlayerCombatRound,
   getPlayerSettings,
   getRuleQuestions,
+  getSafetyState,
   nextPlayerActionSequence,
   PlayerApiError,
   respondToCollaborationContract,
   type CollaborationContractDTO,
   type CollaborationParticipantDTO,
   type PlayerRuleQuestionDTO,
+  type PlayerSafetyStateDTO,
   receiveActionSubmission,
   reconnectPlayer,
+  resumeSafetyPause,
   reviseActionDraft,
   resolveEncounterReaction,
   updatePlayerSettings,
@@ -306,6 +309,12 @@ export default function PlayerActionPage({
   const analysisEpoch = useRef(0);
   const [messages, setMessages] = useState<PlayerChatMessage[]>([]);
   const [ruleQuestions, setRuleQuestions] = useState<PlayerRuleQuestionDTO[]>([]);
+  const [safetyState, setSafetyState] = useState<PlayerSafetyStateDTO>({
+    status: 'active',
+    activePauseCount: 0,
+    canResume: false,
+    ownRequestIds: [],
+  });
   const [narrationDetails, setNarrationDetails] = useState<NarrativeFeedItem[]>([]);
   const [pendingActions, setPendingActions] = useState<TacticalAction[]>([]);
   const [pendingCombatReaction, setPendingCombatReaction] = useState<SoloCombatReactionDTO | null>(null);
@@ -368,6 +377,18 @@ export default function PlayerActionPage({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSafetyState()
+      .then((state) => {
+        if (!cancelled) setSafetyState(state);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -848,6 +869,8 @@ export default function PlayerActionPage({
             timestamp: Date.now(),
           }]);
         }
+      } else if (event.type === 's2c_safety_state_changed') {
+        getSafetyState().then(setSafetyState).catch(() => {});
       }
     });
     ws.connect(token);
@@ -995,6 +1018,16 @@ export default function PlayerActionPage({
           text: recordedInputSummary(mode, declaredIntent),
           timestamp: Date.now(),
         }]);
+        if (mode === 'safety') {
+          setSafetyState((previous) => ({
+            status: 'safety_paused',
+            activePauseCount: Math.max(1, previous.activePauseCount + 1),
+            canResume: true,
+            ownRequestIds: previous.ownRequestIds.includes(submission.actionId)
+              ? previous.ownRequestIds
+              : [...previous.ownRequestIds, submission.actionId],
+          }));
+        }
         return;
       }
       setActionStatus('analyzing');
@@ -1023,6 +1056,26 @@ export default function PlayerActionPage({
     } catch (error) {
       setActionError(formatPlayerApiError(error));
       setActionStatus('typing');
+    }
+  };
+
+  const resumeOwnSafetyPause = async () => {
+    const requestId = safetyState.ownRequestIds[0];
+    if (!requestId) return;
+    setActionError('');
+    try {
+      const nextState = await resumeSafetyPause(requestId);
+      setSafetyState(nextState);
+      setMessages((previous) => [...previous.slice(-49), {
+        id: `safety-resumed:${requestId}`,
+        sender: 'system',
+        text: nextState.status === 'active'
+          ? '安全暂停已由你恢复，引擎可以继续结算。'
+          : '你的暂停已恢复；仍有其他匿名安全暂停生效。',
+        timestamp: Date.now(),
+      }]);
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
     }
   };
 
@@ -1113,13 +1166,14 @@ export default function PlayerActionPage({
       const outcome = await resolveEncounterReaction(pendingCombatReaction.reactionId, choice);
       setPendingCombatReaction(outcome.nextReaction);
       const receivedDamage = Number(outcome.result.damageToPlayer || 0);
-      const dealtDamage = Number(outcome.result.damageToBear || 0);
+      const dealtDamage = Number(outcome.result.damageToAttacker ?? outcome.result.damageToBear ?? 0);
+      const attackerName = pendingCombatReaction.attackerName || '敌人';
       setMessages((previous) => [...previous.slice(-49), {
         id: outcome.reaction.reactionId,
         sender: 'system',
         text: outcome.result.playerWins
-          ? `你${choice === 'dodge' ? '闪开了' : '反击成功'}黑熊的${pendingCombatReaction.attackName}${dealtDamage ? `，造成 ${dealtDamage} 点伤害` : ''}。`
-          : `黑熊的${pendingCombatReaction.attackName}命中，受到 ${receivedDamage} 点伤害。`,
+          ? `你${choice === 'dodge' ? '闪开了' : '反击成功'}${attackerName}的${pendingCombatReaction.attackName}${dealtDamage ? `，造成 ${dealtDamage} 点伤害` : ''}。`
+          : `${attackerName}的${pendingCombatReaction.attackName}命中，受到 ${receivedDamage} 点伤害。`,
         timestamp: Date.now(),
       }]);
       if (outcome.soloTransition) {
@@ -1292,6 +1346,7 @@ export default function PlayerActionPage({
           collaborationContracts={collaborationContracts}
           collaborationParticipants={collaborationParticipants}
           autoConfirmPending={autoConfirmPending}
+          safetyState={safetyState}
           combatRound={combatRound}
           absentPolicy={absentPolicy}
           speechRoutesToDialogue={speechRouting === 'npc_dialogue'}
@@ -1327,6 +1382,7 @@ export default function PlayerActionPage({
           onCreateCollaboration={createCollaboration}
           onRespondToCollaboration={respondToCollaboration}
           onCancelCollaboration={cancelCollaboration}
+          onResumeSafetyPause={() => void resumeOwnSafetyPause()}
         />
       )}
       {tab === 'character' && <PlayerCharacter externalResult={lastSkillCheckResult} onResultConsumed={() => setLastSkillCheckResult(null)} />}
@@ -1378,6 +1434,7 @@ interface ActionPanelProps {
   collaborationContracts: CollaborationContractDTO[];
   collaborationParticipants: CollaborationParticipantDTO[];
   autoConfirmPending: boolean;
+  safetyState: PlayerSafetyStateDTO;
   combatRound: PlayerCombatRoundDTO | null;
   absentPolicy: AbsentPolicy;
   speechRoutesToDialogue: boolean;
@@ -1409,6 +1466,7 @@ interface ActionPanelProps {
   onCreateCollaboration: (sharedIntent: string, inviteeCharacterIds: string[]) => void;
   onRespondToCollaboration: (contractId: string, decision: 'accept' | 'decline') => void;
   onCancelCollaboration: (contractId: string) => void;
+  onResumeSafetyPause: () => void;
 }
 
 function formatPlayerApiError(error: unknown): string {
@@ -1423,6 +1481,7 @@ function formatPlayerApiError(error: unknown): string {
       draft_analysis_disabled: '本房间已关闭停顿分析，你仍可手动生成行动预览。',
       sync_required: '世界状态已变化，请同步后重新确认行动。',
       v2_action_draft_required: '此房间必须通过行动预览提交。',
+      safety_paused: '匿名安全暂停正在生效，新的剧情行动暂不结算。',
     };
     return messages[code] || `行动处理失败：${code}`;
   }
@@ -1472,6 +1531,7 @@ function ActionPanel({
   collaborationContracts,
   collaborationParticipants,
   autoConfirmPending,
+  safetyState,
   combatRound,
   absentPolicy,
   speechRoutesToDialogue,
@@ -1503,6 +1563,7 @@ function ActionPanel({
   onCreateCollaboration,
   onRespondToCollaboration,
   onCancelCollaboration,
+  onResumeSafetyPause,
 }: ActionPanelProps) {
   const isIdle = canStartNewAction(draft, receipt);
   const combatTargetTags = getCombatTargetTags(inputText);
@@ -1605,7 +1666,7 @@ function ActionPanel({
       {pendingCombatReaction && (
         <div className="bh-panel" style={{ marginTop: 16 }} role="alert">
           <span className="bh-eyebrow">INCOMING ATTACK</span>
-          <h3 className="bh-panel-title">黑熊第 {pendingCombatReaction.roundNumber} 轮·{pendingCombatReaction.attackName}</h3>
+          <h3 className="bh-panel-title">{pendingCombatReaction.attackerName || '敌人'}第 {pendingCombatReaction.roundNumber} 轮·{pendingCombatReaction.attackName}</h3>
           <p>先决定你的应对方式；结算前不会扣除生命。</p>
           <div className="bh-hint-list">
             <button className="bh-button" type="button" disabled={deviceControl === false} onClick={() => onResolveCombatReaction('dodge')}>闪避</button>
@@ -1702,6 +1763,21 @@ function ActionPanel({
         />
       )}
 
+      {safetyState.status === 'safety_paused' && (
+        <section className="bh-muted-box" aria-live="assertive" aria-label="匿名安全暂停">
+          <span className="bh-eyebrow">SAFETY PAUSE</span>
+          <h3>引擎已匿名暂停</h3>
+          <p>新的剧情行动不会结算。队伍可以继续发送场外信息或安全请求。</p>
+          {safetyState.canResume ? (
+            <button className="bh-button bh-button--yellow" type="button" onClick={onResumeSafetyPause}>
+              恢复我触发的安全暂停
+            </button>
+          ) : (
+            <p className="bh-hint">只有触发本次暂停的玩家可以恢复。</p>
+          )}
+        </section>
+      )}
+
       <VoiceInput
         onSendToTeam={(text, source) => {
           fetch('/api/player/team-message', {
@@ -1738,6 +1814,7 @@ function ActionPanel({
         ephemeralPreview={ephemeralPreview}
         receipt={receipt}
         error={actionError}
+        safetyPaused={safetyState.status === 'safety_paused'}
         speechRoutesToDialogue={speechRoutesToDialogue}
         collaborationParticipants={collaborationParticipants}
         currentCharacterId={character?.character_id}

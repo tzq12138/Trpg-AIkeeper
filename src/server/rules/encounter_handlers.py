@@ -101,9 +101,20 @@ class CombatAttackHandler(BaseRuleHandler):
         is_success = check["is_success"]
         success_level = check["success_level"]
 
-        raw_damage = _parse_dice(damage_expr) if is_success and success_level != "fumble" else 0
-        if success_level == "critical":
-            raw_damage = max(raw_damage, _parse_dice(damage_expr))  # crit = max of double roll (v1 simple)
+        raw_damage = 0
+        if is_success and success_level != "fumble":
+            from .coc_handlers import max_dice
+
+            impaling = bool(
+                participant.get("impaling")
+                or params.get("impaling")
+            )
+            if success_level in {"extreme", "critical"}:
+                raw_damage = max_dice(damage_expr)
+                if impaling:
+                    raw_damage += _parse_dice(damage_expr)
+            else:
+                raw_damage = _parse_dice(damage_expr)
         armor_match = re.search(r"吸收前\s*(\d+)\s*点伤害", str(target.get("notes") or ""))
         armor = int(armor_match.group(1)) if armor_match else 0
         damage = max(0, raw_damage - armor)
@@ -249,70 +260,54 @@ class CombatWaitHandler(BaseRuleHandler):
 # ══════════════════════════════════════════════
 
 class ChasePursueHandler(BaseRuleHandler):
-    """Pursue target — MOV + skill check, success reduces distance band."""
+    """Spend one chase movement action to reduce the distance by one location."""
 
     async def execute(self, state: GameState, params: dict) -> RuleResult:
         context = _encounter_context(params)
         if not context:
             return _invalid_context("authoritative_encounter_context_required")
         participant, _participants, encounter = context
-        mov = int(participant.get("mov", state.character.get("mov", 7)) or 7)
-        skill_name = str(participant.get("main_skill") or "运动")
-        skill_value = int((state.character.get("skills", {}) or {}).get(skill_name, 0) or 0)
-        check = _skill_check(skill_value, params)
-        roll = check["roll"]
-        is_success = check["is_success"]
-        success_level = check["success_level"]
-
-        from ..encounter_persistence import compute_distance_change
-        delta = compute_distance_change(mov, skill_value, is_success, success_level)
-
         return RuleResult(
-            is_success=is_success,
-            metadata={"roll": roll, "skill_name": skill_name, "skill_value": skill_value,
-                       "success_level": success_level, "mov": mov, "distance_delta": -delta,
-                       "roll_trace": check["roll_trace"]},
+            is_success=True,
+            metadata={
+                "action": "pursue",
+                "movement_action_cost": 1,
+                "distance_delta": -1,
+            },
             mutations=[
-                {"op": "replace", "path": f"/encounter/{_encounter_id(encounter)}/participants/{participant.get('character_id', '')}/distance_band_delta", "value": -delta}
-            ] if delta > 0 else [],
-            reveal_steps=[_roll_step(check, skill_name)],
-            cascading_state_changes=(
-                [f"追击成功，距离缩短 {delta} 级"] if delta > 0 else ["追击失败"]
-            ),
+                {
+                    "op": "replace",
+                    "path": f"/encounter/{_encounter_id(encounter)}/participants/{participant.get('character_id', '')}/distance_band_delta",
+                    "value": -1,
+                }
+            ],
+            cascading_state_changes=["消耗 1 个移动行动，距离缩短 1 个位置"],
         )
 
 
 class ChaseEscapeHandler(BaseRuleHandler):
-    """Escape from pursuer — MOV + skill, success increases distance band."""
+    """Spend one chase movement action to increase the distance by one location."""
 
     async def execute(self, state: GameState, params: dict) -> RuleResult:
         context = _encounter_context(params)
         if not context:
             return _invalid_context("authoritative_encounter_context_required")
         participant, _participants, encounter = context
-        mov = int(participant.get("mov", state.character.get("mov", 7)) or 7)
-        skill_name = str(participant.get("main_skill") or "运动")
-        skill_value = int((state.character.get("skills", {}) or {}).get(skill_name, 0) or 0)
-        check = _skill_check(skill_value, params)
-        roll = check["roll"]
-        is_success = check["is_success"]
-        success_level = check["success_level"]
-
-        from ..encounter_persistence import compute_distance_change
-        delta = compute_distance_change(mov, skill_value, is_success, success_level)
-
         return RuleResult(
-            is_success=is_success,
-            metadata={"roll": roll, "skill_name": skill_name, "skill_value": skill_value,
-                       "success_level": success_level, "mov": mov, "distance_delta": delta,
-                       "roll_trace": check["roll_trace"]},
+            is_success=True,
+            metadata={
+                "action": "escape",
+                "movement_action_cost": 1,
+                "distance_delta": 1,
+            },
             mutations=[
-                {"op": "replace", "path": f"/encounter/{_encounter_id(encounter)}/participants/{participant.get('character_id', '')}/distance_band_delta", "value": delta}
-            ] if delta > 0 else [],
-            reveal_steps=[_roll_step(check, skill_name)],
-            cascading_state_changes=(
-                [f"逃脱成功，距离拉远 {delta} 级"] if delta > 0 else ["逃脱失败"]
-            ),
+                {
+                    "op": "replace",
+                    "path": f"/encounter/{_encounter_id(encounter)}/participants/{participant.get('character_id', '')}/distance_band_delta",
+                    "value": 1,
+                }
+            ],
+            cascading_state_changes=["消耗 1 个移动行动，距离拉远 1 个位置"],
         )
 
 

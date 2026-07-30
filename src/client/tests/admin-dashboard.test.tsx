@@ -229,6 +229,14 @@ describe('AdminDashboard scenario import management', () => {
     expect(message).toContain('[已隐藏路径]');
   });
 
+  test('turns a browser fetch failure into an actionable backend connection message', async () => {
+    const { sanitizeAdminScenarioError } = await loadAdminDashboard();
+
+    expect(sanitizeAdminScenarioError(new TypeError('Failed to fetch'))).toBe(
+      '无法连接后端服务，请确认本地服务已启动后重试。',
+    );
+  });
+
   test('renders version review summary with risks, citations, and publish confirmation gate', async () => {
     const { ScenarioVersionInspector } = await loadAdminDashboard();
     const html = renderToStaticMarkup(
@@ -358,5 +366,102 @@ describe('AdminDashboard AI provider management', () => {
     expect(html).toContain('测试连接');
     expect(html).toContain('设为启用');
     expect(html).not.toContain('api_key_ciphertext');
+  });
+});
+
+describe('AdminDashboard room details and bulk deletion', () => {
+  test('renders explicit room detail loading, failure retry, and ready states', async () => {
+    const { RoomDetailPanel } = (await loadAdminDashboard()) as any;
+    const loading = renderToStaticMarkup(
+      <RoomDetailPanel
+        selectedRoomId="room-1"
+        status="loading"
+        detail={null}
+        error=""
+        onRetry={() => {}}
+        onPatch={() => {}}
+      />,
+    );
+    const failed = renderToStaticMarkup(
+      <RoomDetailPanel
+        selectedRoomId="room-1"
+        status="error"
+        detail={null}
+        error="网络中断"
+        onRetry={() => {}}
+        onPatch={() => {}}
+      />,
+    );
+    const ready = renderToStaticMarkup(
+      <RoomDetailPanel
+        selectedRoomId="room-1"
+        status="ready"
+        detail={{
+          room_id: 'room-1',
+          scenario_title: '钟楼疑云',
+          status: 'lobby',
+          created_at: '2026-07-22T10:00:00Z',
+          characters: [],
+        }}
+        error=""
+        onRetry={() => {}}
+        onPatch={() => {}}
+      />,
+    );
+
+    expect(loading).toContain('正在加载房间详情');
+    expect(failed).toContain('加载失败：网络中断');
+    expect(failed).toContain('重试');
+    expect(ready).toContain('room-1');
+    expect(ready).toContain('钟楼疑云');
+  });
+
+  test('keeps the bulk toolbar visible and reports every batch result category', async () => {
+    const { BatchDeleteToolbar, formatBatchDeleteFeedback } = (await loadAdminDashboard()) as any;
+    const emptyToolbar = renderToStaticMarkup(
+      <BatchDeleteToolbar entityName="房间" selectedCount={0} deleting={false} onDelete={() => {}} />,
+    );
+    const selectedToolbar = renderToStaticMarkup(
+      <BatchDeleteToolbar entityName="房间" selectedCount={2} deleting={false} onDelete={() => {}} />,
+    );
+    const feedback = formatBatchDeleteFeedback('剧本', {
+      deleted_ids: ['scenario-free'],
+      not_found_ids: ['scenario-missing'],
+      errors: [
+        { id: 'scenario-used', status: '409', error: '剧本仍被房间使用' },
+        { id: 'scenario-error', status: '500', error: '数据库暂不可用' },
+      ],
+    });
+
+    expect(emptyToolbar).toContain('已选择 0 个房间');
+    expect(emptyToolbar).toContain('批量删除（0）');
+    expect(emptyToolbar).toContain('disabled=""');
+    expect(selectedToolbar).toContain('已选择 2 个房间');
+    expect(selectedToolbar).not.toContain('disabled=""');
+    expect(feedback).toContain('成功删除：scenario-free');
+    expect(feedback).toContain('未找到：scenario-missing');
+    expect(feedback).toContain('依赖阻止：scenario-used（剧本仍被房间使用）');
+    expect(feedback).toContain('系统错误：scenario-error（数据库暂不可用）');
+  });
+
+  test('renders an in-page batch deletion confirmation and submits an explicit confirmation flag', async () => {
+    const { BatchDeleteConfirmation, buildConfirmedBatchDeletePayload } = (await loadAdminDashboard()) as any;
+    const confirmation = renderToStaticMarkup(
+      <BatchDeleteConfirmation
+        entityName="账号"
+        selectedCount={1}
+        deleting={false}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(confirmation).toContain('请确认后再执行删除');
+    expect(confirmation).toContain('确认删除（1）');
+    expect(confirmation).toContain('取消');
+    expect(buildConfirmedBatchDeletePayload(['account-1'])).toEqual({
+      ids: ['account-1'],
+      confirm: true,
+    });
   });
 });

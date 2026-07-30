@@ -87,7 +87,7 @@ async def test_pushed_check_rerolls_a_failure_and_keeps_both_rolls(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_failed_pushed_check_only_creates_evidence_backed_pending_consequence(monkeypatch):
+async def test_failed_pushed_check_uses_deterministic_engine_consequence(monkeypatch):
     _sequence_randint(monkeypatch, [8, 0, 9, 0])
 
     result = await CocSkillCheckHandler().execute(
@@ -102,8 +102,9 @@ async def test_failed_pushed_check_only_creates_evidence_backed_pending_conseque
 
     assert result.is_success is False
     assert result.mutations == []
-    assert result.metadata["pending_consequence"]["status"] == "pending_host_confirmation"
-    assert result.metadata["pending_consequence"]["citation"]["source_ref"] == "coc7#p84"
+    assert result.metadata["pending_consequence"] is None
+    assert result.metadata["pushed_consequence"]["status"] == "resolved_by_engine"
+    assert result.metadata["pushed_consequence"]["code"] == "pushed_check_complication"
 
 
 @pytest.mark.asyncio
@@ -132,7 +133,7 @@ async def test_opposed_check_uses_server_state_values_and_success_levels(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_opposed_check_without_authoritative_opponent_requires_host_confirmation():
+async def test_opposed_check_without_authoritative_opponent_is_rejected():
     result = await CocOpposedCheckHandler().execute(
         GameState(character={"skills": {"侦查": 60}}),
         {"skillName": "侦查", "opponentSkillName": "潜行"},
@@ -140,11 +141,11 @@ async def test_opposed_check_without_authoritative_opponent_requires_host_confir
 
     assert result.is_success is False
     assert result.mutations == []
-    assert result.metadata["status"] == "pending_host_confirmation"
+    assert result.metadata["status"] == "rejected"
 
 
 @pytest.mark.asyncio
-async def test_opposed_check_has_no_winner_when_both_sides_fail(monkeypatch):
+async def test_opposed_check_uses_higher_skill_when_both_sides_fail(monkeypatch):
     _sequence_randint(monkeypatch, [8, 0, 9, 0])
     state = GameState(
         character={"skills": {"侦查": 60}},
@@ -155,19 +156,20 @@ async def test_opposed_check_has_no_winner_when_both_sides_fail(monkeypatch):
         state, {"skillName": "侦查", "opponentSkillName": "潜行"}
     )
 
-    assert result.is_success is False
-    assert result.metadata["winner"] == "tie"
+    assert result.is_success is True
+    assert result.metadata["winner"] == "actor"
 
 
 @pytest.mark.asyncio
 async def test_healing_is_capped_by_max_hp(monkeypatch):
     monkeypatch.setattr(
-        "src.server.rules.coc_handlers.random.randint", lambda _low, _high: 6
+        "src.server.rules.coc_handlers.roll_dice",
+        lambda _notation: (6, [6], 0),
     )
 
     result = await CocHealingHandler().execute(
         GameState(character={"hp": 7, "max_hp": 10}),
-        {"amount": "1d6"},
+        {"method": "medicine"},
     )
 
     assert result.metadata["healed"] == 3
@@ -196,7 +198,7 @@ async def test_status_handler_only_mutates_known_statuses():
         {"op": "add", "path": "/character/status_tag", "value": "unconscious"}
     ]
     assert pending.mutations == []
-    assert pending.metadata["status"] == "pending_host_confirmation"
+    assert pending.metadata["status"] == "rejected"
 
 
 @pytest.mark.asyncio
@@ -240,7 +242,7 @@ async def test_rule_executor_ignores_client_or_ai_skill_value_and_roll(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_unimplemented_rule_never_applies_state_and_returns_pending_suggestion():
+async def test_unimplemented_rule_never_applies_state_and_is_rejected():
     executor = RuleExecutor()
     intent = PlayerIntent(intent_type="dialogue", declared_intent="进入密室")
     assets = {
@@ -269,7 +271,7 @@ async def test_unimplemented_rule_never_applies_state_and_returns_pending_sugges
     assert result.mutations == []
     pending = result.metadata["pending_rule_suggestions"][0]
     assert pending["mechanic"] == "teleport_through_dream"
-    assert pending["status"] == "pending_host_confirmation"
+    assert pending["status"] == "rejected"
     assert pending["citation"]["source_ref"] == "module#p12"
 
 
@@ -331,15 +333,7 @@ async def test_combat_roll_100_is_fumble_even_at_skill_100(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chase_respects_required_difficulty_and_emits_roll_trace(monkeypatch):
-    digits = iter([4, 0])
-
-    def fixed_randint(_low, high):
-        if high == 100:
-            return 40
-        return next(digits)
-
-    monkeypatch.setattr("src.server.rules.encounter_handlers.random.randint", fixed_randint)
+async def test_chase_movement_spends_one_action_without_a_skill_roll():
     result = await ChasePursueHandler().execute(
         GameState(character={"mov": 8, "skills": {"运动": 60}}),
         {
@@ -349,10 +343,10 @@ async def test_chase_respects_required_difficulty_and_emits_roll_trace(monkeypat
         },
     )
 
-    assert result.metadata["roll"] == 40
-    assert result.metadata["success_level"] == "regular"
-    assert result.is_success is False
-    assert result.metadata["roll_trace"]["candidates"] == [40]
+    assert result.is_success is True
+    assert result.metadata["movement_action_cost"] == 1
+    assert result.metadata["distance_delta"] == -1
+    assert result.reveal_steps == []
 
 
 @pytest.mark.asyncio

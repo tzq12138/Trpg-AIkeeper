@@ -8,8 +8,8 @@ def evaluate_triggers(triggers: list[dict], action_type: str, params: dict) -> l
 
 
 def _match_condition(condition: dict, action_type: str, params: dict) -> bool:
-    if condition.get("$action") and condition["$action"] != action_type:
-        return False
-    if condition.get("itemId") and condition["itemId"] != params.get("itemId"):
-        return False
+    for key, expected in condition.items():
+        actual = action_type if key == "$action" else params.get(key)
+        if actual != expected:
+            return False
     return True

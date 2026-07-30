@@ -393,6 +393,7 @@ def _build_runtime_package(
         },
         "clue_dependencies": _collection(graph, "clues", items, "clue"),
         "rule_triggers": _list(graph.get("rule_triggers")) or _list(graph.get("rule_citations")),
+        "runtime_policy": _json_object(graph.get("runtime_policy")),
         "semantic_map": {
             "assets": [
                 asset for asset in confirmed_assets if asset["target_type"] == "map"

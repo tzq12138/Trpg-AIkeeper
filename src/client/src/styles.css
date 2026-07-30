@@ -329,6 +329,120 @@ textarea {
   font-weight: 900;
 }
 
+.bh-admin-toolbar,
+.bh-admin-toolbar__actions,
+.bh-batch-toolbar,
+.bh-batch-toolbar__confirmation,
+.bh-admin-card-header,
+.bh-admin-card-actions,
+.bh-admin-room-detail__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bh-batch-toolbar,
+.bh-batch-toolbar__confirmation {
+  min-width: 0;
+}
+
+.bh-admin-toolbar {
+  justify-content: space-between;
+}
+
+.bh-admin-toolbar .bh-panel-title {
+  margin-bottom: 0;
+}
+
+.bh-admin-toolbar__actions {
+  justify-content: flex-end;
+}
+
+.bh-batch-toolbar__count {
+  padding: 8px 10px;
+  border: 3px solid var(--bh-black);
+  background: var(--bh-white);
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.bh-admin-room-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.1fr);
+  align-items: start;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.bh-admin-room-layout > * {
+  min-width: 0;
+}
+
+.bh-admin-room-detail {
+  min-height: 240px;
+  align-content: start;
+  background: var(--bh-white);
+}
+
+.bh-admin-room-detail__actions {
+  margin-top: 8px;
+}
+
+.bh-admin-room-detail__players {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 3px solid var(--bh-black);
+}
+
+.bh-admin-card-header {
+  min-width: 0;
+}
+
+.bh-admin-card-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.bh-admin-card-select {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.bh-admin-selectable-card {
+  min-width: 0;
+  padding-right: 104px;
+  overflow-wrap: anywhere;
+}
+
+.bh-admin-selectable-card > div {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bh-admin-selectable-card > div > div {
+  min-width: 0;
+}
+
+.bh-admin-selectable-card > .bh-admin-card-select {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+.bh-admin-card-actions {
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
 .bh-preview-stats,
 .bh-skill-chips {
   display: flex;
@@ -1678,6 +1792,19 @@ textarea {
 @media (max-width: 680px) {
   .bh-page {
     padding: 18px;
+  }
+
+  .bh-admin-room-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .bh-admin-room-detail {
+    order: -1;
+  }
+
+  .bh-admin-toolbar__actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .bh-grid-links,

@@ -21,6 +21,7 @@ interface PlayerActionComposerProps {
   ephemeralPreview?: ActionDraftDTO | null;
   receipt?: ActionReceiptDTO | null;
   error?: string;
+  safetyPaused?: boolean;
   speechRoutesToDialogue?: boolean;
   collaborationParticipants?: CollaborationParticipantDTO[];
   currentCharacterId?: string;
@@ -96,6 +97,7 @@ export default function PlayerActionComposer({
   ephemeralPreview,
   receipt,
   error,
+  safetyPaused = false,
   speechRoutesToDialogue = false,
   collaborationParticipants = [],
   currentCharacterId,
@@ -140,10 +142,16 @@ export default function PlayerActionComposer({
   const formalActionBusy = phase === 'analyzing' || Boolean(draft) || Boolean(
     receipt && !['armed', 'completed', 'resolved', 'rejected', 'canceled', 'timeout'].includes(receipt.status),
   );
-  const editingDisabled = formalActionBusy && !canSendWhileStatefulActionBusy(
+  const statefulInput = isStatefulPlayerInputMode(
     inputMode,
     speechRoutesToDialogue,
   );
+  const editingDisabled = (
+    formalActionBusy && !canSendWhileStatefulActionBusy(
+      inputMode,
+      speechRoutesToDialogue,
+    )
+  ) || (safetyPaused && statefulInput);
 
   useEffect(() => {
     setSelectedSkill('');

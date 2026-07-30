@@ -49,9 +49,22 @@ export interface ReceiveActionSubmissionInput {
 export interface PlayerActionSubmissionReceipt {
   actionId: string;
   inputMode: PlayerInputMode;
-  status: 'received' | 'recorded' | 'analyzing' | 'awaiting_confirmation';
+  status:
+    | 'received'
+    | 'recorded'
+    | 'analyzing'
+    | 'awaiting_confirmation'
+    | 'safety_paused'
+    | 'safety_resumed';
   requiresAnalysis: boolean;
   receivedAt: string;
+}
+
+export interface PlayerSafetyStateDTO {
+  status: 'active' | 'safety_paused';
+  activePauseCount: number;
+  canResume: boolean;
+  ownRequestIds: string[];
 }
 
 export interface PlayerRuleQuestionDTO {
@@ -117,6 +130,19 @@ export async function receiveActionSubmission(
     method: 'POST',
     body: JSON.stringify(input),
   });
+}
+
+export async function getSafetyState(): Promise<PlayerSafetyStateDTO> {
+  return requestJson('/api/player/safety-state');
+}
+
+export async function resumeSafetyPause(
+  requestId: string,
+): Promise<PlayerSafetyStateDTO> {
+  return requestJson(
+    `/api/player/safety-pauses/${encodeURIComponent(requestId)}/resume`,
+    { method: 'POST' },
+  );
 }
 
 export async function getRuleQuestions(): Promise<{ questions: PlayerRuleQuestionDTO[] }> {

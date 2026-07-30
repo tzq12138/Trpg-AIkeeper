@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import hashlib
+import json
 from copy import deepcopy
 from typing import Any
 
@@ -18,9 +19,13 @@ def build_combat_round_plan(
     active_actions = [action for action in actions if action.get("intent_type") != "system_skip"]
     dexterity_order = sorted(
         active_actions,
-        key=lambda action: (-_as_int(action.get("dex")), str(action.get("action_id") or "")),
+        key=lambda action: (
+            -_effective_dex(action),
+            -_combat_skill(action),
+            str(action.get("action_id") or ""),
+        ),
     )
-    ordered_actions = _dependency_order(dexterity_order)
+    ordered_actions = dexterity_order
     prepared_constraints = _prepared_rule_constraints(prepared_actions or [])
     steps = [
         {
@@ -28,6 +33,7 @@ def build_combat_round_plan(
             "cluster_id": _cluster_id(action),
             "action_id": action["action_id"],
             "character_id": action["character_id"],
+            "effective_dex": _effective_dex(action),
             "depends_on": _declared_dependencies(action, ordered_actions),
             "advisory_depends_on": [],
             "rule_binding": action.get("intent_type") or "combat_action",
@@ -243,14 +249,14 @@ def _as_int(value: Any) -> int:
 
 
 def _visibility(action: dict[str, Any]) -> str:
-    params = action.get("params")
+    params = _action_params(action)
     if isinstance(params, dict) and params.get("visibility") == "private":
         return "private"
     return "public"
 
 
 def _declared_dependencies(action: dict[str, Any], ordered_actions: list[dict[str, Any]]) -> list[str]:
-    params = action.get("params")
+    params = _action_params(action)
     raw_dependencies = params.get("depends_on_action_ids", []) if isinstance(params, dict) else []
     valid_ids = {str(item.get("action_id")) for item in ordered_actions}
     if not isinstance(raw_dependencies, list):
@@ -258,7 +264,8 @@ def _declared_dependencies(action: dict[str, Any], ordered_actions: list[dict[st
     return [str(action_id) for action_id in raw_dependencies if str(action_id) in valid_ids]
 
 
-def _dependency_order(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def dependency_resolution_order(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order execution prerequisites first without changing the public DEX plan."""
     action_ids = [str(action.get("action_id") or "") for action in actions]
     known_action_ids = set(action_ids)
     dependencies = {
@@ -290,7 +297,44 @@ def _dependency_order(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _declared_segments(text: str) -> list[str]:
     parts = [part.strip() for part in re.split(r"[，,、；;]|(?:然后|再|并且|并)", text) if part.strip()]
-    return parts[:2] or ["本轮行动"]
+    return parts[:1] or ["本轮行动"]
+
+
+def _action_params(action: dict[str, Any]) -> dict[str, Any]:
+    params = action.get("params")
+    if isinstance(params, dict):
+        return params
+    if isinstance(params, str):
+        try:
+            parsed = json.loads(params)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _effective_dex(action: dict[str, Any]) -> int:
+    dex = _as_int(action.get("dex"))
+    params = _action_params(action)
+    ready_firearm = bool(
+        params.get("readyFirearm", params.get("ready_firearm", False))
+    )
+    weapon_type = str(
+        params.get("weaponType", params.get("weapon_type", ""))
+    ).lower()
+    if ready_firearm and weapon_type in {"firearm", "枪械", "火器"}:
+        return dex + 50
+    return dex
+
+
+def _combat_skill(action: dict[str, Any]) -> int:
+    params = _action_params(action)
+    return _as_int(
+        action.get(
+            "combat_skill",
+            params.get("combatSkill", params.get("combat_skill", 0)),
+        )
+    )
 
 
 def _cluster_id(action: dict[str, Any]) -> str:

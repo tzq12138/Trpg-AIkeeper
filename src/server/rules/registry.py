@@ -5,6 +5,7 @@ from .coc_handlers import (
     CocHealingHandler,
     CocMoveHandler,
     CocOpposedCheckHandler,
+    CocSanityAdvanceHandler,
     CocSanityCheckHandler,
     CocSkillCheckHandler,
     CocStatusHandler,
@@ -20,6 +21,7 @@ from .encounter_handlers import (
 rule_registry: dict[str, BaseRuleHandler] = {
     "skill_check": CocSkillCheckHandler(),
     "sanity_check": CocSanityCheckHandler(),
+    "sanity_advance": CocSanityAdvanceHandler(),
     "combat_damage": CocCombatHandler(),
     "luck_check": CocLuckCheckHandler(),
     "opposed_check": CocOpposedCheckHandler(),

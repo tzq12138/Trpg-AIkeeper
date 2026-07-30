@@ -162,6 +162,55 @@ async def test_rule_executor_applies_hidden_modifier_without_exposing_it_as_play
 
 
 @pytest.mark.asyncio
+async def test_non_blocking_sanity_trigger_does_not_cancel_the_parent_move():
+    executor = RuleExecutor()
+    intent = PlayerIntent(
+        intent_type="move",
+        declared_intent="enter the cistern",
+        params={
+            "fromNodeId": "control-room",
+            "targetNodeId": "cistern",
+            "generic_scene_progression": {
+                "from_scene_id": "control-room",
+                "target_scene_id": "cistern",
+            },
+        },
+    )
+    compiled = MechanicCompileResult(triggeredMechanic="move")
+    character = {
+        "room_id": "room-glass",
+        "character_id": "char-glass",
+        "xlsx_data": {"skills": {}, "hp": 10, "san": 0, "luck": 40},
+    }
+    assets = {
+        "triggers": [
+            {
+                "condition": {"$action": "move", "targetNodeId": "cistern"},
+                "mechanics": [
+                    {
+                        "type": "sanity_check",
+                        "blocking": False,
+                        "params": {"success_loss": 0, "failure_loss": "1d4"},
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = await executor.execute(
+        intent,
+        compiled,
+        character,
+        inventory=[],
+        scenario_assets=assets,
+    )
+
+    assert result.is_success is True
+    assert result.mechanic == "move"
+    assert result.metadata["reason_code"] == "permanent_insanity"
+
+
+@pytest.mark.asyncio
 async def test_rule_executor_runs_matching_scene_triggers_and_cascading_changes():
     random.seed(5)
     executor = RuleExecutor()
@@ -196,4 +245,4 @@ async def test_rule_executor_runs_matching_scene_triggers_and_cascading_changes(
     assert result.mechanic == "sanity_check"
     assert result.metadata["new_san"] == 0
     assert {"op": "replace", "path": "/character/san", "value": 0} in result.mutations
-    assert "疯狂" in result.cascading_state_changes
+    assert any("疯狂" in change for change in result.cascading_state_changes)

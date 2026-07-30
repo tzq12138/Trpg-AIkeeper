@@ -53,8 +53,6 @@ interface ProjectionRecovery {
 
 interface SafetyRequest {
   actionId: string;
-  characterId: string;
-  text: string;
   createdAt: string;
 }
 
@@ -513,25 +511,46 @@ export function HostPresentationControls({
 export function HostSafetyRequests({
   items,
   onRefresh,
+  onExtend,
+  onEndSession,
 }: {
   items: SafetyRequest[];
   onRefresh: () => void;
+  onExtend: () => void;
+  onEndSession: () => void;
 }) {
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
   if (items.length === 0) return null;
 
   return (
     <section className="bh-panel" aria-label="安全请求">
       <span className="bh-eyebrow">SAFETY · HOST ONLY</span>
-      <h2 className="bh-panel-title">安全请求</h2>
-      <p className="bh-subtitle">这些内容不进入公共舞台、队伍消息或 AI 叙事。</p>
+      <h2 className="bh-panel-title">匿名安全暂停</h2>
+      <p className="bh-subtitle">触发者和原文均不显示；只有触发者可以恢复，引擎会保持暂停。</p>
       {items.map((item) => (
         <article className="bh-muted-box" key={item.actionId}>
-          <strong>{item.characterId}</strong>
-          <p style={{ whiteSpace: 'pre-wrap' }}>{item.text}</p>
+          <strong>安全暂停进行中</strong>
           <time>{item.createdAt}</time>
         </article>
       ))}
-      <button className="bh-button" type="button" onClick={onRefresh}>刷新安全请求</button>
+      <div className="bh-action-row">
+        <button className="bh-button" type="button" onClick={onExtend}>延长暂停</button>
+        {!confirmingEnd ? (
+          <button className="bh-button" type="button" onClick={() => setConfirmingEnd(true)}>
+            安全结束本次冒险
+          </button>
+        ) : (
+          <>
+            <button className="bh-button bh-button--danger" type="button" onClick={onEndSession}>
+              确认安全结束
+            </button>
+            <button className="bh-button" type="button" onClick={() => setConfirmingEnd(false)}>
+              取消
+            </button>
+          </>
+        )}
+        <button className="bh-button" type="button" onClick={onRefresh}>刷新</button>
+      </div>
     </section>
   );
 }
@@ -751,6 +770,19 @@ export default function HostConsole({
     });
   };
 
+  const handleSafetyCommand = async (command: 'extend' | 'end-session') => {
+    const response = await fetch(`/api/host/${roomId}/safety/${command}`, {
+      method: 'POST',
+      headers: buildHostHeaders(
+        getSlotValue('owner_token') || '',
+        getSlotValue('account_token') || '',
+      ),
+    });
+    if (!response.ok) return;
+    if (command === 'end-session') setSafetyRequests([]);
+    setSafetyRefresh((previous) => previous + 1);
+  };
+
   const handleResolveException = useCallback(async (
     actionId: string,
     decision: ActionExceptionDecision,
@@ -964,6 +996,8 @@ export default function HostConsole({
           <HostSafetyRequests
             items={safetyRequests}
             onRefresh={() => setSafetyRefresh((previous) => previous + 1)}
+            onExtend={() => void handleSafetyCommand('extend')}
+            onEndSession={() => void handleSafetyCommand('end-session')}
           />
           <div className="bh-player-monitor-list">
             {players.length === 0 && (

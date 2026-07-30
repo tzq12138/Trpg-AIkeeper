@@ -83,7 +83,7 @@ export function confirmationImpactSummary(
 export function recordedInputSummary(mode: PlayerInputMode, _text: string): string {
   if (mode === 'private_note') return '已记录私密笔记，仅自己可见，不会进入剧情。';
   if (mode === 'rule_question') return '已保存规则问题，仅自己可见，不会进入剧情。';
-  if (mode === 'safety') return '已私密发送安全请求，不会进入剧情或改变世界状态。';
+  if (mode === 'safety') return '已匿名暂停引擎；只有你能恢复本次暂停，期间不会结算新的剧情行动。';
   if (mode === 'party_chat') return '已发送队伍讨论，不会自动变成角色行动。';
   if (mode === 'ooc') return '已发送场外信息，不会进入剧情、规则或世界状态。';
   if (mode === 'clue_share') return '已记录线索分享请求，尚未改变线索事实状态。';

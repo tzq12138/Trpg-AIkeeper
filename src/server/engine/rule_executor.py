@@ -85,6 +85,7 @@ class RuleExecutor:
 
         for mechanic in mechanics:
             mechanic_type = mechanic.get("type", "")
+            mechanic_is_blocking = mechanic.get("blocking") is not False
             params = self._normalize_params(mechanic.get("params", mechanic))
             params["_rule_policy"] = dict(
                 (scenario_assets or {}).get("rule_policy") or {}
@@ -115,7 +116,8 @@ class RuleExecutor:
                 merged_metadata.setdefault("warnings", []).append(
                     {"type": "rule_handler_not_found", "mechanic": mechanic_type}
                 )
-                overall_success = False
+                if mechanic_is_blocking:
+                    overall_success = False
                 self._add_pending_rule_suggestion(
                     merged_metadata,
                     mechanic_type,
@@ -161,9 +163,10 @@ class RuleExecutor:
                     params,
                     "unsafe_mutation_rejected",
                 )
-            overall_success = (
-                overall_success and result.is_success and not rejected_mutations
-            )
+            if mechanic_is_blocking:
+                overall_success = (
+                    overall_success and result.is_success and not rejected_mutations
+                )
             mutations.extend(safe_mutations)
             reveal_steps.extend(result.reveal_steps)
             cascading.extend(result.cascading_state_changes)
@@ -309,6 +312,14 @@ class RuleExecutor:
                 elif operation == "remove" and value in tags:
                     tags.remove(value)
                 state["status_tags"] = tags
+            elif (
+                path == "/character/temp_modifier/coc7_sanity"
+                and operation == "replace"
+                and isinstance(mutation.get("value"), dict)
+            ):
+                modifiers = dict(state.get("temp_modifiers", {}) or {})
+                modifiers["coc7_sanity"] = mutation["value"]
+                state["temp_modifiers"] = modifiers
 
     def _is_safe_patch(self, mutation: dict[str, Any]) -> bool:
         path = str(mutation.get("path") or "")
@@ -320,6 +331,8 @@ class RuleExecutor:
             return True
         path = str(mutation.get("path") or "")
         operation = str(mutation.get("op") or "")
+        if path == "/character/temp_modifier/coc7_sanity":
+            return operation == "replace" and isinstance(mutation.get("value"), dict)
         match = _ENCOUNTER_MUTATION_PATTERN.fullmatch(path)
         if not match:
             return False
@@ -348,7 +361,7 @@ class RuleExecutor:
         }
         metadata.setdefault("pending_rule_suggestions", []).append({
             "mechanic": mechanic_type,
-            "status": "pending_host_confirmation",
+            "status": "rejected",
             "reason_code": reason_code,
             "citation": citation,
         })

@@ -288,7 +288,37 @@ def test_golden_module_install_builds_a_ready_cited_runtime_package(client, test
     payload = installed.json()
     assert payload["runtimePackage"]["gate_status"] == "ready"
     runtime_package = payload["runtimePackage"]["runtime_package"]
+    assert runtime_package["runtime_policy"] == {
+        "runtime_version": "v2",
+        "session_mode": "ai_only",
+        "state_scope": "room_run",
+        "archive_on_end": True,
+        "fresh_state_on_new_room": True,
+        "in_game_time": {
+            "day_key": "glass-rain-night-1",
+            "expected_duration_hours": 3,
+        },
+        "safety": {
+            "anonymous_pause": True,
+            "resume_authority": "triggering_player",
+            "table_steward_actions": ["extend", "end_session"],
+            "safe_abort_ending_id": "glass-safe-abort",
+        },
+        "ai_failure_policy": {
+            "pre_commit": "deterministic_fallback",
+            "post_commit": "preserve_state_template_narration",
+        },
+    }
+    assert runtime_package["rule_triggers"][0]["condition"] == {
+        "$action": "move",
+        "targetNodeId": "cistern",
+    }
+    assert runtime_package["rule_triggers"][0]["mechanics"][0]["type"] == "sanity_check"
+    assert runtime_package["rule_triggers"][0]["mechanics"][0]["blocking"] is False
     assert runtime_package["ending_conditions"]
+    assert {
+        ending["type"] for ending in runtime_package["ending_conditions"]
+    } >= {"victory", "mixed", "safe_abort"}
     assert all(
         ending["citation"].get("source_part_id")
         and ending["completion_conditions"]

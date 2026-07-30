@@ -333,8 +333,12 @@ def test_generic_clue_share_submission_requires_a_selected_clue_transaction(clie
     ).fetchone()["count"] == 0
 
 
-def test_safety_submission_notifies_host_without_putting_sensitive_text_in_events(client, test_db):
+def test_safety_submission_anonymously_pauses_engine_until_triggering_player_resumes(
+    client,
+    test_db,
+):
     room_id, character_id, player_token = _setup_player(client, test_db)
+    other = client.post(f"/api/player/rooms/{room_id}/join").json()
     owner = test_db.execute(
         "SELECT owner_token FROM rooms WHERE room_id = %s", (room_id,)
     ).fetchone()
@@ -364,25 +368,147 @@ def test_safety_submission_notifies_host_without_putting_sensitive_text_in_event
         f"/api/host/{room_id}/safety-requests",
         headers={"X-Owner-Token": owner["owner_token"]},
     )
+    trigger_state = client.get(
+        "/api/player/safety-state",
+        headers={"X-Room-Token": player_token},
+    )
+    other_state = client.get(
+        "/api/player/safety-state",
+        headers={"X-Room-Token": other["player_token"]},
+    )
+    blocked_action = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": other["player_token"]},
+        json={
+            "actionId": "blocked-by-safety",
+            "rawText": "我继续调查。",
+            "inputMode": "action",
+        },
+    )
+    forbidden_resume = client.post(
+        "/api/player/safety-pauses/safety-1/resume",
+        headers={"X-Room-Token": other["player_token"]},
+    )
+    resumed = client.post(
+        "/api/player/safety-pauses/safety-1/resume",
+        headers={"X-Room-Token": player_token},
+    )
+    accepted_after_resume = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": other["player_token"]},
+        json={
+            "actionId": "accepted-after-safety",
+            "rawText": "我继续调查。",
+            "inputMode": "action",
+        },
+    )
 
     assert created.status_code == 201
     assert replayed.status_code == 201
+    assert created.json()["status"] == "safety_paused"
     assert marker["audience"] == "host"
-    assert marker["payload"] == {"requestId": "safety-1", "characterId": character_id}
+    assert marker["payload"] == {"requestId": "safety-1"}
     assert message not in json.dumps(marker["payload"], ensure_ascii=False)
     assert host_view.status_code == 200
     assert host_view.json()["items"] == [{
         "actionId": "safety-1",
-        "characterId": character_id,
-        "text": message,
         "createdAt": host_view.json()["items"][0]["createdAt"],
     }]
+    assert trigger_state.json() == {
+        "status": "safety_paused",
+        "activePauseCount": 1,
+        "canResume": True,
+        "ownRequestIds": ["safety-1"],
+    }
+    assert other_state.json() == {
+        "status": "safety_paused",
+        "activePauseCount": 1,
+        "canResume": False,
+        "ownRequestIds": [],
+    }
+    assert blocked_action.status_code == 409
+    assert blocked_action.json()["detail"]["code"] == "safety_paused"
+    assert forbidden_resume.status_code == 403
+    assert resumed.status_code == 200
+    assert resumed.json()["status"] == "active"
+    assert accepted_after_resume.status_code == 201
     assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()["count"] == 0
     assert test_db.execute(
         "SELECT COUNT(*) AS count FROM events WHERE room_id = %s "
         "AND event_type = 's2c_safety_request'",
         (room_id,),
     ).fetchone()["count"] == 1
+    safety_events = test_db.execute(
+        "SELECT payload FROM events WHERE room_id = %s "
+        "AND event_type = 's2c_safety_state_changed' ORDER BY sequence",
+        (room_id,),
+    ).fetchall()
+    assert [event["payload"]["status"] for event in safety_events] == [
+        "safety_paused",
+        "active",
+    ]
+    assert all(
+        "characterId" not in event["payload"] and message not in str(event["payload"])
+        for event in safety_events
+    )
+
+
+def test_table_steward_can_extend_pause_or_end_session_but_cannot_force_resume(
+    client,
+    test_db,
+):
+    room_id, _, player_token = _setup_player(client, test_db)
+    owner_token = test_db.execute(
+        "SELECT owner_token FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["owner_token"]
+    created = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": player_token},
+        json={
+            "actionId": "safety-end-session",
+            "rawText": "请停止这一幕。",
+            "inputMode": "safety",
+        },
+    )
+
+    extended = client.post(
+        f"/api/host/{room_id}/safety/extend",
+        headers={"X-Owner-Token": owner_token},
+    )
+    still_paused = client.get(
+        "/api/player/safety-state",
+        headers={"X-Room-Token": player_token},
+    )
+    ended = client.post(
+        f"/api/host/{room_id}/safety/end-session",
+        headers={"X-Owner-Token": owner_token},
+    )
+
+    assert created.status_code == 201
+    assert extended.status_code == 200
+    assert extended.json()["status"] == "safety_paused"
+    assert still_paused.json()["status"] == "safety_paused"
+    assert ended.status_code == 200
+    assert ended.json() == {
+        "status": "completed",
+        "endingType": "safe_abort",
+        "roomId": room_id,
+    }
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["status"] == "completed"
+    assert test_db.execute(
+        "SELECT status FROM player_action_submissions "
+        "WHERE action_id = 'safety-end-session'"
+    ).fetchone()["status"] == "safety_ended"
+    archive = test_db.execute(
+        "SELECT ending_type, character_arcs FROM campaign_archives WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert archive["ending_type"] == "safe_abort"
+    assert len(archive["character_arcs"]) == 1
 
 
 def test_rule_question_is_private_to_its_author_and_never_enters_actions(client, test_db):

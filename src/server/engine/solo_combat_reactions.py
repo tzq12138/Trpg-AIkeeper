@@ -1,4 +1,4 @@
-"""Persistent player reactions for the scripted black-bear solo encounter."""
+"""Persistent CoC melee reactions, including the scripted black-bear encounter."""
 
 import json
 import re
@@ -82,18 +82,45 @@ def get_pending_reaction(
 
 
 def reaction_projection(reaction: dict[str, Any]) -> dict[str, Any]:
+    pending = _json_value(reaction.get("result"))
     return {
         "reactionId": reaction["reaction_id"],
         "encounterId": reaction["encounter_id"],
         "roundNumber": reaction["round_number"],
         "attackIndex": reaction["attack_index"],
         "attackName": reaction["attack_name"],
+        "attackerName": str(pending.get("attackerName") or "黑熊"),
         "choices": ["dodge", "counterattack"],
         "status": reaction["status"],
     }
 
 
-def queue_black_bear_reaction(
+def _participant_skill_value(conn, participant: dict[str, Any]) -> int:
+    skill_name = str(participant.get("main_skill") or "").strip()
+    character = conn.execute(
+        "SELECT xlsx_data FROM characters WHERE character_id = %s",
+        (participant.get("character_id"),),
+    ).fetchone()
+    sheet = _json_value(character.get("xlsx_data") if character else {})
+    skills = sheet.get("skills") if isinstance(sheet, dict) else {}
+    if isinstance(skills, dict) and skill_name in skills:
+        try:
+            return max(0, int(skills[skill_name] or 0))
+        except (TypeError, ValueError):
+            pass
+    notes = str(participant.get("notes") or "")
+    patterns = []
+    if skill_name:
+        patterns.append(rf"{re.escape(skill_name)}\s*(\d+)\s*%?")
+    patterns.append(r"(\d+)\s*%")
+    for pattern in patterns:
+        match = re.search(pattern, notes)
+        if match:
+            return max(0, int(match.group(1)))
+    return 25
+
+
+def queue_enemy_reaction(
     conn,
     *,
     room_id: str,
@@ -101,7 +128,7 @@ def queue_black_bear_reaction(
     character_id: str,
     source_action_id: str,
 ) -> dict[str, Any] | None:
-    """Create exactly one outstanding enemy attack for the current solo round."""
+    """Create one outstanding enemy melee attack for the player to answer."""
     from ..encounter_persistence import get_encounter, get_participants
 
     existing = get_pending_reaction(
@@ -112,24 +139,71 @@ def queue_black_bear_reaction(
 
     encounter = get_encounter(conn, encounter_id)
     participants = get_participants(conn, encounter_id)
-    enemy = next((item for item in participants if item.get("side") == "enemy"), None)
-    if not _is_black_bear(encounter, enemy) or encounter.get("status") != "active":
-        return None
-    if int(enemy.get("hp", 0) or 0) <= 0:
+    enemy = next(
+        (
+            item
+            for item in participants
+            if item.get("side") == "enemy"
+            and int(item.get("hp", 0) or 0) > 0
+        ),
+        None,
+    )
+    if (
+        not encounter
+        or encounter.get("type") != "combat"
+        or encounter.get("status") != "active"
+        or not enemy
+    ):
         return None
 
     round_number = int(encounter.get("current_round", 0) or 1)
-    attacks = _BEAR_ATTACKS.get(round_number)
-    if not attacks:
-        return None
-    count_row = conn.execute(
-        "SELECT COUNT(*) AS count FROM encounter_pending_reactions "
-        "WHERE encounter_id = %s AND character_id = %s AND round_number = %s",
-        (encounter_id, character_id, round_number),
-    ).fetchone()
-    attack_index = int(count_row["count"] if count_row else 0) + 1
-    if attack_index > len(attacks):
-        return None
+    is_scripted_bear = _is_black_bear(encounter, enemy)
+    if is_scripted_bear:
+        attacks = _BEAR_ATTACKS.get(round_number)
+        if not attacks:
+            return None
+        count_row = conn.execute(
+            "SELECT COUNT(*) AS count FROM encounter_pending_reactions "
+            "WHERE encounter_id = %s AND character_id = %s AND round_number = %s",
+            (encounter_id, character_id, round_number),
+        ).fetchone()
+        attack_index = int(count_row["count"] if count_row else 0) + 1
+        if attack_index > len(attacks):
+            return None
+        attack = attacks[attack_index - 1]
+    else:
+        prior = conn.execute(
+            "SELECT 1 FROM encounter_pending_reactions "
+            "WHERE encounter_id = %s AND character_id = %s AND round_number = %s "
+            "LIMIT 1",
+            (encounter_id, character_id, round_number),
+        ).fetchone()
+        if prior:
+            return None
+        attack_index = 1
+        attack = {
+            "name": str(
+                enemy.get("weapon_name")
+                or enemy.get("main_skill")
+                or "近战攻击"
+            ),
+            "skill": _participant_skill_value(conn, enemy),
+            "damage_expression": str(
+                enemy.get("damage_expression") or "1d3"
+            ),
+        }
+
+    attacker_name = str(
+        enemy.get("public_label")
+        or enemy.get("display_name")
+        or "敌人"
+    )
+    pending_metadata = {
+        "mode": "scripted_black_bear" if is_scripted_bear else "generic_melee",
+        "attackerName": attacker_name,
+        "attackerSkillName": str(enemy.get("main_skill") or attack["name"]),
+        "attackerSkillValue": int(attack["skill"]),
+    }
 
     reaction_id = f"reaction:{uuid.uuid4()}"
     conn.execute(
@@ -142,9 +216,14 @@ def queue_black_bear_reaction(
         (
             reaction_id, room_id, encounter_id, source_action_id, character_id,
             enemy["character_id"], round_number, attack_index,
-            attacks[attack_index - 1]["name"],
-            attacks[attack_index - 1]["damage_expression"],
+            attack["name"],
+            attack["damage_expression"],
         ),
+    )
+    conn.execute(
+        "UPDATE encounter_pending_reactions SET result = %s "
+        "WHERE reaction_id = %s",
+        (json.dumps(pending_metadata, ensure_ascii=False), reaction_id),
     )
     from .prepared_rule_actions import (
         PreparedRuleEvent,
@@ -163,6 +242,37 @@ def queue_black_bear_reaction(
     if queued_reaction is not None:
         queued_reaction["prepared_reactions"] = prepared_reactions
     return queued_reaction
+
+
+def queue_black_bear_reaction(
+    conn,
+    *,
+    room_id: str,
+    encounter_id: str,
+    character_id: str,
+    source_action_id: str,
+) -> dict[str, Any] | None:
+    """Backward-compatible wrapper restricted to the scripted black bear."""
+    from ..encounter_persistence import get_encounter, get_participants
+
+    encounter = get_encounter(conn, encounter_id)
+    enemy = next(
+        (
+            item
+            for item in get_participants(conn, encounter_id)
+            if item.get("side") == "enemy"
+        ),
+        None,
+    )
+    if not _is_black_bear(encounter, enemy):
+        return None
+    return queue_enemy_reaction(
+        conn,
+        room_id=room_id,
+        encounter_id=encounter_id,
+        character_id=character_id,
+        source_action_id=source_action_id,
+    )
 
 
 def _player_fighting_skill(conn, character_id: str) -> tuple[str, int]:
@@ -202,6 +312,13 @@ def _character_attribute(conn, character_id: str, *names: str) -> int:
 
 
 def _attack_definition(reaction: dict[str, Any]) -> dict[str, Any]:
+    pending = _json_value(reaction.get("result"))
+    if pending.get("mode") == "generic_melee":
+        return {
+            "name": reaction["attack_name"],
+            "skill": max(0, int(pending.get("attackerSkillValue") or 0)),
+            "damage_expression": reaction["damage_expression"],
+        }
     attacks = _BEAR_ATTACKS.get(int(reaction["round_number"])) or ()
     index = int(reaction["attack_index"]) - 1
     if 0 <= index < len(attacks):
@@ -241,14 +358,21 @@ def _scripted_outcome_target(
     return ("201" if check["is_success"] else "193"), check
 
 
-def _wins_opposed_check(defender: dict[str, Any], attacker: dict[str, Any]) -> bool:
+def _wins_opposed_check(
+    defender: dict[str, Any],
+    attacker: dict[str, Any],
+    *,
+    reaction: str,
+) -> bool:
     if not defender["is_success"]:
         return False
     if not attacker["is_success"]:
         return True
-    return SUCCESS_LEVEL_RANK[defender["success_level"]] >= SUCCESS_LEVEL_RANK[
-        attacker["success_level"]
-    ]
+    defender_rank = SUCCESS_LEVEL_RANK[defender["success_level"]]
+    attacker_rank = SUCCESS_LEVEL_RANK[attacker["success_level"]]
+    if reaction == "dodge":
+        return defender_rank >= attacker_rank
+    return defender_rank > attacker_rank
 
 
 def _armor(notes: str) -> int:
@@ -297,9 +421,23 @@ def resolve_pending_reaction(
             "SELECT * FROM encounter_participants WHERE encounter_id = %s AND character_id = %s FOR UPDATE",
             (reaction["encounter_id"], reaction["attacker_id"]),
         ).fetchone())
-        if not _is_black_bear(encounter, enemy) or not player or encounter.get("status") != "active":
+        if (
+            not encounter
+            or encounter.get("type") != "combat"
+            or not enemy
+            or not player
+            or encounter.get("status") != "active"
+        ):
             raise SoloCombatReactionError("reaction_encounter_unavailable")
 
+        pending_metadata = _json_value(reaction.get("result"))
+        is_scripted_bear = _is_black_bear(encounter, enemy)
+        attacker_name = str(
+            pending_metadata.get("attackerName")
+            or enemy.get("public_label")
+            or enemy.get("display_name")
+            or "敌人"
+        )
         attack = _attack_definition(reaction)
         bear_check = roll_skill_check(int(attack["skill"]))
         if choice == "dodge":
@@ -309,12 +447,16 @@ def resolve_pending_reaction(
             player_skill_name, player_skill = _player_fighting_skill(conn, character_id)
             player_check = roll_skill_check(player_skill)
 
-        player_wins = _wins_opposed_check(player_check, bear_check)
+        player_wins = _wins_opposed_check(
+            player_check,
+            bear_check,
+            reaction=choice,
+        )
         player_damage = 0
         bear_damage = 0
         raw_rolls: list[dict[str, Any]] = [
             {
-                "actor": "黑熊",
+                "actor": attacker_name,
                 "kind": "skill",
                 "result": bear_check["roll"],
                 "target": int(attack["skill"]),
@@ -341,7 +483,7 @@ def resolve_pending_reaction(
         elif bear_check["is_success"] and not player_wins:
             bear_damage, draws, modifier = roll_dice(attack["damage_expression"])
             raw_rolls.append({
-                "actor": "黑熊",
+                "actor": attacker_name,
                 "kind": "damage",
                 "draws": draws,
                 "modifier": modifier,
@@ -356,12 +498,12 @@ def resolve_pending_reaction(
                 mutations.append({"op": "add", "path": "/character/status_tag", "value": "unconscious"})
             StateService(conn).apply_change(
                 reaction["room_id"],
-                {"type": "system", "id": "solo_black_bear"},
+                {"type": "system", "id": "encounter_reaction"},
                 StateChangeSet(characterMutations=[CharacterMutationItem(
                     characterId=character_id,
                     mutations=mutations,
                 )]),
-                reason="黑熊攻击结算",
+                reason=f"{attacker_name}攻击结算",
                 transaction=tx,
             )
             tx.execute(
@@ -374,13 +516,16 @@ def resolve_pending_reaction(
                 (next_bear_hp, reaction["encounter_id"], reaction["attacker_id"]),
             )
 
-        outcome_target, con_check = _scripted_outcome_target(
-            tx,
-            reaction,
-            player_hp=next_player_hp,
-            player_hp_max=int(player.get("hp_max", 0) or 0),
-            bear_hp=next_bear_hp,
-        )
+        if is_scripted_bear:
+            outcome_target, con_check = _scripted_outcome_target(
+                tx,
+                reaction,
+                player_hp=next_player_hp,
+                player_hp_max=int(player.get("hp_max", 0) or 0),
+                bear_hp=next_bear_hp,
+            )
+        else:
+            outcome_target, con_check = None, None
         if con_check:
             raw_rolls.append({
                 "actor": character_id,
@@ -397,12 +542,15 @@ def resolve_pending_reaction(
         solo_transition = None
         result = {
             "choice": choice,
+            "attackerName": attacker_name,
             "playerSkill": player_skill_name,
             "playerCheck": player_check,
             "bearCheck": bear_check,
+            "attackerCheck": bear_check,
             "playerWins": player_wins,
             "damageToPlayer": bear_damage,
             "damageToBear": player_damage,
+            "damageToAttacker": player_damage,
             "verificationReceipt": receipt,
         }
 
@@ -425,33 +573,44 @@ def resolve_pending_reaction(
             result["soloTransition"] = solo_transition
             if con_check:
                 result["majorWoundCheck"] = con_check
-        elif reaction["attack_index"] < len(_BEAR_ATTACKS[reaction["round_number"]]):
+        elif (
+            is_scripted_bear
+            and reaction["attack_index"] < len(_BEAR_ATTACKS[reaction["round_number"]])
+        ):
             next_index = reaction["attack_index"] + 1
             next_attack = _BEAR_ATTACKS[reaction["round_number"]][next_index - 1]
             next_id = f"reaction:{uuid.uuid4()}"
+            next_metadata = {
+                "mode": "scripted_black_bear",
+                "attackerName": attacker_name,
+                "attackerSkillName": next_attack["name"],
+                "attackerSkillValue": int(next_attack["skill"]),
+            }
             tx.execute(
                 """
                 INSERT INTO encounter_pending_reactions (
                     reaction_id, room_id, encounter_id, source_action_id, character_id,
-                    attacker_id, round_number, attack_index, attack_name, damage_expression
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    attacker_id, round_number, attack_index, attack_name, damage_expression,
+                    result
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     next_id, reaction["room_id"], reaction["encounter_id"],
                     reaction["source_action_id"], character_id, reaction["attacker_id"],
                     reaction["round_number"], next_index,
                     next_attack["name"], next_attack["damage_expression"],
+                    json.dumps(next_metadata, ensure_ascii=False),
                 ),
             )
             next_reaction = _row(tx.execute(
                 "SELECT * FROM encounter_pending_reactions WHERE reaction_id = %s", (next_id,),
             ).fetchone())
-        elif reaction["round_number"] >= 3:
+        elif is_scripted_bear and reaction["round_number"] >= 3:
             tx.execute(
                 "UPDATE encounters SET status = 'resolved', summary = %s, resolved_at = NOW() WHERE encounter_id = %s",
                 ("三轮黑熊战斗结束", reaction["encounter_id"]),
             )
-        else:
+        elif is_scripted_bear:
             tx.execute(
                 "UPDATE encounter_participants SET acted_this_round = FALSE WHERE encounter_id = %s",
                 (reaction["encounter_id"],),
@@ -460,6 +619,18 @@ def resolve_pending_reaction(
                 "UPDATE encounters SET current_round = current_round + 1 WHERE encounter_id = %s",
                 (reaction["encounter_id"],),
             )
+        elif next_bear_hp <= 0:
+            remaining_enemy = tx.execute(
+                "SELECT 1 FROM encounter_participants "
+                "WHERE encounter_id = %s AND side = 'enemy' AND hp > 0 LIMIT 1",
+                (reaction["encounter_id"],),
+            ).fetchone()
+            if not remaining_enemy:
+                tx.execute(
+                    "UPDATE encounters SET status = 'resolved', summary = %s, "
+                    "resolved_at = NOW() WHERE encounter_id = %s",
+                    ("所有敌人已倒下", reaction["encounter_id"]),
+                )
 
         tx.execute(
             """

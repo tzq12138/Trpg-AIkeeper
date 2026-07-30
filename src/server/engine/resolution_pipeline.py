@@ -384,6 +384,18 @@ class ResolutionPipeline:
         )
         if action["status"] not in {"queued", "batched"} and not is_composite_resume:
             return {"status": action["status"], "action_id": action_id}
+        if self.conn.execute(
+            """
+            SELECT 1
+            FROM player_action_submissions
+            WHERE room_id = %s
+              AND input_mode = 'safety'
+              AND status = 'safety_paused'
+            LIMIT 1
+            """,
+            (action["room_id"],),
+        ).fetchone():
+            return {"status": "safety_paused", "action_id": action_id}
 
         is_v2 = bool(action.get("draft_id"))
         if is_v2:
@@ -438,13 +450,56 @@ class ResolutionPipeline:
         else:
             state_before = {
                 key: xlsx_data.get(key)
-                for key in ("hp", "san", "mp", "luck")
+                for key in (
+                    "hp",
+                    "san",
+                    "mp",
+                    "luck",
+                    "status_tags",
+                    "temp_modifiers",
+                )
                 if key in xlsx_data
+            }
+        status_tags = self._json_value(state_before.get("status_tags")) or []
+        sanity_state = self._json_value(
+            (self._json_value(state_before.get("temp_modifiers")) or {}).get(
+                "coc7_sanity"
+            )
+        ) or {}
+        if (
+            "permanent_insanity" in status_tags
+            or sanity_state.get("insanity_type") == "permanent"
+            or sanity_state.get("control") == "ai_keeper"
+            and sanity_state.get("phase") == "permanent"
+        ):
+            await self._reject(action, "investigator_not_player_controlled")
+            return {
+                "status": "rejected",
+                "action_id": action_id,
+                "reason": "investigator_not_player_controlled",
             }
 
         scenario = self._load_scenario(room)
         scenario_assets = self._json_value(scenario.get("scenario_assets") if scenario else None) or {}
+        runtime_package = self._runtime_package_for_room(action["room_id"])
+        runtime_rule_triggers = runtime_package.get("rule_triggers")
+        if isinstance(runtime_rule_triggers, list):
+            legacy_triggers = scenario_assets.get("triggers")
+            merged_triggers = (
+                [trigger for trigger in legacy_triggers if isinstance(trigger, dict)]
+                if isinstance(legacy_triggers, list)
+                else []
+            )
+            merged_triggers.extend(
+                trigger
+                for trigger in runtime_rule_triggers
+                if isinstance(trigger, dict)
+            )
+            scenario_assets["triggers"] = merged_triggers
         scenario_assets["rule_policy"] = self._load_rule_policy(dict(room))
+        scenario_assets["_party_luck_values"] = self._party_luck_values(
+            action["room_id"]
+        )
         inventory = self.conn.execute(
             "SELECT * FROM inventory WHERE character_id = %s", (action["character_id"],)
         ).fetchall()
@@ -778,8 +833,14 @@ class ResolutionPipeline:
         pending_rule_suggestions = (resolution.metadata or {}).get(
             "pending_rule_suggestions"
         )
-        if is_v2 and isinstance(pending_rule_suggestions, list) and pending_rule_suggestions:
-            first_suggestion = pending_rule_suggestions[0]
+        host_rule_suggestions = [
+            suggestion
+            for suggestion in pending_rule_suggestions or []
+            if isinstance(suggestion, dict)
+            and suggestion.get("status") == "pending_host_confirmation"
+        ] if isinstance(pending_rule_suggestions, list) else []
+        if is_v2 and host_rule_suggestions:
+            first_suggestion = host_rule_suggestions[0]
             reason_code = (
                 str(first_suggestion.get("reason_code") or "rule_confirmation_required")
                 if isinstance(first_suggestion, dict)
@@ -1449,13 +1510,41 @@ class ResolutionPipeline:
     def _runtime_snapshot(executor, character_id: str, room_id: str) -> dict[str, Any]:
         try:
             row = executor.execute(
-                "SELECT hp, san, mp, luck FROM character_runtime_state "
+                "SELECT hp, san, mp, luck, status_tags, temp_modifiers "
+                "FROM character_runtime_state "
                 "WHERE character_id = %s AND room_id = %s",
                 (character_id, room_id),
             ).fetchone()
         except Exception:
             return {}
-        return dict(row) if row else {}
+        if not row:
+            return {}
+        snapshot = dict(row)
+        for key, fallback in (("status_tags", []), ("temp_modifiers", {})):
+            value = snapshot.get(key)
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    value = fallback
+            snapshot[key] = value if isinstance(value, type(fallback)) else fallback
+        return snapshot
+
+    def _party_luck_values(self, room_id: str) -> list[int]:
+        values: list[int] = []
+        try:
+            rows = self.conn.execute(
+                "SELECT luck FROM character_runtime_state WHERE room_id = %s",
+                (room_id,),
+            ).fetchall()
+        except Exception:
+            rows = []
+        for row in rows:
+            try:
+                values.append(max(0, int(row["luck"] or 0)))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return sorted(values)
 
     @staticmethod
     def _raw_rolls(resolution: ResolutionResult) -> list[dict[str, Any]]:
@@ -2619,6 +2708,7 @@ class ResolutionPipeline:
                 (room_id, ending.room_status),
             ).fetchone()
             if row:
+                character_arcs = self._archive_character_arcs(tx, room_id)
                 tx.execute(
                     """
                     INSERT INTO campaign_archives
@@ -2631,10 +2721,15 @@ class ResolutionPipeline:
                         ending.ending_type,
                         "本次冒险已按已验证条件结束。",
                         json.dumps(["已完成已验证的结局条件。"], ensure_ascii=False),
-                        json.dumps([], ensure_ascii=False),
+                        json.dumps(character_arcs, ensure_ascii=False),
                     ),
                 )
         return bool(row)
+
+    def _archive_character_arcs(self, executor, room_id: str) -> list[dict[str, Any]]:
+        from ..campaign_archive import build_character_arcs
+
+        return build_character_arcs(executor, room_id)
 
     async def _apply_move_result(self, action: dict[str, Any], resolution: ResolutionResult):
         """Post-resolution: update character position, mark node explored, emit map events."""
@@ -3068,11 +3163,11 @@ class ResolutionPipeline:
             and not params.get("preparedReaction")
         ):
             from .solo_combat_reactions import (
-                queue_black_bear_reaction,
+                queue_enemy_reaction,
                 reaction_projection,
             )
 
-            pending_reaction = queue_black_bear_reaction(
+            pending_reaction = queue_enemy_reaction(
                 self.conn,
                 room_id=room_id,
                 encounter_id=encounter_id,

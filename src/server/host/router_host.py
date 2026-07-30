@@ -222,35 +222,131 @@ async def update_public_scene_time(
 @router.get("/{room_id}/safety-requests")
 async def get_safety_requests(request: Request, room_id: str):
     _verify_owner(request, room_id)
-    from ..player.private_data import PrivateDataDecryptionError, private_data_cipher_from_env
 
     rows = request.app.state.db.execute(
         """
-        SELECT submission.action_id, submission.character_id,
-               submission.raw_text_ciphertext, submission.created_at
+        SELECT submission.action_id, submission.created_at
         FROM player_action_submissions AS submission
         WHERE submission.room_id = %s
           AND submission.input_mode = 'safety'
+          AND submission.status = 'safety_paused'
         ORDER BY submission.created_at DESC
         LIMIT 20
         """,
         (room_id,),
     ).fetchall()
-    cipher = private_data_cipher_from_env()
-    items = []
-    for row in rows:
-        try:
-            text = cipher.decrypt(row["raw_text_ciphertext"])
-        except PrivateDataDecryptionError:
-            logger.warning("Skipping unreadable safety request: %s", row["action_id"])
-            continue
-        items.append({
+    return {
+        "items": [{
             "actionId": row["action_id"],
-            "characterId": row["character_id"],
-            "text": text,
             "createdAt": str(row["created_at"]),
-        })
-    return {"items": items}
+        } for row in rows]
+    }
+
+
+@router.post("/{room_id}/safety/extend")
+async def extend_safety_pause(request: Request, room_id: str):
+    _verify_owner(request, room_id)
+    conn = request.app.state.db
+    active = conn.execute(
+        "SELECT COUNT(*) AS count FROM player_action_submissions "
+        "WHERE room_id = %s AND input_mode = 'safety' "
+        "AND status = 'safety_paused'",
+        (room_id,),
+    ).fetchone()
+    active_count = int(active["count"] or 0)
+    if active_count == 0:
+        raise HTTPException(409, detail={"code": "safety_pause_not_active"})
+    conn.execute(
+        "UPDATE player_action_submissions SET updated_at = NOW() "
+        "WHERE room_id = %s AND input_mode = 'safety' "
+        "AND status = 'safety_paused'",
+        (room_id,),
+    )
+    conn.commit()
+    from ..engine.projection import ProjectionDispatcher
+
+    dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(
+        conn,
+    )
+    await dispatcher.emit(
+        room_id,
+        "s2c_safety_state_changed",
+        "party",
+        {
+            "status": "safety_paused",
+            "activePauseCount": active_count,
+            "extended": True,
+        },
+    )
+    return {"status": "safety_paused", "activePauseCount": active_count}
+
+
+@router.post("/{room_id}/safety/end-session")
+async def end_session_for_safety(request: Request, room_id: str):
+    _verify_owner(request, room_id)
+    conn = request.app.state.db
+    active = conn.execute(
+        "SELECT 1 FROM player_action_submissions "
+        "WHERE room_id = %s AND input_mode = 'safety' "
+        "AND status = 'safety_paused' LIMIT 1",
+        (room_id,),
+    ).fetchone()
+    if not active:
+        raise HTTPException(409, detail={"code": "safety_pause_not_active"})
+
+    import uuid
+    from ..campaign_archive import build_character_arcs
+
+    with conn.transaction() as tx:
+        tx.execute(
+            "UPDATE player_action_submissions SET status = 'safety_ended', "
+            "updated_at = NOW() WHERE room_id = %s AND input_mode = 'safety' "
+            "AND status = 'safety_paused'",
+            (room_id,),
+        )
+        tx.execute(
+            "UPDATE rooms SET status = 'completed', state_version = state_version + 1 "
+            "WHERE room_id = %s",
+            (room_id,),
+        )
+        tx.execute(
+            "INSERT INTO campaign_archives "
+            "(archive_id, room_id, ending_type, summary, highlights, character_arcs) "
+            "VALUES (%s, %s, 'safe_abort', %s, %s, %s)",
+            (
+                str(uuid.uuid4())[:8],
+                room_id,
+                "本次冒险依据安全工具请求安全结束。",
+                json.dumps(["队伍选择了安全结束。"], ensure_ascii=False),
+                json.dumps(build_character_arcs(tx, room_id), ensure_ascii=False),
+            ),
+        )
+
+    from ..engine.projection import ProjectionDispatcher
+
+    dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(
+        conn,
+    )
+    await dispatcher.emit(
+        room_id,
+        "s2c_safety_state_changed",
+        "party",
+        {"status": "session_ended", "activePauseCount": 0},
+    )
+    await dispatcher.emit(
+        room_id,
+        "s2c_campaign_ended",
+        "party",
+        {
+            "endingType": "safe_abort",
+            "completion_source": "safety_tool",
+        },
+    )
+    return {
+        "status": "completed",
+        "endingType": "safe_abort",
+        "roomId": room_id,
+    }
 
 
 @router.post("/{room_id}/reset")

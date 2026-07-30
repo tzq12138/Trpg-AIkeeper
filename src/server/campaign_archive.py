@@ -147,19 +147,7 @@ class CampaignArchive:
         return highlights[:10]
 
     def _build_character_arcs(self, room_id: str, characters: list) -> list[dict]:
-        arcs = []
-        for char in characters:
-            char_id = char["character_id"]
-            actions = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM actions WHERE room_id = %s AND character_id = %s",
-                (room_id, char_id),
-            ).fetchone()
-            arcs.append({
-                "character_id": char_id,
-                "player_name": char["player_name"],
-                "total_actions": actions["cnt"],
-            })
-        return arcs
+        return build_character_arcs(self.conn, room_id, characters)
 
     def _save_archive(self, room_id: str, ending: CampaignEnding):
         archive_id = str(__import__("uuid").uuid4())[:8]
@@ -178,6 +166,53 @@ def _json_value(value):
     if isinstance(value, (dict, list)):
         return value
     return json.loads(value)
+
+
+def build_character_arcs(conn, room_id: str, characters: list | None = None) -> list[dict]:
+    if characters is None:
+        characters = conn.execute(
+            "SELECT character_id, player_name, xlsx_data FROM characters "
+            "WHERE room_id = %s ORDER BY character_id",
+            (room_id,),
+        ).fetchall()
+    arcs = []
+    for character in characters:
+        character_id = str(character["character_id"])
+        runtime = conn.execute(
+            "SELECT san, temp_modifiers FROM character_runtime_state "
+            "WHERE room_id = %s AND character_id = %s",
+            (room_id, character_id),
+        ).fetchone()
+        sheet = _json_value(character.get("xlsx_data")) or {}
+        temp_modifiers = (
+            _json_value(runtime.get("temp_modifiers")) or {}
+            if runtime
+            else _json_value(sheet.get("temp_modifiers")) or {}
+        )
+        sanity_state = _json_value(temp_modifiers.get("coc7_sanity")) or {}
+        actions = conn.execute(
+            "SELECT COUNT(*) AS count FROM actions "
+            "WHERE room_id = %s AND character_id = %s",
+            (room_id, character_id),
+        ).fetchone()
+        final_san_value = runtime["san"] if runtime else sheet.get("san", 0)
+        arcs.append({
+            "character_id": character_id,
+            "player_name": str(character.get("player_name") or ""),
+            "total_actions": int(actions["count"] or 0),
+            "final_san": max(0, int(final_san_value or 0)),
+            "sanity_outcome": {
+                "insanity_type": str(
+                    sanity_state.get("insanity_type") or "none"
+                ),
+                "phase": str(sanity_state.get("phase") or "stable"),
+                "control": str(sanity_state.get("control") or "player"),
+                "archive_required": bool(
+                    sanity_state.get("archive_required", False)
+                ),
+            },
+        })
+    return arcs
 
 
 def _datetime_value(value):

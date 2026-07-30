@@ -7,7 +7,7 @@ export type EngineEventType =
   | 's2c_action_queued' | 's2c_action_batched' | 's2c_action_completed' | 's2c_action_deferred'
   | 's2c_action_review_requested' | 's2c_action_review_resolved'
   | 's2c_action_exception_requested'
-  | 's2c_safety_request'
+  | 's2c_safety_request' | 's2c_safety_state_changed'
   | 's2c_action_choice_requested'
   | 's2c_tactical_prompt' | 's2c_clarification_prompt' | 's2c_clarification_result'
   // ── State sync ──
@@ -186,6 +186,7 @@ export interface SoloCombatReactionDTO {
   roundNumber: number;
   attackIndex: number;
   attackName: string;
+  attackerName: string;
   choices: Array<'dodge' | 'counterattack'>;
   status: 'pending' | 'resolved';
 }
@@ -196,6 +197,7 @@ export interface SoloCombatReactionResolutionDTO {
     playerWins?: boolean;
     damageToPlayer?: number;
     damageToBear?: number;
+    damageToAttacker?: number;
   };
   nextReaction: SoloCombatReactionDTO | null;
   soloTransition?: {

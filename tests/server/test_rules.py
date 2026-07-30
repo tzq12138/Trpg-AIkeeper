@@ -148,7 +148,7 @@ async def test_sanity_check_go_insane():
         make_state(san=1), {"success_loss": "0", "failure_loss": "1d3"}
     )
     assert result.metadata["new_san"] == 0
-    assert "疯狂" in result.cascading_state_changes
+    assert any("永久性疯狂" in change for change in result.cascading_state_changes)
 
 
 @pytest.mark.asyncio
@@ -178,7 +178,8 @@ async def test_combat_hp_zero():
     random.seed(5)
     result = await handler.execute(make_state(hp=1), {"damage": "1d6"})
     assert result.metadata["new_hp"] == 0
-    assert "昏迷/濒死" in result.cascading_state_changes
+    assert result.metadata["instantly_dead"] is True
+    assert any("死亡" in change for change in result.cascading_state_changes)
 
 
 @pytest.mark.asyncio
@@ -275,6 +276,26 @@ def test_triggers_no_match_item():
     ]
     result = evaluate_triggers(triggers, "use", {"itemId": "key_02"})
     assert len(result) == 0
+
+
+def test_triggers_match_all_declared_action_params():
+    triggers = [
+        {
+            "condition": {"$action": "move", "targetNodeId": "cistern"},
+            "mechanics": [{"type": "sanity_check"}],
+        }
+    ]
+
+    assert evaluate_triggers(
+        triggers,
+        "move",
+        {"targetNodeId": "cistern"},
+    ) == [{"type": "sanity_check"}]
+    assert evaluate_triggers(
+        triggers,
+        "move",
+        {"targetNodeId": "control-room"},
+    ) == []
 
 
 def test_triggers_multiple_mechanics():

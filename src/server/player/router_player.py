@@ -890,6 +890,10 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
 
         # Resolve each queued action through the pipeline
         actions = tm.get_pending_actions(turn_id)
+        if combat_plan:
+            from ..combat_round_planner import dependency_resolution_order
+
+            actions = dependency_resolution_order(actions)
         _mark_collaboration_batches_resolving(
             conn,
             [action["action_id"] for action in actions],

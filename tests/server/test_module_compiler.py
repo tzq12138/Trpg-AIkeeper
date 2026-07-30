@@ -86,6 +86,12 @@ def _graph_with_citations():
             "completion_conditions": {"entered_scenes": ["station"]},
         }],
         "rule_triggers": [{"trigger": "spot_hidden", "citation": _citation("part-rule")}],
+        "runtime_policy": {
+            "runtime_version": "v2",
+            "state_scope": "room_run",
+            "archive_on_end": True,
+            "fresh_state_on_new_room": True,
+        },
         "style_pack": {"tone": "investigative", "citation": _citation("part-style")},
         "solo_adventure": {
             "root_node_id": "1",
@@ -134,6 +140,7 @@ def test_runtime_package_blocks_draft_asset_then_ready_after_confirmed_binding(t
         "character_and_items",
         "clue_dependencies",
         "rule_triggers",
+        "runtime_policy",
         "semantic_map",
         "ending_conditions",
         "style_pack",
@@ -141,6 +148,7 @@ def test_runtime_package_blocks_draft_asset_then_ready_after_confirmed_binding(t
         "semantic_progression_rules",
         "citations",
     }
+    assert blocked["runtime_package"]["runtime_policy"]["state_scope"] == "room_run"
 
     test_db.execute(
         "UPDATE scenario_asset_bindings SET status = 'confirmed', reviewed_by = 'admin' "

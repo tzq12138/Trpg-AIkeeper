@@ -35,7 +35,7 @@ def test_combat_round_plan_uses_dexterity_not_submission_order():
     assert plan["steps"][0]["visibility"] == "public"
 
 
-def test_combat_round_plan_honors_confirmed_collaboration_dependencies_before_dexterity():
+def test_combat_round_plan_keeps_dexterity_order_and_records_dependency():
     plan = build_combat_round_plan(
         turn_id="combat-turn",
         encounter_id="combat-encounter",
@@ -60,13 +60,33 @@ def test_combat_round_plan_honors_confirmed_collaboration_dependencies_before_de
     )
 
     assert [step["action_id"] for step in plan["steps"]] == [
-        "slow-opener",
         "fast-dependent",
+        "slow-opener",
     ]
-    assert plan["steps"][1]["depends_on"] == ["slow-opener"]
+    assert plan["steps"][0]["depends_on"] == ["slow-opener"]
 
 
-def test_combat_round_plan_keeps_only_two_declared_segments_and_never_invents_absent_actions():
+def test_dependency_resolution_order_runs_prerequisite_before_faster_dependent():
+    from src.server.combat_round_planner import dependency_resolution_order
+
+    actions = [
+        {
+            "action_id": "fast-dependent",
+            "params": {"depends_on_action_ids": ["slow-opener"]},
+        },
+        {
+            "action_id": "slow-opener",
+            "params": {},
+        },
+    ]
+
+    assert [
+        action["action_id"]
+        for action in dependency_resolution_order(actions)
+    ] == ["slow-opener", "fast-dependent"]
+
+
+def test_combat_round_plan_keeps_one_declared_action_and_never_invents_absent_actions():
     plan = build_combat_round_plan(
         turn_id="combat-turn",
         encounter_id="combat-encounter",
@@ -90,7 +110,7 @@ def test_combat_round_plan_keeps_only_two_declared_segments_and_never_invents_ab
     )
 
     combo = next(step for step in plan["steps"] if step["action_id"] == "combo")
-    assert combo["segments"] == ["我开枪", "掩护安娜撤退"]
+    assert combo["segments"] == ["我开枪"]
     assert plan["absent_policies"] == [
         {"character_id": "absent-player", "policy": "idle"}
     ]

@@ -85,6 +85,10 @@ class FakeConn:
             return Rows([self.characters[params[0]]] if params[0] in self.characters else [])
         if normalized.startswith("SELECT * FROM rooms WHERE room_id"):
             return Rows([self.rooms[params[0]]] if params[0] in self.rooms else [])
+        if normalized.startswith(
+            "SELECT scenario_version_id, runtime_package_version_id FROM rooms WHERE room_id"
+        ):
+            return Rows([self.rooms[params[0]]] if params[0] in self.rooms else [])
         if normalized.startswith("SELECT state_version FROM rooms WHERE room_id"):
             return Rows([self.rooms[params[0]]] if params[0] in self.rooms else [])
         if normalized.startswith("SELECT * FROM scenarios WHERE scenario_id"):
@@ -160,6 +164,8 @@ class FakeConn:
             return Rows()
         if normalized.startswith("SELECT status FROM rooms WHERE room_id"):
             return Rows([self.rooms.get(params[0])])
+        if normalized.startswith("SELECT 1 FROM player_action_submissions"):
+            return Rows([])
         if normalized.startswith("SELECT * FROM character_runtime_state WHERE character_id"):
             return Rows([])  # No existing runtime state
         if normalized.startswith("INSERT INTO character_runtime_state"):
