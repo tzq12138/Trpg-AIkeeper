@@ -383,6 +383,18 @@ class ResolutionPipeline:
         )
         if action["status"] not in {"queued", "batched"} and not is_composite_resume:
             return {"status": action["status"], "action_id": action_id}
+        if not is_composite_resume:
+            from .action_consent import enforce_action_consent_gate
+
+            if not enforce_action_consent_gate(self.conn, action_id):
+                current = self.conn.execute(
+                    "SELECT status FROM actions WHERE action_id = %s",
+                    (action_id,),
+                ).fetchone()
+                return {
+                    "status": current["status"] if current else "missing",
+                    "action_id": action_id,
+                }
         if self.conn.execute(
             """
             SELECT 1

@@ -443,6 +443,26 @@ CREATE TABLE IF NOT EXISTS action_status_events (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS action_consents (
+    consent_id TEXT PRIMARY KEY,
+    action_id TEXT NOT NULL REFERENCES actions(action_id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    requester_character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    affected_character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    consent_kind TEXT NOT NULL,
+    decision TEXT NOT NULL DEFAULT 'pending'
+        CHECK (decision IN ('pending', 'accepted', 'rejected', 'expired')),
+    expires_at TIMESTAMP NOT NULL,
+    responded_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (action_id, affected_character_id, consent_kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_action_consents_affected_pending
+    ON action_consents(affected_character_id, decision, expires_at);
+CREATE INDEX IF NOT EXISTS idx_action_consents_action
+    ON action_consents(action_id, consent_kind);
+
 CREATE TABLE IF NOT EXISTS action_review_requests (
     review_request_id TEXT PRIMARY KEY,
     action_id TEXT NOT NULL REFERENCES actions(action_id) ON DELETE CASCADE,

@@ -21,6 +21,7 @@ from .action_service import (
 router = APIRouter(prefix="/api/player")
 
 _ACTIVE_ACTION_STATUSES = {
+    "awaiting_player_consent",
     "queued",
     "batched",
     "resolving",
@@ -34,10 +35,10 @@ def _require_character(request: Request) -> dict:
     if not token:
         raise HTTPException(401, "Missing X-Room-Token")
     character = request.app.state.db.execute(
-        "SELECT character_id, room_id FROM characters WHERE player_token = %s",
+        "SELECT character_id, room_id, status FROM characters WHERE player_token = %s",
         (token,),
     ).fetchone()
-    if not character:
+    if not character or character.get("status") not in {"joined", "ready"}:
         raise HTTPException(403, "Invalid token")
     return dict(character)
 

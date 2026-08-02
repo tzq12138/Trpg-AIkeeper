@@ -1051,7 +1051,8 @@ async def admin_overview(request: Request):
         "SELECT COUNT(DISTINCT character_id) as c FROM characters WHERE status = 'active'"
     ).fetchone()["c"]
     pending_actions = conn.execute(
-        "SELECT COUNT(*) as c FROM actions WHERE status IN ('queued', 'resolving')"
+        "SELECT COUNT(*) as c FROM actions "
+        "WHERE status IN ('awaiting_player_consent', 'queued', 'resolving')"
     ).fetchone()["c"]
     return {
         "total_rooms": total_rooms,

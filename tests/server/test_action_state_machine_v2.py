@@ -12,6 +12,7 @@ def test_action_state_registry_matches_v2_contract():
     assert ACTION_STATUSES == {
         "analyzing",
         "awaiting_confirmation",
+        "awaiting_player_consent",
         "armed",
         "queued",
         "batched",
@@ -31,6 +32,8 @@ def test_action_state_registry_matches_v2_contract():
     [
         ("analyzing", "awaiting_confirmation"),
         ("awaiting_confirmation", "queued"),
+        ("awaiting_player_consent", "queued"),
+        ("awaiting_player_consent", "rejected"),
         ("armed", "queued"),
         ("armed", "completed"),
         ("queued", "batched"),
@@ -48,7 +51,7 @@ def test_allowed_state_transitions(current, next_status):
     assert is_allowed_transition(current, next_status) is True
 
 
-@pytest.mark.parametrize("status", ["armed", "queued", "batched"])
+@pytest.mark.parametrize("status", ["awaiting_player_consent", "armed", "queued", "batched"])
 def test_action_can_be_canceled_only_before_resolving(status):
     assert can_cancel_action(status) is True
 

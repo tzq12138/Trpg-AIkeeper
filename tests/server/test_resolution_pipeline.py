@@ -166,6 +166,8 @@ class FakeConn:
             return Rows([self.rooms.get(params[0])])
         if normalized.startswith("SELECT 1 FROM player_action_submissions"):
             return Rows([])
+        if normalized.startswith("SELECT COUNT(*) AS count FROM action_consents"):
+            return Rows([{"count": 0}])
         if normalized.startswith("SELECT * FROM character_runtime_state WHERE character_id"):
             return Rows([])  # No existing runtime state
         if normalized.startswith("INSERT INTO character_runtime_state"):

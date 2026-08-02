@@ -188,7 +188,13 @@ def test_reconnect_with_pending_actions(client, test_db):
 def test_reconnect_restores_all_nonterminal_v2_action_states(client, test_db):
     room_id, _, char_id, token = _setup_player(client, test_db)
     for index, status in enumerate(
-        ("armed", "awaiting_player_choice", "awaiting_host_exception", "sync_required"),
+        (
+            "armed",
+            "awaiting_player_consent",
+            "awaiting_player_choice",
+            "awaiting_host_exception",
+            "sync_required",
+        ),
         start=1,
     ):
         test_db.execute(
@@ -209,6 +215,7 @@ def test_reconnect_restores_all_nonterminal_v2_action_states(client, test_db):
     assert response.status_code == 200
     assert {action["status"] for action in response.json()["pending_actions"]} == {
         "armed",
+        "awaiting_player_consent",
         "awaiting_player_choice",
         "awaiting_host_exception",
         "sync_required",

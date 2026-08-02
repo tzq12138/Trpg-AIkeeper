@@ -110,7 +110,7 @@ class TurnManager:
         ).fetchall()
         submitted = set()
         turn_actions = self.conn.execute(
-            "SELECT character_id, action_id, intent_type, declared_intent FROM actions "
+            "SELECT character_id, action_id, intent_type, declared_intent, status FROM actions "
             "WHERE turn_id = %s AND status NOT IN ('rejected', 'canceled', 'timeout')",
             (turn["turn_id"],)
         ).fetchall()
@@ -137,7 +137,10 @@ class TurnManager:
             "encounter_id": turn.get("encounter_id"),
             "encounter_round": self._encounter_round(turn.get("encounter_id")),
             "players": players,
-            "all_submitted": all(p["submitted"] for p in players),
+            "all_submitted": (
+                all(p["submitted"] for p in players)
+                and not any(action["status"] == "awaiting_player_consent" for action in turn_actions)
+            ),
             "actions": [dict(a) for a in turn_actions],
         }
 
@@ -183,10 +186,25 @@ class TurnManager:
             return {"status": "already_submitted", "action_id": existing["action_id"]}
         action_id = str(uuid.uuid4())[:12]
         declared = f"本回合跳过: {policy}"
+        safe_params = {
+            "allowedEffects": ["defend", "follow", "safe_withdraw"],
+            "irreversible": False,
+            "resourceCost": 0,
+            "revealsSecrets": False,
+        }
         self.conn.execute(
-            "INSERT INTO actions (action_id, room_id, character_id, turn_id, intent_type, declared_intent, status) "
-            "VALUES (%s, %s, %s, %s, 'system_skip', %s, 'resolved')",
-            (action_id, room_id, character_id, turn_id, declared),
+            "INSERT INTO actions "
+            "(action_id, room_id, character_id, turn_id, intent_type, declared_intent, params, status, result) "
+            "VALUES (%s, %s, %s, %s, 'system_skip', %s, %s, 'resolved', %s)",
+            (
+                action_id,
+                room_id,
+                character_id,
+                turn_id,
+                declared,
+                json.dumps(safe_params, ensure_ascii=False),
+                json.dumps({"outcome": "safe_hold"}, ensure_ascii=False),
+            ),
         )
         self.conn.commit()
         return {"status": "skipped", "action_id": action_id, "policy": policy}

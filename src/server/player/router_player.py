@@ -221,13 +221,41 @@ async def restore_session(request: Request, character_id: str):
     if not account:
         raise HTTPException(401, "Login required")
     conn = request.app.state.db
-    char = conn.execute(
-        "SELECT * FROM characters WHERE character_id = %s", (character_id,)
-    ).fetchone()
-    if not char:
-        raise HTTPException(404, "Character not found")
-    if char.get("account_id") != account["account_id"]:
-        raise HTTPException(403, "Not your character")
+    with conn.transaction() as tx:
+        char = tx.execute(
+            "SELECT * FROM characters WHERE character_id = %s FOR UPDATE", (character_id,)
+        ).fetchone()
+        if not char:
+            raise HTTPException(404, "Character not found")
+        if char.get("account_id") != account["account_id"]:
+            raise HTTPException(403, "Not your character")
+        if char.get("status") == "left":
+            raise HTTPException(409, detail={"code": "character_session_not_restorable"})
+        if char.get("status") == "protected_inactive":
+            rotated_token = str(uuid.uuid4())
+            tx.execute(
+                "UPDATE characters SET status = 'joined', player_token = %s "
+                "WHERE character_id = %s",
+                (rotated_token, character_id),
+            )
+            tx.execute(
+                "INSERT INTO events (room_id, event_type, audience, payload) "
+                "VALUES (%s, 'character_control_recovered', 'system', %s)",
+                (
+                    char["room_id"],
+                    json.dumps(
+                        {
+                            "actor": "owning_account",
+                            "characterId": character_id,
+                            "result": "joined",
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+            char = dict(char)
+            char["status"] = "joined"
+            char["player_token"] = rotated_token
     return {
         "character_id": char["character_id"],
         "room_id": char["room_id"],

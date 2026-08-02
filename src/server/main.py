@@ -44,6 +44,7 @@ from .player.router_actions_v2 import router as player_actions_v2_router
 from .player.router_collaboration_contracts import router as collaboration_contracts_router
 from .player.router_player_settings import router as player_settings_router
 from .player.router_action_reviews import router as player_action_reviews_router
+from .player.router_action_consents import router as player_action_consents_router
 from .player.router_campaign_v2 import (
     router as player_campaign_v2_router,
     host_router as campaign_host_v2_router,
@@ -390,6 +391,7 @@ app.include_router(player_actions_v2_router)
 app.include_router(collaboration_contracts_router)
 app.include_router(player_settings_router)
 app.include_router(player_action_reviews_router)
+app.include_router(player_action_consents_router)
 app.include_router(player_campaign_v2_router)
 app.include_router(campaign_host_v2_router)
 app.include_router(campaign_evidence_v2_router)

@@ -11,6 +11,7 @@ WS_SEND_TIMEOUT_SECONDS = 1.0
 FULL_SNAPSHOT_THRESHOLD = 100
 NONTERMINAL_ACTION_STATUSES = (
     "armed",
+    "awaiting_player_consent",
     "queued",
     "batched",
     "resolving",

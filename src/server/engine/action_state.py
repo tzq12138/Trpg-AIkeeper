@@ -1,6 +1,7 @@
 ACTION_STATUSES = {
     "analyzing",
     "awaiting_confirmation",
+    "awaiting_player_consent",
     "armed",
     "queued",
     "batched",
@@ -18,6 +19,7 @@ _TERMINAL_STATUSES = {"completed", "rejected", "canceled", "timeout"}
 _TRANSITIONS = {
     "analyzing": {"awaiting_confirmation", "canceled", "timeout"},
     "awaiting_confirmation": {"queued", "canceled", "timeout", "sync_required"},
+    "awaiting_player_consent": {"queued", "rejected", "canceled", "timeout"},
     "armed": {"queued", "completed", "canceled", "timeout"},
     "queued": {"batched", "resolving", "canceled", "rejected", "timeout", "sync_required"},
     "batched": {"resolving", "awaiting_host_exception", "canceled", "rejected", "timeout", "sync_required"},
@@ -51,7 +53,7 @@ def is_allowed_transition(current: str, next_status: str) -> bool:
 
 
 def can_cancel_action(status: str) -> bool:
-    return status in {"queued", "batched", "armed"}
+    return status in {"awaiting_player_consent", "queued", "batched", "armed"}
 
 
 def is_terminal_status(status: str) -> bool:

@@ -83,6 +83,9 @@ _ALLOWED_INTENT_PARAMS = {
     "policyOutcome",
     "policyReason",
     "timeoutChoice",
+    "pvpEffect",
+    "groupDecisionKind",
+    "affectedCharacterIds",
 }
 _COMPOSITE_STEP_INTENT_TYPES = {
     "dialogue",
@@ -1255,8 +1258,26 @@ def confirm_action_draft(
             if isinstance(director_plan, dict)
             else None
         ) or "ambiguous_without_ai"
+        from ..engine.action_consent import (
+            consent_requirements_for_action,
+            insert_action_consents,
+            requirements_need_response,
+        )
+
+        consent_requirements = consent_requirements_for_action(
+            tx,
+            room_id=character["room_id"],
+            actor_character_id=character["character_id"],
+            intent_type=draft["intent_type"],
+            params=action_params,
+        )
         action_id = str(uuid.uuid4())
-        initial_status = "armed" if is_prepared_action else "queued"
+        if is_prepared_action:
+            initial_status = "armed"
+        elif requirements_need_response(consent_requirements):
+            initial_status = "awaiting_player_consent"
+        else:
+            initial_status = "queued"
         tx.execute(
             "INSERT INTO actions (action_id, room_id, character_id, draft_id, idempotency_key, "
             "revision_number, turn_id, intent_type, declared_intent, params, status) "
@@ -1282,6 +1303,13 @@ def confirm_action_draft(
         tx.execute(
             "INSERT INTO action_status_events (action_id, status, metadata) VALUES (%s, %s, %s)",
             (action_id, initial_status, json.dumps({"draft_id": draft_id}, ensure_ascii=False)),
+        )
+        insert_action_consents(
+            tx,
+            action_id=action_id,
+            room_id=character["room_id"],
+            requester_character_id=character["character_id"],
+            requirements=consent_requirements,
         )
         if is_prepared_action:
             try:
@@ -1327,7 +1355,11 @@ def confirm_action_draft(
                     ),
                 ),
             )
-        if not collaboration_contract_id and analysis.get("resolution_route") == "host_exception":
+        if (
+            initial_status == "queued"
+            and not collaboration_contract_id
+            and analysis.get("resolution_route") == "host_exception"
+        ):
             tx.execute(
                 "UPDATE actions SET status = 'awaiting_host_exception' WHERE action_id = %s",
                 (action_id,),
@@ -1394,6 +1426,12 @@ def _stage_collaboration_action(tx, *, contract_id: str, room_id: str, action_id
         or contract["status"] != "accepted"
     ):
         raise ActionDraftError(409, {"code": "collaboration_contract_not_active"})
+    action = tx.execute(
+        "SELECT status FROM actions WHERE action_id = %s FOR UPDATE",
+        (action_id,),
+    ).fetchone()
+    if action and action["status"] == "awaiting_player_consent":
+        return
     cursor = tx.execute(
         "UPDATE actions SET status = 'batched' WHERE action_id = %s AND status = 'queued'",
         (action_id,),
@@ -1441,6 +1479,29 @@ def _stage_collaboration_action(tx, *, contract_id: str, room_id: str, action_id
                 ),
             ),
         )
+
+
+def stage_collaboration_action_after_consent(conn, action_id: str) -> str:
+    """Move a newly consented collaboration action into its existing batch flow."""
+
+    with conn.transaction() as tx:
+        action = tx.execute(
+            "SELECT room_id, status, params FROM actions WHERE action_id = %s FOR UPDATE",
+            (action_id,),
+        ).fetchone()
+        if not action:
+            raise ActionDraftError(404, {"code": "action_not_found"})
+        params = _json_value(action.get("params")) or {}
+        contract_id = params.get("collaborationContractId")
+        if action["status"] != "queued" or not isinstance(contract_id, str) or not contract_id:
+            return str(action["status"])
+        _stage_collaboration_action(
+            tx,
+            contract_id=contract_id,
+            room_id=action["room_id"],
+            action_id=action_id,
+        )
+    return "batched"
 
 
 def _bind_and_order_collaboration_dependencies(tx, rows: list[dict]) -> list[str]:
@@ -1529,6 +1590,11 @@ def cancel_action(conn, character_id: str, action_id: str) -> ActionReceiptV2:
                 (action_id,),
             )
             tx.execute(
+                "UPDATE action_consents SET decision = 'expired', responded_at = NOW() "
+                "WHERE action_id = %s AND decision = 'pending'",
+                (action_id,),
+            )
+            tx.execute(
                 "UPDATE prepared_rule_actions SET status = 'canceled' "
                 "WHERE action_id = %s AND status = 'armed'",
                 (action_id,),
@@ -1561,14 +1627,20 @@ def _cancel_collaboration_batch(tx, contract_id: str) -> None:
     rows = tx.execute(
         "SELECT actions.action_id FROM collaboration_contract_drafts AS links "
         "JOIN actions ON actions.draft_id = links.draft_id "
-        "WHERE links.contract_id = %s AND actions.status = 'batched' FOR UPDATE",
+        "WHERE links.contract_id = %s "
+        "AND actions.status IN ('batched', 'awaiting_player_consent') FOR UPDATE",
         (contract_id,),
     ).fetchall()
     for row in rows:
         linked_action_id = row["action_id"]
         tx.execute(
             "UPDATE actions SET status = 'canceled', canceled_at = NOW() "
-            "WHERE action_id = %s AND status = 'batched'",
+            "WHERE action_id = %s AND status IN ('batched', 'awaiting_player_consent')",
+            (linked_action_id,),
+        )
+        tx.execute(
+            "UPDATE action_consents SET decision = 'expired', responded_at = NOW() "
+            "WHERE action_id = %s AND decision = 'pending'",
             (linked_action_id,),
         )
         tx.execute(
@@ -1705,7 +1777,7 @@ def build_action_receipt(conn, character_id: str, action_id: str) -> ActionRecei
 def _can_cancel_action_record(action: dict) -> bool:
     if action.get("turn_mode") == "combat" and action.get("turn_status") in {"resolving", "blocked"}:
         return False
-    if action.get("status") in ("queued", "batched", "armed"):
+    if action.get("status") in ("awaiting_player_consent", "queued", "batched", "armed"):
         return True
     if action.get("status") != "awaiting_host_exception":
         return False

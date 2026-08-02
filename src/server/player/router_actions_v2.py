@@ -300,7 +300,7 @@ def _require_character(request: Request) -> dict:
         "SELECT * FROM characters WHERE player_token = %s",
         (token,),
     ).fetchone()
-    if not character:
+    if not character or character.get("status") not in {"joined", "ready"}:
         raise HTTPException(403, "Invalid token")
     return dict(character)
 

@@ -35,6 +35,36 @@ def test_turn_manager_parses_persisted_json_values():
     }
 
 
+def test_pending_affected_player_consent_blocks_turn_resolution(test_db):
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token, status) "
+        "VALUES ('consent-turn-room', 'owner', 'active')"
+    )
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token, status) "
+        "VALUES ('consent-turn-character', 'consent-turn-room', 'Player', 'player-token', 'joined')"
+    )
+    test_db.execute(
+        "INSERT INTO actions "
+        "(action_id, room_id, character_id, intent_type, declared_intent, status) "
+        "VALUES ('consent-turn-action', 'consent-turn-room', 'consent-turn-character', "
+        "'combat_action', '等待受影响玩家同意', 'awaiting_player_consent')"
+    )
+    turns = TurnManager(test_db)
+    turn = turns.ensure_current_turn("consent-turn-room")
+    test_db.execute(
+        "UPDATE actions SET turn_id = %s WHERE action_id = 'consent-turn-action'",
+        (turn["turn_id"],),
+    )
+    test_db.commit()
+
+    snapshot = turns.get_turn_snapshot("consent-turn-room")
+
+    assert snapshot["players"][0]["submitted"] is True
+    assert snapshot["all_submitted"] is False
+    assert turns.all_submitted("consent-turn-room") is False
+
+
 def test_active_combat_creates_a_declaration_round_with_encounter_context(test_db):
     test_db.execute(
         "INSERT INTO rooms (room_id, owner_token, status) VALUES ('combat-round-room', 'owner', 'active')"

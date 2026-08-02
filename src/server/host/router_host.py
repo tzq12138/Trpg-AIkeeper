@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request, HTTPException
 from ..models import EngineEvent, HostPublicSceneTimeUpdate, RevealTransaction
 from .host_store import HostStore, HOST_VISIBLE_EVENTS, PRIVATE_EVENTS
@@ -880,7 +881,10 @@ async def reject_character(request: Request, room_id: str, character_id: str):
         raise HTTPException(404, "Character not found")
     if char.get("status") != "pending_approval":
         raise HTTPException(409, "Character is not pending approval")
-    conn.execute("UPDATE characters SET status = 'left' WHERE character_id = %s", (character_id,))
+    conn.execute(
+        "UPDATE characters SET status = 'left', player_token = %s WHERE character_id = %s",
+        (str(uuid.uuid4()), character_id),
+    )
     conn.commit()
 
     # Broadcast updated lobby snapshot
@@ -895,6 +899,56 @@ async def reject_character(request: Request, room_id: str, character_id: str):
         logger.warning("Failed to broadcast lobby snapshot after reject", exc_info=True)
 
     return {"status": "rejected", "character_id": character_id}
+
+
+@router.post("/{room_id}/players/{character_id}/remove")
+async def remove_active_character(
+    request: Request,
+    room_id: str,
+    character_id: str,
+    body: dict,
+):
+    """Terminate current access without transferring character ownership or data."""
+
+    _verify_owner(request, room_id)
+    reason = str(body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, detail={"code": "removal_reason_required"})
+    conn = request.app.state.db
+    with conn.transaction() as tx:
+        character = tx.execute(
+            "SELECT character_id, status FROM characters "
+            "WHERE character_id = %s AND room_id = %s FOR UPDATE",
+            (character_id, room_id),
+        ).fetchone()
+        if not character:
+            raise HTTPException(404, detail={"code": "character_not_found"})
+        if character["status"] == "protected_inactive":
+            return {"characterId": character_id, "status": "protected_inactive"}
+        if character["status"] not in {"joined", "ready"}:
+            raise HTTPException(409, detail={"code": "character_not_active"})
+        tx.execute(
+            "UPDATE characters SET status = 'protected_inactive', player_token = %s "
+            "WHERE character_id = %s",
+            (str(uuid.uuid4()), character_id),
+        )
+        tx.execute(
+            "INSERT INTO events (room_id, event_type, audience, payload) "
+            "VALUES (%s, 'character_access_terminated', 'system', %s)",
+            (
+                room_id,
+                json.dumps(
+                    {
+                        "actor": "host",
+                        "characterId": character_id,
+                        "reason": reason[:500],
+                        "result": "protected_inactive",
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+    return {"characterId": character_id, "status": "protected_inactive"}
 
 
 # ── Host Map Supervision ──
