@@ -21,6 +21,7 @@ _MOVE_WORDS = ("移动", "前往", "走到", "走向", "跑到", "前去", "赶�
 _RESOURCE_WORDS = ("使用", "消耗", "喝下", "点燃", "丢弃")
 _ROLL_WORDS = ("检定", "掷骰", "投骰", "判定")
 _SECRET_WORDS = ("秘密", "偷偷", "瞒着", "私下")
+_INNER_THOUGHT_WORDS = ("心里", "内心", "心想", "默想")
 _LOOK_WORDS = ("看看", "观察", "环顾", "阅读", "查阅", "翻查", "检查", "询问", "交谈", "搜索")
 _LUCK_SPEND_WORDS = ("花幸运", "消耗幸运", "使用幸运", "幸运改")
 _PUSHED_ROLL_WORDS = ("孤注一掷", "重投", "重新检定", "再掷一次")
@@ -77,6 +78,11 @@ _ALLOWED_INTENT_PARAMS = {
     "justificationText",
     "triggerKind",
     "reactionKind",
+    "nonMechanical",
+    "policyDisclosures",
+    "policyOutcome",
+    "policyReason",
+    "timeoutChoice",
 }
 _COMPOSITE_STEP_INTENT_TYPES = {
     "dialogue",
@@ -149,9 +155,27 @@ def analyze_action_draft(body: ActionDraftAnalyzeRequest) -> ActionDraftDTO:
     confidence = 0.68
     summary_prefix = "你想执行一项需要确认的行动"
     prepared_params: dict = {}
+    is_inner_thought = any(word in text for word in _INNER_THOUGHT_WORDS) and not any(
+        word in text
+        for word in (
+            *_ATTACK_WORDS,
+            *_MOVE_WORDS,
+            *_RESOURCE_WORDS,
+            *_ROLL_WORDS,
+            *_LUCK_SPEND_WORDS,
+            *_PUSHED_ROLL_WORDS,
+        )
+    )
 
     inferred_prepared_params = _infer_prepared_action_params(text)
-    if body.intent_type == "prepared_action" or inferred_prepared_params:
+    if is_inner_thought:
+        intent_type = "dialogue"
+        risk = "low"
+        requirements = []
+        visibility = "private"
+        confidence = 0.95
+        summary_prefix = "你在表达仅自己可见的内心感受，不产生机械效果"
+    elif body.intent_type == "prepared_action" or inferred_prepared_params:
         intent_type = "prepared_action"
         prepared_params = _sanitize_prepared_action_params(body.params) or inferred_prepared_params
         risk = "high"
@@ -248,12 +272,15 @@ def analyze_action_draft(body: ActionDraftAnalyzeRequest) -> ActionDraftDTO:
         requirements = []
         resolution_route = "host_exception"
 
-    return ActionDraftDTO(
+    params = prepared_params if intent_type == "prepared_action" else _sanitize_intent_params(body.params)
+    if is_inner_thought:
+        params["nonMechanical"] = True
+    draft = ActionDraftDTO(
         base_state_version=body.base_state_version,
         status="analyzing" if clarification_required else "awaiting_confirmation",
         intent_type=intent_type,
         declared_intent=text,
-        params=(prepared_params if intent_type == "prepared_action" else _sanitize_intent_params(body.params)),
+        params=params,
         understanding_summary=f"{summary_prefix}：{text}",
         risk=risk,
         intent_contract=intent_contract,
@@ -272,6 +299,52 @@ def analyze_action_draft(body: ActionDraftAnalyzeRequest) -> ActionDraftDTO:
         adjudication_stage=(
             "player_clarification_required" if clarification_required else "local_analysis"
         ),
+    )
+    return apply_engine_action_policy(draft)
+
+
+def apply_engine_action_policy(
+    draft: ActionDraftDTO,
+    *,
+    current_state: dict[str, Any] | None = None,
+    risk_contract: dict[str, Any] | None = None,
+) -> ActionDraftDTO:
+    from ..engine.action_policy import evaluate_action_policy
+
+    decision = evaluate_action_policy(
+        {
+            "intent_type": draft.intent_type,
+            "declared_intent": draft.declared_intent,
+            "visibility": draft.visibility,
+            "target": draft.intent_contract.target or draft.movement_target,
+            "params": draft.params,
+            "ambiguities": draft.intent_contract.ambiguities,
+            "ambiguity_scope": draft.params.get("ambiguityScope"),
+            "candidate_interpretations": draft.candidate_interpretations,
+        },
+        current_state=current_state or {},
+        risk_contract=risk_contract or {},
+    )
+    params = dict(draft.params)
+    if decision.outcome == "allow":
+        if not decision.disclosures:
+            return draft
+        params["policyDisclosures"] = decision.disclosures
+        return draft.model_copy(update={"params": params})
+    params["policyOutcome"] = decision.outcome
+    if decision.reason_code:
+        params["policyReason"] = decision.reason_code
+    return draft.model_copy(
+        update={
+            "status": "analyzing",
+            "params": params,
+            "resource_impacts": [],
+            "confirmation_requirements": [],
+            "requires_confirmation": False,
+            "resolution_route": "local",
+            "candidate_interpretations": decision.candidates[:3],
+            "adjudication_stage": "player_clarification_required",
+        }
     )
 
 
@@ -974,6 +1047,56 @@ def cancel_action_draft(conn, character: dict, draft_id: str) -> None:
         raise ActionDraftError(409, {"code": "draft_not_cancelable"})
 
 
+def _expire_action_draft_if_needed(
+    conn,
+    character_id: str,
+    draft_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT intent_type, declared_intent, params, analysis FROM action_drafts "
+        "WHERE draft_id = %s AND character_id = %s "
+        "AND status IN ('analyzing', 'awaiting_confirmation') "
+        "AND expires_at IS NOT NULL AND expires_at <= NOW()",
+        (draft_id, character_id),
+    ).fetchone()
+    if not row:
+        return None
+    from ..engine.action_policy import evaluate_action_policy
+
+    params = _json_value(row.get("params")) or {}
+    phase = (
+        "combat"
+        if row["intent_type"] in {"combat_action", "chase_action"}
+        else "investigation"
+    )
+    decision = evaluate_action_policy(
+        {
+            "intent_type": row["intent_type"],
+            "declared_intent": row.get("declared_intent") or "",
+            "params": params,
+        },
+        current_state={"phase": phase},
+        risk_contract={},
+        timed_out=True,
+    )
+    analysis = _json_value(row.get("analysis")) or {}
+    analysis["timeout_safe_effect"] = decision.safe_effect
+    with conn.transaction() as tx:
+        cursor = tx.execute(
+            "UPDATE action_drafts SET status = 'timeout', analysis = %s, updated_at = NOW() "
+            "WHERE draft_id = %s AND character_id = %s "
+            "AND status IN ('analyzing', 'awaiting_confirmation') "
+            "AND expires_at IS NOT NULL AND expires_at <= NOW()",
+            (json.dumps(analysis, ensure_ascii=False), draft_id, character_id),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return {
+        "code": "draft_timed_out",
+        "safe_effect": decision.safe_effect,
+    }
+
+
 def confirm_action_draft(
     conn,
     character: dict,
@@ -991,6 +1114,14 @@ def confirm_action_draft(
         if existing.get("draft_id") != draft_id:
             raise ActionDraftError(409, {"code": "idempotency_key_reused"})
         return build_action_receipt(conn, character["character_id"], existing["action_id"])
+
+    timeout_detail = _expire_action_draft_if_needed(
+        conn,
+        character["character_id"],
+        draft_id,
+    )
+    if timeout_detail:
+        raise ActionDraftError(409, timeout_detail)
 
     with conn.transaction() as tx:
         tx.execute(
@@ -1017,6 +1148,30 @@ def confirm_action_draft(
         if draft["status"] != "awaiting_confirmation":
             raise ActionDraftError(409, {"code": "draft_not_confirmable"})
         analysis = _json_value(draft.get("analysis")) or {}
+        intent_contract = _json_value(analysis.get("intent_contract")) or {}
+        from ..engine.action_policy import evaluate_action_policy
+
+        policy = evaluate_action_policy(
+            {
+                "intent_type": draft["intent_type"],
+                "declared_intent": draft.get("declared_intent") or "",
+                "visibility": analysis.get("visibility") or intent_contract.get("visibility"),
+                "target": intent_contract.get("target"),
+                "params": _json_value(draft.get("params")) or {},
+                "ambiguities": intent_contract.get("ambiguities") or [],
+                "candidate_interpretations": analysis.get("candidate_interpretations") or [],
+            },
+            current_state={},
+            risk_contract={},
+        )
+        if policy.outcome != "allow":
+            raise ActionDraftError(
+                409,
+                {
+                    "code": "action_policy_rejected",
+                    "reason": policy.reason_code,
+                },
+            )
         required = analysis.get("confirmation_requirements") or []
         missing = [item for item in required if item not in confirmations]
         if missing:

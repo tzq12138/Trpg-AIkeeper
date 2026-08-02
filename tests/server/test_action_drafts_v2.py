@@ -1284,7 +1284,10 @@ def test_configured_ai_analysis_is_structured_and_cannot_change_player_text(
     assert response.status_code == 200
     draft = response.json()
     assert draft["analysis_source"] == "configured_provider"
-    assert draft["resolution_route"] == "ai"
+    assert draft["resolution_route"] == "local"
+    assert draft["status"] == "analyzing"
+    assert draft["adjudication_stage"] == "player_clarification_required"
+    assert draft["candidate_interpretations"][0]["visibility"] == "public"
     assert draft["declared_intent"] == "我悄悄前往图书馆"
     assert draft["movement_target"] == "图书馆"
     assert draft["citations"] == [

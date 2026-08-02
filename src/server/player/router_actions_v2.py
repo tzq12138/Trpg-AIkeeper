@@ -47,6 +47,7 @@ from ..scenario.solo_runtime import (
 from .action_service import (
     ActionDraftError,
     apply_ai_action_analysis,
+    apply_engine_action_policy,
     apply_room_runtime_policy,
     analyze_action_draft,
     cancel_action,
@@ -944,7 +945,9 @@ async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
     draft = _apply_visible_solo_black_bear_combat(
         request.app.state.db, character, draft,
     )
-    gateway = getattr(request.app.state, "gateway", None)
+    draft = apply_engine_action_policy(draft)
+    policy_blocks_ai = draft.params.get("policyOutcome") in {"clarify", "reject"}
+    gateway = None if policy_blocks_ai else getattr(request.app.state, "gateway", None)
     if gateway and hasattr(gateway, "analyze_director_action"):
         director_context = build_director_context(
             request.app.state.db,
@@ -1073,6 +1076,7 @@ async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
         character["room_id"],
         draft,
     )
+    draft = apply_engine_action_policy(draft)
     if body.ephemeral:
         return draft
     persisted = persist_action_draft(request.app.state.db, character, draft)
