@@ -78,6 +78,12 @@ def consume_prepared_actions_for_rule_event(
 
     triggered: list[dict[str, str]] = []
     with conn.transaction() as tx:
+        from ..campaign_archive import CampaignReadOnlyError, ensure_campaign_writable
+
+        try:
+            ensure_campaign_writable(tx, room_id)
+        except CampaignReadOnlyError:
+            return []
         source_action = tx.execute(
             "SELECT action_id, room_id, params, status FROM actions "
             "WHERE action_id = %s FOR UPDATE",
@@ -101,6 +107,7 @@ def consume_prepared_actions_for_rule_event(
             "FROM prepared_rule_actions AS prepared "
             "JOIN actions ON actions.action_id = prepared.action_id "
             "WHERE prepared.room_id = %s AND prepared.status = 'armed' "
+            "AND actions.status = 'armed' "
             "AND prepared.trigger_kind = %s AND prepared.expires_at > NOW() "
             "ORDER BY prepared.created_at, prepared.action_id FOR UPDATE",
             (room_id, rule_event.kind),
@@ -224,11 +231,17 @@ def complete_triggered_prepared_reaction(
 ) -> bool:
     """Close the source preparation after its internally queued reaction ends."""
     with conn.transaction() as tx:
+        from ..campaign_archive import CampaignReadOnlyError, ensure_campaign_writable
+
         reaction = tx.execute(
             "SELECT room_id, params FROM actions WHERE action_id = %s FOR UPDATE",
             (reaction_action_id,),
         ).fetchone()
         if not reaction:
+            return False
+        try:
+            ensure_campaign_writable(tx, reaction["room_id"])
+        except CampaignReadOnlyError:
             return False
         params = _json_value(reaction.get("params"))
         prepared_action_id = params.get("preparedActionId") if isinstance(params, dict) else None

@@ -569,6 +569,7 @@ def resolve_pending_reaction(
                 from_node_id=str((current_scene or {}).get("node_id") or ""),
                 target_node_id=outcome_target,
                 transaction=tx,
+                ending_type="defeat" if outcome_target == "193" else "mixed",
             )
             result["soloTransition"] = solo_transition
             if con_check:

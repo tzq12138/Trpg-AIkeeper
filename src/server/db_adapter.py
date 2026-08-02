@@ -448,6 +448,38 @@ CREATE TABLE IF NOT EXISTS events (
     issued_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE OR REPLACE FUNCTION protect_completed_campaign_event_insert()
+RETURNS TRIGGER AS $$
+DECLARE
+    room_status TEXT;
+BEGIN
+    SELECT status INTO room_status
+    FROM rooms
+    WHERE room_id = NEW.room_id
+    FOR UPDATE;
+    IF room_status IN ('completed', 'archived')
+       AND NEW.event_type NOT IN (
+           's2c_campaign_ended',
+           's2c_action_completed',
+           's2c_ai_stage_changed',
+           's2c_narration_completed',
+           's2c_public_observation',
+           's2c_reveal_transaction',
+           's2c_scene_sync',
+           's2c_state_patch'
+       ) THEN
+        RAISE EXCEPTION 'campaign_completed_read_only'
+            USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_completed_campaign_event_insert ON events;
+CREATE TRIGGER trg_completed_campaign_event_insert
+    BEFORE INSERT ON events
+    FOR EACH ROW EXECUTE FUNCTION protect_completed_campaign_event_insert();
+
 CREATE TABLE IF NOT EXISTS fact_reveals (
     reveal_id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
@@ -943,6 +975,27 @@ CREATE TABLE IF NOT EXISTS campaign_archives (
     character_arcs JSONB NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+CREATE OR REPLACE FUNCTION protect_campaign_archive_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'UPDATE'
+       AND current_setting('aikeeper.archive_redaction', TRUE) = 'on' THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE'
+       AND current_setting('aikeeper.archive_purge', TRUE) = 'on' THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'campaign_archive_immutable'
+        USING ERRCODE = '55000';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_campaign_archives_immutable ON campaign_archives;
+CREATE TRIGGER trg_campaign_archives_immutable
+    BEFORE UPDATE OR DELETE ON campaign_archives
+    FOR EACH ROW EXECUTE FUNCTION protect_campaign_archive_mutation();
 
 CREATE TABLE IF NOT EXISTS clues (
     clue_id TEXT PRIMARY KEY,
@@ -1559,6 +1612,74 @@ WHERE template.scenario_id = scenario.scenario_id
       COALESCE(template.attributes, '{}'::jsonb) ? 'str'
       OR COALESCE(template.attributes, '{}'::jsonb) ? 'STR'
   );
+
+CREATE OR REPLACE FUNCTION protect_completed_room_write()
+RETURNS TRIGGER AS $$
+DECLARE
+    room_status TEXT;
+BEGIN
+    SELECT status INTO room_status
+    FROM rooms
+    WHERE room_id = NEW.room_id
+    FOR UPDATE;
+    IF room_status IN ('completed', 'archived') THEN
+        RAISE EXCEPTION 'campaign_completed_read_only'
+            USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_clues_completed_read_only ON clues;
+CREATE TRIGGER trg_clues_completed_read_only
+    BEFORE INSERT OR UPDATE ON clues
+    FOR EACH ROW EXECUTE FUNCTION protect_completed_room_write();
+DROP TRIGGER IF EXISTS trg_room_scene_completed_read_only ON room_scene_state;
+CREATE TRIGGER trg_room_scene_completed_read_only
+    BEFORE INSERT OR UPDATE ON room_scene_state
+    FOR EACH ROW EXECUTE FUNCTION protect_completed_room_write();
+DROP TRIGGER IF EXISTS trg_encounters_completed_read_only ON encounters;
+CREATE TRIGGER trg_encounters_completed_read_only
+    BEFORE INSERT OR UPDATE ON encounters
+    FOR EACH ROW EXECUTE FUNCTION protect_completed_room_write();
+DROP TRIGGER IF EXISTS trg_encounter_reactions_completed_read_only
+    ON encounter_pending_reactions;
+CREATE TRIGGER trg_encounter_reactions_completed_read_only
+    BEFORE INSERT OR UPDATE ON encounter_pending_reactions
+    FOR EACH ROW EXECUTE FUNCTION protect_completed_room_write();
+DROP TRIGGER IF EXISTS trg_room_map_completed_read_only ON room_map_state;
+CREATE TRIGGER trg_room_map_completed_read_only
+    BEFORE INSERT OR UPDATE ON room_map_state
+    FOR EACH ROW EXECUTE FUNCTION protect_completed_room_write();
+DROP TRIGGER IF EXISTS trg_character_map_completed_read_only
+    ON character_map_positions;
+CREATE TRIGGER trg_character_map_completed_read_only
+    BEFORE INSERT OR UPDATE ON character_map_positions
+    FOR EACH ROW EXECUTE FUNCTION protect_completed_room_write();
+
+CREATE OR REPLACE FUNCTION protect_completed_encounter_participant_write()
+RETURNS TRIGGER AS $$
+DECLARE
+    room_status TEXT;
+BEGIN
+    SELECT rooms.status INTO room_status
+    FROM encounters
+    JOIN rooms ON rooms.room_id = encounters.room_id
+    WHERE encounters.encounter_id = NEW.encounter_id
+    FOR UPDATE OF rooms;
+    IF room_status IN ('completed', 'archived') THEN
+        RAISE EXCEPTION 'campaign_completed_read_only'
+            USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_encounter_participants_completed_read_only
+    ON encounter_participants;
+CREATE TRIGGER trg_encounter_participants_completed_read_only
+    BEFORE INSERT OR UPDATE ON encounter_participants
+    FOR EACH ROW EXECUTE FUNCTION protect_completed_encounter_participant_write();
 """
 
 

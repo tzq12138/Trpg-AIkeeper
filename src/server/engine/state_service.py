@@ -18,6 +18,7 @@ from ..models import (
     StateChangeSet, CharacterMutationItem, SceneChange,
 )
 from ..events.event_log import EventLog
+from ..campaign_archive import ensure_campaign_writable
 from .projection import ProjectionDispatcher
 
 logger = logging.getLogger(__name__)
@@ -358,6 +359,20 @@ class StateService:
                 event_log=EventLog(transaction),
             )
             return worker._apply_change(room_id, actor, changes, reason, commit=False)
+        if hasattr(self.conn, "transaction"):
+            with self.conn.transaction() as tx:
+                worker = StateService(
+                    tx,
+                    dispatcher=self.dispatcher,
+                    event_log=EventLog(tx),
+                )
+                return worker._apply_change(
+                    room_id,
+                    actor,
+                    changes,
+                    reason,
+                    commit=False,
+                )
         return self._apply_change(room_id, actor, changes, reason, commit=True)
 
     def _apply_change(
@@ -462,9 +477,38 @@ class StateService:
         }
 
     def initialize_character_state(
-        self, character_id: str, room_id: str, *, commit: bool = True,
+        self,
+        character_id: str,
+        room_id: str,
+        *,
+        commit: bool = True,
+        transaction=None,
     ) -> dict[str, Any] | None:
         """Create runtime state + profile from characters.xlsx_data. Idempotent."""
+        if transaction is not None:
+            worker = StateService(
+                transaction,
+                dispatcher=self.dispatcher,
+                event_log=EventLog(transaction),
+            )
+            return worker.initialize_character_state(
+                character_id,
+                room_id,
+                commit=False,
+            )
+        if commit and hasattr(self.conn, "transaction"):
+            with self.conn.transaction() as tx:
+                worker = StateService(
+                    tx,
+                    dispatcher=self.dispatcher,
+                    event_log=EventLog(tx),
+                )
+                return worker.initialize_character_state(
+                    character_id,
+                    room_id,
+                    commit=False,
+                )
+
         existing = self.conn.execute(
             "SELECT * FROM character_runtime_state WHERE character_id = %s AND room_id = %s",
             (character_id, room_id),
@@ -479,6 +523,14 @@ class StateService:
         if not char:
             logger.warning("Character %s not found for state init", character_id)
             return None
+
+        ensure_campaign_writable(self.conn, room_id)
+        existing = self.conn.execute(
+            "SELECT * FROM character_runtime_state WHERE character_id = %s AND room_id = %s",
+            (character_id, room_id),
+        ).fetchone()
+        if existing:
+            return dict(existing)
 
         char = dict(char)
         xlsx = _json_val(char.get("xlsx_data")) or {}
@@ -547,10 +599,14 @@ class StateService:
 
     def _validate_room(self, room_id: str):
         room = self.conn.execute(
-            "SELECT status FROM rooms WHERE room_id = %s", (room_id,)
+            "SELECT status FROM rooms WHERE room_id = %s FOR UPDATE", (room_id,)
         ).fetchone()
         if not room:
             raise ValueError(f"Room {room_id} not found")
+        if str(room.get("status") or "") in {"completed", "archived"}:
+            from ..campaign_archive import CampaignReadOnlyError
+
+            raise CampaignReadOnlyError("campaign_completed_read_only")
 
     def _read_room_version(self, room_id: str) -> int:
         """Read current rooms.state_version without bumping."""

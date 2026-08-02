@@ -682,7 +682,7 @@ async def start_room(request: Request, room_id: str):
 
     # Create first turn
     tm = TurnManager(conn)
-    turn = tm._create_turn(room_id)
+    turn = tm.ensure_current_turn(room_id)
 
     # Fetch scenario_title for broadcast (must query after commit)
     scenario_title = ""

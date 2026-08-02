@@ -7,6 +7,17 @@ import uuid
 from typing import Any
 
 
+_PRESENTATION_ONLY_EVENT_TYPES = {
+    "s2c_action_completed",
+    "s2c_ai_stage_changed",
+    "s2c_narration_completed",
+    "s2c_public_observation",
+    "s2c_reveal_transaction",
+    "s2c_scene_sync",
+    "s2c_state_patch",
+}
+
+
 class ModuleCompilerError(ValueError):
     pass
 
@@ -361,7 +372,7 @@ def _build_runtime_package(
         str(item.get("content_item_id") or ""): item
         for item in items
     }
-    progression_edges = []
+    base_progression_edges = []
     for edge in edges:
         payload = {
             "from_content_item_id": edge["from_content_item_id"],
@@ -375,7 +386,57 @@ def _build_runtime_package(
         if from_item.get("item_type") == "scene" and to_item.get("item_type") == "scene":
             payload["from_scene_id"] = str(from_item.get("logical_key") or "")
             payload["to_scene_id"] = str(to_item.get("logical_key") or "")
-        progression_edges.append(payload)
+        base_progression_edges.append(payload)
+
+    alternative_paths = []
+    for path in _progression_contract(graph)["alternative_paths"]:
+        from_scene_id = str(
+            path.get("from_scene_id") or path.get("fromSceneId") or ""
+        ).strip()
+        to_scene_id = str(
+            path.get("target_scene_id") or path.get("targetSceneId") or ""
+        ).strip()
+        path_id = str(path.get("path_id") or path.get("id") or "").strip()
+        if not from_scene_id or not to_scene_id or not path_id:
+            continue
+        alternative_paths.append((from_scene_id, to_scene_id, path_id, path))
+
+    alternative_pairs = {
+        (from_scene_id, to_scene_id)
+        for from_scene_id, to_scene_id, _path_id, _path in alternative_paths
+    }
+    progression_edges = [
+        edge
+        for edge in base_progression_edges
+        if (
+            edge.get("relation_type") != "transitions_to"
+            or (edge.get("from_scene_id"), edge.get("to_scene_id"))
+            not in alternative_pairs
+        )
+    ]
+    for from_scene_id, to_scene_id, path_id, path in alternative_paths:
+        matching_edges = [
+            edge
+            for edge in base_progression_edges
+            if edge.get("relation_type") == "transitions_to"
+            and edge.get("from_scene_id") == from_scene_id
+            and edge.get("to_scene_id") == to_scene_id
+        ] or [{}]
+        for base_edge in matching_edges:
+            payload = {
+                **base_edge,
+                "from_scene_id": from_scene_id,
+                "to_scene_id": to_scene_id,
+                "relation_type": "transitions_to",
+                "conditions": [
+                    *_json_list(base_edge.get("conditions")),
+                    *_json_list(path.get("conditions")),
+                ],
+                "citation": _json_object(path.get("citation")),
+                "alternative_path_id": path_id,
+                "progression_id": str(path.get("progression_id") or ""),
+            }
+            progression_edges.append(payload)
     risk_contract = graph.get("risk_contract")
     return {
         "package_kind": "aikeeper_runtime_package",
@@ -426,6 +487,7 @@ def _build_runtime_package(
         "semantic_progression_rules": {
             "edges": progression_edges,
             "solo_adventure": _json_object(graph.get("solo_adventure")),
+            **_progression_contract(graph),
         },
         "citations": citations,
     }
@@ -474,8 +536,9 @@ def _quality_exceptions(
     issues.extend(_branch_issues_from_graph(graph, items))
     issues.extend(_projection_diagnostic_issues(projection_diagnostics))
     issues.extend(_runtime_citation_issues(graph))
-    issues.extend(_ending_condition_issues(graph))
+    issues.extend(_ending_condition_issues(graph, items))
     issues.extend(_character_control_issues(graph, items))
+    issues.extend(_progression_contract_issues(graph, items, edges))
     for edge in edges:
         if not edge.get("from_content_item_id") or not edge.get("to_content_item_id"):
             issues.append(_issue(
@@ -590,6 +653,439 @@ def _character_control_issues(
                 waivable=False,
             ))
     return issues
+
+
+def _progression_contract(graph: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "critical_progression": _contract_list(
+            graph.get("critical_progression"),
+            graph.get("criticalProgression"),
+        ),
+        "alternative_paths": _contract_list(
+            graph.get("alternative_paths"),
+            graph.get("alternativePaths"),
+        ),
+        "recovery_nodes": _contract_list(
+            graph.get("recovery_nodes"),
+            graph.get("recoveryNodes"),
+        ),
+        "true_failure_conditions": _contract_list(
+            graph.get("true_failure_conditions"),
+            graph.get("trueFailureConditions"),
+        ),
+    }
+
+
+def _contract_list(primary: Any, fallback: Any) -> list[dict[str, Any]]:
+    value = primary if isinstance(primary, list) else fallback
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _progression_contract_issues(
+    graph: dict[str, Any],
+    items: list[dict[str, Any]],
+    edges: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    contract = _progression_contract(graph)
+    issues: list[dict[str, Any]] = []
+    known_scene_ids = {
+        str(scene.get("scene_id") or scene.get("id") or "").strip()
+        for scene in _json_list(graph.get("scenes"))
+        if isinstance(scene, dict)
+    }
+    known_scene_ids.update(
+        str(item.get("logical_key") or "").strip()
+        for item in items
+        if item.get("item_type") == "scene"
+    )
+    known_scene_ids.discard("")
+    known_clue_ids = {
+        str(clue.get("clue_id") or clue.get("id") or "").strip()
+        for clue in _json_list(graph.get("clues"))
+        if isinstance(clue, dict)
+    }
+    known_clue_ids.update(
+        str(item.get("logical_key") or "").strip()
+        for item in items
+        if item.get("item_type") == "clue"
+    )
+    known_clue_ids.discard("")
+    known_fact_ids = {
+        str(fact.get("fact_id") or fact.get("id") or "").strip()
+        for fact in _json_list(graph.get("facts"))
+        if isinstance(fact, dict)
+    }
+    truth = _json_object(graph.get("truth"))
+    truth_id = str(truth.get("fact_id") or truth.get("truth_id") or truth.get("id") or "").strip()
+    if truth_id:
+        known_fact_ids.add(truth_id)
+    known_fact_ids.update(
+        str(item.get("logical_key") or "").strip()
+        for item in items
+        if item.get("item_type") == "truth"
+    )
+    known_fact_ids.discard("")
+
+    semantic_scene_edges: set[tuple[str, str]] = set()
+    for scene in _json_list(graph.get("scenes")):
+        if not isinstance(scene, dict):
+            continue
+        from_scene_id = str(
+            scene.get("scene_id") or scene.get("id") or ""
+        ).strip()
+        for to_scene_id in _string_values(scene.get("exits")):
+            if from_scene_id and to_scene_id:
+                semantic_scene_edges.add((from_scene_id, to_scene_id))
+    for branch in _json_list(graph.get("branches")):
+        if not isinstance(branch, dict):
+            continue
+        from_scene_id = str(
+            branch.get("from_scene_id") or branch.get("from") or ""
+        ).strip()
+        to_scene_id = str(
+            branch.get("to_scene_id") or branch.get("to") or ""
+        ).strip()
+        if from_scene_id and to_scene_id:
+            semantic_scene_edges.add((from_scene_id, to_scene_id))
+    item_by_id = {
+        str(item.get("content_item_id") or ""): item
+        for item in items
+    }
+    for edge in edges or []:
+        if edge.get("relation_type") != "transitions_to":
+            continue
+        from_item = item_by_id.get(
+            str(edge.get("from_content_item_id") or ""),
+            {},
+        )
+        to_item = item_by_id.get(
+            str(edge.get("to_content_item_id") or ""),
+            {},
+        )
+        if (
+            from_item.get("item_type") == "scene"
+            and to_item.get("item_type") == "scene"
+        ):
+            semantic_scene_edges.add((
+                str(from_item.get("logical_key") or "").strip(),
+                str(to_item.get("logical_key") or "").strip(),
+            ))
+
+    alternative_by_id = {
+        path_id: path
+        for path in contract["alternative_paths"]
+        if (path_id := str(path.get("path_id") or path.get("id") or "").strip())
+    }
+    recovery_by_id = {
+        node_id: node
+        for node in contract["recovery_nodes"]
+        if (
+            node_id := str(
+                node.get("recovery_node_id")
+                or node.get("node_id")
+                or node.get("id")
+                or ""
+            ).strip()
+        )
+    }
+    critical_by_id = {
+        progression_id: progression
+        for progression in contract["critical_progression"]
+        if (
+            progression_id := str(
+                progression.get("progression_id") or progression.get("id") or ""
+            ).strip()
+        )
+    }
+    valid_alternative_path_ids: set[str] = set()
+    for index, path in enumerate(contract["alternative_paths"]):
+        path_id = str(path.get("path_id") or path.get("id") or index).strip()
+        progression_id = str(path.get("progression_id") or "").strip()
+        owner = critical_by_id.get(progression_id)
+        owner_path_ids = set(
+            _string_values(owner.get("entry_path_ids") or owner.get("entry_points"))
+            + _string_values(owner.get("alternative_path_ids"))
+        ) if owner else set()
+        valid = True
+        if not owner or path_id not in owner_path_ids:
+            issues.append(_issue(
+                "invalid_progression_alternative_owner",
+                "Alternative paths must be declared by their owning critical progression.",
+                target_type="alternative_path",
+                target_key=path_id,
+                waivable=False,
+            ))
+            valid = False
+        if not _has_citation(path.get("citation")):
+            issues.append(_issue(
+                "invalid_progression_alternative_citation",
+                "Alternative paths require a traceable citation.",
+                target_type="alternative_path",
+                target_key=path_id,
+                waivable=False,
+            ))
+            valid = False
+        from_scene_id = str(
+            path.get("from_scene_id") or path.get("fromSceneId") or ""
+        ).strip()
+        target_scene_id = str(
+            path.get("target_scene_id") or path.get("targetSceneId") or ""
+        ).strip()
+        if (
+            from_scene_id not in known_scene_ids
+            or target_scene_id not in known_scene_ids
+        ):
+            issues.append(_issue(
+                "invalid_progression_alternative_scene",
+                "Alternative paths require compiled source and target scenes.",
+                target_type="alternative_path",
+                target_key=path_id,
+                waivable=False,
+            ))
+            valid = False
+        elif (from_scene_id, target_scene_id) not in semantic_scene_edges:
+            issues.append(_issue(
+                "invalid_progression_alternative_edge",
+                "Alternative paths must correspond to a compiled semantic scene edge.",
+                target_type="alternative_path",
+                target_key=path_id,
+                waivable=False,
+            ))
+            valid = False
+        if not _valid_progression_conditions(
+            path.get("conditions"),
+            known_scene_ids=known_scene_ids,
+            known_clue_ids=known_clue_ids,
+        ):
+            issues.append(_issue(
+                "invalid_progression_alternative_condition",
+                "Alternative path conditions may only reference compiled scenes or clues.",
+                target_type="alternative_path",
+                target_key=path_id,
+                waivable=False,
+            ))
+            valid = False
+        if valid:
+            valid_alternative_path_ids.add(path_id)
+
+    for index, progression in enumerate(contract["critical_progression"]):
+        progression_id = str(
+            progression.get("progression_id") or progression.get("id") or index
+        )
+        entries = _string_values(
+            progression.get("entry_path_ids") or progression.get("entry_points")
+        )
+        alternatives = _string_values(progression.get("alternative_path_ids"))
+        recoveries = _string_values(progression.get("recovery_node_ids"))
+        valid_entries = []
+        for path_id in entries:
+            path = alternative_by_id.get(path_id)
+            if (
+                not path
+                or str(path.get("progression_id") or "").strip() != progression_id
+                or path_id not in valid_alternative_path_ids
+            ):
+                issues.append(_issue(
+                    "invalid_critical_progression_entry",
+                    "Critical progression entries must reference a path owned by that progression.",
+                    target_type="critical_progression",
+                    target_key=f"{progression_id}:entry:{path_id}",
+                    waivable=False,
+                ))
+                continue
+            valid_entries.append(path_id)
+        valid_alternatives = []
+        for path_id in alternatives:
+            path = alternative_by_id.get(path_id)
+            if (
+                not path
+                or str(path.get("progression_id") or "").strip() != progression_id
+                or path_id not in valid_alternative_path_ids
+            ):
+                issues.append(_issue(
+                    "invalid_progression_alternative_owner",
+                    "Alternative paths must belong to the critical progression that declares them.",
+                    target_type="critical_progression",
+                    target_key=f"{progression_id}:alternative:{path_id}",
+                    waivable=False,
+                ))
+                continue
+            valid_alternatives.append(path_id)
+        valid_recoveries = []
+        for node_id in recoveries:
+            node = recovery_by_id.get(node_id)
+            if not node or str(node.get("progression_id") or "").strip() != progression_id:
+                issues.append(_issue(
+                    "invalid_progression_recovery_owner",
+                    "Recovery nodes must belong to the critical progression that declares them.",
+                    target_type="critical_progression",
+                    target_key=f"{progression_id}:recovery:{node_id}",
+                    waivable=False,
+                ))
+                continue
+            valid_recoveries.append(node_id)
+        has_declared_escape = bool(valid_alternatives or valid_recoveries)
+        if (
+            progression.get("ordinary_failure_can_close") is True
+            and len(valid_entries) <= 1
+            and not has_declared_escape
+        ):
+            issues.append(_issue(
+                "critical_progression_single_closable_entry",
+                "Critical progression cannot have one ordinary-failure-closable entry without an alternative or recovery.",
+                target_type="critical_progression",
+                target_key=progression_id,
+                waivable=False,
+            ))
+
+    for index, node in enumerate(contract["recovery_nodes"]):
+        node_id = str(
+            node.get("recovery_node_id") or node.get("node_id") or node.get("id") or index
+        )
+        progression_id = str(node.get("progression_id") or "").strip()
+        owner = critical_by_id.get(progression_id)
+        if (
+            not owner
+            or node_id not in _string_values(owner.get("recovery_node_ids"))
+        ):
+            issues.append(_issue(
+                "invalid_progression_recovery_owner",
+                "Recovery nodes must be declared by their owning critical progression.",
+                target_type="recovery_node",
+                target_key=node_id,
+                waivable=False,
+            ))
+        if not _has_citation(node.get("citation")):
+            issues.append(_issue(
+                "invalid_progression_recovery_citation",
+                "Progression recovery nodes require a traceable citation.",
+                target_type="recovery_node",
+                target_key=node_id,
+                waivable=False,
+            ))
+        for fact_id in _string_values(node.get("reveal_fact_ids") or node.get("fact_ids")):
+            if fact_id not in known_fact_ids:
+                issues.append(_issue(
+                    "invalid_progression_recovery_fact",
+                    "Recovery nodes may only reference compiled facts.",
+                    target_type="recovery_node",
+                    target_key=f"{node_id}:fact:{fact_id}",
+                    waivable=False,
+                ))
+        for clue_id in _string_values(node.get("reveal_clue_ids") or node.get("clue_ids")):
+            if clue_id not in known_clue_ids:
+                issues.append(_issue(
+                    "invalid_progression_recovery_clue",
+                    "Recovery nodes may only reference compiled clues.",
+                    target_type="recovery_node",
+                    target_key=f"{node_id}:clue:{clue_id}",
+                    waivable=False,
+                ))
+        if not _valid_progression_cost_boundary(
+            node.get("cost_boundary") or node.get("costBoundary")
+        ):
+            issues.append(_issue(
+                "invalid_progression_recovery_cost_boundary",
+                "Recovery nodes require a bounded, non-zero cost.",
+                target_type="recovery_node",
+                target_key=node_id,
+                waivable=False,
+            ))
+        if not _valid_progression_conditions(
+            node.get("conditions"),
+            known_scene_ids=known_scene_ids,
+            known_clue_ids=known_clue_ids,
+        ):
+            issues.append(_issue(
+                "invalid_progression_recovery_condition",
+                "Recovery conditions may only reference compiled scenes or clues.",
+                target_type="recovery_node",
+                target_key=node_id,
+                waivable=False,
+            ))
+        target_scene_id = str(
+            node.get("target_scene_id") or node.get("targetSceneId") or ""
+        ).strip()
+        from_scene_ids = _string_values(
+            node.get("from_scene_ids") or node.get("fromSceneIds")
+        )
+        if not target_scene_id or target_scene_id not in known_scene_ids:
+            issues.append(_issue(
+                "invalid_progression_recovery_scene",
+                "Recovery target must be a compiled scene.",
+                target_type="recovery_node",
+                target_key=f"{node_id}:target:{target_scene_id}",
+                waivable=False,
+            ))
+        if not from_scene_ids:
+            issues.append(_issue(
+                "invalid_progression_recovery_scene",
+                "Recovery nodes require at least one compiled source scene.",
+                target_type="recovery_node",
+                target_key=f"{node_id}:source",
+                waivable=False,
+            ))
+        for scene_id in from_scene_ids:
+            if scene_id not in known_scene_ids:
+                issues.append(_issue(
+                    "invalid_progression_recovery_scene",
+                    "Recovery source must be a compiled scene.",
+                    target_type="recovery_node",
+                    target_key=f"{node_id}:source:{scene_id}",
+                    waivable=False,
+                ))
+    return issues
+
+
+def _valid_progression_conditions(
+    value: Any,
+    *,
+    known_scene_ids: set[str],
+    known_clue_ids: set[str],
+) -> bool:
+    if value in (None, []):
+        return True
+    if not isinstance(value, list):
+        return False
+    for condition in value:
+        if not isinstance(condition, dict):
+            return False
+        kind = str(condition.get("kind") or "").strip()
+        identifier = str(condition.get("id") or "").strip()
+        if kind == "scene" and identifier in known_scene_ids:
+            continue
+        if kind == "clue" and identifier in known_clue_ids:
+            continue
+        return False
+    return True
+
+
+def _valid_progression_cost_boundary(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    kind = str(value.get("kind") or "").strip()
+    amount = value.get("amount")
+    return bool(
+        kind == "time"
+        and isinstance(amount, int)
+        and not isinstance(amount, bool)
+        and amount > 0
+    )
+
+
+def _string_values(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            item = item.get("path_id") or item.get("node_id") or item.get("id")
+        normalized = str(item or "").strip()
+        if normalized and normalized not in result:
+            result.append(normalized)
+    return result
 
 
 def _runtime_diagnostic_issues(graph: dict[str, Any]) -> list[dict[str, Any]]:
@@ -845,16 +1341,28 @@ def _collection(
 
 
 def _runtime_ending_conditions(endings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [ending for ending in endings if _valid_ending_conditions(ending)]
+    return [
+        _normalized_runtime_ending(definition, ordinal)
+        for ordinal, ending in enumerate(endings)
+        if _valid_ending_conditions(
+            definition := _ending_definition(ending)
+        )
+    ]
 
 
-def _ending_condition_issues(graph: dict[str, Any]) -> list[dict[str, Any]]:
-    solo = _json_object(graph.get("solo_adventure"))
-    if _json_object(solo.get("integrity")).get("is_valid") is True:
-        return []
+def _ending_condition_issues(
+    graph: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     issues = []
-    for ordinal, ending in enumerate(_list(graph.get("endings"))):
+    endings = [
+        _ending_definition(ending)
+        for ending in _collection(graph, "endings", items, "ending")
+    ]
+    valid_endings: list[tuple[int, dict[str, Any]]] = []
+    for ordinal, ending in enumerate(endings):
         if _valid_ending_conditions(ending):
+            valid_endings.append((ordinal, ending))
             continue
         target_key = str(
             ending.get("ending_id") or ending.get("id") or ending.get("name") or ordinal
@@ -866,16 +1374,55 @@ def _ending_condition_issues(graph: dict[str, Any]) -> list[dict[str, Any]]:
             target_key=target_key,
             waivable=False,
         ))
+    priority_keys: dict[int, list[str]] = {}
+    for ordinal, ending in valid_endings:
+        normalized = _normalized_runtime_ending(ending, ordinal)
+        priority_keys.setdefault(normalized["priority"], []).append(
+            normalized["ending_id"]
+        )
+    for priority, ending_ids in priority_keys.items():
+        if len(ending_ids) < 2:
+            continue
+        issues.append(_issue(
+            "ambiguous_ending_priority",
+            "Runtime endings require unique priorities across exclusive groups.",
+            target_type="ending",
+            target_key=str(priority),
+            waivable=False,
+            details={"ending_ids": ending_ids},
+        ))
     return issues
+
+
+def _ending_definition(ending: dict[str, Any]) -> dict[str, Any]:
+    payload = _json_object(ending.get("payload"))
+    if not payload:
+        return dict(ending)
+    return {
+        **payload,
+        **{key: value for key, value in ending.items() if key != "payload"},
+    }
 
 
 def _valid_ending_conditions(ending: dict[str, Any]) -> bool:
     if not _has_citation(ending.get("citation")):
         return False
     ending_id = str(ending.get("ending_id") or ending.get("id") or "").strip()
+    ending_type = str(ending.get("type") or "mixed").strip()
     conditions = ending.get("completion_conditions")
     allowed_keys = {"all_clues", "any_clues", "entered_scenes", "event_types", "room_status"}
-    if not ending_id or not isinstance(conditions, dict) or not conditions:
+    if (
+        not ending_id
+        or ending_type not in {"victory", "defeat", "mixed", "safe_abort"}
+        or not isinstance(conditions, dict)
+        or not conditions
+    ):
+        return False
+    if "priority" in ending and (
+        not isinstance(ending["priority"], int) or isinstance(ending["priority"], bool)
+    ):
+        return False
+    if "exclusive_group" in ending and not str(ending["exclusive_group"] or "").strip():
         return False
     if set(conditions) - allowed_keys:
         return False
@@ -883,11 +1430,44 @@ def _valid_ending_conditions(ending: dict[str, Any]) -> bool:
         if key == "room_status":
             if not isinstance(expected, str) or not expected.strip():
                 return False
-        elif not isinstance(expected, list) or not expected or not all(
-            isinstance(item, str) and item.strip() for item in expected
-        ):
-            return False
+        else:
+            if not isinstance(expected, list) or not expected or not all(
+                isinstance(item, str) and item.strip() for item in expected
+            ):
+                return False
+            if key == "event_types" and any(
+                item in _PRESENTATION_ONLY_EVENT_TYPES for item in expected
+            ):
+                return False
     return True
+
+
+def _normalized_runtime_ending(
+    ending: dict[str, Any],
+    ordinal: int,
+) -> dict[str, Any]:
+    result = dict(ending)
+    ending_type = str(result.get("type") or "mixed").strip()
+    default_priority = {
+        "victory": 300_000,
+        "mixed": 200_000,
+        "defeat": 100_000,
+    }.get(ending_type, 0)
+    if ending_type == "safe_abort":
+        priority = 1_000_000
+    elif isinstance(result.get("priority"), int) and not isinstance(result.get("priority"), bool):
+        priority = min(int(result["priority"]), 999_999)
+    else:
+        priority = default_priority - ordinal
+    result.update({
+        "ending_id": str(result.get("ending_id") or result.get("id") or "").strip(),
+        "type": ending_type,
+        "priority": priority,
+        "exclusive_group": str(
+            result.get("exclusive_group") or "campaign_ending"
+        ).strip(),
+    })
+    return result
 
 
 def _collect_citations(

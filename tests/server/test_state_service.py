@@ -52,6 +52,69 @@ class TestStateService:
         result = state_service.initialize_character_state("nonexistent", "r1")
         assert result is None
 
+    @pytest.mark.parametrize("terminal_status", ["completed", "archived"])
+    def test_initialize_character_state_rejects_terminal_campaign(
+        self,
+        test_db,
+        state_service,
+        terminal_status,
+    ):
+        from src.server.campaign_archive import CampaignReadOnlyError
+
+        self._setup_room_and_char(test_db)
+        test_db.execute(
+            "UPDATE rooms SET status = %s WHERE room_id = 'r1'",
+            (terminal_status,),
+        )
+        test_db.commit()
+
+        with pytest.raises(CampaignReadOnlyError, match="campaign_completed_read_only"):
+            state_service.initialize_character_state("c1", "r1")
+
+        assert test_db.execute(
+            "SELECT 1 FROM character_runtime_state "
+            "WHERE character_id = 'c1' AND room_id = 'r1'"
+        ).fetchone() is None
+
+    @pytest.mark.parametrize("terminal_status", ["completed", "archived"])
+    def test_apply_change_rejects_terminal_campaign(
+        self,
+        test_db,
+        state_service,
+        terminal_status,
+    ):
+        from src.server.campaign_archive import CampaignReadOnlyError
+
+        self._setup_room_and_char(test_db)
+        state_service.initialize_character_state("c1", "r1")
+        test_db.execute(
+            "UPDATE rooms SET status = %s WHERE room_id = 'r1'",
+            (terminal_status,),
+        )
+        test_db.commit()
+
+        with pytest.raises(CampaignReadOnlyError, match="campaign_completed_read_only"):
+            state_service.apply_change(
+                "r1",
+                {"character_id": "c1"},
+                StateChangeSet(characterMutations=[
+                    CharacterMutationItem(
+                        characterId="c1",
+                        mutations=[{
+                            "op": "replace",
+                            "path": "/character/hp",
+                            "value": 1,
+                        }],
+                    )
+                ]),
+                reason="terminal campaigns are immutable",
+            )
+
+        assert state_service.get_runtime_state("c1", "r1")["hp"] == 12
+        assert test_db.execute(
+            "SELECT state_version FROM rooms WHERE room_id = 'r1'"
+        ).fetchone()["state_version"] == 0
+
     # ── Mutations ──
 
     def test_apply_mutation_hp(self, test_db, state_service):

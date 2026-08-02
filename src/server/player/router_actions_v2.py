@@ -1244,6 +1244,17 @@ async def resolve_encounter_reaction(
         build_public_encounter_event_projection,
     )
     dispatcher = ProjectionDispatcher(request.app.state.db)
+    solo_transition = resolved.get("solo_transition")
+    ending_sequence = (
+        solo_transition.get("ending_event_sequence")
+        if isinstance(solo_transition, dict)
+        else None
+    )
+    if isinstance(ending_sequence, int) and ending_sequence > 0:
+        await dispatcher.publish_committed_event(
+            character["room_id"],
+            ending_sequence,
+        )
     await dispatcher.emit(
         character["room_id"],
         event_type("s2c_encounter_updated"),
@@ -1282,7 +1293,6 @@ async def resolve_encounter_reaction(
                 "reason": encounter.get("summary") or "遭遇结束",
             },
         )
-    solo_transition = resolved.get("solo_transition")
     if solo_transition:
         scene = SoloAdventureRuntime(request.app.state.db).current(character["room_id"])
         await dispatcher.emit(

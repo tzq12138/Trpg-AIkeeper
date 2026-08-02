@@ -295,8 +295,8 @@ async def end_session_for_safety(request: Request, room_id: str):
     if not active:
         raise HTTPException(409, detail={"code": "safety_pause_not_active"})
 
-    import uuid
-    from ..campaign_archive import build_character_arcs
+    from ..campaign_archive import finalize_campaign
+    from ..events.event_log import EventLog
 
     with conn.transaction() as tx:
         tx.execute(
@@ -305,44 +305,56 @@ async def end_session_for_safety(request: Request, room_id: str):
             "AND status = 'safety_paused'",
             (room_id,),
         )
-        tx.execute(
-            "UPDATE rooms SET status = 'completed', state_version = state_version + 1 "
-            "WHERE room_id = %s",
-            (room_id,),
+        safety_payload = {
+            "status": "session_ended",
+            "activePauseCount": 0,
+        }
+        safety_event_sequence = EventLog(tx).log_event(
+            room_id,
+            "s2c_safety_state_changed",
+            "party",
+            safety_payload,
+            commit=False,
         )
-        tx.execute(
-            "INSERT INTO campaign_archives "
-            "(archive_id, room_id, ending_type, summary, highlights, character_arcs) "
-            "VALUES (%s, %s, 'safe_abort', %s, %s, %s)",
-            (
-                str(uuid.uuid4())[:8],
-                room_id,
-                "本次冒险依据安全工具请求安全结束。",
-                json.dumps(["队伍选择了安全结束。"], ensure_ascii=False),
-                json.dumps(build_character_arcs(tx, room_id), ensure_ascii=False),
-            ),
+        ending_payload = {
+            "endingType": "safe_abort",
+            "completion_source": "safety_tool",
+        }
+        finalized = finalize_campaign(
+            conn,
+            room_id,
+            ending_type="safe_abort",
+            summary="本次冒险依据安全工具请求安全结束。",
+            highlights=["队伍选择了安全结束。"],
+            expected_room_statuses=("lobby", "suggested", "active", "paused"),
+            ending_event_payload=ending_payload,
+            transaction=tx,
         )
+        if finalized is None:
+            raise HTTPException(409, detail={"code": "campaign_already_completed"})
 
     from ..engine.projection import ProjectionDispatcher
 
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(
         conn,
     )
-    await dispatcher.emit(
-        room_id,
-        "s2c_safety_state_changed",
-        "party",
-        {"status": "session_ended", "activePauseCount": 0},
-    )
-    await dispatcher.emit(
-        room_id,
-        "s2c_campaign_ended",
-        "party",
-        {
-            "endingType": "safe_abort",
-            "completion_source": "safety_tool",
-        },
-    )
+    publisher = getattr(dispatcher, "publish_committed_event", None)
+    if publisher:
+        await publisher(room_id, safety_event_sequence)
+        await publisher(room_id, finalized.ending_event_sequence)
+    else:
+        await dispatcher.emit(
+            room_id,
+            "s2c_safety_state_changed",
+            "party",
+            safety_payload,
+        )
+        await dispatcher.emit(
+            room_id,
+            "s2c_campaign_ended",
+            "party",
+            ending_payload,
+        )
     return {
         "status": "completed",
         "endingType": "safe_abort",

@@ -1,6 +1,8 @@
 import json
 import time
 
+import pytest
+
 from src.server.turn_manager import TurnManager, _json_val
 from tests.server.conftest import create_room, setup_auth_test_data
 
@@ -27,6 +29,39 @@ def test_ready_player_submission_settles_single_player_turn(test_db):
     turns.submit_action('turn-ready-room', 'turn-ready-character', 'turn-ready-action')
 
     assert turns.all_submitted('turn-ready-room') is True
+
+
+def test_completed_campaign_rejects_direct_turn_submission(test_db):
+    from src.server.campaign_archive import CampaignReadOnlyError
+
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token, status) "
+        "VALUES ('completed-turn-room', 'owner', 'completed')"
+    )
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token, status) "
+        "VALUES ('completed-turn-character', 'completed-turn-room', 'Player', 'token', 'ready')"
+    )
+    test_db.execute(
+        "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, status) "
+        "VALUES ('completed-turn-action', 'completed-turn-room', 'completed-turn-character', "
+        "'dialogue', 'Too late', 'queued')"
+    )
+    test_db.commit()
+
+    with pytest.raises(CampaignReadOnlyError, match="campaign_completed_read_only"):
+        TurnManager(test_db).submit_action(
+            'completed-turn-room',
+            'completed-turn-character',
+            'completed-turn-action',
+        )
+
+    assert test_db.execute(
+        "SELECT 1 FROM room_turns WHERE room_id = 'completed-turn-room'"
+    ).fetchone() is None
+    assert test_db.execute(
+        "SELECT turn_id FROM actions WHERE action_id = 'completed-turn-action'"
+    ).fetchone()["turn_id"] is None
 
 
 def test_turn_manager_parses_persisted_json_values():

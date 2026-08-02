@@ -6,6 +6,7 @@ from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.engine.state_service import StateService
 from src.server.models import ActionDraftDTO, MechanicCompileResult, PlayerIntent, ResolutionResult
 from src.server.player import router_actions_v2
+from src.server.player.action_service import submit_coc_followup_decision
 from src.server.scenario.content_projection import ContentProjectionService
 from src.server.scenario import solo_runtime
 from src.server.scenario.solo_runtime import SoloAdventureRuntime, SoloTransitionError
@@ -1226,9 +1227,21 @@ async def test_solo_skill_check_uses_attribute_roll_to_choose_outcome_target(
         lambda _low, _high: next(rolls),
     )
 
-    result = await ResolutionPipeline(
+    pipeline = ResolutionPipeline(
         test_db, compiler=_AutoSuccessCompiler(), dispatcher=_RecordingDispatcher()
-    ).resolve_action("solo-check-action")
+    )
+    result = await pipeline.resolve_action("solo-check-action")
+
+    if expected_target == "3":
+        assert result["status"] == "awaiting_player_choice"
+        submit_coc_followup_decision(
+            test_db,
+            "solo-check-character",
+            "solo-check-action",
+            "decline",
+            "solo-check-decline",
+        )
+        result = await pipeline.resolve_action("solo-check-action")
 
     assert result["status"] == "completed"
     assert result["result"]["metadata"]["solo_adventure_transition"]["target_node_id"] == expected_target
@@ -1933,6 +1946,13 @@ async def test_terminal_solo_damage_completes_when_narrator_is_unavailable(test_
             ),
         ),
     )
+    test_db.execute(
+        "INSERT INTO actions "
+        "(action_id, room_id, character_id, intent_type, declared_intent, status) "
+        "VALUES ('solo-terminal-pending', %s, 'solo-terminal-character', "
+        "'dialogue', '结局后不应继续', 'queued')",
+        (room_id,),
+    )
     monkeypatch.setattr(
         "src.server.rules.coc_handlers.secure_randint",
         lambda *_args, **_kwargs: 1,
@@ -1961,6 +1981,13 @@ async def test_terminal_solo_damage_completes_when_narrator_is_unavailable(test_
     assert test_db.execute(
         "SELECT status FROM actions WHERE action_id = 'solo-terminal-action'"
     ).fetchone()["status"] == "completed"
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'solo-terminal-pending'"
+    ).fetchone()["status"] == "canceled"
+    assert test_db.execute(
+        "SELECT ending_type FROM campaign_archives WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["ending_type"] == "defeat"
 
 
 @pytest.mark.asyncio
@@ -2009,6 +2036,82 @@ async def test_verified_solo_move_skips_remote_mechanic_compiler(test_db):
 
     assert result["status"] == "completed"
     assert SoloAdventureRuntime(test_db).current(room_id)["node_id"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_verified_solo_terminal_move_uses_atomic_campaign_finalizer(test_db):
+    room_id, _ = _setup_solo_room(test_db)
+    runtime = SoloAdventureRuntime(test_db)
+    runtime.transition(room_id, from_node_id="1", target_node_id="2")
+    runtime.transition(room_id, from_node_id="2", target_node_id="3")
+    context_version = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["state_version"]
+    test_db.execute(
+        "INSERT INTO characters "
+        "(character_id, room_id, player_name, player_token, xlsx_data) "
+        "VALUES ('solo-ending-character', %s, '玩家', 'solo-ending-token', '{}')",
+        (room_id,),
+    )
+    params = json.dumps(
+        {
+            "fromNodeId": "3",
+            "targetNodeId": "4",
+            "director_plan": {
+                "context_version": context_version,
+                "preconditions": [],
+                "permissions": [],
+                "state_patch": [],
+                "state_patch_authority": "advisory_only",
+            },
+        },
+        ensure_ascii=False,
+    )
+    test_db.execute(
+        "INSERT INTO actions "
+        "(action_id, room_id, character_id, draft_id, intent_type, "
+        "declared_intent, params, status, idempotency_key) VALUES "
+        "('solo-ending-action', %s, 'solo-ending-character', "
+        "'solo-ending-draft', 'move', '我逃离危险', %s, 'queued', "
+        "'solo-ending-key'), "
+        "('solo-ending-pending', %s, 'solo-ending-character', "
+        "'solo-ending-pending-draft', 'dialogue', '不应继续', '{}', 'queued', "
+        "'solo-ending-pending-key')",
+        (room_id, params, room_id),
+    )
+
+    result = await ResolutionPipeline(
+        test_db,
+        compiler=_RejectingCompiler(),
+        dispatcher=_RecordingDispatcher(),
+    ).resolve_action("solo-ending-action")
+
+    assert result["status"] == "completed"
+    assert result["result"]["metadata"]["verified_ending"]["ending_type"] == "mixed"
+    assert SoloAdventureRuntime(test_db).current(room_id)["node_id"] == "4"
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["status"] == "completed"
+    statuses = test_db.execute(
+        "SELECT action_id, status FROM actions "
+        "WHERE room_id = %s ORDER BY action_id",
+        (room_id,),
+    ).fetchall()
+    assert {row["action_id"]: row["status"] for row in statuses} == {
+        "solo-ending-action": "completed",
+        "solo-ending-pending": "canceled",
+    }
+    assert test_db.execute(
+        "SELECT ending_type FROM campaign_archives WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["ending_type"] == "mixed"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events "
+        "WHERE room_id = %s AND event_type = 's2c_campaign_ended'",
+        (room_id,),
+    ).fetchone()["count"] == 1
 
 
 def test_player_map_projects_text_scene_without_raw_solo_targets(client, test_db):
@@ -3121,6 +3224,20 @@ def test_solo_ending_transition_completes_the_room(test_db):
 
     room_id, _ = _setup_solo_room(test_db)
     create_encounter(test_db, "ending-encounter", room_id, status="active")
+    test_db.execute(
+        "INSERT INTO characters "
+        "(character_id, room_id, player_name, player_token, xlsx_data) "
+        "VALUES ('ending-character', %s, '玩家', 'ending-token', '{}')",
+        (room_id,),
+    )
+    test_db.execute(
+        "INSERT INTO actions "
+        "(action_id, room_id, character_id, intent_type, declared_intent, status) "
+        "VALUES ('ending-pending-action', %s, 'ending-character', "
+        "'dialogue', 'pending after ending', 'queued')",
+        (room_id,),
+    )
+    test_db.commit()
     runtime = SoloAdventureRuntime(test_db)
     runtime.transition(room_id, from_node_id="1", target_node_id="2")
     runtime.transition(room_id, from_node_id="2", target_node_id="3")
@@ -3136,6 +3253,58 @@ def test_solo_ending_transition_completes_the_room(test_db):
     assert result["is_ending"] is True
     assert room["status"] == "completed"
     assert encounter["status"] == "resolved"
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'ending-pending-action'"
+    ).fetchone()["status"] == "canceled"
+    assert test_db.execute(
+        "SELECT ending_type FROM campaign_archives WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["ending_type"] == "mixed"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events "
+        "WHERE room_id = %s AND event_type = 's2c_campaign_ended'",
+        (room_id,),
+    ).fetchone()["count"] == 1
+
+
+def test_solo_ending_transition_rolls_back_scene_and_encounter_when_archive_fails(
+    test_db,
+    monkeypatch,
+):
+    import src.server.campaign_archive as archive_module
+    from src.server.encounter_persistence import create_encounter
+
+    room_id, _ = _setup_solo_room(test_db)
+    create_encounter(test_db, "ending-rollback-encounter", room_id, status="active")
+    runtime = SoloAdventureRuntime(test_db)
+    runtime.transition(room_id, from_node_id="1", target_node_id="2")
+    runtime.transition(room_id, from_node_id="2", target_node_id="3")
+
+    def fail_archive(*_args, **_kwargs):
+        raise RuntimeError("injected-solo-archive-failure")
+
+    monkeypatch.setattr(archive_module, "_insert_minimal_archive", fail_archive)
+
+    with pytest.raises(RuntimeError, match="injected-solo-archive-failure"):
+        runtime.transition(room_id, from_node_id="3", target_node_id="4")
+
+    assert runtime.current(room_id)["node_id"] == "3"
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["status"] == "lobby"
+    assert test_db.execute(
+        "SELECT status FROM encounters WHERE encounter_id = 'ending-rollback-encounter'"
+    ).fetchone()["status"] == "active"
+    assert test_db.execute(
+        "SELECT 1 FROM campaign_archives WHERE room_id = %s",
+        (room_id,),
+    ).fetchone() is None
+    assert test_db.execute(
+        "SELECT 1 FROM events "
+        "WHERE room_id = %s AND event_type = 's2c_campaign_ended'",
+        (room_id,),
+    ).fetchone() is None
 
 
 def test_conditional_ending_marker_with_successor_does_not_complete_room(test_db):

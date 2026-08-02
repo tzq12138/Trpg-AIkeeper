@@ -28,6 +28,7 @@ from ..engine.skill_check import roll_skill_check
 from ..scenario.character_presets import character_preview, find_preset, list_presets, preset_dir_from_app
 from ..scenario.xlsx_parser import parse_xlsx_character
 from ..router_auth import get_account_from_token
+from ..campaign_archive import CampaignReadOnlyError, ensure_campaign_writable
 from .action_service import (
     ActionDraftError,
     submit_coc_background_decision,
@@ -57,6 +58,31 @@ def _get_character(request: Request) -> dict:
     return require_player_character(request)
 
 
+def _completed_campaign_http_error(exc: CampaignReadOnlyError) -> HTTPException:
+    return HTTPException(409, detail={"code": str(exc)})
+
+
+def _submit_engine_intent(
+    engine,
+    room_id: str,
+    character_id: str,
+    intent: PlayerIntent,
+    *,
+    turn_based: bool = False,
+):
+    try:
+        if turn_based:
+            return engine.submit_intent(
+                room_id,
+                character_id,
+                intent,
+                turn_based=True,
+            )
+        return engine.submit_intent(room_id, character_id, intent)
+    except CampaignReadOnlyError as exc:
+        raise _completed_campaign_http_error(exc) from exc
+
+
 @router.post("/rooms/{room_id}/join")
 async def join_room(request: Request, room_id: str):
     client_ip = request.client.host if request.client else "unknown"
@@ -68,21 +94,29 @@ async def join_room(request: Request, room_id: str):
     _check_rate_limit(_join_rate_key(client_ip, account))
     player_token = str(uuid.uuid4())
     character_id = str(uuid.uuid4())[:8]
-    # Set status based on room state: active rooms put joiners in pending_approval
-    char_status = "pending_approval" if room["status"] == "active" else "joined"
-    conn.execute(
-        "INSERT INTO characters (character_id, room_id, player_name, player_token, status, account_id) "
-        "VALUES (%s, %s, %s, %s, %s, %s)",
-        (
-            character_id,
-            room_id,
-            "未命名玩家",
-            player_token,
-            char_status,
-            account["account_id"] if account else None,
-        ),
-    )
-    conn.commit()
+    try:
+        with conn.transaction() as tx:
+            locked_room = ensure_campaign_writable(tx, room_id)
+            char_status = (
+                "pending_approval"
+                if locked_room["status"] == "active"
+                else "joined"
+            )
+            tx.execute(
+                "INSERT INTO characters "
+                "(character_id, room_id, player_name, player_token, status, account_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    character_id,
+                    room_id,
+                    "未命名玩家",
+                    player_token,
+                    char_status,
+                    account["account_id"] if account else None,
+                ),
+            )
+    except CampaignReadOnlyError as exc:
+        raise _completed_campaign_http_error(exc) from exc
     return {"character_id": character_id, "player_token": player_token, "status": char_status}
 
 
@@ -306,10 +340,6 @@ async def join_room_with_character(
     if source_count != 1:
         raise HTTPException(400, "Choose exactly one character source")
     account_id = account["account_id"] if account else _optional_account_id(request)
-    room_status = room["status"]
-    # Status: lobby→joined, active→pending_approval
-    char_status = "pending_approval" if room_status == "active" else "joined"
-
     source: dict
     initial_inventory: list[dict] = []
     if character_data:
@@ -370,36 +400,53 @@ async def join_room_with_character(
     parsed["source"] = source
     player_token = str(uuid.uuid4())
     character_id = str(uuid.uuid4())[:8]
-    conn.execute(
-        "INSERT INTO characters (character_id, room_id, player_name, player_token, xlsx_data, account_id, status) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (character_id, room_id, nickname, player_token, json.dumps(parsed, ensure_ascii=False), account_id, char_status),
-    )
-    for item in initial_inventory:
-        conn.execute(
-            "INSERT INTO inventory "
-            "(id, character_id, room_id, name, description, quantity, is_secret, source) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'scenario_template')",
-            (
-                str(uuid.uuid4()),
+    try:
+        with conn.transaction() as tx:
+            locked_room = ensure_campaign_writable(tx, room_id)
+            char_status = (
+                "pending_approval"
+                if locked_room["status"] == "active"
+                else "joined"
+            )
+            tx.execute(
+                "INSERT INTO characters "
+                "(character_id, room_id, player_name, player_token, xlsx_data, account_id, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    character_id,
+                    room_id,
+                    nickname,
+                    player_token,
+                    json.dumps(parsed, ensure_ascii=False),
+                    account_id,
+                    char_status,
+                ),
+            )
+            for item in initial_inventory:
+                tx.execute(
+                    "INSERT INTO inventory "
+                    "(id, character_id, room_id, name, description, quantity, is_secret, source) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, 'scenario_template')",
+                    (
+                        str(uuid.uuid4()),
+                        character_id,
+                        room_id,
+                        item["name"],
+                        item["description"],
+                        item["quantity"],
+                        item["is_secret"],
+                    ),
+                )
+            from ..engine.state_service import StateService
+
+            StateService(tx).initialize_character_state(
                 character_id,
                 room_id,
-                item["name"],
-                item["description"],
-                item["quantity"],
-                item["is_secret"],
-            ),
-        )
-    conn.commit()
+                commit=False,
+            )
+    except CampaignReadOnlyError as exc:
+        raise _completed_campaign_http_error(exc) from exc
     _index_character_if_available(request, room_id, character_id, parsed)
-    # Initialize runtime state via StateService
-    state_service = getattr(request.app.state, "state_service", None)
-    if state_service:
-        try:
-            state_service.initialize_character_state(character_id, room_id)
-        except Exception as exc:
-            logger.warning("StateService init failed for char=%s room=%s: %s", character_id, room_id, exc)
-            pass
 
     # Broadcast updated lobby snapshot so host sees the new player immediately
     try:
@@ -777,6 +824,11 @@ async def submit_intent(request: Request, intent: PlayerIntent):
         "SELECT status, player_experience_version FROM rooms WHERE room_id = %s",
         (char["room_id"],),
     ).fetchone()
+    if not room or str(room.get("status") or "") in {"completed", "archived"}:
+        raise HTTPException(
+            409,
+            detail={"code": "campaign_completed_read_only"},
+        )
     if (
         room
         and room.get("player_experience_version") == "v2"
@@ -789,34 +841,36 @@ async def submit_intent(request: Request, intent: PlayerIntent):
     is_active = room and room["status"] == "active"
 
     if is_active and intent.intent_type not in ("ready_toggle",):
-        # Turn-based mode: queue action in current turn
-        # Check duplicate BEFORE writing action (prevents orphan actions)
+        # Turn-based mode: create/bind the turn in the engine's room-locked transaction.
         from ..turn_manager import TurnManager
         tm = TurnManager(conn)
-        turn = tm.ensure_current_turn(char["room_id"])
-        existing = conn.execute(
-            "SELECT action_id FROM actions WHERE turn_id = %s AND character_id = %s "
-            "AND status NOT IN ('rejected', 'canceled', 'timeout')",
-            (turn["turn_id"], char["character_id"]),
-        ).fetchone()
-        if existing:
-            return JSONResponse(
-                content={"status": "duplicate", "turn_id": turn["turn_id"], "turn_index": turn["turn_index"],
-                         "message": "Already submitted this turn"},
-                status_code=409,
-            )
-
-        result = engine.submit_intent(char["room_id"], char["character_id"], intent)
-        turn_result = tm.submit_action(char["room_id"], char["character_id"], intent.action_id)
-        result["turnId"] = turn_result.get("turn_id")
-        result["turnIndex"] = turn_result.get("turn_index")
+        result = _submit_engine_intent(
+            engine,
+            char["room_id"],
+            char["character_id"],
+            intent,
+            turn_based=True,
+        )
+        if result.get("status") == "duplicate":
+            return JSONResponse(content=result, status_code=409)
         # Check if all submitted → auto-settle
-        if tm.all_submitted(char["room_id"]):
-            asyncio.create_task(_settle_turn_background(request.app, char["room_id"], turn_result["turn_id"]))
+        if result.get("turnId") and tm.all_submitted(char["room_id"]):
+            asyncio.create_task(
+                _settle_turn_background(
+                    request.app,
+                    char["room_id"],
+                    result["turnId"],
+                )
+            )
         return JSONResponse(content=result, status_code=202)
 
     # Legacy: immediate resolution for non-active rooms
-    result = engine.submit_intent(char["room_id"], char["character_id"], intent)
+    result = _submit_engine_intent(
+        engine,
+        char["room_id"],
+        char["character_id"],
+        intent,
+    )
     if result.get("status") == "conflict":
         raise HTTPException(409, "State version conflict")
 
@@ -1250,7 +1304,7 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
             (room_id, conn.execute("SELECT turn_index FROM room_turns WHERE turn_id = %s", (turn_id,)).fetchone()["turn_index"]),
         ).fetchone()
         if may_open_next_turn and not existing_next:
-            tm._create_turn(room_id)
+            tm.ensure_current_turn(room_id)
         elif existing_next:
             logger.info("Next turn already exists for room %s (turn %s), skipping creation", room_id, existing_next["turn_id"])
 
@@ -1581,34 +1635,50 @@ async def _submit_retroactive_claim(request: Request, char: dict, intent: Player
 
     service = RetroactiveItemService(conn)
     assets = _scenario_assets_for_room(conn, char["room_id"])
+    rejection = None
     try:
         decision = service.evaluate_claim(intent, char, assets)
     except RetroactiveClaimError as exc:
-        _insert_retro_action(conn, char, intent, "rejected", {"error": exc.detail})
-        raise HTTPException(exc.status_code, exc.detail)
+        decision = None
+        rejection = (exc.status_code, exc.detail, {"error": exc.detail})
 
     roll_payload = None
-    if decision.branch == "roll_required":
+    if decision and decision.branch == "roll_required":
         luck = _character_luck(char)
         roll = random.randint(1, 100)
         roll_payload = {"skill": decision.roll_skill or "luck", "roll": roll, "target": luck}
         if roll > luck:
-            _insert_retro_action(conn, char, intent, "rejected", {"branch": decision.branch, "roll": roll_payload})
-            raise HTTPException(409, "Retroactive item claim roll failed")
-        _decrement_luck(conn, char, luck)
+            rejection = (
+                409,
+                "Retroactive item claim roll failed",
+                {"branch": decision.branch, "roll": roll_payload},
+            )
 
-    inventory_item = _add_claimed_inventory_item(conn, char, decision.item)
-    conn.execute(
-        "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s",
-        (char["room_id"],),
-    )
-    result = {
-        "branch": decision.branch,
-        "item": inventory_item,
-        "roll": roll_payload,
-    }
-    _insert_retro_action(conn, char, intent, "resolved", result)
-    conn.commit()
+    inventory_item = None
+    try:
+        with conn.transaction() as tx:
+            ensure_campaign_writable(tx, char["room_id"])
+            if rejection:
+                _insert_retro_action(tx, char, intent, "rejected", rejection[2])
+            else:
+                if decision and decision.branch == "roll_required":
+                    _decrement_luck(tx, char, luck)
+                inventory_item = _add_claimed_inventory_item(tx, char, decision.item)
+                tx.execute(
+                    "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s",
+                    (char["room_id"],),
+                )
+                result = {
+                    "branch": decision.branch,
+                    "item": inventory_item,
+                    "roll": roll_payload,
+                }
+                _insert_retro_action(tx, char, intent, "resolved", result)
+    except CampaignReadOnlyError as exc:
+        raise _completed_campaign_http_error(exc) from exc
+
+    if rejection:
+        raise HTTPException(rejection[0], rejection[1])
 
     dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(conn)
     patch_payload = {
@@ -1731,8 +1801,8 @@ def _decrement_luck(conn, char: dict, luck: int):
         )
     else:
         conn.execute(
-            "INSERT INTO character_runtime_state (character_id, luck) VALUES (%s, %s)",
-            (char["character_id"], new_luck),
+            "INSERT INTO character_runtime_state (character_id, room_id, luck) VALUES (%s, %s, %s)",
+            (char["character_id"], char["room_id"], new_luck),
         )
     # Also sync xlsx_data for backward compatibility (derived, not authoritative)
     data = _json_value(char.get("xlsx_data")) or {}
@@ -1897,55 +1967,75 @@ async def create_inventory_transfer(
     item_id: str,
     payload: InventoryTransferCreate,
 ):
+    from ..campaign_archive import CampaignReadOnlyError, ensure_campaign_writable
+
     char = _get_character(request)
     conn = request.app.state.db
     if payload.to_character_id == char["character_id"]:
         raise HTTPException(400, "不能转移给自己")
-    recipient = conn.execute(
-        "SELECT character_id FROM characters WHERE character_id = %s AND room_id = %s AND status != 'left'",
-        (payload.to_character_id, char["room_id"]),
-    ).fetchone()
-    if not recipient:
-        raise HTTPException(404, "目标调查员不在当前房间")
-    item = conn.execute(
-        "SELECT * FROM inventory WHERE id = %s AND character_id = %s AND room_id = %s",
-        (item_id, char["character_id"], char["room_id"]),
-    ).fetchone()
-    if not item:
-        raise HTTPException(404, "物品不存在或不属于当前角色")
-    pending = conn.execute(
-        "SELECT COALESCE(SUM(quantity), 0) AS quantity FROM inventory_transfer_requests "
-        "WHERE item_id = %s AND status = 'pending'",
-        (item_id,),
-    ).fetchone()
-    available_quantity = int(item.get("quantity") or 0) - int(pending.get("quantity") or 0)
-    if payload.quantity > available_quantity:
-        raise HTTPException(409, "可转移数量不足，已有待接收请求")
+    try:
+        with conn.transaction() as tx:
+            ensure_campaign_writable(tx, char["room_id"])
+            recipient = tx.execute(
+                "SELECT character_id FROM characters "
+                "WHERE character_id = %s AND room_id = %s AND status != 'left'",
+                (payload.to_character_id, char["room_id"]),
+            ).fetchone()
+            if not recipient:
+                raise HTTPException(404, "目标调查员不在当前房间")
+            item = tx.execute(
+                "SELECT * FROM inventory "
+                "WHERE id = %s AND character_id = %s AND room_id = %s",
+                (item_id, char["character_id"], char["room_id"]),
+            ).fetchone()
+            if not item:
+                raise HTTPException(404, "物品不存在或不属于当前角色")
+            pending = tx.execute(
+                "SELECT COALESCE(SUM(quantity), 0) AS quantity "
+                "FROM inventory_transfer_requests "
+                "WHERE item_id = %s AND status = 'pending'",
+                (item_id,),
+            ).fetchone()
+            available_quantity = int(item.get("quantity") or 0) - int(
+                pending.get("quantity") or 0
+            )
+            if payload.quantity > available_quantity:
+                raise HTTPException(409, "可转移数量不足，已有待接收请求")
 
-    transfer_id = str(uuid.uuid4())
-    conn.execute(
-        """
-        INSERT INTO inventory_transfer_requests
-            (transfer_id, room_id, item_id, from_character_id, to_character_id,
-             item_name, item_is_secret, quantity)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """,
-        (
-            transfer_id, char["room_id"], item_id, char["character_id"], payload.to_character_id,
-            item["name"], bool(item.get("is_secret", False)), payload.quantity,
-        ),
-    )
-    conn.commit()
-    row = conn.execute(
-        """
-        SELECT transfer.*, sender.player_name AS from_player_name, recipient.player_name AS to_player_name
-        FROM inventory_transfer_requests AS transfer
-        LEFT JOIN characters AS sender ON sender.character_id = transfer.from_character_id
-        LEFT JOIN characters AS recipient ON recipient.character_id = transfer.to_character_id
-        WHERE transfer.transfer_id = %s
-        """,
-        (transfer_id,),
-    ).fetchone()
+            transfer_id = str(uuid.uuid4())
+            tx.execute(
+                """
+                INSERT INTO inventory_transfer_requests
+                    (transfer_id, room_id, item_id, from_character_id, to_character_id,
+                     item_name, item_is_secret, quantity)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    transfer_id,
+                    char["room_id"],
+                    item_id,
+                    char["character_id"],
+                    payload.to_character_id,
+                    item["name"],
+                    bool(item.get("is_secret", False)),
+                    payload.quantity,
+                ),
+            )
+            row = tx.execute(
+                """
+                SELECT transfer.*, sender.player_name AS from_player_name,
+                       recipient.player_name AS to_player_name
+                FROM inventory_transfer_requests AS transfer
+                LEFT JOIN characters AS sender
+                  ON sender.character_id = transfer.from_character_id
+                LEFT JOIN characters AS recipient
+                  ON recipient.character_id = transfer.to_character_id
+                WHERE transfer.transfer_id = %s
+                """,
+                (transfer_id,),
+            ).fetchone()
+    except CampaignReadOnlyError as exc:
+        raise HTTPException(409, detail={"code": str(exc)}) from exc
     return _inventory_transfer_payload(dict(row))
 
 
@@ -1975,88 +2065,127 @@ async def get_inventory_transfers(request: Request):
 
 
 def _resolve_inventory_transfer(request: Request, transfer_id: str, resolution: str) -> dict:
+    from ..campaign_archive import CampaignReadOnlyError, ensure_campaign_writable
+    from ..events.event_log import EventLog
+
     char = _get_character(request)
     conn = request.app.state.db
-    transfer = conn.execute(
-        "SELECT * FROM inventory_transfer_requests WHERE transfer_id = %s FOR UPDATE",
-        (transfer_id,),
-    ).fetchone()
-    if not transfer:
-        raise HTTPException(404, "转移请求不存在")
-    transfer = dict(transfer)
-    if transfer["to_character_id"] != char["character_id"]:
-        raise HTTPException(403, "只有接收方可以处理该请求")
-    if transfer["status"] != "pending":
-        raise HTTPException(409, "转移请求已经处理")
-    if resolution == "rejected":
-        conn.execute(
-            "UPDATE inventory_transfer_requests SET status = 'rejected', resolved_at = NOW() WHERE transfer_id = %s",
-            (transfer_id,),
-        )
-        conn.commit()
-        transfer["status"] = "rejected"
-        return _inventory_transfer_payload(transfer)
-
-    source_item = conn.execute(
-        "SELECT * FROM inventory WHERE id = %s AND character_id = %s AND room_id = %s FOR UPDATE",
-        (transfer["item_id"], transfer["from_character_id"], transfer["room_id"]),
-    ).fetchone()
-    if not source_item or int(source_item.get("quantity") or 0) < int(transfer["quantity"]):
-        conn.execute(
-            "UPDATE inventory_transfer_requests SET status = 'unavailable', resolved_at = NOW() WHERE transfer_id = %s",
-            (transfer_id,),
-        )
-        conn.commit()
+    unavailable = False
+    try:
+        with conn.transaction() as tx:
+            transfer_row = tx.execute(
+                "SELECT * FROM inventory_transfer_requests "
+                "WHERE transfer_id = %s FOR UPDATE",
+                (transfer_id,),
+            ).fetchone()
+            if not transfer_row:
+                raise HTTPException(404, "转移请求不存在")
+            transfer = dict(transfer_row)
+            if transfer["to_character_id"] != char["character_id"]:
+                raise HTTPException(403, "只有接收方可以处理该请求")
+            if transfer["status"] != "pending":
+                raise HTTPException(409, "转移请求已经处理")
+            ensure_campaign_writable(tx, transfer["room_id"])
+            if resolution == "rejected":
+                tx.execute(
+                    "UPDATE inventory_transfer_requests "
+                    "SET status = 'rejected', resolved_at = NOW() "
+                    "WHERE transfer_id = %s",
+                    (transfer_id,),
+                )
+                transfer["status"] = "rejected"
+                result = _inventory_transfer_payload(transfer)
+            else:
+                source_item = tx.execute(
+                    "SELECT * FROM inventory "
+                    "WHERE id = %s AND character_id = %s AND room_id = %s FOR UPDATE",
+                    (
+                        transfer["item_id"],
+                        transfer["from_character_id"],
+                        transfer["room_id"],
+                    ),
+                ).fetchone()
+                if (
+                    not source_item
+                    or int(source_item.get("quantity") or 0)
+                    < int(transfer["quantity"])
+                ):
+                    tx.execute(
+                        "UPDATE inventory_transfer_requests "
+                        "SET status = 'unavailable', resolved_at = NOW() "
+                        "WHERE transfer_id = %s",
+                        (transfer_id,),
+                    )
+                    unavailable = True
+                    result = {}
+                else:
+                    source_item = dict(source_item)
+                    if int(source_item["quantity"]) == int(transfer["quantity"]):
+                        result_item_id = source_item["id"]
+                        tx.execute(
+                            "UPDATE inventory SET character_id = %s WHERE id = %s",
+                            (char["character_id"], result_item_id),
+                        )
+                    else:
+                        result_item_id = str(uuid.uuid4())
+                        tx.execute(
+                            "UPDATE inventory SET quantity = quantity - %s WHERE id = %s",
+                            (transfer["quantity"], source_item["id"]),
+                        )
+                        tx.execute(
+                            """
+                            INSERT INTO inventory
+                                (id, character_id, room_id, name, description,
+                                 quantity, is_secret, source)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                result_item_id,
+                                char["character_id"],
+                                transfer["room_id"],
+                                source_item["name"],
+                                source_item.get("description") or "",
+                                transfer["quantity"],
+                                bool(source_item.get("is_secret", False)),
+                                source_item.get("source") or "",
+                            ),
+                        )
+                    state = tx.execute(
+                        "UPDATE rooms SET state_version = state_version + 1 "
+                        "WHERE room_id = %s RETURNING state_version",
+                        (transfer["room_id"],),
+                    ).fetchone()
+                    tx.execute(
+                        """
+                        UPDATE inventory_transfer_requests
+                        SET status = 'completed', result_item_id = %s,
+                            resolved_at = NOW()
+                        WHERE transfer_id = %s
+                        """,
+                        (result_item_id, transfer_id),
+                    )
+                    EventLog(tx).log_event(
+                        transfer["room_id"],
+                        "inventory_transfer_completed",
+                        "system",
+                        {
+                            "operation": "inventory_transfer_completed",
+                            "transferId": transfer_id,
+                            "fromCharacterId": transfer["from_character_id"],
+                            "toCharacterId": char["character_id"],
+                            "quantity": transfer["quantity"],
+                            "stateVersion": state["state_version"],
+                        },
+                        commit=False,
+                    )
+                    transfer["status"] = "completed"
+                    transfer["resolved_at"] = "now"
+                    result = _inventory_transfer_payload(transfer)
+    except CampaignReadOnlyError as exc:
+        raise HTTPException(409, detail={"code": str(exc)}) from exc
+    if unavailable:
         raise HTTPException(409, "物品已不可用，转移请求已关闭")
-
-    source_item = dict(source_item)
-    if int(source_item["quantity"]) == int(transfer["quantity"]):
-        result_item_id = source_item["id"]
-        conn.execute(
-            "UPDATE inventory SET character_id = %s WHERE id = %s",
-            (char["character_id"], result_item_id),
-        )
-    else:
-        result_item_id = str(uuid.uuid4())
-        conn.execute(
-            "UPDATE inventory SET quantity = quantity - %s WHERE id = %s",
-            (transfer["quantity"], source_item["id"]),
-        )
-        conn.execute(
-            """
-            INSERT INTO inventory (id, character_id, room_id, name, description, quantity, is_secret, source)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                result_item_id, char["character_id"], transfer["room_id"], source_item["name"],
-                source_item.get("description") or "", transfer["quantity"],
-                bool(source_item.get("is_secret", False)), source_item.get("source") or "",
-            ),
-        )
-    state = conn.execute(
-        "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s RETURNING state_version",
-        (transfer["room_id"],),
-    ).fetchone()
-    conn.execute(
-        """
-        UPDATE inventory_transfer_requests
-        SET status = 'completed', result_item_id = %s, resolved_at = NOW()
-        WHERE transfer_id = %s
-        """,
-        (result_item_id, transfer_id),
-    )
-    from ..events.event_log import EventLog
-    EventLog(conn).log_event(transfer["room_id"], "inventory_transfer_completed", "system", {
-        "operation": "inventory_transfer_completed",
-        "transferId": transfer_id,
-        "fromCharacterId": transfer["from_character_id"],
-        "toCharacterId": char["character_id"],
-        "quantity": transfer["quantity"],
-        "stateVersion": state["state_version"],
-    })
-    transfer["status"] = "completed"
-    transfer["resolved_at"] = "now"
-    return _inventory_transfer_payload(transfer)
+    return result
 
 
 @router.post("/inventory-transfers/{transfer_id}/accept")

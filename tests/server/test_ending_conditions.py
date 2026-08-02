@@ -76,3 +76,106 @@ def test_evaluate_ending_rejects_ambiguous_or_invalid_conditions(client, test_db
         room_id,
         [{**matching, "completion_conditions": {"invented": True}}],
     ) is None
+    assert evaluate_ending_conditions(
+        test_db,
+        room_id,
+        [{
+            **matching,
+            "completion_conditions": {
+                "event_types": ["s2c_public_observation"],
+            },
+        }],
+    ) is None
+
+
+def test_evaluate_ending_selects_unique_highest_priority_match(client, test_db):
+    from src.server.engine.ending_conditions import evaluate_ending_conditions
+
+    setup_auth_test_data(test_db)
+    room_id = create_room(client)["room_id"]
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.commit()
+    matching = {
+        "citation": {"source_ref": "page:1"},
+        "completion_conditions": {"room_status": "active"},
+        "exclusive_group": "campaign_ending",
+    }
+
+    decision = evaluate_ending_conditions(
+        test_db,
+        room_id,
+        [
+            {**matching, "ending_id": "mixed", "type": "mixed", "priority": 200},
+            {**matching, "ending_id": "victory", "type": "victory", "priority": 300},
+        ],
+    )
+
+    assert decision is not None
+    assert decision.ending_id == "victory"
+    assert decision.priority == 300
+    assert decision.exclusive_group == "campaign_ending"
+
+
+def test_evaluate_ending_rejects_tied_highest_priority(client, test_db):
+    from src.server.engine.ending_conditions import evaluate_ending_conditions
+
+    setup_auth_test_data(test_db)
+    room_id = create_room(client)["room_id"]
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.commit()
+    matching = {
+        "type": "mixed",
+        "citation": {"source_ref": "page:1"},
+        "completion_conditions": {"room_status": "active"},
+        "priority": 200,
+        "exclusive_group": "campaign_ending",
+    }
+
+    assert evaluate_ending_conditions(
+        test_db,
+        room_id,
+        [
+            {**matching, "ending_id": "first"},
+            {**matching, "ending_id": "second"},
+        ],
+    ) is None
+
+
+def test_evaluate_ending_forces_safe_abort_above_declared_normal_priority(
+    client,
+    test_db,
+):
+    from src.server.engine.ending_conditions import evaluate_ending_conditions
+
+    setup_auth_test_data(test_db)
+    room_id = create_room(client)["room_id"]
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.commit()
+    matching = {
+        "citation": {"source_ref": "page:1"},
+        "completion_conditions": {"room_status": "active"},
+        "exclusive_group": "campaign_ending",
+    }
+
+    decision = evaluate_ending_conditions(
+        test_db,
+        room_id,
+        [
+            {
+                **matching,
+                "ending_id": "normal",
+                "type": "victory",
+                "priority": 999_999,
+            },
+            {
+                **matching,
+                "ending_id": "safe-abort",
+                "type": "safe_abort",
+                "priority": -1,
+            },
+        ],
+    )
+
+    assert decision is not None
+    assert decision.ending_id == "safe-abort"
+    assert decision.priority == 1_000_000

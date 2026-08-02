@@ -262,6 +262,13 @@ def test_admin_global_reset_requires_verified_download_before_deleting_room_data
 ):
     monkeypatch.setenv("AIKEEPER_MIGRATION_BACKUP_DIR", str(tmp_path))
     room, _ = _setup_migratable_room(client, test_db)
+    test_db.execute(
+        "INSERT INTO campaign_archives "
+        "(archive_id, room_id, ending_type, summary, highlights, character_arcs) "
+        "VALUES ('reset-archive', %s, 'mixed', 'summary', '[]', '[]')",
+        (room["room_id"],),
+    )
+    test_db.commit()
     admin_token = login(client, "admin")
     headers = {"Authorization": f"Bearer {admin_token}"}
 
@@ -310,6 +317,7 @@ def test_admin_global_reset_requires_verified_download_before_deleting_room_data
     assert executed.json()["deleted"]["rooms"] >= 1
     assert test_db.execute("SELECT COUNT(*) AS count FROM rooms").fetchone()["count"] == 0
     assert test_db.execute("SELECT COUNT(*) AS count FROM characters").fetchone()["count"] == 0
+    assert test_db.execute("SELECT COUNT(*) AS count FROM campaign_archives").fetchone()["count"] == 0
     assert test_db.execute("SELECT COUNT(*) AS count FROM accounts").fetchone()["count"] >= 3
     assert test_db.execute("SELECT COUNT(*) AS count FROM scenarios WHERE scenario_id = 'sc-test'").fetchone()["count"] == 1
     assert test_db.execute("SELECT COUNT(*) AS count FROM events WHERE room_id = %s", (room["room_id"],)).fetchone()["count"] == 0

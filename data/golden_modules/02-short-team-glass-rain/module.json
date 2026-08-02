@@ -276,12 +276,62 @@
       "summary": "G-17 是一次被废弃的节水测试，它错误地把反光标签识别为生长信号。冰雨砸破传感器后，系统将所有银色标签判定为启动条件，并准备向蓄水池回灌。韩岑隐瞒旧测试，梅冬被困于修正管线的过程中。",
       "citation_ids": ["cit-glass-truth"]
     },
+    "critical_progression": [
+      {
+        "progression_id": "glass-stop-flood",
+        "entry_path_ids": ["orchid-route", "control-route"],
+        "ordinary_failure_can_close": true,
+        "alternative_path_ids": ["orchid-route", "control-route"],
+        "recovery_node_ids": ["glass-radio-recovery"],
+        "citation": {"source_ref": "module.json#/knowledge_graph/truth"}
+      }
+    ],
+    "alternative_paths": [
+      {
+        "path_id": "orchid-route",
+        "progression_id": "glass-stop-flood",
+        "from_scene_id": "orchid-hall",
+        "target_scene_id": "cistern",
+        "conditions": [],
+        "citation": {"source_ref": "module.json#/scenario_assets/text_map/edges/3"}
+      },
+      {
+        "path_id": "control-route",
+        "progression_id": "glass-stop-flood",
+        "from_scene_id": "control-room",
+        "target_scene_id": "cistern",
+        "conditions": [],
+        "citation": {"source_ref": "module.json#/scenario_assets/text_map/edges/4"}
+      }
+    ],
+    "recovery_nodes": [
+      {
+        "recovery_node_id": "glass-radio-recovery",
+        "progression_id": "glass-stop-flood",
+        "from_scene_ids": ["cistern"],
+        "target_scene_id": "control-room",
+        "reveal_fact_ids": [],
+        "reveal_clue_ids": ["restart-log"],
+        "conditions": [],
+        "cost_boundary": {"kind": "time", "amount": 10},
+        "citation": {"source_ref": "module.json#/knowledge_graph/clues/3"}
+      }
+    ],
+    "true_failure_conditions": [
+      {
+        "failure_id": "glass-storm-clock-expired",
+        "conditions": [{"kind": "event", "id": "storm_clock_expired"}],
+        "citation": {"source_ref": "module.json#/knowledge_graph/endings/2"}
+      }
+    ],
     "endings": [
       {
         "ending_id": "glass-rescue",
         "name": "协作停机与救援",
         "description": "队伍按正确顺序关闭阀门并断电，救出梅冬，保留测试表作为后续调查证据。",
         "type": "victory",
+        "priority": 300,
+        "exclusive_group": "campaign_ending",
         "completion_conditions": {
           "entered_scenes": ["cistern"],
           "all_clues": ["maintenance-radio"]
@@ -293,6 +343,8 @@
         "name": "先断电的代价",
         "description": "系统停下但回灌压力造成局部水管破裂；梅冬获救，温室需长期修复。",
         "type": "mixed",
+        "priority": 200,
+        "exclusive_group": "campaign_ending",
         "completion_conditions": {
           "entered_scenes": ["cistern"],
           "all_clues": ["restart-log"]
@@ -304,6 +356,8 @@
         "name": "错过倒计时",
         "description": "G-17 重启，蓄水池被淹并毁坏部分证据；队伍仍可疏散人员并留下失败后的调查线索。",
         "type": "defeat",
+        "priority": 100,
+        "exclusive_group": "campaign_ending",
         "completion_conditions": {
           "entered_scenes": ["cistern"],
           "all_clues": ["g17-test-sheet"]
@@ -315,6 +369,8 @@
         "name": "安全中止并撤离",
         "description": "触发安全暂停后，由桌务协助者结束本次游戏。已发生的房间状态与角色结局被归档，新房间不会继承本次 SAN 或疯狂状态。",
         "type": "safe_abort",
+        "priority": 1000000,
+        "exclusive_group": "campaign_ending",
         "completion_mode": "table_steward_safety_end",
         "completion_conditions": {
           "room_status": "completed"

@@ -2,7 +2,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Request, HTTPException, Query
 from .events.event_log import EventLog
-from .campaign_archive import CampaignArchive
+from .campaign_archive import CampaignArchive, CampaignReadOnlyError
 from .models import CampaignArchiveQuery
 from .engine.runtime_integrity import (
     CheckpointIntegrityError,
@@ -355,11 +355,14 @@ async def end_campaign(request: Request, room_id: str):
     if text:
         payload["text"] = text
 
-    event_log = EventLog(conn)
-    event_log.log_event(room_id, "s2c_campaign_ended", "party", payload)
-
     archive = CampaignArchive(conn)
-    ending = archive.generate_ending(room_id)
+    try:
+        ending = archive.generate_ending(
+            room_id,
+            ending_event_payload=payload,
+        )
+    except CampaignReadOnlyError as exc:
+        raise HTTPException(409, detail={"code": str(exc)}) from exc
     return ending.model_dump()
 
 

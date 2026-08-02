@@ -195,6 +195,63 @@ def test_client_like_event_payload_cannot_consume_an_armed_reaction(client, test
     ) == []
 
 
+def test_completed_campaign_cannot_consume_armed_prepared_action(client, test_db):
+    from src.server.engine.prepared_rule_actions import (
+        PreparedRuleEvent,
+        consume_prepared_actions_for_rule_event,
+    )
+
+    room_id, character_id, player_token = _setup_player(client, test_db)
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers={"X-Room-Token": player_token},
+        json={
+            "declared_intent": "When an enemy attacks, take cover.",
+            "intent_type": "prepared_action",
+            "params": {
+                "triggerKind": "enemy_public_attack_declared",
+                "reactionKind": "take_cover",
+            },
+        },
+    ).json()
+    armed = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={
+            "X-Room-Token": player_token,
+            "Idempotency-Key": "arm-after-ending-guard",
+        },
+        json={"confirmations": draft["confirmation_requirements"]},
+    ).json()
+    test_db.execute(
+        "INSERT INTO actions (action_id, room_id, character_id, intent_type, status) "
+        "VALUES ('completed-source-after-ending', %s, %s, 'combat_action', 'completed')",
+        (room_id, character_id),
+    )
+    test_db.execute(
+        "UPDATE rooms SET status = 'completed' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    triggered = consume_prepared_actions_for_rule_event(
+        test_db,
+        room_id=room_id,
+        source_action_id="completed-source-after-ending",
+        rule_event=PreparedRuleEvent.enemy_public_attack_declared(),
+    )
+
+    assert triggered == []
+    assert test_db.execute(
+        "SELECT status FROM prepared_rule_actions WHERE action_id = %s",
+        (armed["action_id"],),
+    ).fetchone()["status"] == "armed"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM actions "
+        "WHERE room_id = %s AND params ->> 'preparedActionId' = %s",
+        (room_id, armed["action_id"]),
+    ).fetchone()["count"] == 0
+
+
 def test_player_can_cancel_an_armed_prepared_action_before_it_triggers(client, test_db):
     room_id, _, player_token = _setup_player(client, test_db)
     headers = {"X-Room-Token": player_token}

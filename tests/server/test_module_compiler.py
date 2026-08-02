@@ -252,6 +252,144 @@ def test_runtime_package_exposes_generic_scene_edge_logical_keys(test_db):
     assert edge["to_scene_id"] == "harbor"
 
 
+def test_runtime_endings_compile_priority_exclusivity_and_safe_abort_precedence():
+    from src.server.scenario.module_compiler import _build_runtime_package
+
+    graph = _graph_with_citations()
+    graph["endings"].append({
+        "ending_id": "abort",
+        "name": "Safe abort",
+        "type": "safe_abort",
+        "citation": _citation("part-safe-abort"),
+        "completion_conditions": {"room_status": "completed"},
+    })
+
+    package = _build_runtime_package(
+        {"scenario_version_id": "ending-version", "scenario_title": "Ending"},
+        graph,
+        {},
+        [],
+        [],
+        [],
+        [{"template_id": "template", "name": "Investigator"}],
+    )
+
+    endings = package["ending_conditions"]
+    assert all(ending["exclusive_group"] == "campaign_ending" for ending in endings)
+    safe_abort = next(ending for ending in endings if ending["type"] == "safe_abort")
+    assert safe_abort["priority"] > max(
+        ending["priority"] for ending in endings if ending["type"] != "safe_abort"
+    )
+
+
+def test_compile_gate_rejects_ambiguous_ending_priority_within_exclusive_group():
+    from src.server.scenario.module_compiler import _quality_exceptions
+
+    graph = _graph_with_citations()
+    graph["endings"] = [
+        {
+            "ending_id": ending_id,
+            "name": ending_id,
+            "type": "mixed",
+            "priority": 500,
+            "exclusive_group": "campaign_ending",
+            "citation": _citation(f"part-{ending_id}"),
+            "completion_conditions": {"entered_scenes": ["station"]},
+        }
+        for ending_id in ("first", "second")
+    ]
+
+    issues = _quality_exceptions(
+        graph,
+        [],
+        [],
+        [],
+        {},
+        [],
+        [{"template_id": "template", "name": "Investigator"}],
+    )
+
+    assert any(
+        issue["code"] == "ambiguous_ending_priority"
+        and issue["blocking"] is True
+        and issue["waivable"] is False
+        for issue in issues
+    )
+
+
+def test_compile_gate_rejects_presentation_event_as_ending_evidence():
+    from src.server.scenario.module_compiler import _quality_exceptions
+
+    graph = _graph_with_citations()
+    graph["endings"] = [{
+        "ending_id": "projection-is-not-a-fact",
+        "name": "Invalid projection ending",
+        "type": "victory",
+        "citation": _citation("part-ending"),
+        "completion_conditions": {
+            "event_types": ["s2c_public_observation"],
+        },
+    }]
+
+    issues = _quality_exceptions(
+        graph,
+        [],
+        [],
+        [],
+        {},
+        [],
+        [{"template_id": "template", "name": "Investigator"}],
+    )
+
+    assert any(
+        issue["code"] == "invalid_ending_conditions"
+        and issue["blocking"] is True
+        and issue["waivable"] is False
+        for issue in issues
+    )
+
+
+def test_compile_gate_rejects_ambiguous_priority_across_exclusive_groups_and_items():
+    from src.server.scenario.module_compiler import _quality_exceptions
+
+    graph = _graph_with_citations()
+    graph["endings"] = []
+    items = [
+        {
+            "item_type": "ending",
+            "logical_key": ending_id,
+            "title": ending_id,
+            "payload": {
+                "type": ending_type,
+                "priority": 500,
+                "exclusive_group": group,
+                "completion_conditions": {"entered_scenes": ["station"]},
+            },
+            "citation": _citation(f"part-{ending_id}"),
+        }
+        for ending_id, ending_type, group in (
+            ("item-mixed", "mixed", "story"),
+            ("item-victory", "victory", "safety"),
+        )
+    ]
+
+    issues = _quality_exceptions(
+        graph,
+        items,
+        [],
+        [],
+        {},
+        [],
+        [{"template_id": "template", "name": "Investigator"}],
+    )
+
+    assert any(
+        issue["code"] == "ambiguous_ending_priority"
+        and issue["blocking"] is True
+        for issue in issues
+    )
+
+
 def test_missing_citation_can_be_confirmed_but_invalid_solo_cannot(test_db):
     from src.server.scenario.module_compiler import ModuleCompiler, ModuleCompilerError
 

@@ -116,18 +116,15 @@ def execute_global_reset(conn, backup_id: str, backup_dir: Path | None = None) -
 
     deleted = collect_reset_counts(conn)
     tables = _room_data_tables(conn)
-    try:
+    with conn.transaction() as tx:
+        tx.execute("SET LOCAL aikeeper.archive_purge = 'on'")
         for table in tables:
             if table == "document_chunks":
-                conn.execute("DELETE FROM document_chunks WHERE room_id IS NOT NULL")
+                tx.execute("DELETE FROM document_chunks WHERE room_id IS NOT NULL")
             else:
-                conn.execute(f'DELETE FROM "{table}"')
-        conn.execute("DELETE FROM characters")
-        conn.execute("DELETE FROM rooms")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+                tx.execute(f'DELETE FROM "{table}"')
+        tx.execute("DELETE FROM characters")
+        tx.execute("DELETE FROM rooms")
     return deleted
 
 

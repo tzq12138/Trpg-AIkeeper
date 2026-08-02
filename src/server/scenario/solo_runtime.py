@@ -547,6 +547,8 @@ class SoloAdventureRuntime:
         target_node_id: str,
         scene_variables: dict[str, Any] | None = None,
         transaction=None,
+        finalize_terminal: bool = True,
+        ending_type: str | None = None,
     ) -> dict[str, Any]:
         transaction_scope = (
             nullcontext(transaction) if transaction is not None else self.conn.transaction()
@@ -593,19 +595,17 @@ class SoloAdventureRuntime:
                     json.dumps(updated_scene_variables, ensure_ascii=False),
                 ),
             )
-            target_text = str(
-                _json_object(context["nodes"][target_node_id].get("payload")).get("text")
-                or ""
-            )
+            target_node = context["nodes"][target_node_id]
+            target_payload = _json_object(target_node.get("payload"))
+            target_text = str(target_payload.get("text") or "")
             is_ending = (
                 "【剧终】" in target_text
                 and not context["targets"].get(target_node_id, [])
             )
             room = tx.execute(
-                "UPDATE rooms SET state_version = state_version + 1, "
-                "status = CASE WHEN %s THEN 'completed' ELSE status END WHERE room_id = %s "
+                "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s "
                 "RETURNING state_version",
-                (is_ending, room_id),
+                (room_id,),
             ).fetchone()
             if is_ending:
                 tx.execute(
@@ -615,6 +615,37 @@ class SoloAdventureRuntime:
                     (room_id,),
                 )
             edge = context["edges"][(current_node_id, target_node_id)]
+            resolved_ending_type = str(
+                ending_type or target_payload.get("ending_type") or "mixed"
+            ).strip()
+            if resolved_ending_type not in {"victory", "defeat", "mixed"}:
+                resolved_ending_type = "mixed"
+            ending_event_sequence = None
+            if is_ending and finalize_terminal:
+                from ..campaign_archive import finalize_campaign
+
+                ending_citation = _json_object(target_node.get("citation")) or _json_object(
+                    edge.get("citation")
+                )
+                finalized = finalize_campaign(
+                    self.conn,
+                    room_id,
+                    ending_type=resolved_ending_type,
+                    summary="单人冒险已到达已编译的终局节点。",
+                    highlights=[target_text] if target_text else [],
+                    expected_room_statuses=("lobby", "suggested", "active", "paused"),
+                    ending_event_payload={
+                        "ending_id": f"solo_terminal_{target_node_id}",
+                        "ending_type": resolved_ending_type,
+                        "citation": ending_citation,
+                        "completion_source": "solo_terminal_node",
+                    },
+                    transaction=tx,
+                )
+                if finalized is None:
+                    raise SoloTransitionError("solo_campaign_already_completed")
+                ending_event_sequence = finalized.ending_event_sequence
+                room = {"state_version": finalized.state_version}
         return {
             "scenario_version_id": context["scenario_version_id"],
             "from_node_id": current_node_id,
@@ -623,6 +654,13 @@ class SoloAdventureRuntime:
             "citation": _json_object(edge.get("citation")),
             "state_version": int(room.get("state_version") or 0) if room else 0,
             "is_ending": is_ending,
+            "ending_type": resolved_ending_type if is_ending else None,
+            "ending_citation": (
+                _json_object(target_node.get("citation"))
+                if is_ending
+                else {}
+            ),
+            "ending_event_sequence": ending_event_sequence,
         }
 
     def _context(self, room_id: str, *, connection=None) -> dict[str, Any] | None:

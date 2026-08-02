@@ -10,64 +10,148 @@ class Engine:
     def __init__(self, conn):
         self.conn = conn
 
-    def submit_intent(self, room_id: str, character_id: str, intent: PlayerIntent) -> dict:
-        existing = self.conn.execute(
-            "SELECT status FROM actions WHERE action_id = %s", (intent.action_id,)
-        ).fetchone()
-        if existing:
-            logger.info("submit_intent: idempotent action_id=%s room=%s status=%s",
-                        intent.action_id, room_id, existing["status"])
-            return {"status": "accepted", "action_id": intent.action_id}
+    def submit_intent(
+        self,
+        room_id: str,
+        character_id: str,
+        intent: PlayerIntent,
+        *,
+        turn_based: bool = False,
+    ) -> dict:
+        from ..campaign_archive import ensure_campaign_writable
 
-        room = self.conn.execute(
-            "SELECT state_version FROM rooms WHERE room_id = %s", (room_id,)
-        ).fetchone()
-        current_version = room["state_version"] if room else 0
-        if intent.base_state_version != 0 and intent.base_state_version != current_version:
-            logger.warning("submit_intent: version conflict room=%s char=%s base=%s current=%s",
-                           room_id, character_id, intent.base_state_version, current_version)
-            return {"status": "conflict", "current_version": current_version}
-
-        if intent.intent_type == "ready_toggle":
-            self.conn.execute(
-                "UPDATE characters SET is_ready = NOT is_ready WHERE character_id = %s",
-                (character_id,),
-            )
-            char = self.conn.execute(
-                "SELECT is_ready FROM characters WHERE character_id = %s", (character_id,)
+        with self.conn.transaction() as tx:
+            room = ensure_campaign_writable(tx, room_id)
+            existing = tx.execute(
+                "SELECT status, turn_id FROM actions WHERE action_id = %s",
+                (intent.action_id,),
             ).fetchone()
-            self.conn.execute(
-                "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, 'player', %s)",
-                (room_id, "s2c_ready_toggled", json.dumps({"character_id": character_id, "is_ready": bool(char["is_ready"])})),
-            )
-            self.conn.commit()
-            logger.info("submit_intent: ready_toggle room=%s char=%s is_ready=%s",
-                        room_id, character_id, char["is_ready"])
-            return {"status": "accepted", "action_id": intent.action_id, "is_ready": bool(char["is_ready"])}
+            if existing:
+                logger.info(
+                    "submit_intent: idempotent action_id=%s room=%s status=%s",
+                    intent.action_id,
+                    room_id,
+                    existing["status"],
+                )
+                result = {"status": "accepted", "action_id": intent.action_id}
+                if turn_based and existing.get("turn_id"):
+                    turn = tx.execute(
+                        "SELECT turn_id, turn_index FROM room_turns WHERE turn_id = %s",
+                        (existing["turn_id"],),
+                    ).fetchone()
+                    if turn:
+                        result.update({
+                            "turnId": turn["turn_id"],
+                            "turnIndex": turn["turn_index"],
+                        })
+                return result
 
-        self.conn.execute(
-            "INSERT INTO actions (action_id, room_id, character_id, intent_type, declared_intent, params, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, 'queued')",
-            (
-                intent.action_id,
+            current_version = int(room.get("state_version") or 0)
+            if (
+                intent.base_state_version != 0
+                and intent.base_state_version != current_version
+            ):
+                logger.warning(
+                    "submit_intent: version conflict room=%s char=%s base=%s current=%s",
+                    room_id,
+                    character_id,
+                    intent.base_state_version,
+                    current_version,
+                )
+                return {"status": "conflict", "current_version": current_version}
+
+            if intent.intent_type == "ready_toggle":
+                tx.execute(
+                    "UPDATE characters SET is_ready = NOT is_ready "
+                    "WHERE character_id = %s AND room_id = %s",
+                    (character_id, room_id),
+                )
+                char = tx.execute(
+                    "SELECT is_ready FROM characters WHERE character_id = %s",
+                    (character_id,),
+                ).fetchone()
+                tx.execute(
+                    "INSERT INTO events (room_id, event_type, audience, payload) "
+                    "VALUES (%s, %s, 'player', %s)",
+                    (
+                        room_id,
+                        "s2c_ready_toggled",
+                        json.dumps({
+                            "character_id": character_id,
+                            "is_ready": bool(char["is_ready"]),
+                        }),
+                    ),
+                )
+                is_ready = bool(char["is_ready"])
+            else:
+                turn = None
+                if turn_based:
+                    from ..turn_manager import TurnManager
+
+                    turn = TurnManager(self.conn).ensure_current_turn(
+                        room_id,
+                        transaction=tx,
+                    )
+                    duplicate = tx.execute(
+                        "SELECT action_id FROM actions WHERE turn_id = %s AND character_id = %s "
+                        "AND status NOT IN ('rejected', 'canceled', 'timeout')",
+                        (turn["turn_id"], character_id),
+                    ).fetchone()
+                    if duplicate:
+                        return {
+                            "status": "duplicate",
+                            "turn_id": turn["turn_id"],
+                            "turn_index": turn["turn_index"],
+                            "message": "Already submitted this turn",
+                        }
+                tx.execute(
+                    "INSERT INTO actions "
+                    "(action_id, room_id, character_id, turn_id, intent_type, declared_intent, params, status) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, 'queued')",
+                    (
+                        intent.action_id,
+                        room_id,
+                        character_id,
+                        turn["turn_id"] if turn else None,
+                        intent.intent_type,
+                        intent.declared_intent,
+                        json.dumps(intent.params, ensure_ascii=False),
+                    ),
+                )
+                tx.execute(
+                    "INSERT INTO events (room_id, event_type, audience, payload) "
+                    "VALUES (%s, %s, 'player', %s)",
+                    (
+                        room_id,
+                        "s2c_action_queued",
+                        json.dumps({"actionId": intent.action_id}),
+                    ),
+                )
+                is_ready = None
+            # Action queuing does not bump rooms.state_version; the locked room
+            # row only serializes this write against campaign finalization.
+        if intent.intent_type == "ready_toggle":
+            logger.info(
+                "submit_intent: ready_toggle room=%s char=%s is_ready=%s",
                 room_id,
                 character_id,
-                intent.intent_type,
-                intent.declared_intent,
-                json.dumps(intent.params, ensure_ascii=False),
-            ),
-        )
-        self.conn.execute(
-            "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, 'player', %s)",
-            (room_id, "s2c_action_queued", json.dumps({"actionId": intent.action_id})),
-        )
-        # Note: action queuing does NOT bump rooms.state_version.
-        # state_version is reserved for authoritative world state changes (HP/SAN/clue/map/etc).
-        self.conn.commit()
+                is_ready,
+            )
+            return {
+                "status": "accepted",
+                "action_id": intent.action_id,
+                "is_ready": is_ready,
+            }
         logger.info("submit_intent: queued action_id=%s room=%s char=%s type=%s intent=%s",
                     intent.action_id, room_id, character_id, intent.intent_type,
                     (intent.declared_intent or "")[:80])
-        return {"status": "accepted", "action_id": intent.action_id}
+        result = {"status": "accepted", "action_id": intent.action_id}
+        if turn:
+            result.update({
+                "turnId": turn["turn_id"],
+                "turnIndex": turn["turn_index"],
+            })
+        return result
 
     def bump_state_version(self, room_id: str) -> dict:
         room = self.conn.execute(

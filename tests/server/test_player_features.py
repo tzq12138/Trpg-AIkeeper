@@ -157,6 +157,51 @@ class TestInventoryTransfers:
         ).fetchone()
         assert transfer["status"] == "unavailable"
 
+    def test_completed_campaign_rejects_inventory_transfer_acceptance(self, client, test_db):
+        room_id, sender, recipient = self._two_players_with_item(client, test_db)
+        requested = client.post(
+            "/api/player/inventory/transfer-item/transfers",
+            json={"toCharacterId": recipient["character_id"], "quantity": 1},
+            headers={"X-Room-Token": sender["player_token"]},
+        ).json()
+        test_db.execute(
+            "UPDATE rooms SET status = 'completed' WHERE room_id = %s",
+            (room_id,),
+        )
+        test_db.commit()
+        before_version = test_db.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()["state_version"]
+
+        response = client.post(
+            f"/api/player/inventory-transfers/{requested['transferId']}/accept",
+            headers={"X-Room-Token": recipient["player_token"]},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "campaign_completed_read_only"
+        rejected = client.post(
+            f"/api/player/inventory-transfers/{requested['transferId']}/reject",
+            headers={"X-Room-Token": recipient["player_token"]},
+        )
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"]["code"] == "campaign_completed_read_only"
+        assert test_db.execute(
+            "SELECT status FROM inventory_transfer_requests WHERE transfer_id = %s",
+            (requested["transferId"],),
+        ).fetchone()["status"] == "pending"
+        assert test_db.execute(
+            "SELECT character_id, quantity FROM inventory WHERE id = 'transfer-item'"
+        ).fetchone() == {
+            "character_id": sender["character_id"],
+            "quantity": 2,
+        }
+        assert test_db.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()["state_version"] == before_version
+
 
 class TestSkillCheckAPI:
     def test_skill_check(self, client, room_and_player):

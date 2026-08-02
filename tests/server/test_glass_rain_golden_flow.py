@@ -136,6 +136,7 @@ def _insert_v2_action(
     declared_intent,
     from_scene=None,
     target_scene=None,
+    extra_params=None,
 ):
     action_id = f"glass-{uuid.uuid4().hex[:12]}"
     room = test_db.execute(
@@ -173,6 +174,7 @@ def _insert_v2_action(
                 },
             }
         )
+    params.update(extra_params or {})
     test_db.execute(
         "INSERT INTO actions "
         "(action_id, room_id, character_id, draft_id, intent_type, "
@@ -208,6 +210,7 @@ async def _resolve(
     declared_intent,
     from_scene=None,
     target_scene=None,
+    extra_params=None,
 ):
     action_id = _insert_v2_action(
         test_db,
@@ -217,6 +220,7 @@ async def _resolve(
         declared_intent=declared_intent,
         from_scene=from_scene,
         target_scene=target_scene,
+        extra_params=extra_params,
     )
     result = await ResolutionPipeline(
         conn=test_db,
@@ -246,6 +250,14 @@ async def test_glass_rain_v2_ai_only_success_mixed_and_safe_abort_flows(
     monkeypatch.setattr(
         "src.server.rules.coc_handlers.secure_randint",
         lambda low, high, test_rng=None: high,
+    )
+
+    def reject_post_ending_prepared_write(*_args, **_kwargs):
+        raise AssertionError("结局提交后不应再处理预备反应状态")
+
+    monkeypatch.setattr(
+        "src.server.engine.prepared_rule_actions.complete_triggered_prepared_reaction",
+        reject_post_ending_prepared_write,
     )
 
     success_room, success_players, success_state = _create_started_room(
@@ -321,7 +333,7 @@ async def test_glass_rain_v2_ai_only_success_mixed_and_safe_abort_flows(
         state_service=success_state,
         host_connection_checker=lambda _room_id: False,
     ).resolve_action(paused_action_id)
-    assert cistern_result["status"] == "completed"
+    assert cistern_result["status"] == "completed", cistern_result
     sanity = test_db.execute(
         "SELECT san, temp_modifiers FROM character_runtime_state "
         "WHERE room_id = %s AND character_id = %s",
@@ -330,6 +342,13 @@ async def test_glass_rain_v2_ai_only_success_mixed_and_safe_abort_flows(
     assert sanity["san"] == start_san - 4
     assert sanity["temp_modifiers"]["coc7_sanity"]["day_key"] == "glass-rain-night-1"
 
+    pending_after_ending_action = _insert_v2_action(
+        test_db,
+        room_id=success_room["room_id"],
+        character_id=success_actor["character_id"],
+        intent_type="dialogue",
+        declared_intent="等待结局后的下一步行动",
+    )
     _, success_ending = await _resolve(
         test_db,
         success_state,
@@ -338,6 +357,7 @@ async def test_glass_rain_v2_ai_only_success_mixed_and_safe_abort_flows(
         character_id=success_actor["character_id"],
         intent_type="dialogue",
         declared_intent="收听维护无线电并确认停机顺序",
+        extra_params={"preparedReaction": True},
     )
     assert success_ending["status"] == "completed"
     assert success_ending["result"]["metadata"]["verified_ending"][
@@ -349,6 +369,15 @@ async def test_glass_rain_v2_ai_only_success_mixed_and_safe_abort_flows(
         (success_room["room_id"],),
     ).fetchone()
     assert success_archive["ending_type"] == "victory"
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = %s",
+        (pending_after_ending_action,),
+    ).fetchone()["status"] == "canceled"
+    assert test_db.execute(
+        "SELECT metadata FROM action_status_events "
+        "WHERE action_id = %s AND status = 'canceled'",
+        (pending_after_ending_action,),
+    ).fetchone()["metadata"]["reason_code"] == "campaign_ended"
     actor_arc = next(
         arc
         for arc in success_archive["character_arcs"]

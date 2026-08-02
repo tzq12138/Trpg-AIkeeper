@@ -337,24 +337,31 @@ class ToolExecutor:
         """
         clue_id = str(uuid.uuid4())[:8]
         try:
-            self.conn.execute(
-                "INSERT INTO clues (clue_id, room_id, character_id, text, source, is_private) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (clue_id, self.room_id, self.character_id, text, source or "agent", True),
-            )
-            # Write discovery event for archival/journal
-            try:
+            from ..campaign_archive import ensure_campaign_writable
+
+            with self.conn.transaction() as tx:
+                ensure_campaign_writable(tx, self.room_id)
+                tx.execute(
+                    "INSERT INTO clues "
+                    "(clue_id, room_id, character_id, text, source, is_private) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (
+                        clue_id,
+                        self.room_id,
+                        self.character_id,
+                        text,
+                        source or "agent",
+                        True,
+                    ),
+                )
                 from ..events.event_log import EventLog
-                el = EventLog(self.conn)
-                el.log_event(self.room_id, "s2c_clue_discovered", "player", {
+
+                EventLog(tx).log_event(self.room_id, "s2c_clue_discovered", "player", {
                     "clueId": clue_id,
                     "characterId": self.character_id,
                     "source": source or "agent",
                     "visibility": "self",
-                })
-            except Exception as ev_err:
-                logger.warning("Failed to write clue_discovered event: %s", ev_err)
-            self.conn.commit()
+                }, commit=False)
             return {"clue_id": clue_id, "saved": True, "text": text}
         except Exception as e:
             return {"error": str(e)}

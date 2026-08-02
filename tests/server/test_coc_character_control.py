@@ -6,6 +6,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import src.server.engine.resolution_pipeline as resolution_pipeline_module
 import src.server.main as main_module
+from src.server.engine.ending_conditions import EndingDecision
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.engine.rule_executor import RuleExecutor
 from src.server.engine.state_service import StateService
@@ -157,6 +158,19 @@ class _PermanentThenDialogueExecutor(_PermanentInsanityExecutor):
             scenario_assets,
         )
         result.mechanic = "dialogue"
+        return result
+
+
+class _SuccessfulPermanentThenDialogueExecutor(_PermanentThenDialogueExecutor):
+    async def execute(self, intent, compiled, character, inventory, scenario_assets):
+        result = await super().execute(
+            intent,
+            compiled,
+            character,
+            inventory,
+            scenario_assets,
+        )
+        result.is_success = True
         return result
 
 
@@ -575,6 +589,234 @@ async def test_san_zero_state_and_control_roll_back_when_action_completion_fails
     assert runtime["san"] == 1
     assert runtime["temp_modifiers"] == {}
     assert character["status"] == "joined"
+
+
+@pytest.mark.asyncio
+async def test_san_zero_state_control_and_action_roll_back_when_ending_archive_fails(
+    test_db,
+    monkeypatch,
+):
+    state_service = _insert_control_transition_fixture(test_db)
+    test_db.execute(
+        "UPDATE rooms SET status = 'active' "
+        "WHERE room_id = 'room-control-transition'"
+    )
+    test_db.commit()
+
+    ending = EndingDecision(
+        ending_id="san-zero-ending",
+        ending_type="defeat",
+        citation={"source": "compiled-test-ending"},
+        room_status="active",
+        priority=100,
+        exclusive_group="campaign_ending",
+    )
+    monkeypatch.setattr(
+        ResolutionPipeline,
+        "_evaluate_verified_runtime_ending",
+        lambda _self, _room_id, *, executor=None: ending,
+    )
+
+    def fail_finalization(*_args, **_kwargs):
+        raise RuntimeError("injected-ending-archive-failure")
+
+    monkeypatch.setattr(
+        resolution_pipeline_module,
+        "finalize_campaign",
+        fail_finalization,
+    )
+
+    outcome = await ResolutionPipeline(
+        test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        rule_executor=_PermanentThenDialogueExecutor(),
+        state_service=state_service,
+    ).resolve_action("action-control-transition")
+
+    assert outcome == {
+        "status": "awaiting_host_exception",
+        "action_id": "action-control-transition",
+        "reason": "state_persistence_failed",
+    }
+    runtime = state_service.get_runtime_state(
+        "char-control-transition",
+        "room-control-transition",
+    )
+    character = test_db.execute(
+        "SELECT status FROM characters WHERE character_id = 'char-control-transition'"
+    ).fetchone()
+    action = test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'action-control-transition'"
+    ).fetchone()
+    room = test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = 'room-control-transition'"
+    ).fetchone()
+    archive = test_db.execute(
+        "SELECT archive_id FROM campaign_archives "
+        "WHERE room_id = 'room-control-transition'"
+    ).fetchone()
+    assert runtime["san"] == 1
+    assert runtime["temp_modifiers"] == {}
+    assert character["status"] == "joined"
+    assert action["status"] == "awaiting_host_exception"
+    assert room["status"] == "active"
+    assert archive is None
+
+
+@pytest.mark.asyncio
+async def test_san_zero_atomically_completes_verified_ending(test_db, monkeypatch):
+    state_service = _insert_control_transition_fixture(test_db)
+    test_db.execute(
+        "UPDATE rooms SET status = 'active' "
+        "WHERE room_id = 'room-control-transition'"
+    )
+    test_db.commit()
+
+    ending = EndingDecision(
+        ending_id="san-zero-ending",
+        ending_type="defeat",
+        citation={"source": "compiled-test-ending"},
+        room_status="active",
+        priority=100,
+        exclusive_group="campaign_ending",
+    )
+    monkeypatch.setattr(
+        ResolutionPipeline,
+        "_evaluate_verified_runtime_ending",
+        lambda _self, _room_id, *, executor=None: ending,
+    )
+
+    outcome = await ResolutionPipeline(
+        test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        rule_executor=_PermanentThenDialogueExecutor(),
+        state_service=state_service,
+    ).resolve_action("action-control-transition")
+
+    assert outcome["status"] == "completed"
+    character = test_db.execute(
+        "SELECT status FROM characters WHERE character_id = 'char-control-transition'"
+    ).fetchone()
+    action = test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'action-control-transition'"
+    ).fetchone()
+    room = test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = 'room-control-transition'"
+    ).fetchone()
+    archive = test_db.execute(
+        "SELECT ending_type FROM campaign_archives "
+        "WHERE room_id = 'room-control-transition'"
+    ).fetchone()
+    assert character["status"] == "restricted_npc"
+    assert action["status"] == "completed"
+    assert room["status"] == "completed"
+    assert archive["ending_type"] == "defeat"
+
+
+@pytest.mark.asyncio
+async def test_san_named_clue_and_action_roll_back_when_triggered_ending_fails(
+    test_db,
+    monkeypatch,
+):
+    state_service = _insert_control_transition_fixture(test_db)
+    test_db.execute(
+        "UPDATE rooms SET status = 'active' "
+        "WHERE room_id = 'room-control-transition'"
+    )
+    test_db.commit()
+
+    ending = EndingDecision(
+        ending_id="clue-ending",
+        ending_type="defeat",
+        citation={"source": "compiled-test-ending"},
+        room_status="active",
+        priority=100,
+        exclusive_group="campaign_ending",
+    )
+
+    async def persist_trigger_clue(
+        _pipeline,
+        action,
+        _intent,
+        *,
+        executor=None,
+        publish=True,
+    ):
+        worker = executor or test_db
+        worker.execute(
+            "INSERT INTO clues "
+            "(clue_id, room_id, character_id, text, source, is_private) "
+            "VALUES ('san-ending-clue', %s, %s, 'ending clue', "
+            "'runtime:san-ending-clue', TRUE)",
+            (action["room_id"], action["character_id"]),
+        )
+        return [
+            {
+                "canonicalId": "san-ending-clue",
+                "clueId": "san-ending-clue",
+                "name": "ending clue",
+            }
+        ]
+
+    def ending_after_clue(_pipeline, _room_id, *, executor=None):
+        worker = executor or test_db
+        clue = worker.execute(
+            "SELECT 1 FROM clues WHERE clue_id = 'san-ending-clue'"
+        ).fetchone()
+        return ending if clue else None
+
+    monkeypatch.setattr(
+        ResolutionPipeline,
+        "_persist_named_runtime_clues",
+        persist_trigger_clue,
+    )
+    monkeypatch.setattr(
+        ResolutionPipeline,
+        "_evaluate_verified_runtime_ending",
+        ending_after_clue,
+    )
+
+    def fail_finalization(*_args, **_kwargs):
+        raise RuntimeError("injected-clue-ending-archive-failure")
+
+    monkeypatch.setattr(
+        resolution_pipeline_module,
+        "finalize_campaign",
+        fail_finalization,
+    )
+
+    outcome = await ResolutionPipeline(
+        test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=_Dispatcher(),
+        rule_executor=_SuccessfulPermanentThenDialogueExecutor(),
+        state_service=state_service,
+    ).resolve_action("action-control-transition")
+
+    assert outcome == {
+        "status": "awaiting_host_exception",
+        "action_id": "action-control-transition",
+        "reason": "state_persistence_failed",
+    }
+    runtime = state_service.get_runtime_state(
+        "char-control-transition",
+        "room-control-transition",
+    )
+    character = test_db.execute(
+        "SELECT status FROM characters WHERE character_id = 'char-control-transition'"
+    ).fetchone()
+    action = test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'action-control-transition'"
+    ).fetchone()
+    assert runtime["san"] == 1
+    assert runtime["temp_modifiers"] == {}
+    assert character["status"] == "joined"
+    assert action["status"] == "awaiting_host_exception"
+    assert test_db.execute(
+        "SELECT 1 FROM clues WHERE clue_id = 'san-ending-clue'"
+    ).fetchone() is None
 
 
 @pytest.mark.asyncio

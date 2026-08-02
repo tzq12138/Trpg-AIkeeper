@@ -205,6 +205,7 @@ def _pseudonymize_account_archives(conn, characters: list[dict]) -> int:
             replacements[player_name] = "已删除玩家"
 
     updated = 0
+    conn.execute("SET LOCAL aikeeper.archive_redaction = 'on'")
     for archive in archives:
         highlights = _json_value(archive.get("highlights"), [])
         character_arcs = _json_value(archive.get("character_arcs"), [])
@@ -949,6 +950,7 @@ async def purge_campaign_archives(request: Request):
     if found_ids:
         archive_filter, archive_params = _in_clause(found_ids)
         with conn.transaction() as tx:
+            tx.execute("SET LOCAL aikeeper.archive_purge = 'on'")
             tx.execute(
                 f"DELETE FROM campaign_archives WHERE archive_id IN {archive_filter}",
                 archive_params,

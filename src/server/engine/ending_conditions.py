@@ -8,7 +8,16 @@ from typing import Any
 
 
 _CONDITION_KEYS = {"all_clues", "any_clues", "entered_scenes", "event_types", "room_status"}
-_ENDING_TYPES = {"victory", "defeat", "mixed"}
+_ENDING_TYPES = {"victory", "defeat", "mixed", "safe_abort"}
+_PRESENTATION_ONLY_EVENT_TYPES = {
+    "s2c_action_completed",
+    "s2c_ai_stage_changed",
+    "s2c_narration_completed",
+    "s2c_public_observation",
+    "s2c_reveal_transaction",
+    "s2c_scene_sync",
+    "s2c_state_patch",
+}
 
 
 @dataclass(frozen=True)
@@ -17,6 +26,8 @@ class EndingDecision:
     ending_type: str
     citation: dict[str, Any]
     room_status: str
+    priority: int = 0
+    exclusive_group: str = "campaign_ending"
 
 
 def evaluate_ending_conditions(conn, room_id: str, ending_conditions: Any) -> EndingDecision | None:
@@ -35,7 +46,13 @@ def evaluate_ending_conditions(conn, room_id: str, ending_conditions: Any) -> En
         for ending in ending_conditions
         if (decision := _matching_decision(ending, facts)) is not None
     ]
-    return matches[0] if len(matches) == 1 else None
+    if not matches:
+        return None
+    highest_priority = max(decision.priority for decision in matches)
+    highest = [
+        decision for decision in matches if decision.priority == highest_priority
+    ]
+    return highest[0] if len(highest) == 1 else None
 
 
 def _matching_decision(ending: Any, facts: dict[str, Any]) -> EndingDecision | None:
@@ -45,20 +62,32 @@ def _matching_decision(ending: Any, facts: dict[str, Any]) -> EndingDecision | N
     ending_type = str(ending.get("type") or "mixed").strip()
     citation = ending.get("citation")
     conditions = ending.get("completion_conditions")
+    declared_priority = ending.get("priority", 0)
+    exclusive_group = str(ending.get("exclusive_group") or "campaign_ending").strip()
     if (
         not ending_id
         or ending_type not in _ENDING_TYPES
         or not _has_citation(citation)
         or not _conditions_are_valid(conditions)
+        or not isinstance(declared_priority, int)
+        or isinstance(declared_priority, bool)
+        or not exclusive_group
     ):
         return None
     if not _conditions_match(conditions, facts):
         return None
+    priority = (
+        1_000_000
+        if ending_type == "safe_abort"
+        else min(int(declared_priority), 999_999)
+    )
     return EndingDecision(
         ending_id,
         ending_type,
         dict(citation),
         str(facts["room_status"]),
+        int(priority),
+        exclusive_group,
     )
 
 
@@ -108,6 +137,10 @@ def _conditions_are_valid(value: Any) -> bool:
             continue
         if not isinstance(expected, list) or not expected or not all(
             isinstance(item, str) and item.strip() for item in expected
+        ):
+            return False
+        if key == "event_types" and any(
+            item in _PRESENTATION_ONLY_EVENT_TYPES for item in expected
         ):
             return False
     return True

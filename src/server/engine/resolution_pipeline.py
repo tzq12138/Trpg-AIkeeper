@@ -16,6 +16,11 @@ from ..ai.narrator import (
     build_narrator_context,
     validate_narration_result,
 )
+from ..campaign_archive import (
+    CampaignReadOnlyError,
+    ensure_campaign_writable,
+    finalize_campaign,
+)
 from .action_lifecycle import complete_action, transition_action
 from .fallback_narrative import render_action_aware_fallback
 from .host_autonomy import decide_host_autonomy
@@ -1159,7 +1164,32 @@ class ResolutionPipeline:
             if target_scene_id:
                 from ..models import SceneChange
 
-                scene_change = SceneChange(currentScene=target_scene_id)
+                recovery_cost = generic_scene_transition.get("cost_boundary")
+                variable_set = None
+                if (
+                    generic_scene_transition.get("recovery_node_id")
+                    and isinstance(recovery_cost, dict)
+                ):
+                    runtime_scene = scenario_assets.get("_runtime_scene")
+                    runtime_scene = runtime_scene if isinstance(runtime_scene, dict) else {}
+                    prior_costs = runtime_scene.get("progression_recovery_costs")
+                    prior_costs = list(prior_costs) if isinstance(prior_costs, list) else []
+                    cost_record = {
+                        "recovery_node_id": generic_scene_transition["recovery_node_id"],
+                        "kind": str(recovery_cost.get("kind") or ""),
+                        "amount": recovery_cost.get("amount"),
+                    }
+                    variable_set = {
+                        "progression_recovery_costs": [*prior_costs, cost_record],
+                    }
+                    if cost_record["kind"] == "time":
+                        variable_set["in_game_minutes"] = int(
+                            runtime_scene.get("in_game_minutes") or 0
+                        ) + int(cost_record["amount"] or 0)
+                scene_change = SceneChange(
+                    currentScene=target_scene_id,
+                    variableSet=variable_set,
+                )
                 resolution.metadata = {
                     **(resolution.metadata or {}),
                     "generic_scene_transition": generic_scene_transition,
@@ -1168,6 +1198,10 @@ class ResolutionPipeline:
         result_payload = resolution.model_dump(by_alias=True)
         completion_status = "completed" if is_v2 else "resolved"
         completed_with_state = False
+        completed_with_ending = False
+        ending_committed = False
+        ending_finalization = None
+        verified_ending = None
         sanity_state_transition = self._has_sanity_state_transition(resolution)
         character_control_revoked = False
         rule_explanation_for_completion = None
@@ -1287,6 +1321,8 @@ class ResolutionPipeline:
             )
 
         committed_reveals: list[dict[str, Any]] = []
+        committed_runtime_clues: list[dict[str, Any]] = []
+        runtime_clues_checked_with_state = False
         reveal_proposals_to_commit = (
             reveal_proposals if resolution.is_success else []
         )
@@ -1316,6 +1352,91 @@ class ResolutionPipeline:
                 executor=transaction,
             )
 
+        async def complete_sanity_transition(transaction) -> None:
+            nonlocal completed_with_state
+            nonlocal completed_with_ending
+            nonlocal committed_runtime_clues
+            nonlocal ending_committed
+            nonlocal ending_finalization
+            nonlocal result_payload
+            nonlocal rule_explanation_for_completion
+            nonlocal runtime_clues_checked_with_state
+            nonlocal verified_ending
+
+            if not sanity_state_transition:
+                return
+
+            if resolution.is_success:
+                committed_runtime_clues = await self._persist_named_runtime_clues(
+                    action,
+                    intent,
+                    executor=transaction,
+                    publish=False,
+                )
+                runtime_clues_checked_with_state = True
+                if committed_runtime_clues:
+                    resolution.metadata = {
+                        **dict(resolution.metadata or {}),
+                        "runtime_clue_discoveries": committed_runtime_clues,
+                    }
+                    result_payload = resolution.model_dump(by_alias=True)
+
+            verified_ending = self._evaluate_verified_runtime_ending(
+                action["room_id"],
+                executor=transaction,
+            )
+            if verified_ending:
+                resolution.metadata = {
+                    **dict(resolution.metadata or {}),
+                    "verified_ending": {
+                        "ending_id": verified_ending.ending_id,
+                        "ending_type": verified_ending.ending_type,
+                        "citation": verified_ending.citation,
+                    },
+                }
+                result_payload = resolution.model_dump(by_alias=True)
+
+            rule_explanation_for_completion = (
+                rule_explanation_for_completion
+                or self._build_rule_explanation(
+                    action,
+                    character_data,
+                    resolution,
+                    state_before=state_before,
+                    state_after=self._runtime_snapshot(
+                        transaction,
+                        action["character_id"],
+                        action["room_id"],
+                    ),
+                )
+            )
+            if verified_ending:
+                ending_finalization = self._commit_verified_runtime_ending(
+                    action,
+                    verified_ending,
+                    completion_status=completion_status,
+                    result=result_payload,
+                    receipt=rule_explanation_for_completion,
+                    complete_current_action=True,
+                    transaction=transaction,
+                )
+                ending_committed = ending_finalization is not None
+                if not ending_committed:
+                    raise RuntimeError("campaign_ending_commit_conflict")
+                completed_with_ending = True
+            elif not complete_action(
+                self.conn,
+                action_id,
+                from_statuses=("resolving",),
+                to_status=completion_status,
+                result=result_payload,
+                receipt=rule_explanation_for_completion,
+                metadata={"has_rule_explanation": True},
+                transaction=transaction,
+            ):
+                raise RuntimeError("action_completion_conflict")
+            completed_with_state = True
+
         try:
             if is_v2 and isinstance(conflict_guard, dict):
                 from .state_service import (
@@ -1325,6 +1446,7 @@ class ResolutionPipeline:
 
                 commit_conflict_reason = None
                 with self.conn.transaction() as tx:
+                    ensure_campaign_writable(tx, action["room_id"])
                     acquire_action_conflict_locks(tx, conflict_guard)
                     commit_conflict_reason = validate_action_conflict_guard(
                         tx,
@@ -1393,18 +1515,7 @@ class ResolutionPipeline:
                                     ),
                                 )
                             )
-                            if not complete_action(
-                                self.conn,
-                                action_id,
-                                from_statuses=("resolving",),
-                                to_status=completion_status,
-                                result=result_payload,
-                                receipt=rule_explanation_for_completion,
-                                metadata={"has_rule_explanation": True},
-                                transaction=tx,
-                            ):
-                                raise RuntimeError("action_completion_conflict")
-                            completed_with_state = True
+                            await complete_sanity_transition(tx)
                 if commit_conflict_reason:
                     return await self._require_action_resync(
                         action,
@@ -1413,6 +1524,7 @@ class ResolutionPipeline:
             elif state_changes is not None and self.state_service:
                 if is_v2:
                     with self.conn.transaction() as tx:
+                        ensure_campaign_writable(tx, action["room_id"])
                         self.state_service.apply_change(
                             room_id=action["room_id"],
                             actor={
@@ -1456,18 +1568,7 @@ class ResolutionPipeline:
                         )
                         committed_reveals = commit_reveals(tx)
                         if sanity_state_transition:
-                            if not complete_action(
-                                self.conn,
-                                action_id,
-                                from_statuses=("resolving",),
-                                to_status=completion_status,
-                                result=result_payload,
-                                receipt=rule_explanation_for_completion,
-                                metadata={"has_rule_explanation": True},
-                                transaction=tx,
-                            ):
-                                raise RuntimeError("action_completion_conflict")
-                            completed_with_state = True
+                            await complete_sanity_transition(tx)
                 else:
                     self.state_service.apply_change(
                         room_id=action["room_id"],
@@ -1480,7 +1581,18 @@ class ResolutionPipeline:
                     )
             elif is_v2 and reveal_proposals_to_commit:
                 with self.conn.transaction() as tx:
+                    ensure_campaign_writable(tx, action["room_id"])
                     committed_reveals = commit_reveals(tx)
+        except CampaignReadOnlyError as exc:
+            current = self.conn.execute(
+                "SELECT status FROM actions WHERE action_id = %s",
+                (action_id,),
+            ).fetchone()
+            return {
+                "status": str(current.get("status") or "canceled") if current else "canceled",
+                "action_id": action_id,
+                "reason": str(exc),
+            }
         except RevealPolicyError as exc:
             await self._reject(action, exc.code)
             return {
@@ -1509,6 +1621,12 @@ class ResolutionPipeline:
 
         if character_control_revoked:
             await self._revoke_character_player_connection(action)
+
+        if committed_runtime_clues:
+            await self._publish_named_runtime_clues(
+                action,
+                committed_runtime_clues,
+            )
 
         if committed_reveals:
             resolution.metadata = {
@@ -1556,7 +1674,7 @@ class ResolutionPipeline:
         solo_target_node_id = ""
         solo_from_node_id = ""
         solo_damage_terminal = False
-        verified_ending = None
+        scripted_solo_terminal = False
         if is_v2 and solo_damage_transition and resolution.is_success:
             damage_metadata = resolution.metadata or {}
             if solo_damage_transition.get("target_node_id"):
@@ -1612,7 +1730,7 @@ class ResolutionPipeline:
                             "solo_skill_bonus_dice": int(solo_daily_penalty_die["bonus_dice"]),
                             "solo_skill_bonus_dice_citation": solo_daily_penalty_die["citation"],
                         }
-                    solo_transition = SoloAdventureRuntime(self.conn).transition(
+                    solo_transition = SoloAdventureRuntime(tx).transition(
                         action["room_id"],
                         from_node_id=solo_from_node_id,
                         target_node_id=solo_target_node_id,
@@ -1622,8 +1740,10 @@ class ResolutionPipeline:
                             else None
                         ),
                         transaction=tx,
+                        finalize_terminal=False,
                     )
-                    current_solo_scene = SoloAdventureRuntime(self.conn).current(
+                    scripted_solo_terminal = bool(solo_transition.get("is_ending"))
+                    current_solo_scene = SoloAdventureRuntime(tx).current(
                         action["room_id"]
                     )
                     if current_solo_scene:
@@ -1631,6 +1751,28 @@ class ResolutionPipeline:
                             current_solo_scene
                         )
                     resolution.metadata["solo_adventure_transition"] = solo_transition
+                    if scripted_solo_terminal:
+                        from .ending_conditions import EndingDecision
+
+                        verified_ending = EndingDecision(
+                            ending_id=f"solo_terminal_{solo_target_node_id}",
+                            ending_type=str(
+                                solo_transition.get("ending_type") or "mixed"
+                            ),
+                            citation=dict(
+                                solo_transition.get("ending_citation")
+                                or solo_transition.get("citation")
+                                or {}
+                            ),
+                            room_status=str(room.get("status") or "active"),
+                            priority=900_000,
+                            exclusive_group="campaign_ending",
+                        )
+                        resolution.metadata["verified_ending"] = {
+                            "ending_id": verified_ending.ending_id,
+                            "ending_type": verified_ending.ending_type,
+                            "citation": verified_ending.citation,
+                        }
                     result_payload = resolution.model_dump(by_alias=True)
                     rule_explanation = self._build_rule_explanation(
                         action, character_data, resolution,
@@ -1642,27 +1784,72 @@ class ResolutionPipeline:
                         ),
                     )
                     rule_explanation_for_completion = rule_explanation
+                    if scripted_solo_terminal:
+                        ending_finalization = self._commit_verified_runtime_ending(
+                            action,
+                            verified_ending,
+                            completion_status=completion_status,
+                            result=result_payload,
+                            receipt=rule_explanation_for_completion,
+                            complete_current_action=True,
+                            revalidate=False,
+                            transaction=tx,
+                        )
+                        ending_committed = ending_finalization is not None
+                        if not ending_committed:
+                            raise RuntimeError("solo_campaign_ending_conflict")
+                        completed_with_ending = True
             except Exception as exc:
+                if scripted_solo_terminal:
+                    await self._await_host_exception(
+                        action,
+                        "campaign_ending_persistence_failed",
+                        result=result_payload,
+                    )
+                    return {
+                        "status": "awaiting_host_exception",
+                        "action_id": action_id,
+                        "reason": "campaign_ending_persistence_failed",
+                    }
                 await self._reject(action, f"solo_transition_failed:{exc}")
-                return {"status": "rejected", "action_id": action_id, "reason": str(exc)}
+                return {
+                    "status": "rejected",
+                    "action_id": action_id,
+                    "reason": str(exc),
+                }
         elif solo_damage_terminal:
-            with self.conn.transaction() as tx:
-                tx.execute(
-                    "UPDATE rooms SET status = 'completed', state_version = state_version + 1 "
-                    "WHERE room_id = %s AND status IN ('suggested', 'active')",
-                    (action["room_id"],),
-                )
+            from .ending_conditions import EndingDecision
+
             resolution.metadata["solo_adventure_terminal"] = {
                 "reason": "hp_zero",
                 "citation": solo_damage_transition.get("citation") or {},
             }
             resolution.narrative = "火焰带走了你最后的力气。你的冒险到此结束。"
+            verified_ending = EndingDecision(
+                ending_id="solo_damage_hp_zero",
+                ending_type="defeat",
+                citation=dict(solo_damage_transition.get("citation") or {}),
+                room_status=str(room.get("status") or "active"),
+                priority=900_000,
+                exclusive_group="campaign_ending",
+            )
+            resolution.metadata["verified_ending"] = {
+                "ending_id": verified_ending.ending_id,
+                "ending_type": verified_ending.ending_type,
+                "citation": verified_ending.citation,
+            }
             result_payload = resolution.model_dump(by_alias=True)
 
-        if is_v2 and resolution.is_success and not solo_damage_terminal:
-            discovered_runtime_clues = await self._persist_named_runtime_clues(
-                action,
-                intent,
+        if (
+            is_v2
+            and resolution.is_success
+            and not solo_damage_terminal
+            and not ending_committed
+        ):
+            discovered_runtime_clues = (
+                committed_runtime_clues
+                if runtime_clues_checked_with_state
+                else await self._persist_named_runtime_clues(action, intent)
             )
             if discovered_runtime_clues:
                 resolution.metadata = {
@@ -1684,6 +1871,7 @@ class ResolutionPipeline:
 
         if (
             not solo_damage_terminal
+            and not ending_committed
             and not narration_applied_before_state
             and self.gateway
             and hasattr(self.gateway, "narrate_action")
@@ -1711,17 +1899,59 @@ class ResolutionPipeline:
                 }
             result_payload = resolution.model_dump(by_alias=True)
 
-        ending_committed = False
-        if verified_ending:
-            ending_committed = self._commit_verified_runtime_ending(
-                action["room_id"],
-                verified_ending,
+        if verified_ending and not ending_committed:
+            rule_explanation_for_completion = (
+                rule_explanation_for_completion
+                or self._build_rule_explanation(
+                    action,
+                    character_data,
+                    resolution,
+                    state_before=state_before,
+                    state_after=self._runtime_snapshot(
+                        self.conn,
+                        action["character_id"],
+                        action["room_id"],
+                    ) or state_before,
+                )
             )
+            try:
+                ending_finalization = self._commit_verified_runtime_ending(
+                    action,
+                    verified_ending,
+                    completion_status=completion_status,
+                    result=result_payload,
+                    receipt=rule_explanation_for_completion,
+                    complete_current_action=not completed_with_state,
+                    revalidate=not solo_damage_terminal,
+                )
+                ending_committed = ending_finalization is not None
+            except Exception:
+                logger.exception(
+                    "Atomic campaign ending failed for action %s",
+                    action_id,
+                )
+                if not completed_with_state:
+                    await self._await_host_exception(
+                        action,
+                        "campaign_ending_persistence_failed",
+                        result=result_payload,
+                    )
+                    return {
+                        "status": "awaiting_host_exception",
+                        "action_id": action_id,
+                        "reason": "campaign_ending_persistence_failed",
+                    }
+                return {
+                    "status": completion_status,
+                    "action_id": action_id,
+                    "reason": "campaign_ending_persistence_failed",
+                }
             if ending_committed:
+                completed_with_ending = not completed_with_state
                 result_payload = resolution.model_dump(by_alias=True)
 
         if is_v2:
-            if not completed_with_state:
+            if not completed_with_state and not completed_with_ending:
                 rule_explanation = rule_explanation_for_completion or self._build_rule_explanation(
                     action,
                     character_data,
@@ -1730,15 +1960,25 @@ class ResolutionPipeline:
                     state_after=state_before,
                 )
                 rule_explanation_for_completion = rule_explanation
-                complete_action(
+                action_completed = complete_action(
                     self.conn,
                     action_id,
                     from_statuses=("resolving",),
                     to_status=completion_status,
                     result=result_payload,
                     receipt=rule_explanation,
-                        metadata={"has_rule_explanation": True},
+                    metadata={"has_rule_explanation": True},
                 )
+                if not action_completed:
+                    current = self.conn.execute(
+                        "SELECT status FROM actions WHERE action_id = %s",
+                        (action_id,),
+                    ).fetchone()
+                    return {
+                        "status": str(current.get("status") or "canceled") if current else "canceled",
+                        "action_id": action_id,
+                        "reason": "action_completion_conflict",
+                    }
         else:
             self.conn.execute(
                 "UPDATE actions SET status = %s, result = %s, completed_at = %s WHERE action_id = %s",
@@ -1775,17 +2015,26 @@ class ResolutionPipeline:
             logger.exception("Projection failed for completed action %s", action_id)
             self._mark_resolution_bundle_projection_pending(bundle)
         if ending_committed:
-            await self.dispatcher.emit(
-                action["room_id"],
-                "s2c_campaign_ended",
-                "party",
-                {
-                    "ending_id": verified_ending.ending_id,
-                    "ending_type": verified_ending.ending_type,
-                    "citation": verified_ending.citation,
-                    "completion_source": "verified_runtime_ending",
-                },
+            ending_sequence = getattr(
+                ending_finalization,
+                "ending_event_sequence",
+                None,
             )
+            publisher = getattr(self.dispatcher, "publish_committed_event", None)
+            if publisher and isinstance(ending_sequence, int) and ending_sequence > 0:
+                await publisher(action["room_id"], ending_sequence)
+            else:
+                await self.dispatcher.emit(
+                    action["room_id"],
+                    "s2c_campaign_ended",
+                    "party",
+                    {
+                        "ending_id": verified_ending.ending_id,
+                        "ending_type": verified_ending.ending_type,
+                        "citation": verified_ending.citation,
+                        "completion_source": "verified_runtime_ending",
+                    },
+                )
         await self._emit_ai_stage(action, "completed")
 
         if solo_transition:
@@ -1799,26 +2048,82 @@ class ResolutionPipeline:
                 },
             )
 
+        room_after_projection = self.conn.execute(
+            "SELECT status FROM rooms WHERE room_id = %s",
+            (action["room_id"],),
+        ).fetchone()
+        post_resolution_writable = bool(
+            not ending_committed
+            and room_after_projection
+            and str(room_after_projection.get("status") or "")
+            not in {"completed", "archived"}
+        )
+
         # ── Post-resolution map updates for move intent ──
-        if action["intent_type"] == "move" and resolution.is_success:
-            await self._apply_move_result(action, resolution)
+        if (
+            post_resolution_writable
+            and action["intent_type"] == "move"
+            and resolution.is_success
+        ):
+            try:
+                await self._apply_move_result(action, resolution)
+            except Exception:
+                current_room = self.conn.execute(
+                    "SELECT status FROM rooms WHERE room_id = %s",
+                    (action["room_id"],),
+                ).fetchone()
+                if not current_room or str(current_room.get("status") or "") not in {
+                    "completed",
+                    "archived",
+                }:
+                    raise
+                logger.info(
+                    "Skipped post-ending map effects action=%s room=%s",
+                    action_id,
+                    action["room_id"],
+                )
 
         # ── Post-resolution encounter updates ──
         prepared_reactions = []
-        if action["intent_type"] in ("combat_action", "chase_action", "system_skip"):
-            prepared_reactions = await self._apply_encounter_result(action, intent, resolution)
+        if post_resolution_writable:
+            if action["intent_type"] in (
+                "combat_action",
+                "chase_action",
+                "system_skip",
+            ):
+                try:
+                    prepared_reactions = await self._apply_encounter_result(
+                        action,
+                        intent,
+                        resolution,
+                    )
+                except Exception:
+                    current_room = self.conn.execute(
+                        "SELECT status FROM rooms WHERE room_id = %s",
+                        (action["room_id"],),
+                    ).fetchone()
+                    if not current_room or str(current_room.get("status") or "") not in {
+                        "completed",
+                        "archived",
+                    }:
+                        raise
+                    logger.info(
+                        "Skipped post-ending encounter effects action=%s room=%s",
+                        action_id,
+                        action["room_id"],
+                    )
 
-        if isinstance(intent.params, dict) and intent.params.get("preparedReaction"):
-            from .prepared_rule_actions import complete_triggered_prepared_reaction
+            if isinstance(intent.params, dict) and intent.params.get("preparedReaction"):
+                from .prepared_rule_actions import complete_triggered_prepared_reaction
 
-            complete_triggered_prepared_reaction(
-                self.conn,
-                reaction_action_id=action_id,
-                terminal_status="completed",
-            )
+                complete_triggered_prepared_reaction(
+                    self.conn,
+                    reaction_action_id=action_id,
+                    terminal_status="completed",
+                )
 
-        for prepared_reaction in prepared_reactions:
-            await self.resolve_action(prepared_reaction["reaction_action_id"])
+            for prepared_reaction in prepared_reactions:
+                await self.resolve_action(prepared_reaction["reaction_action_id"])
 
         return {"status": completion_status, "action_id": action_id, "result": result_payload}
 
@@ -3380,7 +3685,11 @@ class ResolutionPipeline:
         edges = rules.get("edges") if isinstance(rules, dict) else []
         if not isinstance(edges, list):
             return None, "generic_scene_progression_invalid"
-        from ..ai.director import _citation_matches, _generic_edge_conditions_are_met
+        from ..ai.director import (
+            _citation_matches,
+            _generic_edge_conditions_are_met,
+            select_progression_recovery,
+        )
 
         rule_citation = progression.get("ruleCitation") or progression.get("rule_citation")
         if not isinstance(rule_citation, dict):
@@ -3408,27 +3717,72 @@ class ResolutionPipeline:
                 "citation": edge_citation,
                 "already_applied": shared_turn_arrival,
             }, None
+        recovery_node_id = str(
+            progression.get("recoveryNodeId")
+            or progression.get("recovery_node_id")
+            or ""
+        )
+        if recovery_node_id:
+            expected = select_progression_recovery(
+                self.conn,
+                action["room_id"],
+                from_scene_id,
+                runtime_package,
+            )
+            provider_cost = progression.get("costBoundary") or progression.get(
+                "cost_boundary"
+            )
+            if (
+                expected.get("status") != "recovery"
+                or str(expected.get("recoveryNodeId") or "") != recovery_node_id
+                or str(expected.get("targetNodeId") or "") != target_scene_id
+                or not _citation_matches(
+                    rule_citation,
+                    [expected.get("ruleCitation") or {}],
+                )
+                or not isinstance(provider_cost, dict)
+                or provider_cost != expected.get("costBoundary")
+            ):
+                return None, "generic_scene_recovery_invalid"
+            return {
+                "from_scene_id": from_scene_id,
+                "target_scene_id": target_scene_id,
+                "citation": expected["ruleCitation"],
+                "recovery_node_id": recovery_node_id,
+                "cost_boundary": dict(expected["costBoundary"]),
+                "already_applied": shared_turn_arrival,
+            }, None
         return None, "generic_scene_progression_invalid"
 
-    def _evaluate_verified_runtime_ending(self, room_id: str):
+    def _evaluate_verified_runtime_ending(self, room_id: str, *, executor=None):
         from .ending_conditions import evaluate_ending_conditions
 
-        runtime_package = self._runtime_package_for_room(room_id)
+        executor = executor or self.conn
+        runtime_package = self._runtime_package_for_room(
+            room_id,
+            executor=executor,
+        )
         return evaluate_ending_conditions(
-            self.conn,
+            executor,
             room_id,
             runtime_package.get("ending_conditions"),
         )
 
-    def _runtime_package_for_room(self, room_id: str) -> dict[str, Any]:
-        room = self.conn.execute(
+    def _runtime_package_for_room(
+        self,
+        room_id: str,
+        *,
+        executor=None,
+    ) -> dict[str, Any]:
+        executor = executor or self.conn
+        room = executor.execute(
             "SELECT scenario_version_id, runtime_package_version_id FROM rooms WHERE room_id = %s",
             (room_id,),
         ).fetchone()
         if not room or not room.get("scenario_version_id"):
             return {}
         if room.get("runtime_package_version_id"):
-            package_row = self.conn.execute(
+            package_row = executor.execute(
                 """
                 SELECT runtime_package
                 FROM runtime_package_versions
@@ -3439,7 +3793,7 @@ class ResolutionPipeline:
                 (room["runtime_package_version_id"], room["scenario_version_id"]),
             ).fetchone()
         else:
-            package_row = self.conn.execute(
+            package_row = executor.execute(
                 """
                 SELECT runtime_package
                 FROM runtime_package_versions
@@ -3495,11 +3849,31 @@ class ResolutionPipeline:
         self,
         action: dict[str, Any],
         intent: PlayerIntent,
+        *,
+        executor=None,
+        publish: bool = True,
     ) -> list[dict[str, Any]]:
+        if executor is None and hasattr(self.conn, "transaction"):
+            try:
+                with self.conn.transaction() as tx:
+                    discovered = await self._persist_named_runtime_clues(
+                        action,
+                        intent,
+                        executor=tx,
+                        publish=False,
+                    )
+            except CampaignReadOnlyError:
+                return []
+            if publish and discovered:
+                await self._publish_named_runtime_clues(action, discovered)
+            return discovered
+        provided_executor = executor
+        executor = executor or self.conn
+        ensure_campaign_writable(executor, action["room_id"])
         declared = self._normalize_runtime_text(intent.declared_intent)
         if not declared:
             return []
-        current_scene_row = self.conn.execute(
+        current_scene_row = executor.execute(
             "SELECT current_scene FROM room_scene_state WHERE room_id = %s",
             (action["room_id"],),
         ).fetchone()
@@ -3508,7 +3882,14 @@ class ResolutionPipeline:
         ).strip()
         if not current_scene_id:
             return []
-        runtime_package = self._runtime_package_for_room(action["room_id"])
+        runtime_package = (
+            self._runtime_package_for_room(action["room_id"])
+            if provided_executor is None
+            else self._runtime_package_for_room(
+                action["room_id"],
+                executor=executor,
+            )
+        )
         dependencies = runtime_package.get("clue_dependencies")
         if not isinstance(dependencies, list):
             return []
@@ -3538,7 +3919,7 @@ class ResolutionPipeline:
             ).hex[:20]
             description = str(dependency.get("description") or "").strip()
             text = f"{name}：{description}" if description else name
-            created = self.conn.execute(
+            created = executor.execute(
                 """
                 INSERT INTO clues (clue_id, room_id, character_id, text, source, is_private)
                 VALUES (%s, %s, %s, %s, %s, TRUE)
@@ -3555,24 +3936,58 @@ class ResolutionPipeline:
             ).fetchone()
             if not created:
                 continue
-            await self.dispatcher.emit(
+            event_payload = {
+                "characterId": action["character_id"],
+                "clueId": clue_id,
+                "name": name,
+                "source": source,
+                "visibility": "self",
+            }
+            from ..events.event_log import EventLog
+
+            event_sequence = EventLog(executor).log_event(
                 action["room_id"],
                 "s2c_clue_discovered",
                 "player",
-                {
-                    "clueId": clue_id,
-                    "name": name,
-                    "source": source,
-                    "visibility": "self",
-                },
-                character_id=action["character_id"],
+                event_payload,
+                commit=False,
+                action_id=action.get("action_id"),
             )
             discovered.append({
                 "canonicalId": canonical_id,
                 "clueId": clue_id,
                 "name": name,
+                "eventSequence": event_sequence,
             })
+        if publish and discovered:
+            await self._publish_named_runtime_clues(action, discovered)
         return discovered
+
+    async def _publish_named_runtime_clues(
+        self,
+        action: dict[str, Any],
+        discoveries: list[dict[str, Any]],
+    ) -> None:
+        for discovery in discoveries:
+            canonical_id = str(discovery.get("canonicalId") or "")
+            sequence = discovery.get("eventSequence")
+            publisher = getattr(self.dispatcher, "publish_committed_event", None)
+            if publisher and isinstance(sequence, int) and sequence > 0:
+                await publisher(action["room_id"], sequence)
+                continue
+            await self.dispatcher.emit(
+                action["room_id"],
+                "s2c_clue_discovered",
+                "player",
+                {
+                    "characterId": action["character_id"],
+                    "clueId": discovery.get("clueId"),
+                    "name": discovery.get("name"),
+                    "source": f"runtime:{canonical_id}",
+                    "visibility": "self",
+                },
+                character_id=action["character_id"],
+            )
 
     @staticmethod
     def _normalize_runtime_text(value: Any) -> str:
@@ -3621,36 +4036,70 @@ class ResolutionPipeline:
         location = self._normalize_runtime_text(dependency.get("location"))
         return bool(location and location in scene_names)
 
-    def _commit_verified_runtime_ending(self, room_id: str, ending) -> bool:
-        with self.conn.transaction() as tx:
-            row = tx.execute(
-                """
-                UPDATE rooms
-                SET status = 'completed', state_version = state_version + 1
-                WHERE room_id = %s
-                  AND status = %s
-                RETURNING room_id
-                """,
-                (room_id, ending.room_status),
+    def _commit_verified_runtime_ending(
+        self,
+        action: dict[str, Any],
+        ending,
+        *,
+        completion_status: str,
+        result: dict[str, Any],
+        receipt: dict[str, Any],
+        complete_current_action: bool,
+        revalidate: bool = True,
+        transaction=None,
+    ):
+        room_id = action["room_id"]
+
+        def execute(tx):
+            room_row = tx.execute(
+                "SELECT status FROM rooms WHERE room_id = %s FOR UPDATE",
+                (room_id,),
             ).fetchone()
-            if row:
-                character_arcs = self._archive_character_arcs(tx, room_id)
-                tx.execute(
-                    """
-                    INSERT INTO campaign_archives
-                    (archive_id, room_id, ending_type, summary, highlights, character_arcs)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        str(uuid.uuid4())[:8],
-                        room_id,
-                        ending.ending_type,
-                        "本次冒险已按已验证条件结束。",
-                        json.dumps(["已完成已验证的结局条件。"], ensure_ascii=False),
-                        json.dumps(character_arcs, ensure_ascii=False),
-                    ),
+            if not room_row or str(room_row.get("status") or "") == "completed":
+                return None
+            if revalidate:
+                current = self._evaluate_verified_runtime_ending(
+                    room_id,
+                    executor=tx,
                 )
-        return bool(row)
+                if not current or current.ending_id != ending.ending_id:
+                    return None
+            finalized = finalize_campaign(
+                self.conn,
+                room_id,
+                ending_type=ending.ending_type,
+                summary="本次冒险已按已验证条件结束。",
+                highlights=["已完成已验证的结局条件。"],
+                current_action=(
+                    {
+                        "action_id": action["action_id"],
+                        "from_statuses": ("resolving",),
+                        "to_status": completion_status,
+                        "result": result,
+                        "receipt": receipt,
+                        "metadata": {
+                            "has_rule_explanation": True,
+                            "completion_source": "verified_runtime_ending",
+                        },
+                    }
+                    if complete_current_action
+                    else None
+                ),
+                expected_room_statuses=(ending.room_status,),
+                ending_event_payload={
+                    "ending_id": ending.ending_id,
+                    "ending_type": ending.ending_type,
+                    "citation": ending.citation,
+                    "completion_source": "verified_runtime_ending",
+                },
+                transaction=tx,
+            )
+            return finalized
+
+        if transaction is not None:
+            return execute(transaction)
+        with self.conn.transaction() as tx:
+            return execute(tx)
 
     def _archive_character_arcs(self, executor, room_id: str) -> list[dict[str, Any]]:
         from ..campaign_archive import build_character_arcs

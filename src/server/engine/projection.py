@@ -143,6 +143,59 @@ class ProjectionDispatcher:
             return False
         return True
 
+    async def publish_committed_event(
+        self,
+        room_id: str,
+        sequence: int,
+    ) -> bool:
+        """Publish one already committed non-fact event without logging it twice."""
+        row = self.conn.execute(
+            "SELECT sequence, room_id, event_type, audience, payload "
+            "FROM events WHERE room_id = %s AND sequence = %s",
+            (room_id, sequence),
+        ).fetchone()
+        if not row:
+            return False
+        if row.get("event_type") in FACT_REVEAL_EVENT_KINDS:
+            return await self.publish_committed_fact_event(room_id, sequence)
+        payload = row.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (json.JSONDecodeError, TypeError):
+                return False
+        if not isinstance(payload, dict):
+            return False
+        try:
+            event = EngineEvent(
+                roomId=room_id,
+                type=row["event_type"],
+                roomSequence=row["sequence"],
+                audience=row["audience"],
+                payload=payload,
+            )
+        except Exception:
+            logger.exception(
+                "publish_committed_event: invalid event room=%s sequence=%s",
+                room_id,
+                sequence,
+            )
+            return False
+        if row["audience"] == "player":
+            character_id = str(
+                payload.get("characterId") or payload.get("character_id") or ""
+            )
+            if not character_id:
+                return False
+            await self.ws_manager.send_event(
+                room_id,
+                f"player:{character_id}",
+                event,
+            )
+        else:
+            await self.ws_manager.broadcast_to_room(room_id, event)
+        return True
+
     async def _scan_payload_for_spoilers(
         self,
         room_id: str,

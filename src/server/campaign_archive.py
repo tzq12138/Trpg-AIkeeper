@@ -1,20 +1,60 @@
 import json
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
+
+from .engine.action_lifecycle import complete_action
+from .events.event_log import EventLog
 from .models import CampaignEnding, CampaignSummary, CampaignArchiveQuery, EventLogEntry
 from .events.events_registry import event_type
+
+
+NONTERMINAL_CAMPAIGN_ACTION_STATUSES = (
+    "analyzing",
+    "awaiting_confirmation",
+    "awaiting_player_consent",
+    "armed",
+    "queued",
+    "batched",
+    "resolving",
+    "awaiting_player_choice",
+    "awaiting_host_exception",
+    "sync_required",
+)
+
+
+class CampaignReadOnlyError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class CampaignFinalization:
+    archive_id: str
+    canceled_action_ids: tuple[str, ...]
+    state_version: int
+    ending_event_sequence: int | None = None
 
 
 class CampaignArchive:
     def __init__(self, conn):
         self.conn = conn
 
-    def generate_ending(self, room_id: str) -> CampaignEnding:
+    def generate_ending(
+        self,
+        room_id: str,
+        *,
+        ending_event_payload: dict[str, Any] | None = None,
+    ) -> CampaignEnding:
         events = self._get_all_events(room_id)
         characters = self.conn.execute(
             "SELECT * FROM characters WHERE room_id = %s", (room_id,)
         ).fetchall()
 
-        ending_type = self._determine_ending_type(events)
+        ending_type = str(
+            (ending_event_payload or {}).get("ending_type")
+            or self._determine_ending_type(events)
+        )
         summary = self._build_summary(room_id, events, characters)
         highlights = self._extract_highlights(events)
         character_arcs = self._build_character_arcs(room_id, characters)
@@ -26,11 +66,18 @@ class CampaignArchive:
             character_arcs=character_arcs,
         )
 
-        self._save_archive(room_id, ending)
-        self.conn.execute(
-            "UPDATE rooms SET status = 'completed' WHERE room_id = %s", (room_id,)
+        finalized = finalize_campaign(
+            self.conn,
+            room_id,
+            ending_type=ending.ending_type,
+            summary=ending.summary,
+            highlights=ending.highlights,
+            character_arcs=ending.character_arcs,
+            expected_room_statuses=("lobby", "suggested", "active", "paused"),
+            ending_event_payload=ending_event_payload,
         )
-        self.conn.commit()
+        if finalized is None:
+            raise CampaignReadOnlyError("campaign_already_completed")
 
         return ending
 
@@ -150,14 +197,178 @@ class CampaignArchive:
         return build_character_arcs(self.conn, room_id, characters)
 
     def _save_archive(self, room_id: str, ending: CampaignEnding):
-        archive_id = str(__import__("uuid").uuid4())[:8]
-        self.conn.execute(
-            "INSERT INTO campaign_archives (archive_id, room_id, ending_type, summary, highlights, character_arcs) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (archive_id, room_id, ending.ending_type, ending.summary,
-             json.dumps(ending.highlights), json.dumps(ending.character_arcs)),
+        with self.conn.transaction() as tx:
+            _insert_minimal_archive(
+                tx,
+                room_id,
+                ending_type=ending.ending_type,
+                summary=ending.summary,
+                highlights=ending.highlights,
+                character_arcs=ending.character_arcs,
+            )
+
+
+def ensure_campaign_writable(executor, room_id: str) -> dict:
+    room = executor.execute(
+        "SELECT room_id, status, state_version FROM rooms "
+        "WHERE room_id = %s FOR UPDATE",
+        (room_id,),
+    ).fetchone()
+    if not room:
+        raise CampaignReadOnlyError("campaign_room_missing")
+    if str(room.get("status") or "") in {"completed", "archived"}:
+        raise CampaignReadOnlyError("campaign_completed_read_only")
+    return dict(room)
+
+
+def finalize_campaign(
+    conn,
+    room_id: str,
+    *,
+    ending_type: str,
+    summary: str,
+    highlights: list[str],
+    character_arcs: list[dict[str, Any]] | None = None,
+    current_action: dict[str, Any] | None = None,
+    expected_room_statuses: tuple[str, ...] = ("suggested", "active"),
+    ending_event_payload: dict[str, Any] | None = None,
+    transaction=None,
+) -> CampaignFinalization | None:
+    def execute(tx) -> CampaignFinalization | None:
+        room = tx.execute(
+            "SELECT room_id, status, state_version FROM rooms "
+            "WHERE room_id = %s FOR UPDATE",
+            (room_id,),
+        ).fetchone()
+        if not room:
+            raise CampaignReadOnlyError("campaign_room_missing")
+        room_status = str(room.get("status") or "")
+        if room_status == "completed":
+            return None
+        if expected_room_statuses and room_status not in expected_room_statuses:
+            raise CampaignReadOnlyError("campaign_not_ending_eligible")
+
+        current_action_id = ""
+        if current_action:
+            current_action_id = str(current_action.get("action_id") or "")
+            if not current_action_id or not complete_action(
+                conn,
+                current_action_id,
+                from_statuses=tuple(current_action.get("from_statuses") or ()),
+                to_status=str(current_action.get("to_status") or "completed"),
+                result=dict(current_action.get("result") or {}),
+                receipt=(
+                    dict(current_action["receipt"])
+                    if isinstance(current_action.get("receipt"), dict)
+                    else None
+                ),
+                metadata=dict(current_action.get("metadata") or {}),
+                transaction=tx,
+            ):
+                raise RuntimeError("campaign_ending_action_completion_conflict")
+
+        room_row = tx.execute(
+            "UPDATE rooms SET status = 'completed', state_version = state_version + 1 "
+            "WHERE room_id = %s AND status = %s RETURNING state_version",
+            (room_id, room_status),
+        ).fetchone()
+        if not room_row:
+            raise RuntimeError("campaign_ending_room_conflict")
+
+        ending_event_sequence = None
+        if ending_event_payload is not None:
+            ending_event_sequence = EventLog(tx).log_event(
+                room_id,
+                "s2c_campaign_ended",
+                "party",
+                dict(ending_event_payload),
+                commit=False,
+                state_version=int(room_row.get("state_version") or 0),
+            )
+
+        canceled_rows = tx.execute(
+            "UPDATE actions SET status = 'canceled', canceled_at = NOW(), "
+            "completed_at = COALESCE(completed_at, NOW()) "
+            "WHERE room_id = %s AND status = ANY(%s) "
+            "AND (%s = '' OR action_id <> %s) RETURNING action_id",
+            (
+                room_id,
+                list(NONTERMINAL_CAMPAIGN_ACTION_STATUSES),
+                current_action_id,
+                current_action_id,
+            ),
+        ).fetchall()
+        canceled_action_ids = tuple(sorted(
+            str(row["action_id"]) for row in canceled_rows
+        ))
+        tx.execute(
+            "UPDATE prepared_rule_actions SET status = 'canceled', "
+            "completed_at = COALESCE(completed_at, NOW()) "
+            "WHERE room_id = %s AND status IN ('armed', 'triggered')",
+            (room_id,),
         )
-        self.conn.commit()
+        for action_id in canceled_action_ids:
+            tx.execute(
+                "INSERT INTO action_status_events (action_id, status, metadata) "
+                "VALUES (%s, 'canceled', %s)",
+                (
+                    action_id,
+                    json.dumps(
+                        {"reason_code": "campaign_ended"},
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+
+        archive_id = _insert_minimal_archive(
+            tx,
+            room_id,
+            ending_type=ending_type,
+            summary=summary,
+            highlights=highlights,
+            character_arcs=(
+                character_arcs
+                if character_arcs is not None
+                else build_character_arcs(tx, room_id)
+            ),
+        )
+        return CampaignFinalization(
+            archive_id=archive_id,
+            canceled_action_ids=canceled_action_ids,
+            state_version=int(room_row.get("state_version") or 0),
+            ending_event_sequence=ending_event_sequence,
+        )
+
+    if transaction is not None:
+        return execute(transaction)
+    with conn.transaction() as tx:
+        return execute(tx)
+
+
+def _insert_minimal_archive(
+    executor,
+    room_id: str,
+    *,
+    ending_type: str,
+    summary: str,
+    highlights: list[str],
+    character_arcs: list[dict[str, Any]],
+) -> str:
+    archive_id = uuid.uuid4().hex
+    executor.execute(
+        "INSERT INTO campaign_archives "
+        "(archive_id, room_id, ending_type, summary, highlights, character_arcs) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (
+            archive_id,
+            room_id,
+            str(ending_type or "mixed"),
+            str(summary or ""),
+            json.dumps(list(highlights or []), ensure_ascii=False),
+            json.dumps(list(character_arcs or []), ensure_ascii=False),
+        ),
+    )
+    return archive_id
 
 
 def _json_value(value):

@@ -359,3 +359,340 @@ def test_replay_pagination(client, test_db):
     data = resp.json()
     assert len(data["events"]) == 3
     assert data["total"] == 10
+
+
+def _insert_ending_actions(test_db, room_id: str, character_id: str):
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    for action_id, status in (
+        ("ending-action", "resolving"),
+        ("pending-action", "queued"),
+        ("pending-choice", "awaiting_player_choice"),
+    ):
+        test_db.execute(
+            "INSERT INTO actions "
+            "(action_id, room_id, character_id, intent_type, declared_intent, status) "
+            "VALUES (%s, %s, %s, 'dialogue', %s, %s)",
+            (action_id, room_id, character_id, action_id, status),
+        )
+    test_db.commit()
+
+
+def _ending_action_completion():
+    return {
+        "action_id": "ending-action",
+        "from_statuses": ("resolving",),
+        "to_status": "completed",
+        "result": {"ending": "victory"},
+        "receipt": {"verified": True},
+        "metadata": {"completion_source": "verified_runtime_ending"},
+    }
+
+
+def test_campaign_finalization_atomically_completes_room_archives_and_cancels_pending_actions(
+    client,
+    test_db,
+):
+    from src.server.campaign_archive import finalize_campaign
+
+    room_id, _, character_id, _ = _setup_player(client, test_db)
+    _insert_ending_actions(test_db, room_id, character_id)
+
+    outcome = finalize_campaign(
+        test_db,
+        room_id,
+        ending_type="victory",
+        summary="Verified ending",
+        highlights=["The team escaped."],
+        current_action=_ending_action_completion(),
+    )
+
+    assert outcome is not None
+    assert outcome.canceled_action_ids == ("pending-action", "pending-choice")
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["status"] == "completed"
+    action_rows = test_db.execute(
+        "SELECT action_id, status FROM actions WHERE room_id = %s ORDER BY action_id",
+        (room_id,),
+    ).fetchall()
+    assert {row["action_id"]: row["status"] for row in action_rows} == {
+        "ending-action": "completed",
+        "pending-action": "canceled",
+        "pending-choice": "canceled",
+    }
+    assert test_db.execute(
+        "SELECT ending_type FROM campaign_archives WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["ending_type"] == "victory"
+
+
+def test_campaign_finalization_rolls_back_everything_when_archive_insert_fails(
+    client,
+    test_db,
+    monkeypatch,
+):
+    import src.server.campaign_archive as archive_module
+
+    room_id, _, character_id, _ = _setup_player(client, test_db)
+    _insert_ending_actions(test_db, room_id, character_id)
+
+    def fail_archive(*_args, **_kwargs):
+        raise RuntimeError("injected-archive-failure")
+
+    monkeypatch.setattr(archive_module, "_insert_minimal_archive", fail_archive)
+
+    with pytest.raises(RuntimeError, match="injected-archive-failure"):
+        archive_module.finalize_campaign(
+            test_db,
+            room_id,
+            ending_type="victory",
+            summary="Verified ending",
+            highlights=["The team escaped."],
+            current_action=_ending_action_completion(),
+        )
+
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["status"] == "active"
+    action_rows = test_db.execute(
+        "SELECT action_id, status FROM actions WHERE room_id = %s ORDER BY action_id",
+        (room_id,),
+    ).fetchall()
+    assert {row["action_id"]: row["status"] for row in action_rows} == {
+        "ending-action": "resolving",
+        "pending-action": "queued",
+        "pending-choice": "awaiting_player_choice",
+    }
+    assert test_db.execute(
+        "SELECT 1 FROM campaign_archives WHERE room_id = %s",
+        (room_id,),
+    ).fetchone() is None
+
+
+def test_campaign_finalization_cancels_prepared_rule_state(client, test_db):
+    from src.server.campaign_archive import finalize_campaign
+
+    room_id, _, character_id, _ = _setup_player(client, test_db)
+    _insert_ending_actions(test_db, room_id, character_id)
+    test_db.execute(
+        "INSERT INTO actions "
+        "(action_id, room_id, character_id, intent_type, declared_intent, status) "
+        "VALUES ('prepared-before-ending', %s, %s, 'prepared_action', 'take cover', 'armed')",
+        (room_id, character_id),
+    )
+    test_db.execute(
+        "INSERT INTO prepared_rule_actions "
+        "(action_id, room_id, character_id, trigger_kind, reaction_kind, status) "
+        "VALUES ('prepared-before-ending', %s, %s, "
+        "'enemy_public_attack_declared', 'take_cover', 'armed')",
+        (room_id, character_id),
+    )
+    test_db.commit()
+
+    finalize_campaign(
+        test_db,
+        room_id,
+        ending_type="victory",
+        summary="Verified ending",
+        highlights=[],
+        current_action=_ending_action_completion(),
+    )
+
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'prepared-before-ending'"
+    ).fetchone()["status"] == "canceled"
+    assert test_db.execute(
+        "SELECT status FROM prepared_rule_actions "
+        "WHERE action_id = 'prepared-before-ending'"
+    ).fetchone()["status"] == "canceled"
+
+
+def test_completed_campaign_database_boundary_rejects_new_ending_fact_event(
+    client,
+    test_db,
+):
+    import psycopg2
+
+    room_id, _, _, _ = _setup_player(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET status = 'completed' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    with pytest.raises(psycopg2.Error, match="campaign_completed_read_only"):
+        test_db.execute(
+            "INSERT INTO events (room_id, event_type, audience, payload) "
+            "VALUES (%s, 's2c_encounter_resolved', 'party', '{}')",
+            (room_id,),
+        )
+
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"] == 0
+
+
+def test_completed_campaign_database_boundary_rejects_encounter_mutation(
+    client,
+    test_db,
+):
+    import psycopg2
+
+    room_id, _, _, _ = _setup_player(client, test_db)
+    test_db.execute(
+        "INSERT INTO encounters (encounter_id, room_id, type, status) "
+        "VALUES ('encounter-before-ending', %s, 'combat', 'active')",
+        (room_id,),
+    )
+    test_db.execute(
+        "UPDATE rooms SET status = 'completed' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    with pytest.raises(psycopg2.Error, match="campaign_completed_read_only"):
+        test_db.execute(
+            "UPDATE encounters SET status = 'resolved' "
+            "WHERE encounter_id = 'encounter-before-ending'"
+        )
+
+    assert test_db.execute(
+        "SELECT status FROM encounters "
+        "WHERE encounter_id = 'encounter-before-ending'"
+    ).fetchone()["status"] == "active"
+
+
+def test_manual_campaign_end_rolls_back_event_when_archive_insert_fails(
+    client,
+    test_db,
+    monkeypatch,
+):
+    import src.server.campaign_archive as archive_module
+
+    room_id, owner_token, _, _ = _setup_player(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET status = 'active' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    def fail_archive(*_args, **_kwargs):
+        raise RuntimeError("injected-manual-archive-failure")
+
+    monkeypatch.setattr(archive_module, "_insert_minimal_archive", fail_archive)
+
+    with pytest.raises(RuntimeError, match="injected-manual-archive-failure"):
+        client.post(
+            f"/api/rooms/{room_id}/end",
+            headers={"X-Owner-Token": owner_token},
+            json={"ending_type": "mixed", "text": "manual ending"},
+        )
+
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["status"] == "active"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events "
+        "WHERE room_id = %s AND event_type = 's2c_campaign_ended'",
+        (room_id,),
+    ).fetchone()["count"] == 0
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM campaign_archives WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"] == 0
+
+
+def test_completed_campaign_rejects_epilogue_state_writes(client, test_db):
+    from src.server.campaign_archive import CampaignReadOnlyError
+    from src.server.campaign_archive import finalize_campaign
+    from src.server.engine.state_service import StateService
+    from src.server.models import SceneChange, StateChangeSet
+
+    room_id, _, character_id, _ = _setup_player(client, test_db)
+    _insert_ending_actions(test_db, room_id, character_id)
+    finalize_campaign(
+        test_db,
+        room_id,
+        ending_type="victory",
+        summary="Verified ending",
+        highlights=[],
+        current_action=_ending_action_completion(),
+    )
+
+    with pytest.raises(CampaignReadOnlyError, match="campaign_completed_read_only"):
+        StateService(test_db).apply_change(
+            room_id,
+            {"character_id": character_id, "action_id": "epilogue-write"},
+            StateChangeSet(
+                sceneChanges=SceneChange(variableSet={"epilogue_mutation": True})
+            ),
+            reason="epilogue must remain read-only",
+        )
+    scene = test_db.execute(
+        "SELECT scene_variables FROM room_scene_state WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert not scene or "epilogue_mutation" not in (scene["scene_variables"] or {})
+
+
+def test_authoritative_state_change_rolls_back_when_version_bump_fails(
+    client,
+    test_db,
+    monkeypatch,
+):
+    from src.server.engine.state_service import StateService
+    from src.server.models import SceneChange, StateChangeSet
+
+    room_id, _, character_id, _ = _setup_player(client, test_db)
+    service = StateService(test_db)
+
+    def fail_version_bump(_service, _room_id):
+        raise RuntimeError("injected-version-failure")
+
+    monkeypatch.setattr(StateService, "_bump_room_version", fail_version_bump)
+
+    with pytest.raises(RuntimeError, match="injected-version-failure"):
+        service.apply_change(
+            room_id,
+            {"character_id": character_id, "action_id": "atomic-state-write"},
+            StateChangeSet(
+                sceneChanges=SceneChange(variableSet={"must_roll_back": True})
+            ),
+            reason="verify state transaction",
+        )
+
+    scene = test_db.execute(
+        "SELECT scene_variables FROM room_scene_state WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert not scene or "must_roll_back" not in (scene["scene_variables"] or {})
+
+
+def test_minimal_archive_rejects_normal_update_and_delete(client, test_db):
+    from src.server.campaign_archive import finalize_campaign
+
+    room_id, _, character_id, _ = _setup_player(client, test_db)
+    _insert_ending_actions(test_db, room_id, character_id)
+    outcome = finalize_campaign(
+        test_db,
+        room_id,
+        ending_type="victory",
+        summary="Verified ending",
+        highlights=[],
+        current_action=_ending_action_completion(),
+    )
+
+    with pytest.raises(Exception, match="campaign_archive_immutable"):
+        test_db.execute(
+            "UPDATE campaign_archives SET summary = 'tampered' WHERE archive_id = %s",
+            (outcome.archive_id,),
+        )
+    with pytest.raises(Exception, match="campaign_archive_immutable"):
+        test_db.execute(
+            "DELETE FROM campaign_archives WHERE archive_id = %s",
+            (outcome.archive_id,),
+        )

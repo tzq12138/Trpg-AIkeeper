@@ -100,6 +100,102 @@ def test_join_with_uploaded_character_creates_player_and_character_data(client, 
     assert char["name"] == "阿尔伯特·格雷"
 
 
+def test_completed_campaign_rejects_join_with_character(client, test_db):
+    room_id = _room_id(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET status = 'completed' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    response = client.post(
+        f"/api/player/rooms/{room_id}/join-with-character",
+        data={
+            "player_name": "Late player",
+            "character_data": json.dumps(
+                {
+                    "name": "Late investigator",
+                    "attributes": {"luck": 50},
+                    "derived_stats": {"hp": 10, "san": 50, "mp": 10},
+                    "skills": {},
+                }
+            ),
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "campaign_completed_read_only"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM characters WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"] == 0
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM inventory WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"] == 0
+
+
+def test_join_initializes_runtime_before_releasing_campaign_lock(
+    client,
+    test_db,
+    monkeypatch,
+):
+    from src.server.player import router_player
+
+    room_id = _room_id(client, test_db)
+    runtime_seen_before_completion = []
+
+    class NoopDispatcher:
+        async def emit(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(
+        client.app.state,
+        "dispatcher",
+        NoopDispatcher(),
+        raising=False,
+    )
+
+    def complete_when_post_commit_work_starts(_request, target_room_id, character_id, _parsed):
+        runtime_seen_before_completion.append(
+            test_db.execute(
+                "SELECT 1 FROM character_runtime_state "
+                "WHERE room_id = %s AND character_id = %s",
+                (target_room_id, character_id),
+            ).fetchone()
+            is not None
+        )
+        test_db.execute(
+            "UPDATE rooms SET status = 'completed' WHERE room_id = %s",
+            (target_room_id,),
+        )
+        test_db.commit()
+
+    monkeypatch.setattr(
+        router_player,
+        "_index_character_if_available",
+        complete_when_post_commit_work_starts,
+    )
+
+    response = client.post(
+        f"/api/player/rooms/{room_id}/join-with-character",
+        data={
+            "player_name": "Atomic join",
+            "character_data": json.dumps(
+                {
+                    "name": "Atomic investigator",
+                    "attributes": {"luck": 50},
+                    "derived_stats": {"hp": 10, "san": 50, "mp": 10},
+                    "skills": {},
+                }
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    assert runtime_seen_before_completion == [True]
+
+
 def test_presets_list_skips_bad_files_and_marks_room_occupancy(client, test_db, tmp_path):
     room_id = _room_id(client, test_db)
     client.app.state.character_preset_dir = str(tmp_path)

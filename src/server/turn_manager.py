@@ -12,16 +12,17 @@ class TurnManager:
     def __init__(self, conn):
         self.conn = conn
 
-    def ensure_current_turn(self, room_id: str) -> dict:
-        """Get or create the current collecting turn for a room."""
-        encounter = self.conn.execute(
+    def get_current_turn(self, room_id: str, *, executor=None) -> dict | None:
+        """Return the current open turn without creating one."""
+        executor = executor or self.conn
+        encounter = executor.execute(
             "SELECT encounter_id FROM encounters "
             "WHERE room_id = %s AND type = 'combat' AND status = 'active' "
             "ORDER BY created_at DESC LIMIT 1",
             (room_id,),
         ).fetchone()
         if encounter:
-            turn = self.conn.execute(
+            turn = executor.execute(
                 "SELECT * FROM room_turns WHERE room_id = %s "
                 "AND status IN ('collecting', 'resolving', 'blocked') "
                 "AND mode = 'combat' AND encounter_id = %s "
@@ -29,27 +30,42 @@ class TurnManager:
                 (room_id, encounter["encounter_id"]),
             ).fetchone()
         else:
-            turn = self.conn.execute(
+            turn = executor.execute(
                 "SELECT * FROM room_turns WHERE room_id = %s AND status IN ('collecting', 'resolving', 'blocked') "
                 "ORDER BY turn_index DESC LIMIT 1",
                 (room_id,),
             ).fetchone()
-        if turn:
-            return dict(turn)
-        return self._create_turn(room_id)
+        return dict(turn) if turn else None
 
-    def _create_turn(self, room_id: str) -> dict:
-        max_idx = self.conn.execute(
+    def ensure_current_turn(self, room_id: str, *, transaction=None) -> dict:
+        """Get or create the current collecting turn under the room write lock."""
+        from .campaign_archive import ensure_campaign_writable
+
+        if transaction is not None:
+            ensure_campaign_writable(transaction, room_id)
+            turn = self.get_current_turn(room_id, executor=transaction)
+            return turn or self._create_turn(room_id, transaction)
+
+        turn = self.get_current_turn(room_id)
+        if turn:
+            return turn
+        with self.conn.transaction() as tx:
+            ensure_campaign_writable(tx, room_id)
+            turn = self.get_current_turn(room_id, executor=tx)
+            return turn or self._create_turn(room_id, tx)
+
+    def _create_turn(self, room_id: str, executor) -> dict:
+        max_idx = executor.execute(
             "SELECT COALESCE(MAX(turn_index), 0) as max_idx FROM room_turns WHERE room_id = %s",
             (room_id,)
         ).fetchone()["max_idx"]
         turn_id = str(uuid.uuid4())[:8]
         new_idx = max_idx + 1
-        room = self.conn.execute(
+        room = executor.execute(
             "SELECT state_version FROM rooms WHERE room_id = %s",
             (room_id,),
         ).fetchone()
-        encounter = self.conn.execute(
+        encounter = executor.execute(
             "SELECT encounter_id, current_round FROM encounters "
             "WHERE room_id = %s AND type = 'combat' AND status = 'active' "
             "ORDER BY created_at DESC LIMIT 1",
@@ -60,16 +76,15 @@ class TurnManager:
         encounter_round = int(encounter["current_round"] or 0) if encounter else 0
         if encounter and encounter_round <= 0:
             encounter_round = 1
-            self.conn.execute(
+            executor.execute(
                 "UPDATE encounters SET current_round = %s WHERE encounter_id = %s",
                 (encounter_round, encounter_id),
             )
-        self.conn.execute(
+        executor.execute(
             "INSERT INTO room_turns (turn_id, room_id, turn_index, status, mode, encounter_id, base_state_version) "
             "VALUES (%s, %s, %s, 'collecting', %s, %s, %s)",
             (turn_id, room_id, new_idx, mode, encounter_id, int(room["state_version"]) if room else 0),
         )
-        self.conn.commit()
         logger.info("create_turn: room=%s turn=%s index=%s", room_id, turn_id, new_idx)
         return {
             "turn_id": turn_id,
@@ -83,22 +98,22 @@ class TurnManager:
 
     def submit_action(self, room_id: str, character_id: str, action_id: str) -> dict:
         """Submit an action to the current turn. Returns action status."""
-        turn = self.ensure_current_turn(room_id)
-        # Check duplicate — same character can't submit twice in same turn
-        existing = self.conn.execute(
-            "SELECT action_id FROM actions WHERE turn_id = %s AND character_id = %s "
-            "AND status NOT IN ('rejected', 'canceled', 'timeout')",
-            (turn["turn_id"], character_id),
-        ).fetchone()
-        if existing:
-            return {"status": "duplicate", "turn_id": turn["turn_id"], "turn_index": turn["turn_index"],
-                    "message": "Already submitted this turn"}
-        self.conn.execute(
-            "UPDATE actions SET turn_id = %s WHERE action_id = %s",
-            (turn["turn_id"], action_id),
-        )
-        self.conn.commit()
-        return {"status": "queued", "turn_id": turn["turn_id"], "turn_index": turn["turn_index"]}
+        with self.conn.transaction() as tx:
+            turn = self.ensure_current_turn(room_id, transaction=tx)
+            # Check duplicate — same character can't submit twice in same turn
+            existing = tx.execute(
+                "SELECT action_id FROM actions WHERE turn_id = %s AND character_id = %s "
+                "AND status NOT IN ('rejected', 'canceled', 'timeout')",
+                (turn["turn_id"], character_id),
+            ).fetchone()
+            if existing:
+                return {"status": "duplicate", "turn_id": turn["turn_id"], "turn_index": turn["turn_index"],
+                        "message": "Already submitted this turn"}
+            tx.execute(
+                "UPDATE actions SET turn_id = %s WHERE action_id = %s",
+                (turn["turn_id"], action_id),
+            )
+            return {"status": "queued", "turn_id": turn["turn_id"], "turn_index": turn["turn_index"]}
 
     def get_turn_snapshot(self, room_id: str) -> dict:
         """Return current turn state with per-character submission status."""

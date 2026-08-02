@@ -452,7 +452,23 @@ def _compact_runtime_package(
             "solo_adventure": {
                 "root_node_id": solo.get("root_node_id"),
                 "nodes": compact_nodes,
-            }
+            },
+            "critical_progression": _compact_value(
+                progression_rules.get("critical_progression"),
+                max_items=20,
+            ),
+            "alternative_paths": _compact_value(
+                progression_rules.get("alternative_paths"),
+                max_items=20,
+            ),
+            "recovery_nodes": _compact_value(
+                progression_rules.get("recovery_nodes"),
+                max_items=20,
+            ),
+            "true_failure_conditions": _compact_value(
+                progression_rules.get("true_failure_conditions"),
+                max_items=20,
+            ),
         },
     }
 
@@ -773,6 +789,27 @@ def _validate_semantic_progression(
                     "providerCitationMissing": True,
                     "validated": True,
                 }
+        recovery = select_progression_recovery(
+            conn,
+            str(character.get("room_id") or ""),
+            current_scene_id,
+            runtime_package,
+        )
+        if recovery.get("status") == "recovery":
+            return {
+                key: value
+                for key, value in recovery.items()
+                if key != "status"
+            }
+        if recovery.get("status") in {
+            "revealed_unresolved_facts",
+            "no_change",
+        }:
+            return {
+                "targetNodeId": target,
+                "fromNodeId": current_scene_id,
+                **recovery,
+            }
     solo = _json_object(rules.get("solo_adventure") if isinstance(rules, dict) else None)
     allowed = False
     matched_rule_citation: dict[str, Any] = {}
@@ -876,6 +913,145 @@ def _validate_semantic_progression(
         "validated": False,
         "rejected": True,
         "reason": "semantic_progression_evidence_required",
+    }
+
+
+def select_progression_recovery(
+    conn,
+    room_id: str,
+    current_scene_id: str,
+    runtime_package: dict[str, Any],
+) -> dict[str, Any]:
+    rules = _json_object(runtime_package.get("semantic_progression_rules"))
+    edges = rules.get("edges") if isinstance(rules.get("edges"), list) else []
+    for edge in edges:
+        if (
+            isinstance(edge, dict)
+            and edge.get("relation_type") == "transitions_to"
+            and str(edge.get("from_scene_id") or "") == current_scene_id
+            and _generic_edge_conditions_are_met(conn, room_id, edge.get("conditions"))
+        ):
+            return {
+                "status": "path_available",
+                "validated": False,
+                "rejected": True,
+                "reason": "compiled_progression_path_available",
+                "revealedFactIds": [],
+                "stateChanged": False,
+            }
+
+    candidates: list[tuple[int, str, dict[str, Any]]] = []
+    recovery_nodes = (
+        rules.get("recovery_nodes")
+        if isinstance(rules.get("recovery_nodes"), list)
+        else []
+    )
+    declared_recoveries = {
+        progression_id: {
+            str(value)
+            for value in progression.get("recovery_node_ids") or []
+            if str(value)
+        }
+        for progression in rules.get("critical_progression") or []
+        if isinstance(progression, dict)
+        and (
+            progression_id := str(
+                progression.get("progression_id") or progression.get("id") or ""
+            ).strip()
+        )
+    }
+    for node in recovery_nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(
+            node.get("recovery_node_id") or node.get("node_id") or node.get("id") or ""
+        ).strip()
+        progression_id = str(node.get("progression_id") or "").strip()
+        if node_id not in declared_recoveries.get(progression_id, set()):
+            continue
+        from_scene_ids = node.get("from_scene_ids") or node.get("fromSceneIds") or []
+        if not isinstance(from_scene_ids, list):
+            from_scene_ids = []
+        if current_scene_id not in {str(value) for value in from_scene_ids}:
+            continue
+        target_scene_id = str(
+            node.get("target_scene_id") or node.get("targetSceneId") or ""
+        ).strip()
+        citation = _sanitize_citation(node.get("citation") or {})
+        cost_boundary = _object_dict(
+            node.get("cost_boundary") or node.get("costBoundary")
+        )
+        amount = cost_boundary.get("amount")
+        if (
+            not node_id
+            or not target_scene_id
+            or not citation
+            or str(cost_boundary.get("kind") or "").strip() != "time"
+            or not isinstance(amount, int)
+            or isinstance(amount, bool)
+            or amount <= 0
+            or not _generic_edge_conditions_are_met(
+                conn,
+                room_id,
+                node.get("conditions"),
+            )
+        ):
+            continue
+        priority = node.get("priority", 0)
+        if not isinstance(priority, int) or isinstance(priority, bool):
+            priority = 0
+        candidates.append((priority, node_id, node))
+
+    if candidates:
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        top_priority = candidates[0][0]
+        top = [candidate for candidate in candidates if candidate[0] == top_priority]
+        if len(top) == 1:
+            _, node_id, node = top[0]
+            citation = _sanitize_citation(node.get("citation") or {})
+            return {
+                "status": "recovery",
+                "validated": True,
+                "fromNodeId": current_scene_id,
+                "targetNodeId": str(
+                    node.get("target_scene_id") or node.get("targetSceneId") or ""
+                ),
+                "recoveryNodeId": node_id,
+                "citation": citation,
+                "ruleCitation": citation,
+                "costBoundary": _object_dict(
+                    node.get("cost_boundary") or node.get("costBoundary")
+                ),
+            }
+
+    revealed_rows = conn.execute(
+        "SELECT DISTINCT fact_id FROM fact_reveals "
+        "WHERE room_id = %s AND audience = 'party' "
+        "AND status = 'revealed' AND record_kind = 'reveal' "
+        "ORDER BY fact_id",
+        (room_id,),
+    ).fetchall()
+    revealed_fact_ids = [
+        str(row.get("fact_id") or "")
+        for row in revealed_rows
+        if str(row.get("fact_id") or "")
+    ]
+    if revealed_fact_ids:
+        return {
+            "status": "revealed_unresolved_facts",
+            "validated": False,
+            "rejected": True,
+            "reason": "progression_exhausted_revealed_facts_only",
+            "revealedFactIds": revealed_fact_ids,
+            "stateChanged": False,
+        }
+    return {
+        "status": "no_change",
+        "validated": False,
+        "rejected": True,
+        "reason": "progression_exhausted_no_information",
+        "revealedFactIds": [],
+        "stateChanged": False,
     }
 
 
@@ -992,6 +1168,7 @@ def _citation_matches(citation: dict[str, Any], candidates: list[dict[str, Any]]
         return False
     stable_fields = {
         "source",
+        "source_ref",
         "source_part_id",
         "content_item_id",
         "page_number",

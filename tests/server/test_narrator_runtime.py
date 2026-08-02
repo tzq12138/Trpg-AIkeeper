@@ -1043,6 +1043,18 @@ async def test_named_runtime_clue_is_persisted_and_can_complete_an_ending(client
     assert test_db.execute(
         "SELECT status FROM rooms WHERE room_id = %s", (room_id,)
     ).fetchone()["status"] == "completed"
+    projected_event_types = {
+        row["event_type"]
+        for row in test_db.execute(
+            "SELECT event_type FROM events WHERE room_id = %s",
+            (room_id,),
+        ).fetchall()
+    }
+    assert {
+        "s2c_campaign_ended",
+        "s2c_public_observation",
+        "s2c_action_completed",
+    } <= projected_event_types
 
 
 @pytest.mark.asyncio
