@@ -27,9 +27,14 @@ def _seed_room(conn, room_id: str, version: str) -> None:
         (f"char-{room_id}", room_id, "调查员", f"player-{room_id}"),
     )
     conn.execute(
-        "INSERT INTO events (room_id, event_type, audience, payload) "
-        "VALUES (%s, 's2c_public_observation', 'party', %s)",
-        (room_id, json.dumps({"text": "现场仍有余温"}, ensure_ascii=False)),
+        "INSERT INTO events "
+        "(room_id, event_type, audience, payload, action_id, state_version) "
+        "VALUES (%s, 's2c_public_observation', 'party', %s, %s, 0)",
+        (
+            room_id,
+            json.dumps({"text": "现场仍有余温"}, ensure_ascii=False),
+            f"action-{room_id}",
+        ),
     )
 
 
@@ -51,6 +56,17 @@ def test_cutover_creates_verified_backup_before_clearing_all_existing_rooms(
 ):
     _seed_room(test_db, "v2-room", "v2")
     _seed_room(test_db, "legacy-room", "v1")
+    reveal_event_sequence = test_db.execute(
+        "SELECT sequence FROM events WHERE room_id = 'v2-room'"
+    ).fetchone()["sequence"]
+    test_db.execute(
+        "INSERT INTO fact_reveals "
+        "(reveal_id, room_id, fact_id, content_item_id, fact_text, citation, "
+        "audience, source_action_id, state_version, event_sequence, trigger_snapshot) "
+        "VALUES ('cutover-reveal', 'v2-room', 'cutover-fact', 'cutover-fact', "
+        "'cutover-fact-reveal-canary', '{}', 'party', 'action-v2-room', 0, %s, '{}')",
+        (reveal_event_sequence,),
+    )
     test_db.execute(
         "INSERT INTO inventory (id, character_id, room_id, name, source) "
         "VALUES ('cutover-inventory', 'char-v2-room', 'v2-room', "
@@ -127,6 +143,7 @@ def test_cutover_creates_verified_backup_before_clearing_all_existing_rooms(
         assert len(manifest["table_inventory"]["note_attachments"]["sha256"]) == 64
         assert manifest["table_inventory"]["session_summary_citations"]["count"] == 1
         assert manifest["table_inventory"]["evidence_references"]["count"] == 1
+        assert manifest["table_inventory"]["fact_reveals"]["count"] == 1
         assert manifest["table_inventory"]["session_attendance"]["count"] == 0
         live_state = json.loads(archive.read("live_state.json"))
         rendered_live_state = json.dumps(live_state, ensure_ascii=False)
@@ -135,6 +152,7 @@ def test_cutover_creates_verified_backup_before_clearing_all_existing_rooms(
         assert "cutover-summary-citation-canary" in rendered_live_state
         assert "application/x-cutover-note-canary" in rendered_live_state
         assert "cutover-evidence-reference-canary" in rendered_live_state
+        assert "cutover-fact-reveal-canary" in rendered_live_state
         assert '"confidence": "0.875"' in rendered_live_state
         assert "owner-v2-room" not in rendered_live_state
         assert "player-v2-room" not in rendered_live_state
@@ -152,6 +170,9 @@ def test_cutover_creates_verified_backup_before_clearing_all_existing_rooms(
     assert test_db.execute(
         "SELECT COUNT(*) AS count FROM inventory_transfer_requests "
         "WHERE transfer_id = 'cutover-transfer'"
+    ).fetchone()["count"] == 0
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM fact_reveals WHERE reveal_id = 'cutover-reveal'"
     ).fetchone()["count"] == 0
     for table, key, value in (
         ("session_summary_citations", "session_summary_citation_id", "cutover-summary-citation"),

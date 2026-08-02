@@ -15,11 +15,17 @@ from ..engine.runtime_integrity import (
     sanitize_checkpoint_value,
     validate_runtime_snapshot,
 )
-from ..models import Checkpoint, EventLogEntry
+from ..models import Checkpoint, EventLogEntry, redact_citation
 
 PLAYER_VISIBLE_SYSTEM_EVENTS: set[str] = {
     "s2c_turn_resolved",
     "s2c_checkpoint_created",
+}
+
+FACT_REVEAL_EVENT_KINDS = {
+    "s2c_fact_revealed": "reveal",
+    "s2c_fact_corrected": "correction",
+    "s2c_fact_safety_event": "safety_event",
 }
 
 MAX_AUTO_CHECKPOINTS = 20
@@ -91,7 +97,26 @@ class EventLog:
         audience: str,
         payload: dict,
         character_id: str,
+        sequence: int | None = None,
+        action_id: str | None = None,
+        state_version: int | None = None,
+        room_id: str | None = None,
     ) -> bool:
+        if event_type.startswith("s2c_fact_"):
+            if (
+                event_type not in FACT_REVEAL_EVENT_KINDS
+                or not self._ledger_authorizes_event(
+                    sequence,
+                    event_type,
+                    audience,
+                    character_id,
+                    payload,
+                    action_id,
+                    state_version,
+                    room_id,
+                )
+            ):
+                return False
         if audience == "host":
             return False
         if audience == "party":
@@ -124,6 +149,8 @@ class EventLog:
             payload = _decode_json(row["payload"])
             if self._can_player_see_event(
                 row["event_type"], row["audience"], payload, character_id,
+                row["sequence"], row.get("action_id"), row.get("state_version"),
+                row.get("room_id"),
             ):
                 result.append(_event_entry(row, payload=payload))
         return list(reversed(result)) if latest else result
@@ -142,7 +169,102 @@ class EventLog:
             "ORDER BY sequence LIMIT %s",
             (room_id, since_sequence, list(PLAYER_VISIBLE_SYSTEM_EVENTS), limit),
         ).fetchall()
-        return [_event_entry(row) for row in rows]
+        result = []
+        for row in rows:
+            payload = _decode_json(row["payload"])
+            if row["event_type"].startswith("s2c_fact_"):
+                if (
+                    row["event_type"] not in FACT_REVEAL_EVENT_KINDS
+                    or not self._ledger_authorizes_event(
+                        row["sequence"],
+                        row["event_type"],
+                        row["audience"],
+                        None,
+                        payload,
+                        row.get("action_id"),
+                        row.get("state_version"),
+                        row.get("room_id"),
+                    )
+                ):
+                    continue
+            result.append(_event_entry(row, payload=payload))
+        return result
+
+    def _ledger_authorizes_event(
+        self,
+        sequence: int | None,
+        event_type: str,
+        audience: str,
+        character_id: str | None,
+        payload: dict,
+        action_id: str | None,
+        state_version: int | None,
+        room_id: str | None,
+    ) -> bool:
+        if (
+            sequence is None
+            or not room_id
+            or not action_id
+            or state_version is None
+        ):
+            return False
+        try:
+            row = self.conn.execute(
+                "SELECT reveal_id, room_id, fact_id, content_item_id, fact_text, citation, "
+                "audience, target_character_id, source_action_id, state_version, "
+                "record_kind, status, corrects_reveal_id, reason_code "
+                "FROM fact_reveals WHERE event_sequence = %s",
+                (sequence,),
+            ).fetchone()
+        except Exception:
+            return False
+        if not row:
+            return False
+        if row.get("room_id") != room_id:
+            return False
+        if row.get("record_kind") != FACT_REVEAL_EVENT_KINDS.get(event_type):
+            return False
+        if row.get("audience") != audience:
+            return False
+        if audience == "player" and not (
+            character_id
+            and row.get("target_character_id") == character_id
+        ):
+            return False
+        if audience not in {"party", "player"}:
+            return False
+        if row.get("source_action_id") != action_id:
+            return False
+        if int(row.get("state_version") or 0) != int(state_version):
+            return False
+        expected = {
+            "revealId": row["reveal_id"],
+            "factId": row["fact_id"],
+            "status": row["status"],
+        }
+        if row["record_kind"] == "reveal":
+            expected.update({
+                "contentItemId": row.get("content_item_id") or "",
+                "factText": row.get("fact_text") or "",
+                "citation": redact_citation(_decode_json(row.get("citation"))),
+            })
+        else:
+            expected.update({
+                "correctsRevealId": row.get("corrects_reveal_id") or "",
+                "reasonCode": row.get("reason_code") or "",
+            })
+            if row.get("fact_text"):
+                expected["factText"] = row["fact_text"]
+                expected["citation"] = redact_citation(
+                    _decode_json(row.get("citation"))
+                )
+        if audience == "player":
+            expected["characterId"] = row.get("target_character_id") or ""
+        canonical_payload = _canonical_exact_json(payload)
+        return (
+            canonical_payload is not None
+            and canonical_payload == _canonical_exact_json(expected)
+        )
 
     def create_checkpoint(
         self,
@@ -590,6 +712,19 @@ def _json_default(value: Any) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
     raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
+def _canonical_exact_json(value: Any) -> str | None:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _to_iso(value: Any) -> Any:

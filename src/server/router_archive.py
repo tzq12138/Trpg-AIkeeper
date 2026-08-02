@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, Request, HTTPException, Query
 from .events.event_log import EventLog
 from .campaign_archive import CampaignArchive
@@ -325,7 +327,7 @@ async def dry_run_restore_checkpoint(
 
 @router.get("/{room_id}/campaign")
 async def get_campaign_summary(request: Request, room_id: str,
-                                scope: str = Query("public")):
+                                scope: Literal["public", "full"] = Query("public")):
     """Get campaign summary. scope=public for players, scope=full for owner/admin."""
     conn = request.app.state.db
     if scope == "full":
@@ -372,8 +374,8 @@ async def end_campaign(request: Request, room_id: str):
 
 @router.get("/{room_id}/export")
 async def export_room(request: Request, room_id: str,
-                      format: str = Query("markdown"),
-                      scope: str = Query("public")):
+                      format: Literal["markdown", "json"] = Query("markdown"),
+                      scope: Literal["public", "full"] = Query("public")):
     """Export room data as Markdown or JSON."""
     if scope == "full":
         _verify_owner_or_admin(request, room_id)

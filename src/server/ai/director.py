@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from ..events.event_log import EventLog
+from ..engine.runtime_integrity import sanitize_checkpoint_value
 from ..models import ActionDraftDTO, DirectorPlanDTO, RedactedCitation, redact_citation
 from ..player.action_service import (
     _sanitize_composite_steps,
@@ -75,7 +76,13 @@ def build_director_context(conn, character: dict, draft: ActionDraftDTO) -> dict
     )
     relevant_content_keys = _relevant_content_keys(current_scene, runtime_package)
     context_version = int(room_dict.get("state_version") or draft.base_state_version or 0)
-    return {
+    authorized_facts = _authorized_knowledge_facts(
+        conn,
+        character["room_id"],
+        character["character_id"],
+        current_scene,
+    )
+    context = {
         "room": _director_room_context(room_dict),
         "context_version": context_version,
         "actor": actor,
@@ -86,12 +93,12 @@ def build_director_context(conn, character: dict, draft: ActionDraftDTO) -> dict
         "local_analysis": draft.model_dump(mode="json"),
         "current_scene": current_scene,
         "runtime_package": runtime_package,
-        "public_facts": _content_facts(
-            conn,
-            room_dict.get("scenario_version_id"),
-            "public",
-            relevant_content_keys,
-        ),
+        "public_facts": [
+            fact for fact in authorized_facts if fact.get("audience") == "party"
+        ],
+        "private_facts": [
+            fact for fact in authorized_facts if fact.get("audience") == "player"
+        ],
         "hidden_facts": _content_facts(
             conn,
             room_dict.get("scenario_version_id"),
@@ -107,7 +114,14 @@ def build_director_context(conn, character: dict, draft: ActionDraftDTO) -> dict
             character["character_id"],
         ),
         "inventory": _inventory(conn, character["character_id"]),
+        "player_hypotheses": _player_hypotheses(
+            conn,
+            character["room_id"],
+            character["character_id"],
+            draft.declared_intent,
+        ),
     }
+    return sanitize_checkpoint_value(context)
 
 
 def normalize_director_plan(raw: dict[str, Any], context: dict[str, Any]) -> DirectorPlanDTO:
@@ -336,17 +350,101 @@ def _compact_runtime_package(
         if isinstance(item, dict)
         and str(item.get("logical_key") or "") in visible_node_ids
     ]
+    current_keys = {
+        str(current_scene.get(key) or "").strip()
+        for key in ("current_scene", "scene_id", "node_id")
+    }
+    current_keys.update(visible_node_ids)
+    current_keys.discard("")
+    visible_scene_keys = set(current_keys)
+    visible_scene_keys.update(
+        str(edge.get("to_scene_id") or "").strip()
+        for edge in generic_edges
+    )
+    visible_scene_keys.discard("")
+
+    def matching_items(
+        values: Any,
+        allowed_keys: set[str],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(values, list):
+            return []
+        result = []
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            payload = _json_object(item.get("payload"))
+            identifiers = {
+                str(item.get(key) or "").strip()
+                for key in (
+                    "logical_key", "scene_id", "node_id", "location_id",
+                    "current_scene",
+                )
+            }
+            identifiers.update({
+                str(payload.get(key) or "").strip()
+                for key in ("scene_id", "node_id", "location_id")
+            })
+            identifiers.discard("")
+            if allowed_keys.intersection(identifiers):
+                result.append(item)
+        return result
+
+    def scene_identity_items(values: Any) -> list[dict[str, Any]]:
+        result = []
+        for item in matching_items(values, visible_scene_keys):
+            projected = {
+                key: value
+                for key in (
+                    "id", "logical_key", "scene_id", "node_id", "location_id",
+                    "name", "title",
+                )
+                if (value := item.get(key)) is not None
+                and isinstance(value, (str, int, float, bool))
+            }
+            payload = _json_object(item.get("payload"))
+            projected_payload = {
+                key: value
+                for key in (
+                    "id", "scene_id", "node_id", "location_id", "name", "title",
+                )
+                if (value := payload.get(key)) is not None
+                and isinstance(value, (str, int, float, bool))
+            }
+            if projected_payload:
+                projected["payload"] = projected_payload
+            if projected:
+                result.append(projected)
+        return result
+
+    world_book = _json_object(runtime_package.get("world_book"))
+    public_world_book = {}
+    synopsis = world_book.get("synopsis")
+    if isinstance(synopsis, str) and synopsis.strip():
+        public_world_book["synopsis"] = synopsis[:1200]
     return {
         "package_kind": runtime_package.get("package_kind"),
         "schema_version": runtime_package.get("schema_version"),
         "scenario_version_id": runtime_package.get("scenario_version_id"),
         "scenario_title": runtime_package.get("scenario_title"),
-        "world_book": _compact_value(runtime_package.get("world_book"), max_items=20),
-        "semantic_scenes": _compact_value(runtime_package.get("semantic_scenes"), max_items=10),
-        "npc_states": _compact_value(runtime_package.get("npc_states"), max_items=20),
-        "clue_dependencies": _compact_value(runtime_package.get("clue_dependencies"), max_items=20),
-        "rule_triggers": _compact_value(runtime_package.get("rule_triggers"), max_items=20),
-        "semantic_map": _compact_value(runtime_package.get("semantic_map"), max_items=30),
+        "world_book": public_world_book,
+        "semantic_scenes": _compact_value(
+            scene_identity_items(runtime_package.get("semantic_scenes")),
+            max_items=10,
+        ),
+        "npc_states": _compact_value(
+            matching_items(runtime_package.get("npc_states"), current_keys),
+            max_items=20,
+        ),
+        "clue_dependencies": _compact_value(
+            matching_items(runtime_package.get("clue_dependencies"), current_keys),
+            max_items=20,
+        ),
+        "rule_triggers": _compact_value(
+            matching_items(runtime_package.get("rule_triggers"), current_keys),
+            max_items=20,
+        ),
+        "semantic_map": {},
         "style_pack": _compact_value(runtime_package.get("style_pack"), max_items=20),
         "story_evidence_nodes": _compact_value(evidence, max_items=20),
         "semantic_progression_rules": {
@@ -382,7 +480,8 @@ def _current_scene(conn, room_id: str) -> dict[str, Any]:
     except Exception:
         pass
     row = conn.execute(
-        "SELECT current_scene, visited_scenes, scene_variables, version FROM room_scene_state WHERE room_id = %s",
+        "SELECT current_scene, visited_scenes, public_facts, scene_variables, version "
+        "FROM room_scene_state WHERE room_id = %s",
         (room_id,),
     ).fetchone()
     return _json_safe(dict(row)) if row else {}
@@ -396,19 +495,6 @@ def _relevant_content_keys(
         str(current_scene.get(field) or "").strip()
         for field in ("current_scene", "scene_id", "node_id")
     }
-    progression = _json_object(runtime_package.get("semantic_progression_rules"))
-    solo = _json_object(progression.get("solo_adventure"))
-    for node in solo.get("nodes") or []:
-        if isinstance(node, dict):
-            keys.add(str(node.get("node_id") or "").strip())
-    for edge in progression.get("edges") or []:
-        if not isinstance(edge, dict):
-            continue
-        keys.add(str(edge.get("from_scene_id") or "").strip())
-        keys.add(str(edge.get("to_scene_id") or "").strip())
-    for item in runtime_package.get("story_evidence_nodes") or []:
-        if isinstance(item, dict):
-            keys.add(str(item.get("logical_key") or "").strip())
     return sorted(key for key in keys if key)
 
 
@@ -423,7 +509,7 @@ def _content_facts(
     key_filter = "(" + ",".join(["%s"] * len(logical_keys)) + ")"
     rows = conn.execute(
         f"""
-        SELECT item_type, logical_key, title, citation
+        SELECT content_item_id, item_type, logical_key, title, citation
         FROM content_items
         WHERE scenario_version_id = %s
           AND visibility = %s
@@ -433,7 +519,110 @@ def _content_facts(
         """,
         (scenario_version_id, visibility, *logical_keys),
     ).fetchall()
-    return [_json_safe(dict(row)) for row in rows]
+    return [
+        {
+            **_json_safe(dict(row)),
+            "fact_id": str(row.get("content_item_id") or ""),
+            "epistemic_status": "engine_hidden_candidate",
+        }
+        for row in rows
+    ]
+
+
+def _authorized_knowledge_facts(
+    conn,
+    room_id: str,
+    character_id: str,
+    current_scene: dict[str, Any],
+) -> list[dict[str, Any]]:
+    from ..engine.reveal_ledger import RevealLedger
+
+    try:
+        records = RevealLedger(conn).project_facts(
+            room_id,
+            audience="director",
+            character_id=character_id,
+        )
+    except Exception:
+        records = []
+    facts = []
+    for record in records:
+        text = str(record.get("fact_text") or "").strip()
+        if not text:
+            continue
+        facts.append({
+            "fact_id": str(record.get("fact_id") or ""),
+            "content_item_id": str(record.get("content_item_id") or ""),
+            "item_type": "revealed_fact",
+            "logical_key": str(record.get("fact_id") or ""),
+            "title": text,
+            "citation": _json_object(record.get("citation")),
+            "audience": str(record.get("audience") or "party"),
+            "status": str(record.get("status") or "revealed"),
+            "epistemic_status": "engine_revealed_fact",
+        })
+    scene_facts = current_scene.get("public_facts")
+    if isinstance(scene_facts, str):
+        try:
+            scene_facts = json.loads(scene_facts)
+        except json.JSONDecodeError:
+            scene_facts = []
+    for index, value in enumerate(scene_facts or [], start=1):
+        text = str(value or "").strip()
+        if text:
+            facts.append({
+                "fact_id": f"scene-public:{index}",
+                "item_type": "runtime_public_fact",
+                "logical_key": str(current_scene.get("current_scene") or ""),
+                "title": text[:1200],
+                "citation": {},
+                "audience": "party",
+                "status": "revealed",
+                "epistemic_status": "engine_public_state",
+            })
+    return facts[:40]
+
+
+def _player_hypotheses(
+    conn,
+    room_id: str,
+    character_id: str,
+    declared_intent: str,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT evidence_card_id, title, body FROM evidence_cards "
+        "WHERE room_id = %s AND fact_status = 'hypothesis' "
+        "AND source = 'player' AND "
+        "(visibility = 'party' OR created_by_character_id = %s) "
+        "ORDER BY updated_at DESC LIMIT 20",
+        (room_id, character_id),
+    ).fetchall()
+    intent_key = _normalized_relevance_text(declared_intent)
+    result = []
+    for row in rows:
+        title = str(row.get("title") or "").strip()
+        title_key = _normalized_relevance_text(title)
+        if title_key and intent_key and not _texts_overlap(title_key, intent_key):
+            continue
+        result.append({
+            "evidence_card_id": str(row["evidence_card_id"]),
+            "title": title[:300],
+            "body": str(row.get("body") or "")[:1000],
+            "epistemic_status": "player_hypothesis_not_world_truth",
+        })
+    return result[:5]
+
+
+def _normalized_relevance_text(value: Any) -> str:
+    return "".join(
+        char.casefold() for char in str(value or "") if char.isalnum()
+    )
+
+
+def _texts_overlap(left: str, right: str) -> bool:
+    if left in right or right in left:
+        return True
+    return any(left[index:index + 2] in right for index in range(len(left) - 1))
 
 
 def _rule_version(conn, room_id: str) -> str:
@@ -497,7 +686,13 @@ def _recent_events(conn, room_id: str, character_id: str) -> list[dict[str, Any]
         limit=100,
         latest=True,
     )
-    return [event.model_dump(mode="json") for event in events[-10:]]
+    return [
+        sanitize_checkpoint_value({
+            **event.model_dump(mode="json"),
+            "epistemic_status": "authorized_observation_not_world_truth",
+        })
+        for event in events[-10:]
+    ]
 
 
 def _inventory(conn, character_id: str) -> list[dict[str, Any]]:

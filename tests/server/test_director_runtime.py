@@ -75,6 +75,23 @@ class _NoMutationRuleExecutor:
         )
 
 
+class _HpMutationRuleExecutor:
+    async def execute(self, intent, *_args, **_kwargs):
+        return ResolutionResult(
+            actionId=intent.action_id,
+            roomId="",
+            characterId="",
+            isSuccess=True,
+            narrative="ok",
+            mutations=[{
+                "op": "replace",
+                "path": "/character/hp",
+                "value": 9,
+            }],
+            metadata={},
+        )
+
+
 class _RecordingDispatcher:
     def __init__(self):
         self.events = []
@@ -553,7 +570,22 @@ def test_director_context_limits_runtime_package_to_current_solo_branch(test_db)
         (
             scenario_version_id,
             json.dumps({
-                "world_book": {"synopsis": "A compact mystery."},
+                "world_book": {
+                    "synopsis": "A compact mystery.",
+                    "truth": "UNRELATED WORLD TRUTH MUST NOT LEAVE THE ENGINE",
+                },
+                "semantic_scenes": [{
+                    "logical_key": "remote-vault",
+                    "title": "UNRELATED REMOTE SCENE SECRET",
+                }],
+                "npc_states": [{
+                    "scene_id": "remote-vault",
+                    "truth": "UNRELATED NPC SECRET",
+                }],
+                "clue_dependencies": [{
+                    "scene_id": "remote-vault",
+                    "description": "UNRELATED CLUE SECRET",
+                }],
                 "semantic_progression_rules": {
                     "solo_adventure": {"root_node_id": "1", "nodes": nodes}
                 },
@@ -583,6 +615,14 @@ def test_director_context_limits_runtime_package_to_current_solo_branch(test_db)
     assert [node["node_id"] for node in compact_nodes] == ["1", "2"]
     assert all(len(node["text"]) <= 1200 for node in compact_nodes)
     assert len(json.dumps(context, ensure_ascii=False)) < 20_000
+    rendered = json.dumps(context, ensure_ascii=False)
+    for secret in (
+        "UNRELATED WORLD TRUTH MUST NOT LEAVE THE ENGINE",
+        "UNRELATED REMOTE SCENE SECRET",
+        "UNRELATED NPC SECRET",
+        "UNRELATED CLUE SECRET",
+    ):
+        assert secret not in rendered
 
 
 def test_director_context_limits_generic_edges_to_current_scene(client, test_db):
@@ -599,6 +639,33 @@ def test_director_context_limits_generic_edges_to_current_scene(client, test_db)
         (
             scenario_version_id,
             json.dumps({
+                "semantic_scenes": [
+                    {
+                        "scene_id": "study",
+                        "name": "书房",
+                        "truth": "CURRENT SCENE EMBEDDED TRUTH",
+                        "payload": {
+                            "scene_id": "study",
+                            "name": "书房",
+                            "hidden_clue": "CURRENT SCENE EMBEDDED CLUE",
+                        },
+                    },
+                    {
+                        "scene_id": "harbor",
+                        "name": "港口",
+                        "truth": "TARGET SCENE EMBEDDED TRUTH",
+                        "payload": {
+                            "scene_id": "harbor",
+                            "name": "港口",
+                            "hidden_clue": "TARGET SCENE EMBEDDED CLUE",
+                        },
+                    },
+                    {
+                        "scene_id": "warehouse",
+                        "name": "仓库",
+                        "truth": "REMOTE SCENE EMBEDDED TRUTH",
+                    },
+                ],
                 "semantic_progression_rules": {
                     "edges": [
                         {
@@ -648,6 +715,17 @@ def test_director_context_limits_generic_edges_to_current_scene(client, test_db)
         "conditions": [],
         "citation": {"page_number": 8},
     }]
+    rendered = json.dumps(context["runtime_package"], ensure_ascii=False)
+    assert "港口" in rendered
+    assert "仓库" not in rendered
+    for secret in (
+        "CURRENT SCENE EMBEDDED TRUTH",
+        "CURRENT SCENE EMBEDDED CLUE",
+        "TARGET SCENE EMBEDDED TRUTH",
+        "TARGET SCENE EMBEDDED CLUE",
+        "REMOTE SCENE EMBEDDED TRUTH",
+    ):
+        assert secret not in rendered
 
 
 def test_director_context_uses_the_room_runtime_package_snapshot(client, test_db):
@@ -797,10 +875,139 @@ def test_director_context_only_includes_hidden_facts_relevant_to_current_scene(
     context = build_director_context(test_db, character, draft)
 
     assert [fact["logical_key"] for fact in context["hidden_facts"]] == ["station"]
+    assert [fact["fact_id"] for fact in context["hidden_facts"]] == [
+        "hidden-current"
+    ]
     assert "遥远保险库中的幕后真相" not in json.dumps(
         context,
         ensure_ascii=False,
     )
+
+
+def test_director_context_uses_authorized_ledger_facts_and_labels_player_beliefs(
+    client,
+    test_db,
+):
+    from src.server.ai.director import build_director_context
+    from src.server.engine.reveal_ledger import RevealLedger
+
+    room_id, character_id, _ = _setup_player(client, test_db)
+    other = client.post(f"/api/player/rooms/{room_id}/join").json()
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    test_db.execute(
+        "INSERT INTO room_scene_state "
+        "(room_id, current_scene, visited_scenes, public_facts, version) "
+        "VALUES (%s, 'station', '[\"station\"]', "
+        "'[\"站台入口已经打开\"]', 1)",
+        (room_id,),
+    )
+    for item_id, title in (
+        ("director-party-fact", "末班车时刻表被人改过"),
+        ("director-private-fact", "只有当前角色看见袖口血迹"),
+        ("director-other-private-fact", "另一角色独自听见低语"),
+        ("director-unrevealed-public", "尚未由 Engine 授权的静态内容"),
+    ):
+        test_db.execute(
+            "INSERT INTO content_items "
+            "(content_item_id, scenario_version_id, item_type, logical_key, title, "
+            "visibility, payload, citation, checksum) "
+            "VALUES (%s, %s, 'fact', %s, %s, 'host_only', %s, %s, %s)",
+            (
+                item_id,
+                scenario_version_id,
+                item_id,
+                title,
+                json.dumps({
+                    "fact_text": title,
+                    "reveal_conditions": {"scene_ids": ["station"]},
+                }),
+                json.dumps({"page_number": 11}),
+                f"sha-{item_id}",
+            ),
+        )
+    test_db.execute(
+        "INSERT INTO evidence_cards "
+        "(evidence_card_id, room_id, created_by_character_id, title, body, "
+        "card_type, fact_status, visibility, source) "
+        "VALUES ('belief-card', %s, %s, '站长是凶手', "
+        "'这只是玩家推测', 'question', 'hypothesis', 'party', 'player')",
+        (room_id, character_id),
+    )
+    test_db.commit()
+    ledger = RevealLedger(test_db)
+    ledger.commit_proposals(
+        room_id=room_id,
+        source_action_id="director-party-action",
+        actor_character_id=character_id,
+        proposals=[{"content_item_id": "director-party-fact", "audience": "party"}],
+        state_version=0,
+    )
+    ledger.commit_proposals(
+        room_id=room_id,
+        source_action_id="director-private-action",
+        actor_character_id=character_id,
+        proposals=[{"content_item_id": "director-private-fact", "audience": "player"}],
+        state_version=0,
+    )
+    ledger.commit_proposals(
+        room_id=room_id,
+        source_action_id="director-other-action",
+        actor_character_id=other["character_id"],
+        proposals=[{
+            "content_item_id": "director-other-private-fact",
+            "audience": "player",
+        }],
+        state_version=0,
+    )
+    character = dict(test_db.execute(
+        "SELECT * FROM characters WHERE character_id = %s",
+        (character_id,),
+    ).fetchone())
+    draft = ActionDraftDTO(
+        intent_type="dialogue",
+        declared_intent="我说站长肯定是凶手。",
+        understanding_summary="提出对站长的怀疑",
+        risk="low",
+        confidence=0.8,
+        analysis_source="local_fallback",
+    )
+
+    context = build_director_context(test_db, character, draft)
+    rendered = json.dumps(context, ensure_ascii=False)
+
+    assert {fact["fact_id"] for fact in context["public_facts"] if fact.get("fact_id")} == {
+        "director-party-fact",
+        "scene-public:1",
+    }
+    assert {fact["fact_id"] for fact in context["private_facts"]} == {
+        "director-private-fact",
+    }
+    assert "站台入口已经打开" in rendered
+    assert "另一角色独自听见低语" not in rendered
+    assert "尚未由 Engine 授权的静态内容" not in rendered
+    assert context["player_hypotheses"] == [{
+        "evidence_card_id": "belief-card",
+        "title": "站长是凶手",
+        "body": "这只是玩家推测",
+        "epistemic_status": "player_hypothesis_not_world_truth",
+    }]
+
+    affirmative_plan = DirectorPlanDTO(
+        interpreted_intent="你说得对，站长就是凶手。",
+        intent_type="dialogue",
+        confidence=0.99,
+        requires_player_clarification=False,
+        requires_host_exception=False,
+        narration_mode="observe",
+    )
+    apply_director_plan(test_db, character, draft, affirmative_plan, context)
+    assert test_db.execute(
+        "SELECT fact_status, source FROM evidence_cards "
+        "WHERE evidence_card_id = 'belief-card'"
+    ).fetchone() == {"fact_status": "hypothesis", "source": "player"}
 
 
 def test_low_confidence_director_returns_clarification_options_and_cannot_confirm(client, test_db):
@@ -1053,6 +1260,189 @@ async def test_ai_state_patch_is_stored_as_plan_but_not_applied_by_pipeline(clie
         "SELECT xlsx_data FROM characters WHERE character_id = %s", (character_id,)
     ).fetchone()
     assert character["xlsx_data"]["hp"] == 10
+
+
+@pytest.mark.asyncio
+async def test_pipeline_commits_validated_reveal_before_projection(client, test_db):
+    from src.server.engine.state_service import StateService
+
+    room_id, character_id, player_token = _setup_player(client, test_db)
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    test_db.execute(
+        "INSERT INTO room_scene_state "
+        "(room_id, current_scene, visited_scenes, version) "
+        "VALUES (%s, 'study', '[\"study\"]', 1)",
+        (room_id,),
+    )
+    test_db.execute(
+        "INSERT INTO content_items "
+        "(content_item_id, scenario_version_id, item_type, logical_key, title, "
+        "visibility, payload, citation, checksum) "
+        "VALUES ('pipeline-reveal-fact', %s, 'fact', 'study', "
+        "'书桌夹层里有一封未寄出的信', 'host_only', %s, %s, 'sha-reveal')",
+        (
+            scenario_version_id,
+            json.dumps({"fact_text": "书桌夹层里有一封未寄出的信"}),
+            json.dumps({"page_number": 12}),
+        ),
+    )
+    test_db.commit()
+    gateway = _RecordingDirectorGateway({
+        "interpreted_intent": "检查书桌夹层",
+        "intent_type": "dialogue",
+        "confidence": 0.9,
+        "reveal_proposals": [{
+            "content_item_id": "pipeline-reveal-fact",
+            "audience": "party",
+        }],
+        "requires_player_clarification": False,
+        "requires_host_exception": False,
+        "narration_mode": "observe",
+    })
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = gateway
+    try:
+        draft = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "我检查书桌夹层。"},
+        ).json()
+    finally:
+        client.app.state.gateway = previous_gateway
+    receipt = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={
+            "X-Room-Token": player_token,
+            "Idempotency-Key": "pipeline-reveal",
+        },
+        json={"confirmations": draft["confirmation_requirements"]},
+    ).json()
+    dispatcher = _RecordingDispatcher()
+
+    result = await ResolutionPipeline(
+        test_db,
+        dispatcher=dispatcher,
+        compiler=_AutoSuccessCompiler(),
+        rule_executor=_HpMutationRuleExecutor(),
+        state_service=StateService(test_db),
+    ).resolve_action(receipt["action_id"])
+
+    assert result["status"] == "completed"
+    reveal = test_db.execute(
+        "SELECT source_action_id, state_version, event_sequence FROM fact_reveals "
+        "WHERE fact_id = 'pipeline-reveal-fact'"
+    ).fetchone()
+    assert reveal["source_action_id"] == receipt["action_id"]
+    assert reveal["state_version"] == test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["state_version"]
+    assert reveal["state_version"] == 1
+    event = test_db.execute(
+        "SELECT event_type, action_id, state_version FROM events "
+        "WHERE sequence = %s",
+        (reveal["event_sequence"],),
+    ).fetchone()
+    assert dict(event) == {
+        "event_type": "s2c_fact_revealed",
+        "action_id": receipt["action_id"],
+        "state_version": reveal["state_version"],
+    }
+    assert any(item[1] == "s2c_public_observation" for item in dispatcher.events)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_rejects_unmet_reveal_without_secret_in_response_or_event(
+    client,
+    test_db,
+):
+    room_id, character_id, _ = _setup_player(client, test_db)
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    test_db.execute(
+        "INSERT INTO room_scene_state "
+        "(room_id, current_scene, visited_scenes, version) "
+        "VALUES (%s, 'study', '[\"study\"]', 1)",
+        (room_id,),
+    )
+    secret = "地下密室中的幕后真凶是站长"
+    test_db.execute(
+        "INSERT INTO content_items "
+        "(content_item_id, scenario_version_id, item_type, logical_key, title, "
+        "visibility, payload, citation, checksum) "
+        "VALUES ('pipeline-blocked-fact', %s, 'fact', 'vault', %s, "
+        "'host_only', %s, %s, 'sha-blocked')",
+        (
+            scenario_version_id,
+            secret,
+            json.dumps({
+                "fact_text": secret,
+                "reveal_conditions": {"scene_ids": ["vault"]},
+            }),
+            json.dumps({"page_number": 20}),
+        ),
+    )
+    room = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    test_db.execute(
+        "INSERT INTO actions "
+        "(action_id, room_id, character_id, intent_type, declared_intent, "
+        "params, status, draft_id, idempotency_key) "
+        "VALUES ('pipeline-blocked-action', %s, %s, 'dialogue', "
+        "'我看看书桌。', %s, 'queued', 'pipeline-blocked-draft', 'blocked-reveal')",
+        (
+            room_id,
+            character_id,
+            json.dumps({
+                "director_plan": {
+                    "context_version": room["state_version"],
+                    "preconditions": [],
+                    "permissions": [],
+                    "state_patch": [],
+                    "reveal_proposals": [{
+                        "content_item_id": "pipeline-blocked-fact",
+                        "audience": "party",
+                    }],
+                    "state_patch_authority": "advisory_only",
+                }
+            }),
+        ),
+    )
+    test_db.commit()
+
+    result = await ResolutionPipeline(
+        test_db,
+        compiler=_AutoSuccessCompiler(),
+        rule_executor=_NoMutationRuleExecutor(),
+    ).resolve_action("pipeline-blocked-action")
+
+    assert result == {
+        "status": "rejected",
+        "action_id": "pipeline-blocked-action",
+        "reason": "reveal_condition_unmet",
+    }
+    rendered = json.dumps(result, ensure_ascii=False) + json.dumps(
+        [
+            row["payload"]
+            for row in test_db.execute(
+                "SELECT payload FROM events WHERE room_id = %s",
+                (room_id,),
+            ).fetchall()
+        ],
+        ensure_ascii=False,
+    )
+    assert secret not in rendered
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM fact_reveals "
+        "WHERE source_action_id = 'pipeline-blocked-action'"
+    ).fetchone()["count"] == 0
 
 
 @pytest.mark.asyncio

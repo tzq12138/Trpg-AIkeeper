@@ -25,6 +25,7 @@ EngineEventType = Literal[
     "s2c_turn_resolved",
     "s2c_combat_round_locked",
     "s2c_clue_discovered", "s2c_clue_shared",
+    "s2c_fact_revealed", "s2c_fact_corrected", "s2c_fact_safety_event",
     "s2c_checkpoint_created", "s2c_checkpoint_restored", "s2c_runtime_integrity_changed",
     "s2c_private_note_emergency_access",
     "s2c_ai_stage_changed", "s2c_player_clarification_required",
@@ -428,6 +429,21 @@ class DirectorActionStepDTO(BaseModel):
         return _validate_director_nested_value(value)
 
 
+class DirectorRevealProposalDTO(BaseModel):
+    """A reference-only proposal. Engine loads the fact text and citation."""
+
+    model_config = ConfigDict(extra="forbid")
+    fact_id: str | None = Field(default=None, min_length=1, max_length=200)
+    content_item_id: str | None = Field(default=None, min_length=1, max_length=200)
+    audience: Literal["party", "player"] = "party"
+
+    @model_validator(mode="after")
+    def _requires_stable_fact_reference(self):
+        if not self.fact_id and not self.content_item_id:
+            raise ValueError("reveal proposal requires fact_id or content_item_id")
+        return self
+
+
 class DirectorPlanDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -442,6 +458,10 @@ class DirectorPlanDTO(BaseModel):
     mechanic_plan: DirectorMechanicPlanDTO = Field(default_factory=DirectorMechanicPlanDTO)
     state_patch: list[DirectorStatePatchDTO] = Field(default_factory=list)
     event_plan: list[DirectorEventPlanDTO] = Field(default_factory=list)
+    reveal_proposals: list[DirectorRevealProposalDTO] = Field(
+        default_factory=list,
+        max_length=10,
+    )
     semantic_progression: DirectorSemanticProgressionDTO = Field(default_factory=DirectorSemanticProgressionDTO)
     action_steps: list[DirectorActionStepDTO] = Field(default_factory=list, max_length=2)
     npc_reactions: list[dict[str, Any]] = Field(default_factory=list)
@@ -691,6 +711,17 @@ class CampaignRecentClueDTO(BaseModel):
     is_shared: bool
 
 
+class CampaignKnownFactDTO(BaseModel):
+    reveal_id: str
+    fact_id: str
+    text: str
+    citation: RedactedCitation = Field(default_factory=RedactedCitation)
+    audience: Literal["party", "player"]
+    state_version: int
+    status: Literal["revealed", "corrected", "safety_flagged"]
+    revealed_at: str
+
+
 class CampaignHomeDTO(BaseModel):
     room_id: str
     current_scene: CampaignCurrentSceneDTO | None = None
@@ -700,6 +731,7 @@ class CampaignHomeDTO(BaseModel):
     last_summary: dict[str, Any] | None = None
     next_session: CampaignSessionDTO | None = None
     recent_clues: list[CampaignRecentClueDTO] = Field(default_factory=list)
+    known_facts: list[CampaignKnownFactDTO] = Field(default_factory=list)
     unresolved_questions: list[CampaignQuestionDTO] = Field(default_factory=list)
 
 
@@ -1192,6 +1224,10 @@ class SpoilerUnlockState(BaseModel):
     explored_node_ids: list[str] = Field(default=[], alias="exploredNodeIds")
     active_ending_phase: str = Field(default="", alias="activeEndingPhase")
     shared_clue_ids: list[str] = Field(default=[], alias="sharedClueIds")
+    revealed_fact_ids: list[str] = Field(default=[], alias="revealedFactIds")
+    revealed_content_item_ids: list[str] = Field(
+        default=[], alias="revealedContentItemIds"
+    )
     host_manual_reveals: list[str] = Field(default=[], alias="hostManualReveals")
 
 

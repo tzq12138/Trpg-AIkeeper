@@ -20,6 +20,7 @@ from .fallback_narrative import render_action_aware_fallback
 from .host_autonomy import decide_host_autonomy
 from .projection import ProjectionDispatcher
 from .retro_items import RetroactiveClaimError, RetroactiveItemService
+from .reveal_ledger import RevealPolicyError
 from .roll_receipt import create_roll_receipt
 from .rule_executor import RuleExecutor
 
@@ -596,6 +597,7 @@ class ResolutionPipeline:
         solo_daily_penalty_die = None
         solo_damage_transition = None
         solo_item_purchase = None
+        reveal_proposals: list[dict[str, Any]] = []
         if is_v2:
             await self._emit_ai_stage(action, "directing")
             director_err = self._validate_director_plan(
@@ -614,6 +616,18 @@ class ResolutionPipeline:
                     "action_id": action_id,
                     "reason": director_err,
                 }
+            director_plan = intent.params.get("director_plan")
+            raw_reveal_proposals = (
+                director_plan.get("reveal_proposals")
+                if isinstance(director_plan, dict)
+                else []
+            )
+            if isinstance(raw_reveal_proposals, list):
+                reveal_proposals = [
+                    proposal
+                    for proposal in raw_reveal_proposals
+                    if isinstance(proposal, dict)
+                ][:10]
         retroactive_decision = None
         if is_v2 and intent.intent_type == "retroactive_item_claim":
             try:
@@ -961,6 +975,36 @@ class ResolutionPipeline:
                 inventoryChanges=inventory_changes,
             )
 
+        committed_reveals: list[dict[str, Any]] = []
+        reveal_proposals_to_commit = (
+            reveal_proposals if resolution.is_success else []
+        )
+
+        def commit_reveals(transaction) -> list[dict[str, Any]]:
+            if not reveal_proposals_to_commit:
+                return []
+            from .reveal_ledger import RevealLedger
+
+            ledger = RevealLedger(self.conn)
+            validated = ledger.validate_proposals(
+                room_id=action["room_id"],
+                actor_character_id=action["character_id"],
+                proposals=reveal_proposals_to_commit,
+                executor=transaction,
+            )
+            state_row = transaction.execute(
+                "SELECT state_version FROM rooms WHERE room_id = %s",
+                (action["room_id"],),
+            ).fetchone()
+            return ledger.commit_validated(
+                room_id=action["room_id"],
+                source_action_id=action["action_id"],
+                actor_character_id=action["character_id"],
+                proposals=validated,
+                state_version=int(state_row.get("state_version") or 0),
+                executor=transaction,
+            )
+
         try:
             if is_v2 and isinstance(conflict_guard, dict):
                 from .state_service import (
@@ -998,6 +1042,8 @@ class ResolutionPipeline:
                                 action["room_id"],
                             ),
                         )
+                    if not commit_conflict_reason:
+                        committed_reveals = commit_reveals(tx)
                 if commit_conflict_reason:
                     return await self._require_action_resync(
                         action,
@@ -1027,6 +1073,7 @@ class ResolutionPipeline:
                                 action["room_id"],
                             ),
                         )
+                        committed_reveals = commit_reveals(tx)
                 else:
                     self.state_service.apply_change(
                         room_id=action["room_id"],
@@ -1037,6 +1084,16 @@ class ResolutionPipeline:
                         changes=state_changes,
                         reason=f"Action {action['action_id']} resolved",
                     )
+            elif is_v2 and reveal_proposals_to_commit:
+                with self.conn.transaction() as tx:
+                    committed_reveals = commit_reveals(tx)
+        except RevealPolicyError as exc:
+            await self._reject(action, exc.code)
+            return {
+                "status": "rejected",
+                "action_id": action_id,
+                "reason": exc.code,
+            }
         except Exception:
             logger.exception("StateService failed for action %s", action["action_id"])
             if is_v2:
@@ -1055,6 +1112,48 @@ class ResolutionPipeline:
                     "action_id": action_id,
                     "reason": "state_persistence_failed",
                 }
+
+        if committed_reveals:
+            resolution.metadata = {
+                **dict(resolution.metadata or {}),
+                "fact_reveals": [
+                    {
+                        "reveal_id": record["reveal_id"],
+                        "fact_id": record["fact_id"],
+                        "audience": record["audience"],
+                        "state_version": record["state_version"],
+                        "event_sequence": record["event_sequence"],
+                    }
+                    for record in committed_reveals
+                ],
+            }
+            result_payload = resolution.model_dump(by_alias=True)
+            publisher = getattr(
+                self.dispatcher,
+                "publish_committed_fact_event",
+                None,
+            )
+            if publisher:
+                for record in committed_reveals:
+                    try:
+                        published = await publisher(
+                            action["room_id"],
+                            record["event_sequence"],
+                        )
+                        if not published:
+                            logger.error(
+                                "Committed fact event failed ledger publication "
+                                "room=%s sequence=%s",
+                                action["room_id"],
+                                record["event_sequence"],
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Committed fact event publication failed "
+                            "room=%s sequence=%s",
+                            action["room_id"],
+                            record["event_sequence"],
+                        )
 
         solo_transition = None
         solo_target_node_id = ""
@@ -2180,7 +2279,10 @@ class ResolutionPipeline:
             violation = validate_narration_result(narration, context)
             if violation:
                 if ai_only or (
-                    violation == "narrator_fact_violation"
+                    violation in {
+                        "narrator_fact_violation",
+                        "narrator_hypothesis_violation",
+                    }
                     and (
                         is_solo_transition
                         or self._can_use_verified_narration_fallback(action, room)

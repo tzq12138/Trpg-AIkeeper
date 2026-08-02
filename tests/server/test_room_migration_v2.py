@@ -82,12 +82,13 @@ def test_room_package_export_has_manifest_hashes_and_no_tokens(client, test_db):
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["schema"] == "aikeeper.room-migration"
-        assert manifest["version"] == 1
+        assert manifest["version"] == 2
         assert {entry["path"] for entry in manifest["files"]} == {
             "room.json",
             "characters.json",
             "objectives.json",
             "events.json",
+            "fact_reveals.json",
             "player_notes.json",
         }
         for entry in manifest["files"]:
@@ -203,6 +204,7 @@ def test_imported_room_discards_an_unavailable_runtime_package_snapshot(client, 
         characters=package.characters,
         objectives=package.objectives,
         events=package.events,
+        fact_reveals=package.fact_reveals,
         player_notes=package.player_notes,
     )
 
@@ -311,3 +313,68 @@ def test_admin_global_reset_requires_verified_download_before_deleting_room_data
     assert test_db.execute("SELECT COUNT(*) AS count FROM accounts").fetchone()["count"] >= 3
     assert test_db.execute("SELECT COUNT(*) AS count FROM scenarios WHERE scenario_id = 'sc-test'").fetchone()["count"] == 1
     assert test_db.execute("SELECT COUNT(*) AS count FROM events WHERE room_id = %s", (room["room_id"],)).fetchone()["count"] == 0
+
+
+def test_room_migration_round_trips_authoritative_fact_reveals(client, test_db):
+    from src.server.engine.reveal_ledger import RevealLedger
+    from src.server.events.event_log import EventLog
+
+    room, _ = _setup_migratable_room(client, test_db)
+    room_row = test_db.execute(
+        "SELECT scenario_version_id, state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    test_db.execute(
+        "UPDATE characters SET status = 'active' WHERE character_id = 'old-character'"
+    )
+    test_db.execute(
+        "INSERT INTO room_scene_state "
+        "(room_id, current_scene, visited_scenes, public_facts, version) "
+        "VALUES (%s, 'lobby', '[\"lobby\"]', '[]', 1) "
+        "ON CONFLICT (room_id) DO UPDATE SET current_scene = EXCLUDED.current_scene",
+        (room["room_id"],),
+    )
+    test_db.execute(
+        "INSERT INTO content_items "
+        "(content_item_id, scenario_version_id, item_type, logical_key, title, "
+        "visibility, payload, citation, checksum) "
+        "VALUES ('migration-fact', %s, 'fact', 'lobby', %s, "
+        "'host_only', %s, %s, 'sha-migration-fact')",
+        (
+            room_row["scenario_version_id"],
+            "钟楼的时针已经停下",
+            json.dumps({
+                "fact_text": "钟楼的时针已经停下",
+                "reveal_conditions": {"scene_ids": ["lobby"]},
+            }, ensure_ascii=False),
+            json.dumps({"page_number": 7}),
+        ),
+    )
+    test_db.commit()
+    RevealLedger(test_db).commit_proposals(
+        room_id=room["room_id"],
+        source_action_id="migration-reveal-action",
+        actor_character_id="old-character",
+        proposals=[{"content_item_id": "migration-fact", "audience": "party"}],
+        state_version=int(room_row["state_version"] or 0),
+    )
+
+    package = inspect_room_package(_export_package(client, room))
+    copied_room_id = import_room_package(
+        test_db,
+        package,
+        owner_account_id="acc-host",
+    )
+
+    copied = test_db.execute(
+        "SELECT room_id, fact_id, source_action_id, event_sequence "
+        "FROM fact_reveals WHERE room_id = %s",
+        (copied_room_id,),
+    ).fetchone()
+    assert copied["room_id"] == copied_room_id
+    assert copied["fact_id"] == "migration-fact"
+    assert copied["source_action_id"] == "migration-reveal-action"
+    events = EventLog(test_db).get_public_events(copied_room_id)
+    assert [event.payload["factText"] for event in events] == [
+        "钟楼的时针已经停下"
+    ]

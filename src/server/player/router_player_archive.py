@@ -2,11 +2,19 @@ import json
 from fastapi import APIRouter, Request, HTTPException, Query
 from typing import Literal
 
+from ..events.event_log import EventLog
+
 router = APIRouter(prefix="/api")
 
 ARCHIVE_EVENT_TYPES = {
     "narrative": ["s2c_public_observation"],
-    "clues": ["s2c_private_notice", "s2c_public_observation"],
+    "clues": [
+        "s2c_private_notice",
+        "s2c_public_observation",
+        "s2c_fact_revealed",
+        "s2c_fact_corrected",
+        "s2c_fact_safety_event",
+    ],
     "actions": ["s2c_action_queued", "s2c_action_batched", "s2c_action_completed"],
     "skill_checks": ["s2c_action_completed"],
     "citations": [],
@@ -137,7 +145,8 @@ async def player_archive(
         placeholders = ",".join("%s" for _ in allowed_types)
         params: list = [room_id, *allowed_types]
         rows = conn.execute(
-            f"SELECT sequence, event_type, audience, payload, issued_at FROM events "
+            f"SELECT sequence, room_id, event_type, audience, payload, action_id, "
+            f"state_version, issued_at FROM events "
             f"WHERE room_id = %s AND event_type IN ({placeholders}) "
             f"ORDER BY sequence ASC",
             params,
@@ -147,6 +156,7 @@ async def player_archive(
         conn, room_id, character_id, type
     )
     entries = list(bundle_entries)
+    event_log = EventLog(conn)
     for r in rows:
         payload = r["payload"]
         if isinstance(payload, str):
@@ -161,12 +171,18 @@ async def player_archive(
         ):
             continue
 
+        if not event_log._can_player_see_event(
+            r["event_type"],
+            r["audience"],
+            payload,
+            character_id,
+            r["sequence"],
+            r.get("action_id"),
+            r.get("state_version"),
+            r.get("room_id"),
+        ):
+            continue
         is_public = r["audience"] in ("party", "system")
-
-        if not is_public:
-            owner_char_id = payload.get("characterId", "")
-            if owner_char_id and owner_char_id != character_id:
-                continue
 
         entries.append({
             "sequence": r["sequence"],

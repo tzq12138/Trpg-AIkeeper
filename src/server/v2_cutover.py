@@ -13,7 +13,7 @@ from pathlib import Path
 
 CUTOVER_CONFIRMATION = "BACKUP_AND_CLEAR_V2"
 BACKUP_SCHEMA = "aikeeper.v2-cutover-backup"
-BACKUP_VERSION = 3
+BACKUP_VERSION = 4
 LIVE_STATE_SCHEMA = "aikeeper.v2-cutover-live-state"
 LIVE_STATE_PATH = "live_state.json"
 
@@ -42,6 +42,7 @@ _CUTOVER_LOCK_TABLES = (
     "encounter_pending_reactions",
     "encounters",
     "events",
+    "fact_reveals",
     "evidence_cards",
     "evidence_comments",
     "evidence_links",

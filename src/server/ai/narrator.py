@@ -72,7 +72,6 @@ def build_narrator_context(
     verified_ending = _json_object((resolution.metadata or {}).get("verified_ending"))
     adventure_ended = bool(solo_transition.get("is_ending") or verified_ending)
     visible_changes = _visible_state_changes(resolution)
-    runtime_allowed_facts = _runtime_allowed_facts(runtime_package)
     interactables = (
         ["本次冒险记录"]
         if adventure_ended
@@ -81,17 +80,21 @@ def build_narrator_context(
     allowed_facts = _allowed_facts(
         conn,
         runtime_package,
-        room.get("scenario_version_id"),
+        room.get("room_id"),
         scene_brief,
         interactables,
         visible_changes,
         _investigator_name(character),
-        runtime_allowed_facts,
     )
     context = {
         "investigator_name": _investigator_name(character),
         "scene_brief": scene_brief,
-        "declared_intent": action.get("declared_intent") or "",
+        "player_hypotheses": _player_hypotheses(
+            conn,
+            room.get("room_id"),
+            action,
+            director_plan,
+        ),
         "director_summary": _director_summary(director_plan),
         "deterministic_rule_outcome": {
             "mechanic": resolution.mechanic,
@@ -143,6 +146,14 @@ def validate_narration_result(
             return "narrator_fact_violation"
     if _has_scene_fact_conflict(text, context):
         return "narrator_scene_fact_conflict"
+    narration_fields = " ".join([
+        text,
+        *[str(item) for item in result.environment_changes],
+        *[str(item) for item in result.interactable_objects],
+        str(result.open_question or ""),
+    ])
+    if _affirms_player_hypothesis(narration_fields, context):
+        return "narrator_hypothesis_violation"
     return None
 
 
@@ -263,6 +274,91 @@ def _has_scene_fact_conflict(text: str, context: dict[str, Any]) -> bool:
         ):
             return True
     return False
+
+
+def _player_hypotheses(
+    conn,
+    room_id: str | None,
+    action: dict[str, Any],
+    director_plan: dict[str, Any],
+) -> list[dict[str, str]]:
+    candidates: list[str] = []
+    for value in (
+        action.get("declared_intent"),
+        director_plan.get("interpreted_intent"),
+    ):
+        text = str(value or "").strip()
+        if text and _looks_like_hypothesis(text):
+            candidates.append(text)
+    if room_id:
+        try:
+            rows = conn.execute(
+                "SELECT title, body FROM evidence_cards WHERE room_id = %s "
+                "AND fact_status = 'hypothesis' AND visibility = 'party' "
+                "ORDER BY created_at DESC LIMIT 20",
+                (room_id,),
+            ).fetchall()
+            for row in rows:
+                candidates.extend([
+                    str(row.get("title") or "").strip(),
+                    str(row.get("body") or "").strip(),
+                ])
+        except Exception:
+            pass
+    return [
+        {
+            "text": text,
+            "epistemic_status": "player_hypothesis_not_world_truth",
+        }
+        for text in dict.fromkeys(item for item in candidates if item)
+    ]
+
+
+def _looks_like_hypothesis(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in (
+        "认为",
+        "觉得",
+        "怀疑",
+        "猜",
+        "可能",
+        "也许",
+        "大概",
+        "肯定",
+        "一定是",
+        "应该是",
+        "真凶",
+        "凶手",
+        "hypothesis",
+        "suspect",
+        "probably",
+        "must be",
+    ))
+
+
+def _affirms_player_hypothesis(text: str, context: dict[str, Any]) -> bool:
+    narrative = _normalized_claim(text)
+    if not narrative:
+        return False
+    for item in context.get("player_hypotheses") or []:
+        if not isinstance(item, dict):
+            continue
+        hypothesis = _normalized_claim(item.get("text"))
+        if len(hypothesis) >= 4 and hypothesis in narrative:
+            return True
+    return False
+
+
+def _normalized_claim(value: Any) -> str:
+    text = str(value or "").lower()
+    text = re.sub(r"^(我|我们)(认为|觉得|怀疑|猜测?|说)", "", text)
+    text = re.sub(
+        r"(可能|也许|大概|肯定|一定|应该|恐怕|perhaps|maybe|probably|must)",
+        "",
+        text,
+    )
+    text = text.replace("就是", "是")
+    return re.sub(r"[^\w\u3400-\u9fff]", "", text)
 
 
 def build_manual_action_hints(conn, character: dict[str, Any]) -> dict[str, list[str]]:
@@ -413,38 +509,31 @@ def _solo_scene_brief(text: Any) -> str:
 def _allowed_facts(
     conn,
     runtime_package: dict[str, Any],
-    scenario_version_id: str | None,
+    room_id: str | None,
     scene_brief: str,
     interactables: list[str],
     visible_changes: list[str],
     investigator_name: str,
-    runtime_allowed_facts: list[dict[str, str]],
 ) -> list[dict[str, str]]:
-    facts: list[dict[str, str]] = list(runtime_allowed_facts)
+    facts: list[dict[str, str]] = []
     facts.extend(_facts_from_texts("fact:interactable", interactables))
     facts.extend(_facts_from_texts("fact:visible-change", visible_changes))
     if investigator_name:
         facts.append({"fact_ref": "fact:investigator", "text": investigator_name})
     if scene_brief:
         facts.append({"fact_ref": "fact:scene-brief", "text": scene_brief})
-    if scenario_version_id:
-        rows = conn.execute(
-            """
-            SELECT title, logical_key
-            FROM content_items
-            WHERE scenario_version_id = %s AND visibility = 'public'
-            ORDER BY ordinal, logical_key
-            LIMIT 40
-            """,
-            (scenario_version_id,),
-        ).fetchall()
-        for row in rows:
-            logical_key = str(row.get("logical_key") or "").strip()
-            title = str(row.get("title") or "").strip()
-            if logical_key and title:
+    if room_id:
+        from ..engine.reveal_ledger import RevealLedger
+
+        for record in RevealLedger(conn).project_facts(
+            str(room_id), audience="public"
+        ):
+            text = str(record.get("fact_text") or "").strip()
+            fact_id = str(record.get("fact_id") or "").strip()
+            if fact_id and text:
                 facts.append({
-                    "fact_ref": f"fact:content:{logical_key}",
-                    "text": title,
+                    "fact_ref": f"fact:reveal:{fact_id}",
+                    "text": text,
                 })
     deduped: dict[str, dict[str, str]] = {}
     for fact in facts:
@@ -457,7 +546,6 @@ def _allowed_facts(
 
 def _director_summary(plan: dict[str, Any]) -> dict[str, Any]:
     return {
-        "interpreted_intent": str(plan.get("interpreted_intent") or "")[:500],
         "intent_type": str(plan.get("intent_type") or "")[:80],
         "narration_mode": str(plan.get("narration_mode") or "")[:80],
         "visibility": str(plan.get("visibility") or "public")[:80],
@@ -566,26 +654,6 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _runtime_allowed_facts(runtime_package: dict[str, Any]) -> list[dict[str, str]]:
-    raw = runtime_package.get("allowed_facts")
-    if not isinstance(raw, list):
-        return []
-    facts: list[dict[str, str]] = []
-    for index, item in enumerate(raw, start=1):
-        if isinstance(item, dict):
-            text = str(item.get("text") or item.get("label") or "").strip()
-            fact_ref = str(item.get("fact_ref") or item.get("ref") or "").strip()
-        else:
-            text = str(item).strip()
-            fact_ref = ""
-        if not text:
-            continue
-        if not fact_ref:
-            fact_ref = f"fact:runtime:{_stable_slug(text, index)}"
-        facts.append({"fact_ref": fact_ref, "text": text})
-    return facts
 
 
 def _interactable_names(value: Any) -> list[str]:

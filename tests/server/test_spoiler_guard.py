@@ -226,6 +226,35 @@ class TestReview:
         result = sg.review("张教授是凶手", "party", None, unlock, [])
         assert result.allowed is True
 
+    def test_revealed_fact_id_does_not_unlock_prefix_collision(self, sg):
+        item = SpoilerSensitiveItem(
+            itemId="sc-review:hidden_clue:fact-10",
+            scenarioId="sc-review",
+            category="hidden_clue",
+            label="十号秘密",
+            aliases=["十号秘密"],
+            sourceRef="clue_id:fact-10",
+            defaultAudience="host",
+        )
+
+        blocked = sg.review(
+            "你发现了十号秘密。",
+            "party",
+            None,
+            SpoilerUnlockState(roomId="room-review", revealedFactIds=["fact-1"]),
+            [item],
+        )
+        released = sg.review(
+            "你发现了十号秘密。",
+            "party",
+            None,
+            SpoilerUnlockState(roomId="room-review", revealedFactIds=["fact-10"]),
+            [item],
+        )
+
+        assert blocked.allowed is False
+        assert released.allowed is True
+
 
 # ── Tests: Retry Prompt & Fallback ──
 
@@ -275,8 +304,8 @@ class TestUnlockState:
         assert state.room_id == "room-nonexistent"
         assert state.discovered_clue_ids == []
 
-    def test_compute_unlock_state_with_clues(self, test_db):
-        # Setup: create room + clues
+    def test_private_clues_do_not_unlock_party_spoilers(self, test_db):
+        # A discovery belongs to one character until it is explicitly shared.
         test_db.execute(
             "INSERT INTO rooms (room_id, owner_token) VALUES ('room-clues', 't1')"
         )
@@ -290,11 +319,11 @@ class TestUnlockState:
 
         sg = SpoilerGuard(test_db)
         state = sg.compute_unlock_state("room-clues")
-        assert "c1" in state.discovered_clue_ids
-        assert "c2" in state.discovered_clue_ids
+        assert state.discovered_clue_ids == []
+        assert state.shared_clue_ids == []
 
-    def test_unlocked_clue_not_flagged(self, test_db):
-        """A hidden clue that's been discovered should NOT be flagged."""
+    def test_shared_clue_unlocks_party_spoiler(self, test_db):
+        """A hidden clue is party-safe only after an explicit share."""
         sg = SpoilerGuard(test_db)
         kg = _make_kg_with_hidden()
         index = sg.build_sensitive_index("sc-unlocked", kg)
@@ -306,10 +335,17 @@ class TestUnlockState:
         test_db.execute(
             "INSERT INTO clues (clue_id, room_id, character_id, text) VALUES ('clue-secret-1', 'room-unlocked', 'ch1', 'hidden clue')"
         )
+        test_db.execute(
+            "INSERT INTO clue_shares "
+            "(share_id, clue_id, shared_by, room_id, public_version) "
+            "VALUES ('share-secret-1', 'clue-secret-1', 'ch1', "
+            "'room-unlocked', '墙上的铭文指向北方')"
+        )
         test_db.commit()
 
         unlock = sg.compute_unlock_state("room-unlocked")
-        assert "clue-secret-1" in unlock.discovered_clue_ids
+        assert "clue-secret-1" not in unlock.discovered_clue_ids
+        assert "clue-secret-1" in unlock.shared_clue_ids
 
         # This text mentions the description of clue clue-secret-1, but it's unlocked
         text = "墙上刻着的诡异符号似乎在指引什么方向。"

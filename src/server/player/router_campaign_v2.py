@@ -719,6 +719,13 @@ async def campaign_home(request: Request):
             character["character_id"],
         ),
     ).fetchall()
+    from ..engine.reveal_ledger import RevealLedger
+
+    known_facts = RevealLedger(conn).project_facts(
+        character["room_id"],
+        audience="player",
+        character_id=character["character_id"],
+    )
     current_scene = None
     try:
         from ..scenario.solo_runtime import SoloAdventureRuntime
@@ -769,6 +776,19 @@ async def campaign_home(request: Request):
                 "is_shared": bool(row["is_shared"]),
             }
             for row in recent_clues
+        ],
+        "known_facts": [
+            {
+                "reveal_id": fact["reveal_id"],
+                "fact_id": fact["fact_id"],
+                "text": fact.get("fact_text") or "",
+                "citation": redact_citation(fact.get("citation") or {}),
+                "audience": fact["audience"],
+                "state_version": int(fact["state_version"]),
+                "status": fact["status"],
+                "revealed_at": fact.get("created_at") or "",
+            }
+            for fact in known_facts[-20:]
         ],
         "unresolved_questions": [dict(row) for row in unresolved_questions],
     }

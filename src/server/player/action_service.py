@@ -571,6 +571,7 @@ def _build_intent_contract(
 def _extract_intent_target(text: str) -> str | None:
     patterns = (
         r"(?:朝|向|对)([^，,。；;]{1,80}?)(?:射击|开枪|攻击|砍|刺|殴打)",
+        r"(?:制服|袭击|殴打)([^，,。；;]{1,80})",
         r"(?:检查|观察|搜索|询问|阅读)([^，,。；;]{1,80})",
     )
     for pattern in patterns:

@@ -448,6 +448,39 @@ CREATE TABLE IF NOT EXISTS events (
     issued_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS fact_reveals (
+    reveal_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    fact_id TEXT NOT NULL,
+    content_item_id TEXT,
+    fact_text TEXT NOT NULL DEFAULT '',
+    citation JSONB NOT NULL DEFAULT '{}',
+    audience TEXT NOT NULL CHECK (audience IN ('party', 'player')),
+    target_character_id TEXT NOT NULL DEFAULT '',
+    source_action_id TEXT NOT NULL,
+    state_version INTEGER NOT NULL,
+    event_sequence BIGINT NOT NULL UNIQUE REFERENCES events(sequence) ON DELETE CASCADE,
+    trigger_snapshot JSONB NOT NULL DEFAULT '{}',
+    record_kind TEXT NOT NULL DEFAULT 'reveal'
+        CHECK (record_kind IN ('reveal', 'correction', 'safety_event')),
+    status TEXT NOT NULL DEFAULT 'revealed'
+        CHECK (status IN ('revealed', 'corrected', 'safety_flagged')),
+    corrects_reveal_id TEXT REFERENCES fact_reveals(reveal_id),
+    reason_code TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (
+        room_id, source_action_id, fact_id, audience,
+        target_character_id, record_kind
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_reveals_room_audience
+    ON fact_reveals(room_id, audience, target_character_id, event_sequence);
+CREATE INDEX IF NOT EXISTS idx_fact_reveals_room_fact
+    ON fact_reveals(room_id, fact_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_reveals_event_sequence
+    ON fact_reveals(event_sequence);
+
 CREATE TABLE IF NOT EXISTS actions (
     action_id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL,

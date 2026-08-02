@@ -8,14 +8,20 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from .engine.runtime_integrity import (
+    checkpoint_snapshot_hash,
+    sanitize_checkpoint_value,
+)
+
 
 PACKAGE_SCHEMA = "aikeeper.room-migration"
-PACKAGE_VERSION = 1
+PACKAGE_VERSION = 2
 PACKAGE_FILES = (
     "room.json",
     "characters.json",
     "objectives.json",
     "events.json",
+    "fact_reveals.json",
     "player_notes.json",
 )
 MAX_PACKAGE_BYTES = 10 * 1024 * 1024
@@ -32,6 +38,7 @@ class RoomMigrationPackage:
     characters: list[dict[str, Any]]
     objectives: list[dict[str, Any]]
     events: list[dict[str, Any]]
+    fact_reveals: list[dict[str, Any]]
     player_notes: list[dict[str, Any]]
 
     @property
@@ -40,6 +47,7 @@ class RoomMigrationPackage:
             "characters": len(self.characters),
             "objectives": len(self.objectives),
             "events": len(self.events),
+            "fact_reveals": len(self.fact_reveals),
             "player_notes": len(self.player_notes),
         }
 
@@ -67,6 +75,14 @@ def build_room_package(conn, room_id: str) -> bytes:
             _export_event(dict(row))
             for row in conn.execute(
                 "SELECT * FROM events WHERE room_id = %s ORDER BY sequence", (room_id,)
+            ).fetchall()
+        ]),
+        "fact_reveals.json": _json_bytes([
+            _json_safe(dict(row))
+            for row in conn.execute(
+                "SELECT * FROM fact_reveals WHERE room_id = %s "
+                "ORDER BY event_sequence, reveal_id",
+                (room_id,),
             ).fetchall()
         ]),
         "player_notes.json": _json_bytes([
@@ -133,6 +149,7 @@ def inspect_room_package(package_bytes: bytes) -> RoomMigrationPackage:
         characters=data["characters.json"],
         objectives=data["objectives.json"],
         events=data["events.json"],
+        fact_reveals=data["fact_reveals.json"],
         player_notes=data["player_notes.json"],
     )
 
@@ -155,13 +172,32 @@ def import_room_package(conn, package: RoomMigrationPackage, owner_account_id: s
         for item in package.player_notes
         if isinstance(item.get("note_id"), str) and item["note_id"]
     }
-    id_map = {old_room_id: new_room_id, **character_ids, **objective_ids, **note_ids}
+    reveal_ids = {
+        item["reveal_id"]: str(uuid.uuid4())
+        for item in package.fact_reveals
+        if isinstance(item.get("reveal_id"), str) and item["reveal_id"]
+    }
+    id_map = {
+        old_room_id: new_room_id,
+        **character_ids,
+        **objective_ids,
+        **note_ids,
+        **reveal_ids,
+    }
 
     with conn.transaction() as tx:
         _insert_room(tx, new_room_id, package.room, owner_account_id)
         _insert_characters(tx, new_room_id, package.characters, character_ids)
         _insert_objectives(tx, new_room_id, package.objectives, objective_ids, id_map)
-        _insert_events(tx, new_room_id, package.events, id_map)
+        event_sequences = _insert_events(tx, new_room_id, package.events, id_map)
+        _insert_fact_reveals(
+            tx,
+            new_room_id,
+            package.fact_reveals,
+            reveal_ids,
+            event_sequences,
+            id_map,
+        )
         _insert_player_notes(tx, new_room_id, package.player_notes, note_ids, id_map)
     return new_room_id
 
@@ -179,7 +215,7 @@ def _export_character(character: dict[str, Any]) -> dict[str, Any]:
 
 
 def _export_event(event: dict[str, Any]) -> dict[str, Any]:
-    event.pop("sequence", None)
+    event["source_sequence"] = event.pop("sequence", None)
     return _json_safe(_strip_token_fields(event))
 
 
@@ -262,17 +298,87 @@ def _insert_objectives(tx, room_id: str, objectives: list[dict[str, Any]], objec
         )
 
 
-def _insert_events(tx, room_id: str, events: list[dict[str, Any]], id_map: dict[str, str]) -> None:
+def _insert_events(
+    tx,
+    room_id: str,
+    events: list[dict[str, Any]],
+    id_map: dict[str, str],
+) -> dict[int, int]:
+    sequence_map: dict[int, int] = {}
     for event in events:
-        tx.execute(
-            "INSERT INTO events (room_id, event_type, audience, payload, issued_at) "
-            "VALUES (%s, %s, %s, %s, COALESCE(%s, NOW()))",
+        payload = _remap_json_values(event.get("payload", {}), id_map)
+        cursor = tx.execute(
+            "INSERT INTO events "
+            "(room_id, event_type, audience, payload, action_id, state_version, "
+            "payload_hash, issued_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, COALESCE(%s, NOW())) "
+            "RETURNING sequence",
             (
                 room_id,
                 event.get("event_type", "migration_event"),
                 event.get("audience", "host"),
-                _as_json(_remap_json_values(event.get("payload", {}), id_map)),
+                _as_json(payload),
+                id_map.get(event.get("action_id"), event.get("action_id")),
+                event.get("state_version"),
+                checkpoint_snapshot_hash(sanitize_checkpoint_value(payload)),
                 event.get("issued_at"),
+            ),
+        )
+        inserted = cursor.fetchone()
+        source_sequence = event.get("source_sequence")
+        if inserted and source_sequence is not None:
+            sequence_map[int(source_sequence)] = int(inserted["sequence"])
+    return sequence_map
+
+
+def _insert_fact_reveals(
+    tx,
+    room_id: str,
+    records: list[dict[str, Any]],
+    reveal_ids: dict[str, str],
+    event_sequences: dict[int, int],
+    id_map: dict[str, str],
+) -> None:
+    for record in records:
+        old_reveal_id = str(record.get("reveal_id") or "")
+        reveal_id = reveal_ids.get(old_reveal_id)
+        source_sequence = record.get("event_sequence")
+        event_sequence = event_sequences.get(int(source_sequence or 0))
+        if not reveal_id or event_sequence is None:
+            raise RoomMigrationError("事实揭示记录缺少可映射的事件")
+        corrects_reveal_id = str(record.get("corrects_reveal_id") or "")
+        tx.execute(
+            "INSERT INTO fact_reveals "
+            "(reveal_id, room_id, fact_id, content_item_id, fact_text, citation, "
+            "audience, target_character_id, source_action_id, state_version, "
+            "event_sequence, trigger_snapshot, record_kind, status, "
+            "corrects_reveal_id, reason_code, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            "%s, %s, %s, %s, COALESCE(%s, NOW()))",
+            (
+                reveal_id,
+                room_id,
+                record.get("fact_id", ""),
+                record.get("content_item_id"),
+                record.get("fact_text", ""),
+                _as_json(record.get("citation")),
+                record.get("audience", "party"),
+                id_map.get(
+                    record.get("target_character_id"),
+                    record.get("target_character_id", ""),
+                ),
+                id_map.get(
+                    record.get("source_action_id"),
+                    record.get("source_action_id", ""),
+                ),
+                record.get("state_version", 0),
+                event_sequence,
+                _as_json(record.get("trigger_snapshot")),
+                record.get("record_kind", "reveal"),
+                record.get("status", "revealed"),
+                reveal_ids.get(corrects_reveal_id) if corrects_reveal_id else None,
+                record.get("reason_code"),
+                record.get("created_at"),
             ),
         )
 

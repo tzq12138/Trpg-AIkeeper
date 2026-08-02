@@ -60,13 +60,20 @@ _DIRECTOR_M0_RUNTIME_V1_PROMPT = (
     "declared_intent, intent_type, params, execution_condition, and on_previous_failure. "
     "execution_condition must be always, previous_step_success, or previous_step_failure; "
     "on_previous_failure must be cancel or continue, never ask for a mid-round choice; "
-    "do not return more than two steps, hidden facts, internal IDs, or authoritative state changes. "
+    "do not return more than two steps, hidden fact text, unrelated internal IDs, or authoritative state changes. "
+    "Player hypotheses are beliefs, never world truth even if you agree with them. "
+    "private_facts are authorized only for this actor's private adjudication and "
+    "must never enter party narration unless Engine accepts a party reveal proposal. "
+    "To reveal a supplied hidden fact, add reveal_proposals containing only fact_id "
+    "copied from hidden_facts and audience (party or player); never copy or rewrite "
+    "the hidden fact text or citation into the proposal. "
     "Use actor_display_name for narration identity, not character_id."
 )
 
 _NARRATOR_M0_RUNTIME_V1_PROMPT = (
     "You are AI-Keeper Narrator. Return JSON only. "
     "Narrate only from allowed_facts and deterministic_rule_outcome. "
+    "Player hypotheses are deliberately excluded and must never be asserted as facts. "
     "Do not create state_patch, mutations, hidden facts, room_id, character_id, action_id, or internal IDs. "
     "Required fields: context_version, director_plan_digest, narrative_text, "
     "environment_changes, interactable_objects, open_question, redacted_citations, "
@@ -1397,6 +1404,7 @@ _NARRATOR_PROVIDER_DENIED_KEYS = {
     "full_text",
     "state_patch",
     "mutations",
+    "player_hypotheses",
 }
 
 
@@ -1581,7 +1589,9 @@ def _minimal_director_provider_payload(context: dict[str, Any]) -> dict[str, Any
             continue
         projected_event = {
             key: event[key]
-            for key in ("event_type", "audience", "issued_at")
+            for key in (
+                "event_type", "audience", "issued_at", "epistemic_status"
+            )
             if key in event
         }
         event_payload = (
@@ -1618,7 +1628,7 @@ def _minimal_director_provider_payload(context: dict[str, Any]) -> dict[str, Any
         )
         if key in context
     }
-    for visibility in ("public_facts", "hidden_facts"):
+    for visibility in ("public_facts", "private_facts", "hidden_facts"):
         projected_facts = [
             projected
             for fact in context.get(visibility) or []
@@ -1627,6 +1637,20 @@ def _minimal_director_provider_payload(context: dict[str, Any]) -> dict[str, Any
         ]
         if projected_facts:
             payload[visibility] = projected_facts
+    player_hypotheses = []
+    for hypothesis in context.get("player_hypotheses") or []:
+        if not isinstance(hypothesis, dict):
+            continue
+        projected = {
+            key: hypothesis[key]
+            for key in ("title", "body", "epistemic_status")
+            if key in hypothesis
+            and _is_director_public_scalar(hypothesis[key])
+        }
+        if projected:
+            player_hypotheses.append(projected)
+    if player_hypotheses:
+        payload["player_hypotheses"] = player_hypotheses[:5]
     if projected_scene:
         payload["current_scene"] = projected_scene
 
@@ -1716,7 +1740,15 @@ def _project_director_fact(value: dict[str, Any]) -> dict[str, Any]:
     projected = {
         key: item
         for key, item in value.items()
-        if key in {"item_type", "logical_key", "title"}
+        if key in {
+            "fact_id",
+            "item_type",
+            "logical_key",
+            "title",
+            "audience",
+            "status",
+            "epistemic_status",
+        }
         and _is_director_public_scalar(item)
     }
     citation = _project_director_citation(value.get("citation"))

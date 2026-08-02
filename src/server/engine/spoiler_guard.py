@@ -255,9 +255,9 @@ class SpoilerGuard:
         """Aggregate all unlock sources for a room."""
         state = SpoilerUnlockState(roomId=room_id)
 
-        # 1. Discovered clues from clues table
+        # 1. A character's private discovery is not party knowledge.
         clue_rows = self.conn.execute(
-            "SELECT clue_id FROM clues WHERE room_id = %s",
+            "SELECT clue_id FROM clues WHERE room_id = %s AND is_private = FALSE",
             (room_id,),
         ).fetchall()
         state.discovered_clue_ids = [r["clue_id"] for r in clue_rows]
@@ -272,7 +272,31 @@ class SpoilerGuard:
         except Exception:
             pass  # table may not exist yet
 
-        # 3. Entered scenes / explored nodes from room_map_state
+        # 3. Only party-scoped Engine reveal records relax party spoiler rules.
+        try:
+            from .reveal_ledger import RevealLedger
+
+            fact_rows = [
+                row
+                for row in RevealLedger(self.conn).project_facts(
+                    room_id, audience="public"
+                )
+                if row.get("record_kind") != "safety_event"
+            ]
+            state.revealed_fact_ids = list(dict.fromkeys(
+                str(row.get("fact_id") or "")
+                for row in fact_rows
+                if str(row.get("fact_id") or "")
+            ))
+            state.revealed_content_item_ids = list(dict.fromkeys(
+                str(row.get("content_item_id") or "")
+                for row in fact_rows
+                if str(row.get("content_item_id") or "")
+            ))
+        except Exception:
+            pass
+
+        # 4. Entered scenes / explored nodes from room_map_state
         try:
             map_rows = self.conn.execute(
                 "SELECT explored_nodes FROM room_map_state WHERE room_id = %s",
@@ -289,7 +313,7 @@ class SpoilerGuard:
         except Exception:
             pass
 
-        # 4. Active ending phase from events
+        # 5. Active ending phase from events
         try:
             end_rows = self.conn.execute(
                 "SELECT payload FROM events WHERE room_id = %s AND event_type = %s ORDER BY sequence DESC LIMIT 1",
@@ -308,7 +332,7 @@ class SpoilerGuard:
         except Exception:
             pass
 
-        # 5. NPC appearances from events — extract both npcName (legacy) and npcId (target)
+        # 6. NPC appearances from events — extract both npcName (legacy) and npcId (target)
         try:
             npc_rows = self.conn.execute(
                 "SELECT payload FROM events WHERE room_id = %s AND event_type = %s ORDER BY sequence",
@@ -429,6 +453,15 @@ class SpoilerGuard:
         item_id = item.item_id
         category = item.category
         unlocked_clues = set(unlock.discovered_clue_ids + unlock.shared_clue_ids)
+        revealed_facts = set(
+            unlock.revealed_fact_ids + unlock.revealed_content_item_ids
+        )
+        reference_ids = self._sensitive_item_reference_ids(item)
+
+        for fact_id in revealed_facts:
+            fact_key = fact_id.lower()
+            if fact_key and fact_key in reference_ids:
+                return True
 
         if item.unlock_clue_ids:
             return bool(unlocked_clues.intersection(item.unlock_clue_ids))
@@ -437,7 +470,7 @@ class SpoilerGuard:
             # Check if any discovered or shared clue ID is in the source_ref
             for cid in unlocked_clues:
                 cid_lower = cid.lower()
-                if cid_lower in item_id.lower() or cid_lower in item.source_ref.lower():
+                if cid_lower and cid_lower in reference_ids:
                     return True
             # Also check by label match in clue text (from source_ref)
             return False
@@ -445,7 +478,7 @@ class SpoilerGuard:
         if category == "hidden_npc":
             # Check by npcId first (preferred)
             for npc_id in unlock.revealed_npc_ids:
-                if npc_id and (npc_id in item_id or npc_id in item.source_ref):
+                if npc_id and npc_id.lower() in reference_ids:
                     return True
             # Fallback: check by npcName (legacy compatibility)
             for name in unlock.revealed_npc_names:
@@ -468,11 +501,25 @@ class SpoilerGuard:
                 return True
             return False
 
-        # truth: never unlocked (admin-only)
+        # Unrevealed truth remains Engine-only. A matching party ledger entry
+        # was already accepted above.
         if category == "truth":
             return False
 
         return False
+
+    @staticmethod
+    def _sensitive_item_reference_ids(item: SpoilerSensitiveItem) -> set[str]:
+        item_id = str(item.item_id or "").strip().lower()
+        source_ref = str(item.source_ref or "").strip().lower()
+        references = {value for value in (item_id, source_ref) if value}
+        if ":" in item_id:
+            references.add(item_id.rsplit(":", 1)[-1])
+        if source_ref.startswith("clue_id:"):
+            references.add(source_ref.split(":", 1)[1])
+        if "." in source_ref:
+            references.add(source_ref.rsplit(".", 1)[-1])
+        return {value for value in references if value}
 
     # ── Retry & Fallback ────────────────────────────────────────────
 

@@ -497,6 +497,37 @@ def test_narrator_rejects_vehicle_conflict_against_visible_scene():
     assert violation == "narrator_scene_fact_conflict"
 
 
+def test_narrator_cannot_launder_player_hypothesis_as_world_truth():
+    narration = NarrationResultDTO(
+        **_valid_narration(
+            action_id="narrator-action",
+            narrative_text="站长是凶手，已经没有任何疑问。",
+            fact_refs={
+                "narrative_text": ["fact:scene-brief"],
+                "environment_changes": ["fact:scene-brief"],
+                "interactable_objects": ["fact:scene-brief"],
+                "open_question": ["fact:scene-brief"],
+            },
+        )
+    )
+
+    violation = validate_narration_result(
+        narration,
+        {
+            "allowed_facts": [{
+                "fact_ref": "fact:scene-brief",
+                "text": "候车室里只看得见一张旧桌子。",
+            }],
+            "player_hypotheses": [{
+                "text": "我怀疑站长可能就是凶手。",
+                "epistemic_status": "player_hypothesis_not_world_truth",
+            }],
+        },
+    )
+
+    assert violation == "narrator_hypothesis_violation"
+
+
 def test_verified_solo_transition_narration_uses_visible_scene_fact_only():
     narration = narrator_module.build_verified_narration(
         {
@@ -830,14 +861,18 @@ async def test_non_dialogue_action_calls_narrator_with_redacted_context(client, 
     context = gateway.contexts[0]
     serialized = json.dumps(context, ensure_ascii=False)
     assert context["investigator_name"] == "Ada"
-    assert context["declared_intent"] == "I inspect the brass key"
+    assert "declared_intent" not in context
     assert context["deterministic_rule_outcome"]["is_success"] is True
     assert context["runtime_package_style_pack"]["version"] == "noir-v1"
     assert all(isinstance(item, dict) for item in context["allowed_facts"])
-    assert {item["fact_ref"] for item in context["allowed_facts"]} >= {
+    assert {item["text"] for item in context["allowed_facts"]} >= {
+        "oak desk",
+        "brass key",
+    }
+    assert {item["fact_ref"] for item in context["allowed_facts"]}.isdisjoint({
         "fact:oak-desk",
         "fact:brass-key",
-    }
+    })
     _assert_no_denied_internal_payload(context)
 
 

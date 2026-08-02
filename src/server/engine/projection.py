@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from ..models import EngineEvent
-from ..events.event_log import EventLog
+from ..events.event_log import EventLog, FACT_REVEAL_EVENT_KINDS
 from ..host.ws_manager import manager as default_ws_manager
 from ..redis_cache import RedisCache
 
@@ -42,6 +42,9 @@ class ProjectionDispatcher:
         character_id: str | None = None,
         _skip_spoiler_check: bool = False,
     ):
+        if event_type.startswith("s2c_fact_"):
+            raise ValueError("fact_event_requires_reveal_ledger")
+
         # ── SpoilerGuard safety-net scan ──
         if not _skip_spoiler_check and audience in ("player", "party") and self.spoiler_guard:
             payload = await self._scan_payload_for_spoilers(
@@ -75,6 +78,70 @@ class ProjectionDispatcher:
             await self.ws_manager.send_event(room_id, f"player:{character_id}", event)
             return
         await self.ws_manager.broadcast_to_room(room_id, event)
+
+    async def publish_committed_fact_event(
+        self,
+        room_id: str,
+        sequence: int,
+    ) -> bool:
+        """Publish an already committed fact event after exact ledger validation."""
+        row = self.conn.execute(
+            "SELECT sequence, room_id, event_type, audience, payload, action_id, "
+            "state_version FROM events WHERE room_id = %s AND sequence = %s",
+            (room_id, sequence),
+        ).fetchone()
+        if not row or row.get("event_type") not in FACT_REVEAL_EVENT_KINDS:
+            return False
+        payload = row.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (json.JSONDecodeError, TypeError):
+                return False
+        if not isinstance(payload, dict):
+            return False
+        character_id = str(
+            payload.get("characterId") or payload.get("character_id") or ""
+        )
+        if not EventLog(self.conn)._ledger_authorizes_event(
+            row["sequence"],
+            row["event_type"],
+            row["audience"],
+            character_id or None,
+            payload,
+            row.get("action_id"),
+            row.get("state_version"),
+            row.get("room_id"),
+        ):
+            return False
+        try:
+            event = EngineEvent(
+                roomId=room_id,
+                type=row["event_type"],
+                roomSequence=row["sequence"],
+                audience=row["audience"],
+                payload=payload,
+            )
+        except Exception:
+            logger.exception(
+                "publish_committed_fact_event: invalid event room=%s sequence=%s",
+                room_id,
+                sequence,
+            )
+            return False
+        if row["audience"] == "player":
+            if not character_id:
+                return False
+            await self.ws_manager.send_event(
+                room_id,
+                f"player:{character_id}",
+                event,
+            )
+        elif row["audience"] == "party":
+            await self.ws_manager.broadcast_to_room(room_id, event)
+        else:
+            return False
+        return True
 
     async def _scan_payload_for_spoilers(
         self,

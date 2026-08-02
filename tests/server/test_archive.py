@@ -324,6 +324,28 @@ def test_export_omits_reveal_summary_when_public_projection_exists(client, test_
     assert result["content"].count(narrative) == 1
 
 
+def test_export_rejects_unknown_scope_instead_of_treating_it_as_full(client, test_db):
+    room_id, _, _, token = _setup_player(client, test_db)
+
+    response = client.get(
+        f"/api/rooms/{room_id}/export?format=json&scope=anything",
+        headers={"X-Room-Token": token},
+    )
+
+    assert response.status_code == 422
+
+
+def test_export_rejects_unknown_format(client, test_db):
+    room_id, _, _, token = _setup_player(client, test_db)
+
+    response = client.get(
+        f"/api/rooms/{room_id}/export?format=xml&scope=public",
+        headers={"X-Room-Token": token},
+    )
+
+    assert response.status_code == 422
+
+
 def test_replay_pagination(client, test_db):
     room_id, owner_token, char_id, token = _setup_player(client, test_db)
 

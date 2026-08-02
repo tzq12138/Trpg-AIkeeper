@@ -184,6 +184,18 @@ ALL_EVENTS: dict[str, EventDef] = {
         "s2c_clue_shared", EventDomain.ACTION, "party",
         "玩家分享线索（公开版本）",
     ),
+    "s2c_fact_revealed": EventDef(
+        "s2c_fact_revealed", EventDomain.NARRATIVE, "party",
+        "Engine 已验证并写入受众知识投影的事实揭示",
+    ),
+    "s2c_fact_corrected": EventDef(
+        "s2c_fact_corrected", EventDomain.NARRATIVE, "party",
+        "对既有事实揭示追加更正，不抹除历史可见记录",
+    ),
+    "s2c_fact_safety_event": EventDef(
+        "s2c_fact_safety_event", EventDomain.SYSTEM, "party",
+        "事实揭示被标记为安全事件（不携带安全原文）",
+    ),
 
     # ── Checkpoint ──
     "s2c_checkpoint_created": EventDef(

@@ -143,6 +143,74 @@ def test_campaign_home_returns_recent_clues_without_leaking_other_players_origin
     assert '凶手真实身份是医生' not in rendered
 
 
+def test_campaign_home_projects_party_and_own_private_reveals_only(client, test_db):
+    from src.server.engine.reveal_ledger import RevealLedger
+
+    room_id, character_id, player_token = _setup_player(client, test_db)
+    other = client.post(f"/api/player/rooms/{room_id}/join").json()
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    for item_id, title in (
+        ("campaign-party-fact", "大厅所有人都听见三声钟响"),
+        ("campaign-private-fact", "只有第一名玩家看见暗号"),
+    ):
+        test_db.execute(
+            "INSERT INTO content_items "
+            "(content_item_id, scenario_version_id, item_type, logical_key, title, "
+            "visibility, payload, citation, checksum) "
+            "VALUES (%s, %s, 'fact', %s, %s, 'player', %s, %s, %s)",
+            (
+                item_id,
+                scenario_version_id,
+                item_id,
+                title,
+                json.dumps({"fact_text": title}),
+                json.dumps({"page_number": 4}),
+                f"sha-{item_id}",
+            ),
+        )
+    test_db.commit()
+    ledger = RevealLedger(test_db)
+    ledger.commit_proposals(
+        room_id=room_id,
+        source_action_id="campaign-party-action",
+        actor_character_id=character_id,
+        proposals=[{"content_item_id": "campaign-party-fact", "audience": "party"}],
+        state_version=0,
+    )
+    ledger.commit_proposals(
+        room_id=room_id,
+        source_action_id="campaign-private-action",
+        actor_character_id=character_id,
+        proposals=[{"content_item_id": "campaign-private-fact", "audience": "player"}],
+        state_version=0,
+    )
+
+    own_home = client.get(
+        "/api/player/campaign-home",
+        headers={"X-Room-Token": player_token},
+    ).json()
+    other_home = client.get(
+        "/api/player/campaign-home",
+        headers={"X-Room-Token": other["player_token"]},
+    ).json()
+    evidence = client.get(
+        f"/api/rooms/{room_id}/evidence",
+        headers={"X-Room-Token": other["player_token"]},
+    ).json()
+
+    assert {fact["fact_id"] for fact in own_home["known_facts"]} == {
+        "campaign-party-fact",
+        "campaign-private-fact",
+    }
+    assert {fact["fact_id"] for fact in other_home["known_facts"]} == {
+        "campaign-party-fact",
+    }
+    assert "只有第一名玩家看见暗号" not in json.dumps(evidence, ensure_ascii=False)
+
+
 def test_only_controller_device_can_confirm_action(client, test_db):
     _, _, player_token = _setup_player(client, test_db)
     headers = {"X-Room-Token": player_token}
@@ -1722,7 +1790,7 @@ def test_hidden_map_token_is_visible_only_to_its_owner(client, test_db):
     assert second_view["partyPosition"] == {"nodeId": "hall", "label": "大厅"}
 
 
-def test_secret_move_is_compiled_as_private_confirmed_movement(client, test_db):
+def test_secret_move_requires_public_reproposal_instead_of_confirmation(client, test_db):
     _, _, player_token = _setup_player(client, test_db)
     response = client.post(
         "/api/player/action-drafts/analyze",
@@ -1735,7 +1803,11 @@ def test_secret_move_is_compiled_as_private_confirmed_movement(client, test_db):
     assert draft["intent_type"] == "move"
     assert draft["visibility"] == "private"
     assert draft["movement_target"] == "地下室"
-    assert draft["confirmation_requirements"] == ["movement", "secret_action", "state_change"]
+    assert draft["confirmation_requirements"] == []
+    assert draft["status"] == "analyzing"
+    assert draft["adjudication_stage"] == "player_clarification_required"
+    assert draft["params"]["policyReason"] == "private_mechanical_action_forbidden"
+    assert draft["candidate_interpretations"][0]["visibility"] == "public"
 
 
 def test_private_move_hides_token_and_emits_only_to_its_owner(client, test_db):
