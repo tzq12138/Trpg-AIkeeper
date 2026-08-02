@@ -47,6 +47,7 @@ from ..scenario.solo_runtime import (
 from .action_service import (
     ActionDraftError,
     apply_ai_action_analysis,
+    apply_room_runtime_policy,
     analyze_action_draft,
     cancel_action,
     cancel_action_draft,
@@ -1049,6 +1050,11 @@ async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
                 draft = apply_ai_action_analysis(draft, ai_result)
         except Exception:
             pass
+    draft = apply_room_runtime_policy(
+        request.app.state.db,
+        character["room_id"],
+        draft,
+    )
     if body.ephemeral:
         return draft
     persisted = persist_action_draft(request.app.state.db, character, draft)

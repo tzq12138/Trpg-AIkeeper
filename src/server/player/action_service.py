@@ -385,6 +385,56 @@ def apply_ai_action_analysis(local: ActionDraftDTO, raw: dict) -> ActionDraftDTO
     })
 
 
+def apply_room_runtime_policy(
+    conn,
+    room_id: str,
+    draft: ActionDraftDTO,
+) -> ActionDraftDTO:
+    if draft.resolution_route != "host_exception":
+        return draft
+    row = conn.execute(
+        "SELECT packages.runtime_package FROM rooms "
+        "LEFT JOIN runtime_package_versions AS packages "
+        "ON packages.runtime_package_version_id = rooms.runtime_package_version_id "
+        "WHERE rooms.room_id = %s",
+        (room_id,),
+    ).fetchone()
+    runtime_package = _json_value(row.get("runtime_package") if row else None) or {}
+    runtime_policy = _json_value(runtime_package.get("runtime_policy")) or {}
+    if runtime_policy.get("session_mode") != "ai_only":
+        return draft
+
+    ambiguities = list(draft.intent_contract.ambiguities)
+    if not ambiguities:
+        ambiguities.append("目标、方法或规则影响仍需玩家明确")
+    intent_contract = draft.intent_contract.model_copy(
+        update={"ambiguities": ambiguities[:8]}
+    )
+    candidates = list(draft.candidate_interpretations)
+    if len(candidates) < 2:
+        candidates = [
+            {
+                "label": "补充具体目标、方法与愿意承担的风险",
+                "interpreted_intent": "clarify_action",
+            },
+            {
+                "label": "取消本次行动，不产生任何效果",
+                "interpreted_intent": "cancel_action",
+            },
+        ]
+    return draft.model_copy(
+        update={
+            "status": "analyzing",
+            "intent_contract": intent_contract,
+            "confirmation_requirements": [],
+            "requires_confirmation": False,
+            "resolution_route": "local",
+            "candidate_interpretations": candidates[:3],
+            "adjudication_stage": "player_clarification_required",
+        }
+    )
+
+
 def _build_intent_contract(
     text: str,
     *,

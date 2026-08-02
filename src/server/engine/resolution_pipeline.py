@@ -499,6 +499,11 @@ class ResolutionPipeline:
         scenario_assets["_party_luck_values"] = self._party_luck_values(
             action["room_id"]
         )
+        runtime_policy = self._json_value(runtime_package.get("runtime_policy"))
+        if not isinstance(runtime_policy, dict):
+            runtime_policy = {}
+        session_mode = str(runtime_policy.get("session_mode") or "")
+        is_ai_only = session_mode == "ai_only"
         inventory = self.conn.execute(
             "SELECT * FROM inventory WHERE character_id = %s", (action["character_id"],)
         ).fetchall()
@@ -511,6 +516,7 @@ class ResolutionPipeline:
         )
         autonomy = decide_host_autonomy(
             policy=room.get("host_autonomy_policy"),
+            session_mode=session_mode,
             host_connected=self._is_host_connected(action["room_id"]),
             intent_type=intent.intent_type,
             params=intent.params,
@@ -521,6 +527,14 @@ class ResolutionPipeline:
                 "status": "awaiting_host_exception",
                 "action_id": action_id,
                 "reason": autonomy.reason_code or "host_offline_policy",
+            }
+        if autonomy.route == "engine_policy":
+            reason_code = autonomy.reason_code or "ai_only_policy_required"
+            await self._reject(action, reason_code)
+            return {
+                "status": "rejected",
+                "action_id": action_id,
+                "reason": reason_code,
             }
         solo_skill_check, solo_skill_check_error = self._validated_solo_skill_check(
             action["room_id"], intent.params, intent.declared_intent
@@ -542,9 +556,12 @@ class ResolutionPipeline:
             await self._emit_ai_stage(action, "directing")
             director_err = self._validate_director_plan(action, intent, dict(room))
             if director_err:
-                await self._await_host_exception(action, director_err)
+                if is_ai_only:
+                    await self._reject(action, director_err)
+                else:
+                    await self._await_host_exception(action, director_err)
                 return {
-                    "status": "awaiting_host_exception",
+                    "status": "rejected" if is_ai_only else "awaiting_host_exception",
                     "action_id": action_id,
                     "reason": director_err,
                 }
@@ -819,13 +836,16 @@ class ResolutionPipeline:
             reason_code = str(
                 pending_consequence.get("reason") or "rule_consequence_confirmation_required"
             )
-            await self._await_host_exception(
-                action,
-                reason_code,
-                result=result_payload,
-            )
+            if is_ai_only:
+                await self._reject(action, reason_code)
+            else:
+                await self._await_host_exception(
+                    action,
+                    reason_code,
+                    result=result_payload,
+                )
             return {
-                "status": "awaiting_host_exception",
+                "status": "rejected" if is_ai_only else "awaiting_host_exception",
                 "action_id": action_id,
                 "reason": reason_code,
             }
@@ -845,13 +865,16 @@ class ResolutionPipeline:
                 if isinstance(first_suggestion, dict)
                 else "rule_confirmation_required"
             )
-            await self._await_host_exception(
-                action,
-                reason_code,
-                result=result_payload,
-            )
+            if is_ai_only:
+                await self._reject(action, reason_code)
+            else:
+                await self._await_host_exception(
+                    action,
+                    reason_code,
+                    result=result_payload,
+                )
             return {
-                "status": "awaiting_host_exception",
+                "status": "rejected" if is_ai_only else "awaiting_host_exception",
                 "action_id": action_id,
                 "reason": reason_code,
             }
@@ -859,9 +882,18 @@ class ResolutionPipeline:
         if state_mutations or inventory_changes or scene_change:
             if not self.state_service:
                 if is_v2:
-                    await self._await_host_exception(action, "state_service_unavailable")
+                    if is_ai_only:
+                        await self._pause_room_for_integrity(
+                            action,
+                            "state_service_unavailable",
+                        )
+                    else:
+                        await self._await_host_exception(
+                            action,
+                            "state_service_unavailable",
+                        )
                     return {
-                        "status": "awaiting_host_exception",
+                        "status": "rejected" if is_ai_only else "awaiting_host_exception",
                         "action_id": action_id,
                         "reason": "state_service_unavailable",
                     }
@@ -915,9 +947,18 @@ class ResolutionPipeline:
                 except Exception:
                     logger.exception("StateService failed for action %s", action["action_id"])
                     if is_v2:
-                        await self._await_host_exception(action, "state_persistence_failed")
+                        if is_ai_only:
+                            await self._pause_room_for_integrity(
+                                action,
+                                "state_persistence_failed",
+                            )
+                        else:
+                            await self._await_host_exception(
+                                action,
+                                "state_persistence_failed",
+                            )
                         return {
-                            "status": "awaiting_host_exception",
+                            "status": "rejected" if is_ai_only else "awaiting_host_exception",
                             "action_id": action_id,
                             "reason": "state_persistence_failed",
                         }
@@ -1059,6 +1100,7 @@ class ResolutionPipeline:
                 character_data,
                 dict(room),
                 resolution,
+                ai_only=is_ai_only,
             )
             if narration_error:
                 await self._emit_ai_stage(action, "recovering")
@@ -1780,6 +1822,44 @@ class ResolutionPipeline:
             character_id=action["character_id"],
         )
 
+    async def _pause_room_for_integrity(
+        self,
+        action: dict[str, Any],
+        reason: str,
+    ) -> None:
+        payload = {"reason": reason}
+        with self.conn.transaction() as tx:
+            complete_action(
+                self.conn,
+                action["action_id"],
+                from_statuses=("resolving",),
+                to_status="rejected",
+                result=payload,
+                metadata={"reason_code": "room_integrity_paused"},
+                transaction=tx,
+            )
+            tx.execute(
+                "UPDATE rooms SET status = 'paused' WHERE room_id = %s",
+                (action["room_id"],),
+            )
+        await self.dispatcher.emit(
+            action["room_id"],
+            "s2c_action_completed",
+            "player",
+            {
+                "actionId": action["action_id"],
+                "status": "rejected",
+                "reason": reason,
+            },
+            character_id=action["character_id"],
+        )
+        await self.dispatcher.emit(
+            action["room_id"],
+            "s2c_room_paused",
+            "party",
+            {"reasonCode": reason, "mode": "read_only_recovery"},
+        )
+
     async def _await_host_exception(
         self,
         action: dict[str, Any],
@@ -1892,6 +1972,8 @@ class ResolutionPipeline:
         character: dict[str, Any],
         room: dict[str, Any],
         resolution: ResolutionResult,
+        *,
+        ai_only: bool = False,
     ) -> str | None:
         context: dict[str, Any] | None = None
         is_solo_transition = False
@@ -1928,7 +2010,7 @@ class ResolutionPipeline:
                     return None
                 return "narrator_timeout"
             if not isinstance(raw, dict):
-                if is_solo_transition:
+                if is_solo_transition or ai_only:
                     self._apply_verified_narration_fallback(
                         context,
                         action,
@@ -1940,7 +2022,7 @@ class ResolutionPipeline:
             try:
                 narration = NarrationResultDTO(**raw)
             except Exception:
-                if is_solo_transition:
+                if is_solo_transition or ai_only:
                     self._apply_verified_narration_fallback(
                         context,
                         action,
@@ -1951,9 +2033,12 @@ class ResolutionPipeline:
                 return "narrator_invalid_response"
             violation = validate_narration_result(narration, context)
             if violation:
-                if violation == "narrator_fact_violation" and (
-                    is_solo_transition
-                    or self._can_use_verified_narration_fallback(action, room)
+                if ai_only or (
+                    violation == "narrator_fact_violation"
+                    and (
+                        is_solo_transition
+                        or self._can_use_verified_narration_fallback(action, room)
+                    )
                 ):
                     self._apply_verified_narration_fallback(
                         context,
@@ -1972,7 +2057,8 @@ class ResolutionPipeline:
             if (
                 context is not None
                 and (
-                    is_solo_transition
+                    ai_only
+                    or is_solo_transition
                     or self._can_use_verified_narration_fallback(action, room)
                 )
             ):

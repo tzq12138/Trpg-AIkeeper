@@ -112,11 +112,6 @@ def _create_started_room(client, test_db, installed, tokens, templates):
         },
     )
     assert started.status_code == 200, started.text
-    test_db.execute(
-        "UPDATE rooms SET host_autonomy_policy = 'delegated' WHERE room_id = %s",
-        (room["room_id"],),
-    )
-    test_db.commit()
     return room, joined, state_service
 
 
@@ -229,6 +224,7 @@ async def _resolve(
         gateway=_FailingNarratorGateway(),
         dispatcher=dispatcher,
         state_service=state_service,
+        host_connection_checker=lambda _room_id: False,
     ).resolve_action(action_id)
     return action_id, result
 
@@ -304,6 +300,7 @@ async def test_glass_rain_v2_ai_only_success_mixed_and_safe_abort_flows(
         compiler=_GoldenFlowCompiler(),
         dispatcher=dispatcher,
         state_service=success_state,
+        host_connection_checker=lambda _room_id: False,
     ).resolve_action(paused_action_id)
     assert paused_result == {
         "status": "safety_paused",
@@ -322,6 +319,7 @@ async def test_glass_rain_v2_ai_only_success_mixed_and_safe_abort_flows(
         gateway=_FailingNarratorGateway(),
         dispatcher=dispatcher,
         state_service=success_state,
+        host_connection_checker=lambda _room_id: False,
     ).resolve_action(paused_action_id)
     assert cistern_result["status"] == "completed"
     sanity = test_db.execute(

@@ -75,6 +75,46 @@ class _NoMutationRuleExecutor:
         )
 
 
+class _RecordingDispatcher:
+    def __init__(self):
+        self.events = []
+
+    async def emit(self, room_id, event_type, audience, payload, **kwargs):
+        self.events.append((room_id, event_type, audience, payload, kwargs))
+
+
+class _InvalidNarratorGateway:
+    async def narrate_action(self, *_args, **_kwargs):
+        return {"unexpected": "provider response"}
+
+
+def _bind_ai_only_runtime(test_db, room_id: str, package_id: str) -> dict:
+    room = test_db.execute(
+        "SELECT scenario_version_id, state_version FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    test_db.execute(
+        """
+        INSERT INTO runtime_package_versions (
+            runtime_package_version_id, scenario_version_id,
+            package_version_number, gate_status, input_checksum,
+            runtime_package, created_by
+        ) VALUES (%s, %s, 99, 'ready', %s, %s, 'test')
+        """,
+        (
+            package_id,
+            room["scenario_version_id"],
+            package_id,
+            json.dumps({"runtime_policy": {"session_mode": "ai_only"}}),
+        ),
+    )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = %s WHERE room_id = %s",
+        (package_id, room_id),
+    )
+    return dict(room)
+
+
 def _setup_player(client, test_db, *, display_name: str = "Investigator Ada"):
     setup_auth_test_data(test_db)
     room_id = create_room(client)["room_id"]
@@ -1058,6 +1098,104 @@ async def test_director_unknown_precondition_and_denied_permission_fail_closed(c
         "director_precondition_unsupported",
         "director_permission_denied",
     }
+
+
+@pytest.mark.asyncio
+async def test_ai_only_invalid_director_plan_rejects_without_human_review(client, test_db):
+    room_id, character_id, _ = _setup_player(client, test_db)
+    room = _bind_ai_only_runtime(test_db, room_id, "ai-only-director-package")
+    params = {
+        "analysis": {"risk": "medium", "visibility": "public"},
+        "director_plan": {
+            "context_version": room["state_version"],
+            "preconditions": [],
+            "permissions": [],
+            "state_patch": [],
+            "state_patch_authority": "authoritative",
+        },
+    }
+    test_db.execute(
+        """
+        INSERT INTO actions (
+            action_id, room_id, character_id, intent_type, declared_intent,
+            params, status, draft_id, idempotency_key
+        ) VALUES (%s, %s, %s, 'dialogue', 'I inspect the room', %s,
+                  'queued', 'ai-only-director-draft', 'ai-only-director-key')
+        """,
+        ("ai-only-director-action", room_id, character_id, json.dumps(params)),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('ai-only-director-action', 'queued', '{}')"
+    )
+    test_db.commit()
+    dispatcher = _RecordingDispatcher()
+
+    result = await ResolutionPipeline(
+        test_db,
+        dispatcher=dispatcher,
+        compiler=_AutoSuccessCompiler(),
+        rule_executor=_NoMutationRuleExecutor(),
+        host_connection_checker=lambda _room_id: False,
+    ).resolve_action("ai-only-director-action")
+
+    assert result == {
+        "status": "rejected",
+        "action_id": "ai-only-director-action",
+        "reason": "director_plan_unverified",
+    }
+    assert not any(
+        event[1] == "s2c_action_exception_requested" for event in dispatcher.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_ai_only_invalid_narrator_response_uses_verified_template(client, test_db):
+    room_id, character_id, _ = _setup_player(client, test_db)
+    room = _bind_ai_only_runtime(test_db, room_id, "ai-only-narrator-package")
+    params = {
+        "analysis": {"risk": "low", "visibility": "public"},
+        "director_plan": {
+            "context_version": room["state_version"],
+            "preconditions": [],
+            "permissions": [],
+            "state_patch": [],
+            "state_patch_authority": "advisory_only",
+        },
+    }
+    test_db.execute(
+        """
+        INSERT INTO actions (
+            action_id, room_id, character_id, intent_type, declared_intent,
+            params, status, draft_id, idempotency_key
+        ) VALUES (%s, %s, %s, 'dialogue', 'I inspect the room', %s,
+                  'queued', 'ai-only-narrator-draft', 'ai-only-narrator-key')
+        """,
+        ("ai-only-narrator-action", room_id, character_id, json.dumps(params)),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('ai-only-narrator-action', 'queued', '{}')"
+    )
+    test_db.commit()
+    dispatcher = _RecordingDispatcher()
+
+    result = await ResolutionPipeline(
+        test_db,
+        dispatcher=dispatcher,
+        gateway=_InvalidNarratorGateway(),
+        compiler=_AutoSuccessCompiler(),
+        rule_executor=_NoMutationRuleExecutor(),
+        host_connection_checker=lambda _room_id: False,
+    ).resolve_action("ai-only-narrator-action")
+
+    assert result["status"] == "completed"
+    narration = result["result"]["metadata"]["narration"]
+    assert narration["rejected_provider_reason"] == "narrator_invalid_response"
+    assert result["result"]["narrative"]
+    assert not any(
+        event[1] == "s2c_action_exception_requested" for event in dispatcher.events
+    )
 
 
 def test_director_semantic_progression_maps_target_with_valid_citation(client, test_db):

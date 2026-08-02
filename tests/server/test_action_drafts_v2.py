@@ -17,6 +17,30 @@ def _setup_player(client, test_db):
     return room_id, joined["character_id"], joined["player_token"]
 
 
+def _bind_ai_only_runtime(test_db, room_id):
+    room = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    package_id = f"runtime-ai-only-{room_id}"
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, "
+        "gate_status, input_checksum, runtime_package, created_by) "
+        "VALUES (%s, %s, 1, 'ready', 'ai-only-test', %s, 'test')",
+        (
+            package_id,
+            room["scenario_version_id"],
+            json.dumps({"runtime_policy": {"session_mode": "ai_only"}}),
+        ),
+    )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = %s WHERE room_id = %s",
+        (package_id, room_id),
+    )
+    test_db.commit()
+
+
 def test_action_submission_is_received_before_ai_analysis_and_is_idempotent(client, test_db):
     room_id, character_id, player_token = _setup_player(client, test_db)
     payload = {
@@ -1041,6 +1065,43 @@ def test_ambiguous_local_fallback_routes_to_host_exception_without_state_change(
         (room_id,),
     ).fetchone()["state_version"]
     assert after_version == before_version
+
+
+def test_ai_only_ambiguous_fallback_requires_player_clarification_without_host_queue(
+    client,
+    test_db,
+):
+    room_id, _, player_token = _setup_player(client, test_db)
+    _bind_ai_only_runtime(test_db, room_id)
+    headers = {"X-Room-Token": player_token}
+
+    draft_response = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我尝试用一种无法确定规则的方式改变现实"},
+    )
+
+    assert draft_response.status_code == 200
+    draft = draft_response.json()
+    assert draft["status"] == "analyzing"
+    assert draft["resolution_route"] == "local"
+    assert draft["adjudication_stage"] == "player_clarification_required"
+    assert 2 <= len(draft["candidate_interpretations"]) <= 3
+    confirm = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "ai-only-ambiguous-action"},
+        json={"confirmations": ["stateful_action"]},
+    )
+    assert confirm.status_code == 409
+    assert confirm.json()["detail"]["code"] == "draft_not_confirmable"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM actions WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"] == 0
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM action_status_events "
+        "WHERE status = 'awaiting_host_exception'",
+    ).fetchone()["count"] == 0
 
 
 def test_confirming_stale_draft_requires_sync_and_creates_no_action(client, test_db):

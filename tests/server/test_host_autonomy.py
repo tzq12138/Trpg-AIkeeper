@@ -59,6 +59,30 @@ def test_host_absence_defers_sensitive_or_undelegated_actions():
     assert combat.reason_code == "host_offline_policy"
 
 
+def test_ai_only_host_absence_never_routes_to_human_review():
+    public_move = decide_host_autonomy(
+        policy="host_required",
+        session_mode="ai_only",
+        host_connected=False,
+        intent_type="move",
+        params={
+            "targetNodeId": "hall",
+            "analysis": {"risk": "medium", "visibility": "public"},
+        },
+    )
+    sensitive_attack = decide_host_autonomy(
+        policy="host_required",
+        session_mode="ai_only",
+        host_connected=False,
+        intent_type="combat_action",
+        params={"analysis": {"risk": "high", "visibility": "public"}},
+    )
+
+    assert public_move.route == "offline_autonomy"
+    assert sensitive_attack.route == "engine_policy"
+    assert sensitive_attack.reason_code == "ai_only_policy_required"
+
+
 @pytest.mark.asyncio
 async def test_offline_policy_pauses_sensitive_action_before_any_state_or_projection(test_db):
     test_db.execute(

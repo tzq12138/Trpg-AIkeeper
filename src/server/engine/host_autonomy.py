@@ -5,7 +5,12 @@ from typing import Any, Literal
 
 
 HostAutonomyPolicy = Literal["host_required", "conservative", "delegated"]
-HostAutonomyRoute = Literal["host_online", "offline_autonomy", "deferred_host_review"]
+HostAutonomyRoute = Literal[
+    "host_online",
+    "offline_autonomy",
+    "deferred_host_review",
+    "engine_policy",
+]
 
 _ALLOWED_POLICIES = {"host_required", "conservative", "delegated"}
 _BLOCKING_CONFIRMATIONS = {
@@ -28,11 +33,21 @@ class HostAutonomyDecision:
 def decide_host_autonomy(
     *,
     policy: str | None,
+    session_mode: str | None = None,
     host_connected: bool,
     intent_type: str,
     params: dict[str, Any] | None,
 ) -> HostAutonomyDecision:
     """Classify an action without trusting client-supplied safety declarations."""
+    analysis = _analysis(params)
+    if session_mode == "ai_only":
+        if _is_engine_resolvable(intent_type, params or {}, analysis):
+            return HostAutonomyDecision(route="offline_autonomy")
+        return HostAutonomyDecision(
+            route="engine_policy",
+            reason_code="ai_only_policy_required",
+        )
+
     if host_connected:
         return HostAutonomyDecision(route="host_online")
 
@@ -43,7 +58,6 @@ def decide_host_autonomy(
             reason_code="host_offline_policy",
         )
 
-    analysis = _analysis(params)
     if not _is_public_and_compensable(intent_type, params or {}, analysis):
         return HostAutonomyDecision(
             route="deferred_host_review",
@@ -58,6 +72,31 @@ def decide_host_autonomy(
             )
 
     return HostAutonomyDecision(route="offline_autonomy")
+
+
+def _is_engine_resolvable(
+    intent_type: str,
+    params: dict[str, Any],
+    analysis: dict[str, Any],
+) -> bool:
+    if intent_type not in _DELEGATED_INTENT_TYPES:
+        return False
+    if analysis.get("visibility", "public") != "public":
+        return False
+    if (
+        bool(params.get("secretMove"))
+        or bool(params.get("spendLuck"))
+        or bool(params.get("pushed"))
+    ):
+        return False
+    requirements = analysis.get("confirmation_requirements")
+    if isinstance(requirements, list) and any(
+        item in _BLOCKING_CONFIRMATIONS for item in requirements
+    ):
+        return False
+    if intent_type == "move" and not str(params.get("targetNodeId") or "").strip():
+        return False
+    return True
 
 
 def _analysis(params: dict[str, Any] | None) -> dict[str, Any]:

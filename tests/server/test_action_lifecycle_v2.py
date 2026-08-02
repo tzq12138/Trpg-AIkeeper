@@ -59,6 +59,30 @@ def _insert_action(test_db, *, action_id="action-v2", status="queued"):
     )
 
 
+def _bind_ai_only_runtime(test_db):
+    test_db.execute(
+        "INSERT INTO scenarios (scenario_id, title) "
+        "VALUES ('scenario-ai-only', 'AI only')"
+    )
+    test_db.execute(
+        "INSERT INTO scenario_versions "
+        "(scenario_version_id, scenario_id, version_number, created_by) "
+        "VALUES ('version-ai-only', 'scenario-ai-only', 1, 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, "
+        "gate_status, input_checksum, runtime_package, created_by) VALUES "
+        "('package-ai-only', 'version-ai-only', 1, 'ready', 'ai-only', %s, 'test')",
+        (json.dumps({"runtime_policy": {"session_mode": "ai_only"}}),),
+    )
+    test_db.execute(
+        "UPDATE rooms SET scenario_id = 'scenario-ai-only', "
+        "scenario_version_id = 'version-ai-only', "
+        "runtime_package_version_id = 'package-ai-only' WHERE room_id = 'room-v2'"
+    )
+
+
 def test_director_plan_accepts_the_same_resolving_turn_snapshot(test_db):
     _insert_action(test_db)
     test_db.execute(
@@ -303,6 +327,26 @@ class _PendingSuggestionRuleExecutor:
                         "status": "rejected",
                         "reason_code": "rule_handler_not_found",
                         "citation": {"source_ref": "module#p12"},
+                    }
+                ]
+            },
+        )
+
+
+class _PendingHostSuggestionRuleExecutor:
+    async def execute(self, intent, compiled, character, inventory, scenario_assets):
+        return ResolutionResult(
+            actionId=intent.action_id,
+            roomId=character["room_id"],
+            characterId=character["character_id"],
+            mechanic="unsupported_rule",
+            isSuccess=False,
+            metadata={
+                "pending_rule_suggestions": [
+                    {
+                        "mechanic": "unsupported_rule",
+                        "status": "pending_host_confirmation",
+                        "reason_code": "rule_confirmation_required",
                     }
                 ]
             },
@@ -650,6 +694,42 @@ async def test_v2_pipeline_does_not_complete_or_project_when_state_persistence_f
 
 
 @pytest.mark.asyncio
+async def test_ai_only_state_persistence_failure_pauses_room_without_human_review(test_db):
+    _insert_action(test_db)
+    _bind_ai_only_runtime(test_db)
+    test_db.execute(
+        "UPDATE actions SET intent_type = 'use_item', params = %s WHERE action_id = 'action-v2'",
+        (json.dumps(_verified_params(), ensure_ascii=False),),
+    )
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    dispatcher = _Dispatcher()
+
+    result = await ResolutionPipeline(
+        conn=test_db,
+        compiler=_SkillCheckCompiler(),
+        dispatcher=dispatcher,
+        rule_executor=_MutationRuleExecutor(),
+        state_service=_FailingStateService(),
+        host_connection_checker=lambda _room_id: False,
+    ).resolve_action("action-v2")
+
+    assert result == {
+        "status": "rejected",
+        "action_id": "action-v2",
+        "reason": "state_persistence_failed",
+    }
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = 'room-v2'"
+    ).fetchone()["status"] == "paused"
+    event_types = [event[1] for event in dispatcher.events]
+    assert "s2c_room_paused" in event_types
+    assert "s2c_action_exception_requested" not in event_types
+
+
+@pytest.mark.asyncio
 async def test_failed_v2_pushed_roll_uses_engine_consequence_without_human_host(
     test_db,
     monkeypatch,
@@ -773,6 +853,34 @@ async def test_unimplemented_v2_rule_is_rejected_without_human_host(test_db):
         "reason_code"
     ] == "rule_handler_not_found"
     assert "s2c_action_completed" in [event[1] for event in dispatcher.events]
+
+
+@pytest.mark.asyncio
+async def test_ai_only_pending_rule_suggestion_is_rejected_without_human_review(test_db):
+    _insert_action(test_db)
+    _bind_ai_only_runtime(test_db)
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    dispatcher = _Dispatcher()
+
+    result = await ResolutionPipeline(
+        conn=test_db,
+        compiler=_SkillCheckCompiler(),
+        dispatcher=dispatcher,
+        rule_executor=_PendingHostSuggestionRuleExecutor(),
+        host_connection_checker=lambda _room_id: False,
+    ).resolve_action("action-v2")
+
+    assert result == {
+        "status": "rejected",
+        "action_id": "action-v2",
+        "reason": "rule_confirmation_required",
+    }
+    assert "s2c_action_exception_requested" not in [
+        event[1] for event in dispatcher.events
+    ]
 
 
 @pytest.mark.asyncio
