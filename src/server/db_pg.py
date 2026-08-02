@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS rooms (
     action_timing JSONB NOT NULL DEFAULT '{"input_hint_seconds":60,"receipt_seconds":5,"preview_seconds":30,"resolution_seconds":180}'::jsonb,
     draft_analysis_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     speech_routing TEXT NOT NULL DEFAULT 'party_message',
+    risk_contract JSONB,
+    risk_contract_version TEXT,
+    risk_contract_hash TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     started_at TIMESTAMP
 );

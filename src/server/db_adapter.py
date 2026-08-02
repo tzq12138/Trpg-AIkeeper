@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS rooms (
     draft_analysis_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     speech_routing TEXT NOT NULL DEFAULT 'party_message',
     host_autonomy_policy TEXT NOT NULL DEFAULT 'host_required',
+    risk_contract JSONB,
+    risk_contract_version TEXT,
+    risk_contract_hash TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     started_at TIMESTAMP
 );
@@ -717,6 +720,8 @@ CREATE TABLE IF NOT EXISTS session_zero_confirmations (
     room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
     character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
     step TEXT NOT NULL,
+    contract_version TEXT,
+    contract_hash TEXT,
     confirmed_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (room_id, character_id, step)
 );
@@ -1106,6 +1111,11 @@ ALTER TABLE rooms ADD COLUMN IF NOT EXISTS action_timing JSONB NOT NULL DEFAULT 
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS draft_analysis_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS speech_routing TEXT NOT NULL DEFAULT 'party_message';
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS host_autonomy_policy TEXT NOT NULL DEFAULT 'host_required';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS risk_contract JSONB;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS risk_contract_version TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS risk_contract_hash TEXT;
+ALTER TABLE session_zero_confirmations ADD COLUMN IF NOT EXISTS contract_version TEXT;
+ALTER TABLE session_zero_confirmations ADD COLUMN IF NOT EXISTS contract_hash TEXT;
 ALTER TABLE room_player_settings ADD COLUMN IF NOT EXISTS absent_policy TEXT NOT NULL DEFAULT 'idle';
 ALTER TABLE characters ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'joined';
 -- Fix default for databases created before migration

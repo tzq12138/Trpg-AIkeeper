@@ -65,6 +65,25 @@
         "post_commit": "preserve_state_template_narration"
       }
     },
+    "risk_contract": {
+      "categories": [
+        {"category": "weather_disaster", "max_level": "medium"},
+        {"category": "physical_harm", "max_level": "medium"},
+        {"category": "psychological_horror", "max_level": "medium"}
+      ],
+      "excluded_tags": ["graphic_gore", "sexual_violence"],
+      "default_harm": {"npc": "medium", "scene": "medium"},
+      "irreversible_controls": ["san_zero_npc_transfer"],
+      "hidden_checks": {
+        "allowed": true,
+        "declaration_source": "compiled_rule"
+      },
+      "safe_alternatives": {
+        "graphic_gore": "fade_to_black",
+        "sexual_violence": "no_effect"
+      },
+      "safe_abort_rule": "glass-safe-abort"
+    },
     "rule_triggers": [
       {
         "trigger_id": "glass-cistern-sanity",

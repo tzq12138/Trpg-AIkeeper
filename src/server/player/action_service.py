@@ -1023,11 +1023,33 @@ def confirm_action_draft(
             raise ActionDraftError(409, {"code": "confirmation_required", "missing": missing})
 
         room = tx.execute(
-            "SELECT status, state_version FROM rooms WHERE room_id = %s FOR UPDATE",
+            "SELECT status, state_version, risk_contract_version, risk_contract_hash "
+            "FROM rooms WHERE room_id = %s FOR UPDATE",
             (character["room_id"],),
         ).fetchone()
         if not room or room["status"] in {"completed", "archived"}:
             raise ActionDraftError(409, {"code": "room_not_active"})
+        if room["status"] == "active" and room.get("risk_contract_hash"):
+            confirmed = tx.execute(
+                "SELECT 1 FROM session_zero_confirmations "
+                "WHERE room_id = %s AND character_id = %s AND step = 'safety' "
+                "AND contract_version = %s AND contract_hash = %s",
+                (
+                    character["room_id"],
+                    character["character_id"],
+                    room.get("risk_contract_version"),
+                    room.get("risk_contract_hash"),
+                ),
+            ).fetchone()
+            if not confirmed:
+                raise ActionDraftError(
+                    409,
+                    {
+                        "code": "risk_contract_confirmation_required",
+                        "contract_version": room.get("risk_contract_version"),
+                        "contract_hash": room.get("risk_contract_hash"),
+                    },
+                )
         if room and draft.get("base_state_version", 0) != room.get("state_version", 0):
             raise ActionDraftError(
                 409,

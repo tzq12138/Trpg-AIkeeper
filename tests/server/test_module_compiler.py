@@ -92,6 +92,21 @@ def _graph_with_citations():
             "archive_on_end": True,
             "fresh_state_on_new_room": True,
         },
+        "risk_contract": {
+            "categories": [
+                {"category": "physical_harm", "max_level": "medium"},
+                {"category": "psychological_horror", "max_level": "medium"},
+            ],
+            "excluded_tags": ["graphic_gore"],
+            "default_harm": {"npc": "medium", "scene": "medium"},
+            "irreversible_controls": ["san_zero_npc_transfer"],
+            "hidden_checks": {
+                "allowed": True,
+                "declaration_source": "compiled_rule",
+            },
+            "safe_alternatives": {"graphic_gore": "fade_to_black"},
+            "safe_abort_rule": "safe",
+        },
         "style_pack": {"tone": "investigative", "citation": _citation("part-style")},
         "solo_adventure": {
             "root_node_id": "1",
@@ -141,6 +156,7 @@ def test_runtime_package_blocks_draft_asset_then_ready_after_confirmed_binding(t
         "clue_dependencies",
         "rule_triggers",
         "runtime_policy",
+        "risk_contract",
         "semantic_map",
         "ending_conditions",
         "style_pack",
@@ -149,6 +165,10 @@ def test_runtime_package_blocks_draft_asset_then_ready_after_confirmed_binding(t
         "citations",
     }
     assert blocked["runtime_package"]["runtime_policy"]["state_scope"] == "room_run"
+    contract = blocked["runtime_package"]["risk_contract"]
+    assert contract["schema_version"] == "risk_contract.v1"
+    assert len(contract["contract_hash"]) == 64
+    assert contract["excluded_tags"] == ["graphic_gore"]
 
     test_db.execute(
         "UPDATE scenario_asset_bindings SET status = 'confirmed', reviewed_by = 'admin' "

@@ -685,6 +685,12 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
         str(runtime_package_row["runtime_package_version_id"])
         if runtime_package_row else None
     )
+    from ..engine.risk_contract import runtime_package_risk_contract
+    risk_contract = runtime_package_risk_contract(
+        conn,
+        runtime_package_version_id,
+        scenario_version_id,
+    )
 
     # Quality gate check
     body = None
@@ -715,7 +721,8 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
     with conn.transaction() as tx:
         tx.execute(
             "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, "
-            "owner_token, owner_account_id) VALUES (%s, %s, %s, %s, %s, %s)",
+            "owner_token, owner_account_id, risk_contract, risk_contract_version, "
+            "risk_contract_hash) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 room_id,
                 scenario_id,
@@ -723,6 +730,9 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
                 runtime_package_version_id,
                 owner_token,
                 owner_account_id,
+                json.dumps(risk_contract, ensure_ascii=False) if risk_contract else None,
+                risk_contract.get("schema_version") if risk_contract else None,
+                risk_contract.get("contract_hash") if risk_contract else None,
             ),
         )
         pin_room_ai_runtime(
@@ -753,4 +763,10 @@ async def create_room_from_scenario(request: Request, scenario_id: str):
         "quality_level": quality_level,
         "scenario_version_id": scenario_version_id,
         "runtime_package_version_id": runtime_package_version_id,
+        "risk_contract_version": (
+            risk_contract.get("schema_version") if risk_contract else None
+        ),
+        "risk_contract_hash": (
+            risk_contract.get("contract_hash") if risk_contract else None
+        ),
     }

@@ -45,6 +45,17 @@ def _latest_ready_runtime_package_id(conn, scenario_version_id: str) -> str | No
     return str(row["runtime_package_version_id"]) if row else None
 
 
+def _runtime_risk_contract(conn, scenario_version_id: str, package_id: str | None):
+    from .engine.risk_contract import runtime_package_risk_contract
+
+    contract = runtime_package_risk_contract(conn, package_id, scenario_version_id)
+    return (
+        contract,
+        contract.get("schema_version") if contract else None,
+        contract.get("contract_hash") if contract else None,
+    )
+
+
 def _initialize_runtime_scene_state(
     conn,
     room_id: str,
@@ -174,6 +185,11 @@ async def create_room(request: Request):
         conn,
         scenario_version_id,
     )
+    risk_contract, risk_contract_version, risk_contract_hash = _runtime_risk_contract(
+        conn,
+        scenario_version_id,
+        runtime_package_version_id,
+    )
 
     # Admin may specify owner; host always creates for self
     if role == "host":
@@ -187,10 +203,14 @@ async def create_room(request: Request):
     with conn.transaction() as tx:
         tx.execute(
             "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, "
-            "owner_token, owner_account_id, spoiler_level) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            "owner_token, owner_account_id, spoiler_level, risk_contract, "
+            "risk_contract_version, risk_contract_hash) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 room_id, scenario_id, scenario_version_id, runtime_package_version_id, owner_token,
                 owner_account_id, body.get("spoiler_level", "standard"),
+                json.dumps(risk_contract, ensure_ascii=False) if risk_contract else None,
+                risk_contract_version, risk_contract_hash,
             ),
         )
         pin_room_ai_runtime(
@@ -204,6 +224,8 @@ async def create_room(request: Request):
         "status": "lobby", "scenario_title": sc["title"],
         "scenario_id": scenario_id, "scenario_version_id": scenario_version_id,
         "runtime_package_version_id": runtime_package_version_id,
+        "risk_contract_version": risk_contract_version,
+        "risk_contract_hash": risk_contract_hash,
         "owner_account_id": owner_account_id,
     }
 
@@ -337,6 +359,8 @@ async def get_room(request: Request, room_id: str):
             "is_ready": bool(c.get("is_ready")),
         })
 
+    from .engine.risk_contract import public_risk_contract
+
     return {
         "room_id": room["room_id"],
         "status": room["status"],
@@ -345,6 +369,7 @@ async def get_room(request: Request, room_id: str):
         "spoiler_level": room.get("spoiler_level", "standard"),
         "speech_routing": room.get("speech_routing", "party_message"),
         "host_autonomy_policy": room.get("host_autonomy_policy", "host_required"),
+        "risk_contract": public_risk_contract(room.get("risk_contract")),
         "created_at": str(room.get("created_at", "")),
         "started_at": str(room.get("started_at", "")) if room.get("started_at") else None,
         "player_count": player_count,
@@ -412,6 +437,11 @@ async def set_room_scenario(request: Request, room_id: str):
         conn,
         scenario_version_id,
     )
+    risk_contract, risk_contract_version, risk_contract_hash = _runtime_risk_contract(
+        conn,
+        scenario_version_id,
+        runtime_package_version_id,
+    )
     # Check room status
     room = conn.execute("SELECT status FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
@@ -420,8 +450,17 @@ async def set_room_scenario(request: Request, room_id: str):
         raise HTTPException(409, "Cannot change scenario in active/completed/archived room")
     conn.execute(
         "UPDATE rooms SET scenario_id = %s, scenario_version_id = %s, "
-        "runtime_package_version_id = %s WHERE room_id = %s",
-        (scenario_id, scenario_version_id, runtime_package_version_id, room_id),
+        "runtime_package_version_id = %s, risk_contract = %s, "
+        "risk_contract_version = %s, risk_contract_hash = %s WHERE room_id = %s",
+        (
+            scenario_id,
+            scenario_version_id,
+            runtime_package_version_id,
+            json.dumps(risk_contract, ensure_ascii=False) if risk_contract else None,
+            risk_contract_version,
+            risk_contract_hash,
+            room_id,
+        ),
     )
     conn.commit()
     # Return updated room with title
@@ -455,14 +494,23 @@ async def update_room(request: Request, room_id: str):
             conn,
             sc["published_version_id"],
         )
+        risk_contract, risk_contract_version, risk_contract_hash = _runtime_risk_contract(
+            conn,
+            sc["published_version_id"],
+            runtime_package_version_id,
+        )
         conn.execute(
             "UPDATE rooms SET scenario_id = %s, scenario_version_id = %s, "
-            "runtime_package_version_id = %s "
+            "runtime_package_version_id = %s, risk_contract = %s, "
+            "risk_contract_version = %s, risk_contract_hash = %s "
             "WHERE room_id = %s",
             (
                 body["scenario_id"],
                 sc["published_version_id"],
                 runtime_package_version_id,
+                json.dumps(risk_contract, ensure_ascii=False) if risk_contract else None,
+                risk_contract_version,
+                risk_contract_hash,
                 room_id,
             ),
         )

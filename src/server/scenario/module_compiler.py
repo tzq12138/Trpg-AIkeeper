@@ -349,6 +349,8 @@ def _build_runtime_package(
     asset_bindings: list[dict[str, Any]],
     character_templates: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    from ..engine.risk_contract import normalize_risk_contract
+
     citations = _collect_citations(graph, prep_package, items, edges)
     confirmed_assets = [
         _asset_payload(binding)
@@ -374,6 +376,7 @@ def _build_runtime_package(
             payload["from_scene_id"] = str(from_item.get("logical_key") or "")
             payload["to_scene_id"] = str(to_item.get("logical_key") or "")
         progression_edges.append(payload)
+    risk_contract = graph.get("risk_contract")
     return {
         "package_kind": "aikeeper_runtime_package",
         "schema_version": "runtime_package.v1",
@@ -394,6 +397,11 @@ def _build_runtime_package(
         "clue_dependencies": _collection(graph, "clues", items, "clue"),
         "rule_triggers": _list(graph.get("rule_triggers")) or _list(graph.get("rule_citations")),
         "runtime_policy": _json_object(graph.get("runtime_policy")),
+        **(
+            {"risk_contract": normalize_risk_contract(risk_contract)}
+            if isinstance(risk_contract, dict) and risk_contract
+            else {}
+        ),
         "semantic_map": {
             "assets": [
                 asset for asset in confirmed_assets if asset["target_type"] == "map"

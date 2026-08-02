@@ -906,6 +906,24 @@ async def list_rule_questions(request: Request):
 @router.post("/action-drafts/analyze", response_model=ActionDraftDTO)
 async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
     character = _require_character(request)
+    from ..engine.risk_contract import (
+        current_risk_contract_confirmation,
+        excluded_risk_boundary,
+    )
+
+    confirmation_error = current_risk_contract_confirmation(
+        request.app.state.db,
+        character,
+    )
+    if confirmation_error:
+        raise HTTPException(409, detail=confirmation_error)
+    boundary_error = excluded_risk_boundary(
+        request.app.state.db,
+        character["room_id"],
+        body.params,
+    )
+    if boundary_error:
+        raise HTTPException(409, detail=boundary_error)
     _begin_submission_analysis(request.app.state.db, character, body)
     if body.ephemeral and not get_effective_draft_analysis_enabled(
         request.app.state.db, character

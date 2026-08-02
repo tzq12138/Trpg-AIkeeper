@@ -141,6 +141,7 @@ class SessionZeroConfirmation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     confirmed: bool
+    contract_hash: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 _NOTE_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
@@ -1123,17 +1124,40 @@ async def update_campaign_attendance(
 @router.get("/session-zero")
 async def get_session_zero(request: Request):
     character = _require_character(request)
-    rows = request.app.state.db.execute(
-        "SELECT step, confirmed_at FROM session_zero_confirmations "
+    conn = request.app.state.db
+    room = conn.execute(
+        "SELECT risk_contract, risk_contract_version, risk_contract_hash "
+        "FROM rooms WHERE room_id = %s",
+        (character["room_id"],),
+    ).fetchone()
+    rows = conn.execute(
+        "SELECT step, confirmed_at, contract_version, contract_hash "
+        "FROM session_zero_confirmations "
         "WHERE room_id = %s AND character_id = %s",
         (character["room_id"], character["character_id"]),
     ).fetchall()
-    confirmed = {row["step"]: row["confirmed_at"].isoformat() for row in rows}
+    confirmed = {
+        row["step"]: row["confirmed_at"].isoformat()
+        for row in rows
+        if row["step"] != "safety"
+        or not room
+        or not room.get("risk_contract_hash")
+        or (
+            row.get("contract_version") == room.get("risk_contract_version")
+            and row.get("contract_hash") == room.get("risk_contract_hash")
+        )
+    }
     steps = [
         {"step": step, "confirmed": step in confirmed, "confirmed_at": confirmed.get(step)}
         for step in _SESSION_ZERO_STEPS
     ]
-    return {"steps": steps, "complete": all(item["confirmed"] for item in steps)}
+    from ..engine.risk_contract import public_risk_contract
+
+    return {
+        "steps": steps,
+        "complete": all(item["confirmed"] for item in steps),
+        "risk_contract": public_risk_contract(room.get("risk_contract") if room else None),
+    }
 
 
 @router.post("/session-zero/{step}")
@@ -1145,6 +1169,24 @@ async def confirm_session_zero(request: Request, step: str, body: SessionZeroCon
         raise HTTPException(422, detail={"code": "session_zero_confirmation_required"})
     step_index = _SESSION_ZERO_STEPS.index(step)
     conn = request.app.state.db
+    room = conn.execute(
+        "SELECT risk_contract_version, risk_contract_hash FROM rooms WHERE room_id = %s",
+        (character["room_id"],),
+    ).fetchone()
+    contract_version = None
+    contract_hash = None
+    if step == "safety" and room and room.get("risk_contract_hash"):
+        contract_version = room.get("risk_contract_version")
+        contract_hash = room.get("risk_contract_hash")
+        if body.contract_hash != contract_hash:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "risk_contract_hash_mismatch",
+                    "contract_version": contract_version,
+                    "contract_hash": contract_hash,
+                },
+            )
     if step_index:
         prior_steps = _SESSION_ZERO_STEPS[:step_index]
         rows = conn.execute(
@@ -1155,12 +1197,27 @@ async def confirm_session_zero(request: Request, step: str, body: SessionZeroCon
         if {row["step"] for row in rows} != set(prior_steps):
             raise HTTPException(409, detail={"code": "session_zero_step_order"})
     conn.execute(
-        "INSERT INTO session_zero_confirmations (room_id, character_id, step) VALUES (%s, %s, %s) "
-        "ON CONFLICT (room_id, character_id, step) DO NOTHING",
-        (character["room_id"], character["character_id"], step),
+        "INSERT INTO session_zero_confirmations "
+        "(room_id, character_id, step, contract_version, contract_hash) "
+        "VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (room_id, character_id, step) DO UPDATE SET "
+        "contract_version = EXCLUDED.contract_version, "
+        "contract_hash = EXCLUDED.contract_hash, confirmed_at = NOW()",
+        (
+            character["room_id"],
+            character["character_id"],
+            step,
+            contract_version,
+            contract_hash,
+        ),
     )
     conn.commit()
-    return {"step": step, "confirmed": True}
+    return {
+        "step": step,
+        "confirmed": True,
+        "contract_version": contract_version,
+        "contract_hash": contract_hash,
+    }
 
 
 @evidence_router.post("/rooms/{room_id}/evidence", status_code=201)

@@ -94,12 +94,17 @@ async def reconnect(request: Request):
     last_sequence = last_seq_row["last_delivered_sequence"] if last_seq_row else 0
 
     room_row = conn.execute(
-        "SELECT state_version FROM rooms WHERE room_id = %s", (room_id,)
+        "SELECT state_version, risk_contract FROM rooms WHERE room_id = %s", (room_id,)
     ).fetchone()
     current_state_version = room_row["state_version"] if room_row else 0
     pending_submissions = _pending_submissions(conn, room_id, character_id)
 
     result = manager.reconnect(conn, room_id, character_id, last_sequence)
+    from ..engine.risk_contract import public_risk_contract
+
+    risk_contract = public_risk_contract(
+        room_row.get("risk_contract") if room_row else None
+    )
 
     if result.get("needs_snapshot"):
         char_data = dict(char)
@@ -138,6 +143,7 @@ async def reconnect(request: Request):
             "last_sequence": max_seq,
             "stateVersion": current_state_version,
             "sceneState": _scene_snapshot(conn, room_id),
+            "riskContract": risk_contract,
         }
 
     char_data = dict(char)
@@ -160,6 +166,7 @@ async def reconnect(request: Request):
         "last_sequence": new_last,
         "stateVersion": current_state_version,
         "sceneState": _scene_snapshot(conn, room_id),
+        "riskContract": risk_contract,
     }
 
 
