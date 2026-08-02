@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 
 from src.server.engine.roll_receipt import create_roll_receipt, verify_roll_receipt
@@ -104,6 +106,79 @@ def test_roll_receipt_rejects_tampered_raw_rolls():
     )
     receipt["raw_rolls"][0]["result"] = 1
 
+    assert verify_roll_receipt(receipt, secret="test-secret") is False
+
+
+def test_v2_roll_receipt_binds_authoritative_context():
+    receipt = create_roll_receipt(
+        version="v2",
+        room_id="room-1",
+        state_version=12,
+        action_id="action-1",
+        purpose="skill_check.initial",
+        rule_set_version="coc7-v2",
+        locked_inputs={
+            "skill_name": "侦查",
+            "skill_value": 60,
+            "difficulty": "regular",
+            "bonus_dice": 0,
+        },
+        raw_draws=[{"dice": "d100", "values": {"ones": 2, "tens": [4]}, "result": 42}],
+        idempotency_key="confirm-1",
+        secret="test-secret",
+    )
+
+    assert receipt["version"] == "v2"
+    assert receipt["room_id"] == "room-1"
+    assert receipt["state_version"] == 12
+    assert receipt["purpose"] == "skill_check.initial"
+    assert verify_roll_receipt(receipt, secret="test-secret") is True
+
+
+@pytest.mark.parametrize(
+    ("field", "tampered"),
+    [
+        ("room_id", "room-2"),
+        ("state_version", 13),
+        ("action_id", "action-2"),
+        ("purpose", "skill_check.pushed"),
+        ("rule_set_version", "coc7-v3"),
+        ("locked_inputs", {"skill_name": "潜行", "skill_value": 60}),
+        ("raw_draws", [{"dice": "d100", "result": 1}]),
+        ("idempotency_key", "confirm-2"),
+    ],
+)
+def test_v2_roll_receipt_rejects_any_bound_field_tamper(field, tampered):
+    receipt = create_roll_receipt(
+        version="v2",
+        room_id="room-1",
+        state_version=12,
+        action_id="action-1",
+        purpose="skill_check.initial",
+        rule_set_version="coc7-v2",
+        locked_inputs={"skill_name": "侦查", "skill_value": 60},
+        raw_draws=[{"dice": "d100", "result": 42}],
+        idempotency_key="confirm-1",
+        secret="test-secret",
+    )
+    tampered_receipt = copy.deepcopy(receipt)
+    tampered_receipt[field] = tampered
+
+    assert verify_roll_receipt(tampered_receipt, secret="test-secret") is False
+
+
+def test_roll_receipt_verifier_keeps_v1_compatibility_and_rejects_unknown_versions():
+    receipt = create_roll_receipt(
+        action_id="legacy-action",
+        rule_set_version="coc7-v1",
+        rolled_at="2026-07-11T10:00:00+00:00",
+        raw_rolls=[{"dice": "d100", "result": 42}],
+        secret="test-secret",
+    )
+
+    assert receipt["version"] == "v1"
+    assert verify_roll_receipt(receipt, secret="test-secret") is True
+    receipt["version"] = "v3"
     assert verify_roll_receipt(receipt, secret="test-secret") is False
 
 

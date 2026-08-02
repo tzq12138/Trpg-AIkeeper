@@ -1,9 +1,10 @@
 import asyncio
+import hashlib
 import json
 import re
 import uuid
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from ..ai.contracts import KpResponse, NarrativePayload
@@ -365,6 +366,105 @@ class ResolutionPipeline:
             "result": result_payload,
         }
 
+    async def _await_coc_followup(
+        self,
+        action: dict[str, Any],
+        character: dict[str, Any],
+        resolution: ResolutionResult,
+        *,
+        state_before: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw_follow_up = (resolution.metadata or {}).get("follow_up")
+        if not isinstance(raw_follow_up, dict):
+            raise ValueError("coc_followup_missing")
+        follow_up = json.loads(json.dumps(raw_follow_up, ensure_ascii=False, default=str))
+        engine = follow_up.pop("_engine", None)
+        if not isinstance(engine, dict):
+            raise ValueError("coc_followup_engine_context_missing")
+
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=180)
+        follow_up["expires_at"] = expires_at.isoformat()
+        resolution.metadata = {
+            **dict(resolution.metadata or {}),
+            "follow_up": follow_up,
+        }
+        result_payload = resolution.model_dump(by_alias=True)
+        rule_explanation = self._build_rule_explanation(
+            action,
+            character,
+            resolution,
+            state_before=state_before,
+            state_after=state_before,
+        )
+        verification_receipt = rule_explanation.get("verification_receipt")
+        state_version = (
+            verification_receipt.get("state_version")
+            if isinstance(verification_receipt, dict)
+            else None
+        )
+        progress = {
+            "status": "pending",
+            "allowed_decisions": list(follow_up.get("allowed_decisions") or []),
+            "luck": follow_up.get("luck") or {},
+            "push": follow_up.get("push") or {},
+            "expires_at": follow_up["expires_at"],
+            "state_version": int(state_version or 0),
+            "engine": engine,
+            "initial_resolution": result_payload,
+            "initial_verification_receipt": verification_receipt,
+        }
+        params = self._json_value(action.get("params")) or {}
+        params["coc_followup_progress"] = progress
+
+        with self.conn.transaction() as tx:
+            cursor = tx.execute(
+                "UPDATE actions SET status = 'awaiting_player_choice', params = %s, "
+                "result = %s, receipt = %s "
+                "WHERE action_id = %s AND status = 'resolving'",
+                (
+                    json.dumps(params, ensure_ascii=False, default=str),
+                    json.dumps(result_payload, ensure_ascii=False, default=str),
+                    json.dumps(rule_explanation, ensure_ascii=False, default=str),
+                    action["action_id"],
+                ),
+            )
+            if cursor.rowcount:
+                tx.execute(
+                    "INSERT INTO action_status_events (action_id, status, metadata) "
+                    "VALUES (%s, 'awaiting_player_choice', %s)",
+                    (
+                        action["action_id"],
+                        json.dumps({"reason_code": "coc_followup_required"}),
+                    ),
+                )
+        if cursor.rowcount == 0:
+            return {"status": "sync_required", "action_id": action["action_id"]}
+
+        self._persist_resolution_bundle(
+            action,
+            "awaiting_player_choice",
+            result_payload,
+            rule_explanation,
+            resolution,
+        )
+        await self.dispatcher.emit(
+            action["room_id"],
+            "s2c_action_choice_requested",
+            "player",
+            {
+                "actionId": action["action_id"],
+                "status": "awaiting_player_choice",
+                "kind": "coc_followup",
+                "followUp": follow_up,
+            },
+            character_id=action["character_id"],
+        )
+        return {
+            "status": "awaiting_player_choice",
+            "action_id": action["action_id"],
+            "result": result_payload,
+        }
+
     async def resolve_action(self, action_id: str) -> dict[str, Any]:
         action = self.conn.execute(
             "SELECT * FROM actions WHERE action_id = %s", (action_id,)
@@ -382,9 +482,17 @@ class ResolutionPipeline:
             and isinstance(composite_progress, dict)
             and composite_progress.get("decision") in {"continue", "cancel"}
         )
-        if action["status"] not in {"queued", "batched"} and not is_composite_resume:
+        coc_followup_progress = action_params.get("coc_followup_progress")
+        is_coc_followup_resume = (
+            action["status"] in {"awaiting_player_choice", "queued", "batched"}
+            and isinstance(coc_followup_progress, dict)
+            and coc_followup_progress.get("status") == "submitted"
+            and coc_followup_progress.get("decision") in {"spend_luck", "push", "decline"}
+        )
+        is_player_choice_resume = is_composite_resume or is_coc_followup_resume
+        if action["status"] not in {"queued", "batched"} and not is_player_choice_resume:
             return {"status": action["status"], "action_id": action_id}
-        if not is_composite_resume:
+        if not is_player_choice_resume:
             from .action_consent import enforce_action_consent_gate
 
             if not enforce_action_consent_gate(self.conn, action_id):
@@ -414,9 +522,18 @@ class ResolutionPipeline:
             won_claim = transition_action(
                 self.conn,
                 action_id,
-                from_statuses=("awaiting_player_choice",) if is_composite_resume else ("queued", "batched"),
+                from_statuses=(action["status"],) if is_player_choice_resume else ("queued", "batched"),
                 to_status="resolving",
-                metadata={"ai_stage": "retrieving"},
+                metadata={
+                    "ai_stage": "retrieving",
+                    "reason_code": (
+                        "coc_followup_submitted"
+                        if is_coc_followup_resume
+                        else "composite_choice_submitted"
+                        if is_composite_resume
+                        else "action_resolution_started"
+                    ),
+                },
             )
             claimed = self.conn.execute(
                 "SELECT * FROM actions WHERE action_id = %s",
@@ -459,6 +576,10 @@ class ResolutionPipeline:
             await self._reject(action, reason)
             return {"status": "rejected", "action_id": action_id, "reason": reason}
         action_params = self._json_value(action.get("params")) or {}
+        if is_coc_followup_resume:
+            refreshed_progress = action_params.get("coc_followup_progress")
+            if isinstance(refreshed_progress, dict):
+                action_params["_coc_followup"] = refreshed_progress
         conflict_guard = action_params.get("_conflictGuard")
         allow_same_turn_scene_drift = False
         semantic_guard_valid = False
@@ -810,6 +931,9 @@ class ResolutionPipeline:
         except Exception as exc:
             await self._reject(action, f"resolution failed: {exc}")
             return {"status": "rejected", "action_id": action_id, "reason": str(exc)}
+        follow_up_error = (resolution.metadata or {}).get("follow_up_error")
+        if is_v2 and follow_up_error:
+            return await self._require_action_resync(action, str(follow_up_error))
         composite_state = (resolution.metadata or {}).get("composite_action")
         if (
             is_v2
@@ -818,6 +942,19 @@ class ResolutionPipeline:
         ):
             return await self._await_composite_choice(action, resolution)
         resolution.narrative = self._render_fallback_narrative(intent, compiled, resolution, character_data)
+        coc_follow_up = (resolution.metadata or {}).get("follow_up")
+        if (
+            is_v2
+            and not is_coc_followup_resume
+            and isinstance(coc_follow_up, dict)
+            and coc_follow_up.get("status") == "pending"
+        ):
+            return await self._await_coc_followup(
+                action,
+                character_data,
+                resolution,
+                state_before=state_before,
+            )
 
         inventory_changes = []
         if retroactive_decision:
@@ -1434,27 +1571,79 @@ class ResolutionPipeline:
         if target is None:
             target = metadata.get("skill_value", metadata.get("skillValue"))
         raw_rolls = self._raw_rolls(resolution)
-        rolled_at = datetime.now(timezone.utc).isoformat()
         rule_set_version = action.get("rule_set_version_id") or "unversioned"
-        verification_receipt = None
-        if raw_rolls:
-            verification_receipt = create_roll_receipt(
-                action_id=action["action_id"],
-                rule_set_version=rule_set_version,
-                rolled_at=rolled_at,
-                raw_rolls=raw_rolls,
-            )
         params = self._json_value(action.get("params")) or {}
         analysis = params.get("analysis") if isinstance(params.get("analysis"), dict) else {}
         citations = analysis.get("citations") if isinstance(analysis.get("citations"), list) else []
         hidden_effects = metadata.get("hidden_modifiers")
         hidden_sources = []
         if isinstance(hidden_effects, list):
-            hidden_sources = [
-                {"source": "hidden", "effect": item.get("effect")}
-                for item in hidden_effects
-                if isinstance(item, dict) and item.get("effect") is not None
+            for item in hidden_effects:
+                if not isinstance(item, dict) or item.get("effect") is None:
+                    continue
+                source = str(item.get("source") or "hidden")
+                commitment = hashlib.sha256(
+                    f"{action['action_id']}\x00{rule_set_version}\x00{source}".encode("utf-8")
+                ).hexdigest()
+                hidden_sources.append({
+                    "source": "hidden",
+                    "effect": item.get("effect"),
+                    "source_commitment": commitment,
+                })
+        locked_inputs = metadata.get("receipt_locked_inputs")
+        if not isinstance(locked_inputs, dict):
+            locked_inputs = {
+                "intent_type": action.get("intent_type"),
+                "declared_intent": action.get("declared_intent") or "",
+                "mechanic": resolution.mechanic,
+            }
+        else:
+            locked_inputs = json.loads(
+                json.dumps(locked_inputs, ensure_ascii=False, default=str)
+            )
+        if hidden_sources:
+            locked_inputs["hidden_source_commitments"] = [
+                source["source_commitment"] for source in hidden_sources
             ]
+
+        receipt_state_version = metadata.get("receipt_state_version")
+        if not isinstance(receipt_state_version, int):
+            conflict_guard = params.get("_conflictGuard")
+            receipt_state_version = (
+                conflict_guard.get("baseStateVersion")
+                if isinstance(conflict_guard, dict)
+                and isinstance(conflict_guard.get("baseStateVersion"), int)
+                else None
+            )
+        if not isinstance(receipt_state_version, int):
+            room_id = action.get("room_id") or resolution.room_id
+            room_state = (
+                self.conn.execute(
+                    "SELECT state_version FROM rooms WHERE room_id = %s",
+                    (room_id,),
+                ).fetchone()
+                if self.conn is not None and room_id
+                else None
+            )
+            receipt_state_version = int(room_state.get("state_version") or 0) if room_state else 0
+        purpose = str(metadata.get("receipt_purpose") or f"{resolution.mechanic}.initial")
+        receipt_draws = metadata.get("receipt_raw_draws")
+        if not isinstance(receipt_draws, list):
+            receipt_draws = raw_rolls
+        verification_receipt = None
+        if raw_rolls or metadata.get("receipt_purpose"):
+            receipt_room_id = str(action.get("room_id") or resolution.room_id)
+            verification_receipt = create_roll_receipt(
+                version="v2",
+                room_id=receipt_room_id,
+                state_version=receipt_state_version,
+                action_id=action["action_id"],
+                purpose=purpose,
+                rule_set_version=rule_set_version,
+                locked_inputs=locked_inputs,
+                raw_draws=receipt_draws,
+                idempotency_key=str(action.get("idempotency_key") or action["action_id"]),
+            )
         xlsx_data = self._json_value(character.get("xlsx_data")) or {}
         if state_before is None:
             state_before = {
@@ -2406,7 +2595,14 @@ class ResolutionPipeline:
             "INSERT INTO resolution_bundles "
             "(action_id, room_id, character_id, canonical_result, rule_explanation, "
             "actor_projection, stage_projection, host_console, release_status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (action_id) DO UPDATE SET "
+            "canonical_result = EXCLUDED.canonical_result, "
+            "rule_explanation = EXCLUDED.rule_explanation, "
+            "actor_projection = EXCLUDED.actor_projection, "
+            "stage_projection = EXCLUDED.stage_projection, "
+            "host_console = EXCLUDED.host_console, "
+            "release_status = EXCLUDED.release_status, released_at = NULL",
             (
                 action["action_id"],
                 action["room_id"],

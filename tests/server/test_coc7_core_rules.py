@@ -47,7 +47,7 @@ def test_bonus_and_penalty_dice_are_clamped_to_two(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_skill_check_can_spend_only_required_luck_after_server_roll(monkeypatch):
+async def test_initial_skill_check_reports_exact_luck_cost_without_spending(monkeypatch):
     _sequence_randint(monkeypatch, [6, 5])
     state = GameState(character={"luck": 10})
 
@@ -61,17 +61,19 @@ async def test_skill_check_can_spend_only_required_luck_after_server_roll(monkey
         },
     )
 
-    assert result.is_success is True
+    assert result.is_success is False
     assert result.metadata["roll"] == 65
-    assert result.metadata["luck_spent"] == 5
-    assert result.metadata["success_level"] == "regular"
-    assert result.mutations == [
-        {"op": "replace", "path": "/character/luck", "value": 5}
-    ]
+    assert result.metadata["luck_spent"] == 0
+    assert result.metadata["follow_up"]["luck"] == {
+        "available": True,
+        "required": 5,
+        "remaining": 5,
+    }
+    assert result.mutations == []
 
 
 @pytest.mark.asyncio
-async def test_pushed_check_rerolls_a_failure_and_keeps_both_rolls(monkeypatch):
+async def test_initial_pushed_flag_only_rolls_once_and_returns_follow_up(monkeypatch):
     _sequence_randint(monkeypatch, [8, 0, 3, 0])
 
     result = await CocSkillCheckHandler().execute(
@@ -79,16 +81,17 @@ async def test_pushed_check_rerolls_a_failure_and_keeps_both_rolls(monkeypatch):
         {"skillName": "侦查", "skillValue": 60, "pushed": True},
     )
 
-    assert result.is_success is True
-    assert result.metadata["pushed"] is True
+    assert result.is_success is False
+    assert result.metadata["pushed"] is False
     assert result.metadata["initial_roll"] == 80
-    assert result.metadata["roll"] == 30
-    assert [step["result"] for step in result.reveal_steps] == [80, 30]
+    assert result.metadata["roll"] == 80
+    assert result.metadata["follow_up"]["push"]["risk_level"] == "high"
+    assert [step["result"] for step in result.reveal_steps] == [80]
 
 
 @pytest.mark.asyncio
-async def test_failed_pushed_check_uses_deterministic_engine_consequence(monkeypatch):
-    _sequence_randint(monkeypatch, [8, 0, 9, 0])
+async def test_unconfirmed_push_does_not_select_or_apply_a_consequence(monkeypatch):
+    _sequence_randint(monkeypatch, [8, 0])
 
     result = await CocSkillCheckHandler().execute(
         GameState(character={"luck": 0}),
@@ -103,8 +106,8 @@ async def test_failed_pushed_check_uses_deterministic_engine_consequence(monkeyp
     assert result.is_success is False
     assert result.mutations == []
     assert result.metadata["pending_consequence"] is None
-    assert result.metadata["pushed_consequence"]["status"] == "resolved_by_engine"
-    assert result.metadata["pushed_consequence"]["code"] == "pushed_check_complication"
+    assert result.metadata["pushed_consequence"] is None
+    assert result.metadata["follow_up"]["push"]["warning"]
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from src.server.rules.coc_handlers import (
     CocSanityCheckHandler,
     CocSkillCheckHandler,
     CocStatusHandler,
+    _resolve_pushed_consequence,
 )
 from src.server.rules.encounter_handlers import (
     ChaseEscapeHandler,
@@ -54,8 +55,8 @@ def test_fumble_threshold_uses_required_target_not_unmodified_skill():
 
 
 @pytest.mark.asyncio
-async def test_failed_pushed_roll_is_resolved_by_engine_without_human_host(monkeypatch):
-    _skill_rolls(monkeypatch, [8, 0, 9, 0])
+async def test_initial_failed_roll_locks_push_envelope_without_applying_ai_consequence(monkeypatch):
+    _skill_rolls(monkeypatch, [8, 0])
 
     result = await CocSkillCheckHandler().execute(
         GameState(character={"luck": 0}),
@@ -63,6 +64,13 @@ async def test_failed_pushed_roll_is_resolved_by_engine_without_human_host(monke
             "skillName": "侦查",
             "skillValue": 60,
             "pushed": True,
+            "pushedConsequenceEnvelope": {
+                "riskLevel": "medium",
+                "affectedScope": ["scene"],
+                "supportingFactIds": ["fact-public-1"],
+                "allowedCodes": ["glass_alarm_escalates"],
+                "warning": "失败会让现场警报升级。",
+            },
             "pushedFailureConsequence": {
                 "code": "glass_alarm_escalates",
                 "publicText": "警报升级，倒计时缩短。",
@@ -72,12 +80,43 @@ async def test_failed_pushed_roll_is_resolved_by_engine_without_human_host(monke
 
     assert result.is_success is False
     assert result.metadata["pending_consequence"] is None
-    assert result.metadata["pushed_consequence"] == {
-        "status": "resolved_by_engine",
-        "reason": "pushed_check_failed",
-        "code": "glass_alarm_escalates",
-        "public_text": "警报升级，倒计时缩短。",
+    assert result.metadata["pushed_consequence"] is None
+    assert result.metadata["follow_up"]["push"] == {
+        "available": True,
+        "risk_level": "medium",
+        "affected_scope": ["scene"],
+        "supporting_fact_ids": ["fact-public-1"],
+        "warning": "失败会让现场警报升级。",
     }
+
+
+def test_pushed_consequence_accepts_one_bounded_retry():
+    safe_text = "警报升级，调查时间缩短。"
+    result = _resolve_pushed_consequence({
+        "envelope": {
+            "risk_level": "medium",
+            "affected_scope": ["scene"],
+            "supporting_fact_ids": ["fact-public-1"],
+            "allowed_codes": ["alarm_escalates"],
+            "allowed_public_texts": {"alarm_escalates": [safe_text]},
+        },
+        "proposal": {
+            "code": "alarm_escalates",
+            "publicText": "未获批准的具体后果。",
+        },
+        "retry_proposal": {
+            "code": "alarm_escalates",
+            "publicText": safe_text,
+            "riskLevel": "medium",
+            "affectedScope": ["scene"],
+            "supportingFactIds": ["fact-public-1"],
+        },
+    })
+
+    assert result["selection_source"] == "ai_retry"
+    assert result["retry_count"] == 1
+    assert result["public_text"] == safe_text
+    assert result["affected_scope"] == ["scene"]
 
 
 @pytest.mark.asyncio

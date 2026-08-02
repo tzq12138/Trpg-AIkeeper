@@ -28,7 +28,7 @@ async def test_rule_executor_runs_compiled_skill_check_with_character_skill():
 
 
 @pytest.mark.asyncio
-async def test_rule_executor_preserves_confirmed_luck_spend_params(monkeypatch):
+async def test_rule_executor_stages_luck_spend_until_follow_up_confirmation(monkeypatch):
     rolls = iter([6, 5])
     monkeypatch.setattr(
         "src.server.engine.skill_check.random.randint",
@@ -49,11 +49,10 @@ async def test_rule_executor_preserves_confirmed_luck_spend_params(monkeypatch):
 
     result = await executor.execute(intent, compiled, character, inventory=[], scenario_assets={})
 
-    assert result.is_success is True
-    assert result.metadata["luck_spent"] == 5
-    assert result.mutations == [
-        {"op": "replace", "path": "/character/luck", "value": 5}
-    ]
+    assert result.is_success is False
+    assert result.metadata["luck_spent"] == 0
+    assert result.metadata["follow_up"]["luck"]["required"] == 5
+    assert result.mutations == []
 
 
 @pytest.mark.asyncio
@@ -91,8 +90,8 @@ async def test_rule_executor_preserves_solo_move_target_when_compiler_returns_mo
 
 
 @pytest.mark.asyncio
-async def test_rule_executor_preserves_confirmed_pushed_roll_and_bonus_dice(monkeypatch):
-    rolls = iter([8, 0, 9, 3, 0, 2])
+async def test_rule_executor_stages_pushed_roll_and_preserves_bonus_dice(monkeypatch):
+    rolls = iter([8, 7, 9])
     monkeypatch.setattr(
         "src.server.engine.skill_check.random.randint",
         lambda _low, _high: next(rolls),
@@ -112,9 +111,10 @@ async def test_rule_executor_preserves_confirmed_pushed_roll_and_bonus_dice(monk
 
     result = await executor.execute(intent, compiled, character, inventory=[], scenario_assets={})
 
-    assert result.metadata["pushed"] is True
+    assert result.metadata["pushed"] is False
     assert result.metadata["bonus_dice"] == 1
-    assert len(result.reveal_steps) == 2
+    assert result.metadata["follow_up"]["push"]["available"] is True
+    assert len(result.reveal_steps) == 1
 
 
 @pytest.mark.asyncio

@@ -577,6 +577,12 @@ class CompositeActionChoiceRequest(BaseModel):
     proceed: bool
 
 
+class CocFollowUpDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["spend_luck", "push", "decline"]
+
+
 class ActionDraftStepDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
     step_id: str = Field(min_length=1, max_length=80)

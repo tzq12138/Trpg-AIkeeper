@@ -1726,6 +1726,112 @@ def choose_composite_action_continuation(
     return build_action_receipt(conn, character_id, action_id)
 
 
+def submit_coc_followup_decision(
+    conn,
+    character_id: str,
+    action_id: str,
+    decision: str,
+    idempotency_key: str,
+) -> ActionReceiptV2:
+    if decision not in {"spend_luck", "push", "decline"}:
+        raise ActionDraftError(422, {"code": "coc_followup_decision_invalid"})
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        raise ActionDraftError(422, {"code": "idempotency_key_required"})
+    idempotency_key = idempotency_key.strip()
+    if len(idempotency_key) > 200:
+        raise ActionDraftError(422, {"code": "idempotency_key_invalid"})
+
+    timed_out = False
+    with conn.transaction() as tx:
+        action = tx.execute(
+            "SELECT * FROM actions WHERE action_id = %s AND character_id = %s FOR UPDATE",
+            (action_id, character_id),
+        ).fetchone()
+        if not action:
+            raise ActionDraftError(404, {"code": "action_not_found"})
+        params = _json_value(action.get("params")) or {}
+        progress = params.get("coc_followup_progress")
+        if not isinstance(progress, dict):
+            raise ActionDraftError(409, {"code": "coc_followup_not_pending"})
+
+        submitted_decision = progress.get("decision")
+        submitted_key = progress.get("decision_idempotency_key")
+        if submitted_decision:
+            if submitted_decision == decision and submitted_key == idempotency_key:
+                return build_action_receipt(tx, character_id, action_id)
+            if submitted_key == idempotency_key:
+                raise ActionDraftError(409, {"code": "idempotency_key_reused"})
+            raise ActionDraftError(409, {"code": "coc_followup_already_submitted"})
+
+        if action["status"] != "awaiting_player_choice" or progress.get("status") != "pending":
+            raise ActionDraftError(409, {"code": "coc_followup_not_pending"})
+
+        expires_at = _parse_utc_datetime(progress.get("expires_at"))
+        if expires_at is None or expires_at <= datetime.now(timezone.utc):
+            progress["status"] = "timed_out"
+            params["coc_followup_progress"] = progress
+            result = _json_value(action.get("result")) or {}
+            metadata = result.get("metadata")
+            if isinstance(metadata, dict) and isinstance(metadata.get("follow_up"), dict):
+                metadata = dict(metadata)
+                metadata["follow_up"] = {
+                    **metadata["follow_up"],
+                    "status": "timed_out",
+                }
+                result["metadata"] = metadata
+            tx.execute(
+                "UPDATE actions SET status = 'timeout', params = %s, result = %s, completed_at = NOW() "
+                "WHERE action_id = %s AND status = 'awaiting_player_choice'",
+                (
+                    json.dumps(params, ensure_ascii=False),
+                    json.dumps(result, ensure_ascii=False),
+                    action_id,
+                ),
+            )
+            tx.execute(
+                "INSERT INTO action_status_events (action_id, status, metadata) "
+                "VALUES (%s, 'timeout', %s)",
+                (
+                    action_id,
+                    json.dumps({"reason_code": "coc_followup_timed_out"}),
+                ),
+            )
+            timed_out = True
+        else:
+            allowed = progress.get("allowed_decisions")
+            if not isinstance(allowed, list) or decision not in allowed:
+                code = (
+                    "coc_followup_luck_unavailable"
+                    if decision == "spend_luck"
+                    else "coc_followup_push_unavailable"
+                )
+                raise ActionDraftError(409, {"code": code})
+            progress["decision"] = decision
+            progress["decision_idempotency_key"] = idempotency_key
+            progress["status"] = "submitted"
+            params["coc_followup_progress"] = progress
+            tx.execute(
+                "UPDATE actions SET params = %s WHERE action_id = %s",
+                (json.dumps(params, ensure_ascii=False), action_id),
+            )
+
+    if timed_out:
+        raise ActionDraftError(409, {"code": "coc_followup_timed_out"})
+    return build_action_receipt(conn, character_id, action_id)
+
+
+def _parse_utc_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def build_action_receipt(conn, character_id: str, action_id: str) -> ActionReceiptV2:
     action = conn.execute(
         "SELECT actions.action_id, actions.room_id, actions.draft_id, actions.revision_number, actions.declared_intent, "

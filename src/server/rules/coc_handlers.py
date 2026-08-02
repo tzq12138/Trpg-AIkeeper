@@ -129,17 +129,187 @@ def _temp_modifiers(character: dict) -> dict:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
-def _normalized_consequence(value: Any) -> dict[str, str]:
+_PUSH_RISK_RANK = {"low": 0, "medium": 1, "high": 2}
+_PUSH_FALLBACK_TEXT = "孤注一掷失败，局势出现了更严重但不越权改写状态的后果。"
+
+
+def _safe_push_tag(value: Any) -> str:
+    tag = re.sub(r"[^a-z0-9_.-]", "", str(value or "").strip().lower())[:80]
+    return tag
+
+
+def _safe_push_tags(value: Any, *, fallback: list[str] | None = None) -> list[str]:
+    if not isinstance(value, list):
+        return list(fallback or [])
+    tags = []
+    for item in value:
+        tag = _safe_push_tag(item)
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags[:16]
+
+
+def _safe_push_fact_ids(value: Any, *, fallback: list[str] | None = None) -> list[str]:
+    if not isinstance(value, list):
+        return list(fallback or [])
+    fact_ids = []
+    for item in value:
+        fact_id = str(item or "").strip()[:160]
+        if (
+            fact_id
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}", fact_id)
+            and fact_id not in fact_ids
+        ):
+            fact_ids.append(fact_id)
+    return fact_ids[:16]
+
+
+def _pushed_follow_up_contract(params: dict, *, available: bool) -> tuple[dict, dict]:
+    raw = params.get("pushedConsequenceEnvelope") or params.get("pushed_consequence_envelope")
+    raw = raw if isinstance(raw, dict) else {}
+    risk_level = str(raw.get("riskLevel") or raw.get("risk_level") or "high").strip().lower()
+    if risk_level not in _PUSH_RISK_RANK:
+        risk_level = "high"
+    affected_scope = _safe_push_tags(
+        raw.get("affectedScope", raw.get("affected_scope")),
+        fallback=["scene"],
+    ) or ["scene"]
+    supporting_fact_ids = _safe_push_fact_ids(
+        raw.get("supportingFactIds", raw.get("supporting_fact_ids")),
+    )
+    allowed_codes = _safe_push_tags(
+        raw.get("allowedCodes", raw.get("allowed_codes")),
+        fallback=["pushed_check_complication"],
+    ) or ["pushed_check_complication"]
+    allowed_public_texts: dict[str, list[str]] = {}
+    raw_allowed_consequences = raw.get(
+        "allowedConsequences",
+        raw.get("allowed_consequences"),
+    )
+    if isinstance(raw_allowed_consequences, list):
+        for item in raw_allowed_consequences[:16]:
+            if not isinstance(item, dict):
+                continue
+            code = _safe_push_tag(item.get("code"))
+            text = re.sub(
+                r"\s+",
+                " ",
+                str(item.get("publicText") or item.get("public_text") or ""),
+            ).strip()[:500]
+            if code in allowed_codes and text:
+                allowed_public_texts.setdefault(code, []).append(text)
+    if "pushed_check_complication" in allowed_codes:
+        allowed_public_texts.setdefault(
+            "pushed_check_complication",
+            [],
+        ).append(_PUSH_FALLBACK_TEXT)
+    warning = re.sub(
+        r"\s+",
+        " ",
+        str(raw.get("warning") or "失败会触发已说明范围内的更严重后果。"),
+    ).strip()[:500]
+    public = {
+        "available": available,
+        "risk_level": risk_level,
+        "affected_scope": affected_scope,
+        "supporting_fact_ids": supporting_fact_ids,
+        "warning": warning,
+    }
+    engine = {
+        "envelope": {
+            "risk_level": risk_level,
+            "affected_scope": affected_scope,
+            "supporting_fact_ids": supporting_fact_ids,
+            "allowed_codes": allowed_codes,
+            "allowed_public_texts": allowed_public_texts,
+        },
+        "proposal": deepcopy(
+            params.get("pushedFailureConsequence")
+            or params.get("pushed_failure_consequence")
+        ),
+        "retry_proposal": deepcopy(
+            params.get("pushedFailureConsequenceRetry")
+            or params.get("pushed_failure_consequence_retry")
+        ),
+    }
+    return public, engine
+
+
+def _validated_pushed_consequence(value: Any, envelope: dict) -> dict | None:
     if not isinstance(value, dict):
-        return {
-            "code": "pushed_check_complication",
-            "public_text": "孤注一掷失败，局势出现了更严重但不越权改写状态的后果。",
-        }
-    code = re.sub(r"[^a-z0-9_-]", "", str(value.get("code") or "").lower())[:80]
-    text = re.sub(r"\s+", " ", str(value.get("publicText") or value.get("public_text") or "")).strip()
+        return None
+    code = _safe_push_tag(value.get("code"))
+    text = re.sub(
+        r"\s+",
+        " ",
+        str(value.get("publicText") or value.get("public_text") or ""),
+    ).strip()[:500]
+    risk_level = str(
+        value.get("riskLevel") or value.get("risk_level") or envelope["risk_level"]
+    ).strip().lower()
+    affected_scope = _safe_push_tags(
+        value.get("affectedScope", value.get("affected_scope")),
+        fallback=envelope["affected_scope"],
+    )
+    supporting_fact_ids = _safe_push_fact_ids(
+        value.get("supportingFactIds", value.get("supporting_fact_ids")),
+        fallback=envelope["supporting_fact_ids"],
+    )
+    if (
+        not code
+        or not text
+        or code not in envelope["allowed_codes"]
+        or text not in (envelope.get("allowed_public_texts") or {}).get(code, [])
+        or risk_level not in _PUSH_RISK_RANK
+        or _PUSH_RISK_RANK[risk_level] > _PUSH_RISK_RANK[envelope["risk_level"]]
+        or not set(affected_scope).issubset(envelope["affected_scope"])
+        or not set(supporting_fact_ids).issubset(envelope["supporting_fact_ids"])
+    ):
+        return None
     return {
-        "code": code or "pushed_check_complication",
-        "public_text": text[:500] or "孤注一掷失败，局势出现了更严重但不越权改写状态的后果。",
+        "code": code,
+        "public_text": text,
+        "risk_level": risk_level,
+        "affected_scope": affected_scope,
+        "supporting_fact_ids": supporting_fact_ids,
+    }
+
+
+def _resolve_pushed_consequence(contract: dict) -> dict:
+    contract = contract if isinstance(contract, dict) else {}
+    envelope = contract.get("envelope")
+    if not isinstance(envelope, dict):
+        envelope = {
+            "risk_level": "high",
+            "affected_scope": ["scene"],
+            "supporting_fact_ids": [],
+            "allowed_codes": ["pushed_check_complication"],
+            "allowed_public_texts": {
+                "pushed_check_complication": [_PUSH_FALLBACK_TEXT],
+            },
+        }
+    selected = _validated_pushed_consequence(contract.get("proposal"), envelope)
+    retry_count = 0
+    selection_source = "ai_validated"
+    if selected is None:
+        retry_count = 1
+        selected = _validated_pushed_consequence(contract.get("retry_proposal"), envelope)
+        selection_source = "ai_retry"
+    if selected is None:
+        selected = {
+            "code": "pushed_check_complication",
+            "public_text": _PUSH_FALLBACK_TEXT,
+            "risk_level": envelope["risk_level"],
+            "affected_scope": list(envelope["affected_scope"]),
+            "supporting_fact_ids": list(envelope["supporting_fact_ids"]),
+        }
+        selection_source = "engine_fixed_fallback"
+    return {
+        "status": "resolved_by_engine",
+        "reason": "pushed_check_failed",
+        **selected,
+        "selection_source": selection_source,
+        "retry_count": retry_count,
     }
 
 
@@ -225,6 +395,10 @@ def _roll_step(result: dict, skill_name: str, *, pushed: bool = False) -> dict:
 
 class CocSkillCheckHandler(BaseRuleHandler):
     async def execute(self, state: GameState, params: dict) -> RuleResult:
+        follow_up = params.get("_coc_followup")
+        if isinstance(follow_up, dict):
+            return self._execute_follow_up(state, follow_up)
+
         skill_name = params.get("skillName", "")
         skill_value = params.get("skillValue", 0)
         difficulty = params.get("difficulty", "regular")
@@ -239,18 +413,7 @@ class CocSkillCheckHandler(BaseRuleHandler):
 
         initial_result = result
         bonus_dice = initial_result["bonus_dice"]
-        pushed = bool(params.get("pushed", params.get("push", False)))
-        if rule_policy.get("allow_pushed_roll") is False:
-            pushed = False
         reveal_steps = [_roll_step(initial_result, skill_name)]
-        if pushed and not initial_result["is_success"] and initial_result["success_level"] != "fumble":
-            result = roll_skill_check(
-                skill_value=skill_value,
-                difficulty=difficulty,
-                bonus_dice=bonus_dice,
-                policy=rule_policy,
-            )
-            reveal_steps.append(_roll_step(result, skill_name, pushed=True))
 
         roll = result["roll"]
         target = _compute_threshold(skill_value, difficulty)
@@ -259,41 +422,51 @@ class CocSkillCheckHandler(BaseRuleHandler):
         is_success = result["is_success"]
         mutations = []
         luck_spent = 0
-        spend_luck = params.get("spendLuck", params.get("spend_luck", False))
-        if rule_policy.get("allow_luck_spend") is False:
-            spend_luck = False
         current_luck = max(0, int(state.character.get("luck", 0) or 0))
-        if spend_luck and not pushed and not is_success and success_level != "fumble":
-            required_luck = max(0, roll - target)
-            if spend_luck is True:
-                budget = current_luck
-            else:
-                try:
-                    budget = max(0, int(spend_luck))
-                except (TypeError, ValueError):
-                    budget = 0
-            if 0 < required_luck <= min(current_luck, budget):
-                luck_spent = required_luck
-                is_success = True
-                success_level = difficulty
-                mutations.append({
-                    "op": "replace",
-                    "path": "/character/luck",
-                    "value": current_luck - required_luck,
-                })
-
         pending_consequence = None
         pushed_consequence = None
-        if pushed and not is_success:
-            consequence = _normalized_consequence(
-                params.get("pushedFailureConsequence")
-                or params.get("pushed_failure_consequence")
+        follow_up_payload = None
+        if not is_success and success_level != "fumble":
+            required_luck = max(0, roll - target)
+            luck_available = (
+                rule_policy.get("allow_luck_spend") is not False
+                and 0 < required_luck <= current_luck
             )
-            pushed_consequence = {
-                "status": "resolved_by_engine",
-                "reason": "pushed_check_failed",
-                **consequence,
+            push_available = rule_policy.get("allow_pushed_roll") is not False
+            push_public, push_engine = _pushed_follow_up_contract(
+                params,
+                available=push_available,
+            )
+            allowed_decisions = ["decline"]
+            if luck_available:
+                allowed_decisions.insert(0, "spend_luck")
+            if push_available:
+                allowed_decisions.insert(0, "push")
+            locked_inputs = {
+                "skill_name": skill_name,
+                "skill_value": int(skill_value or 0),
+                "difficulty": difficulty,
+                "bonus_dice": bonus_dice,
+                "target": target,
             }
+            follow_up_payload = {
+                "status": "pending",
+                "allowed_decisions": allowed_decisions,
+                "luck": {
+                    "available": luck_available,
+                    "required": required_luck,
+                    "remaining": current_luck - required_luck if luck_available else current_luck,
+                },
+                "push": push_public,
+                "_engine": {
+                    "locked_inputs": locked_inputs,
+                    "initial_result": deepcopy(initial_result),
+                    "rule_policy": deepcopy(rule_policy),
+                    "pushed_consequence": push_engine,
+                },
+            }
+            if not luck_available and not push_available:
+                follow_up_payload = None
 
         return RuleResult(
             is_success=is_success,
@@ -307,13 +480,160 @@ class CocSkillCheckHandler(BaseRuleHandler):
                 "is_success": is_success,
                 "bonus_dice": bonus_dice,
                 "roll_trace": result["roll_trace"],
-                "pushed": pushed and len(reveal_steps) == 2,
+                "pushed": False,
                 "initial_roll": initial_result["roll"],
                 "initial_roll_trace": initial_result["roll_trace"],
                 "luck_spent": luck_spent,
                 "pending_consequence": pending_consequence,
                 "pushed_consequence": pushed_consequence,
+                "follow_up": follow_up_payload,
+                "receipt_purpose": "skill_check.initial",
+                "receipt_locked_inputs": {
+                    "skill_name": skill_name,
+                    "skill_value": int(skill_value or 0),
+                    "difficulty": difficulty,
+                    "bonus_dice": bonus_dice,
+                    "target": target,
+                },
                 "detail": detail,
+            },
+            mutations=mutations,
+            reveal_steps=reveal_steps,
+            cascading_state_changes=[],
+        )
+
+    @staticmethod
+    def _execute_follow_up(state: GameState, progress: dict) -> RuleResult:
+        decision = str(progress.get("decision") or "")
+        engine = progress.get("engine")
+        if not isinstance(engine, dict):
+            return RuleResult(
+                is_success=False,
+                metadata={"follow_up_error": "coc_followup_context_invalid"},
+            )
+        locked = engine.get("locked_inputs")
+        initial = engine.get("initial_result")
+        if not isinstance(locked, dict) or not isinstance(initial, dict):
+            return RuleResult(
+                is_success=False,
+                metadata={"follow_up_error": "coc_followup_context_invalid"},
+            )
+
+        skill_name = str(locked.get("skill_name") or "")
+        skill_value = int(locked.get("skill_value") or 0)
+        difficulty = str(locked.get("difficulty") or "regular")
+        bonus_dice = int(locked.get("bonus_dice") or 0)
+        target = int(locked.get("target") or 0)
+        initial_roll = int(initial.get("roll") or 0)
+        initial_level = str(initial.get("success_level") or "failure")
+        initial_step = _roll_step(initial, skill_name)
+        current_luck = max(0, int(state.character.get("luck", 0) or 0))
+        required_luck = max(0, initial_roll - target)
+        rule_policy = engine.get("rule_policy")
+        rule_policy = rule_policy if isinstance(rule_policy, dict) else {}
+
+        result = initial
+        reveal_steps = [initial_step]
+        is_success = bool(initial.get("is_success"))
+        success_level = initial_level
+        luck_spent = 0
+        mutations = []
+        pushed = False
+        pushed_consequence = None
+        receipt_draws = []
+        purpose = "skill_check.decline"
+
+        if decision == "spend_luck":
+            if (
+                rule_policy.get("allow_luck_spend") is False
+                or required_luck <= 0
+                or required_luck > current_luck
+                or initial_level == "fumble"
+            ):
+                return RuleResult(
+                    is_success=False,
+                    metadata={"follow_up_error": "coc_followup_luck_unavailable"},
+                )
+            luck_spent = required_luck
+            is_success = True
+            success_level = difficulty
+            mutations.append({
+                "op": "replace",
+                "path": "/character/luck",
+                "value": current_luck - required_luck,
+            })
+            purpose = "skill_check.spend_luck"
+        elif decision == "push":
+            if rule_policy.get("allow_pushed_roll") is False or initial_level == "fumble":
+                return RuleResult(
+                    is_success=False,
+                    metadata={"follow_up_error": "coc_followup_push_unavailable"},
+                )
+            from ..engine.skill_check import roll_skill_check
+
+            result = roll_skill_check(
+                skill_value=skill_value,
+                difficulty=difficulty,
+                bonus_dice=bonus_dice,
+                policy=rule_policy,
+            )
+            reveal_steps.append(_roll_step(result, skill_name, pushed=True))
+            is_success = bool(result["is_success"])
+            success_level = str(result["success_level"])
+            pushed = True
+            receipt_draws = [{
+                "dice": "d100",
+                "values": deepcopy(result["roll_trace"]),
+                "result": result["roll"],
+            }]
+            purpose = "skill_check.pushed"
+            if not is_success:
+                pushed_consequence = _resolve_pushed_consequence(
+                    engine.get("pushed_consequence") or {}
+                )
+        elif decision != "decline":
+            return RuleResult(
+                is_success=False,
+                metadata={"follow_up_error": "coc_followup_decision_invalid"},
+            )
+
+        initial_receipt = progress.get("initial_verification_receipt")
+        receipt_locked_inputs = {
+            **locked,
+            "decision": decision,
+            "initial_receipt_signature": (
+                initial_receipt.get("signature")
+                if isinstance(initial_receipt, dict)
+                else None
+            ),
+        }
+        if decision == "push":
+            receipt_locked_inputs["push"] = deepcopy(progress.get("push") or {})
+        return RuleResult(
+            is_success=is_success,
+            metadata={
+                "skill_name": skill_name,
+                "skill_value": skill_value,
+                "roll": int(result.get("roll") or initial_roll),
+                "target": target,
+                "difficulty": difficulty,
+                "success_level": success_level,
+                "is_success": is_success,
+                "bonus_dice": bonus_dice,
+                "roll_trace": deepcopy(result.get("roll_trace") or initial.get("roll_trace") or {}),
+                "pushed": pushed,
+                "initial_roll": initial_roll,
+                "initial_roll_trace": deepcopy(initial.get("roll_trace") or {}),
+                "luck_spent": luck_spent,
+                "pending_consequence": None,
+                "pushed_consequence": pushed_consequence,
+                "follow_up": {"status": "resolved", "decision": decision},
+                "initial_verification_receipt": deepcopy(initial_receipt),
+                "receipt_purpose": purpose,
+                "receipt_locked_inputs": receipt_locked_inputs,
+                "receipt_raw_draws": receipt_draws,
+                "receipt_state_version": progress.get("state_version"),
+                "detail": str(result.get("detail") or initial.get("detail") or ""),
             },
             mutations=mutations,
             reveal_steps=reveal_steps,

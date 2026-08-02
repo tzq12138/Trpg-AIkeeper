@@ -129,6 +129,20 @@ class RuleExecutor:
                          type(handler).__name__, mechanic_type, intent.action_id)
 
             if mechanic_type == "skill_check":
+                hidden_requested = bool(
+                    (intent.params or {}).get("hiddenCheck")
+                    or (intent.params or {}).get("hidden_check")
+                )
+                hidden_declared = bool(
+                    params.get("hiddenCheck") or params.get("hidden_check")
+                )
+                if hidden_requested and not hidden_declared:
+                    overall_success = False
+                    merged_metadata.update({
+                        "status": "rejected",
+                        "reason_code": "hidden_check_not_declared",
+                    })
+                    continue
                 skill_name = params.get("skillName") or params.get("skill_name") or ""
                 params["skillName"] = skill_name
                 params["skillValue"] = self._skill_value(xlsx_data, skill_name)
@@ -141,6 +155,8 @@ class RuleExecutor:
                 hidden_modifiers = []
 
             result = await handler.execute(state, params)
+            if mechanic_type == "skill_check" and hidden_declared:
+                result.metadata["hidden_check"] = True
             if mechanic_type == "move" and params.get("generic_scene_progression"):
                 result.mutations = []
             if mechanic_type == "move" and params.get("solo_adventure"):
@@ -207,6 +223,9 @@ class RuleExecutor:
             for key in ("bonusDice", "pushed", "spendLuck")
             if key in intent_params
         }
+        follow_up = intent_params.get("_coc_followup")
+        if isinstance(follow_up, dict):
+            params["_coc_followup"] = follow_up
         params.update({
             "difficulty": compiled.difficulty,
             "itemConsumed": compiled.item_consumed,

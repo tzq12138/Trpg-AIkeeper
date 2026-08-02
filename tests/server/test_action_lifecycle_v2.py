@@ -730,7 +730,7 @@ async def test_ai_only_state_persistence_failure_pauses_room_without_human_revie
 
 
 @pytest.mark.asyncio
-async def test_failed_v2_pushed_roll_uses_engine_consequence_without_human_host(
+async def test_failed_v2_pushed_roll_waits_for_player_before_second_draw(
     test_db,
     monkeypatch,
 ):
@@ -762,13 +762,15 @@ async def test_failed_v2_pushed_roll_uses_engine_consequence_without_human_host(
 
     result = await pipeline.resolve_action("action-v2")
 
-    assert result["status"] == "completed"
+    assert result["status"] == "awaiting_player_choice"
     action = test_db.execute(
         "SELECT status, result FROM actions WHERE action_id = 'action-v2'"
     ).fetchone()
-    assert action["status"] == "completed"
+    assert action["status"] == "awaiting_player_choice"
     assert action["result"]["metadata"]["pending_consequence"] is None
-    assert action["result"]["metadata"]["pushed_consequence"]["status"] == "resolved_by_engine"
+    assert action["result"]["metadata"]["pushed_consequence"] is None
+    assert action["result"]["metadata"]["follow_up"]["status"] == "pending"
+    assert [step["result"] for step in action["result"]["revealSteps"]] == [80]
     assert test_db.execute(
         "SELECT state_version FROM rooms WHERE room_id = 'room-v2'"
     ).fetchone()["state_version"] == 0
@@ -1096,9 +1098,10 @@ def test_rule_explanation_hides_modifier_source_but_keeps_mechanical_effect():
         ),
     )
 
-    assert explanation["hidden_sources"] == [
-        {"source": "hidden", "effect": "1 penalty die"}
-    ]
+    assert explanation["hidden_sources"][0]["source"] == "hidden"
+    assert explanation["hidden_sources"][0]["effect"] == "1 penalty die"
+    commitment = explanation["hidden_sources"][0]["source_commitment"]
+    assert len(commitment) == 64
     assert "不可见生物" not in json.dumps(explanation, ensure_ascii=False)
 
 
@@ -1123,7 +1126,7 @@ async def test_player_receipt_applies_hidden_modifier_and_never_exposes_source(
         "INSERT INTO action_status_events (action_id, status, metadata) "
         "VALUES ('action-v2', 'queued', '{}')"
     )
-    rolls = iter([5, 0, 9])
+    rolls = iter([2, 0, 4])
     monkeypatch.setattr(
         "src.server.engine.skill_check.random.randint",
         lambda _low, _high: next(rolls),
@@ -1145,7 +1148,11 @@ async def test_player_receipt_applies_hidden_modifier_and_never_exposes_source(
     payload = response.json()
     assert payload["result"]["metadata"]["bonus_dice"] == -1
     assert payload["result"]["metadata"]["hidden_modifiers"][0]["source"] == "hidden"
-    assert payload["rule_explanation"]["hidden_sources"] == [
-        {"source": "hidden", "effect": "1 penalty die"}
-    ]
+    hidden_source = payload["rule_explanation"]["hidden_sources"][0]
+    assert hidden_source["source"] == "hidden"
+    assert hidden_source["effect"] == "1 penalty die"
+    assert len(hidden_source["source_commitment"]) == 64
+    assert payload["rule_explanation"]["verification_receipt"]["locked_inputs"][
+        "hidden_source_commitments"
+    ] == [hidden_source["source_commitment"]]
     assert "不可见生物" not in response.text

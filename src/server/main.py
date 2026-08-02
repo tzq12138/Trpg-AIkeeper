@@ -41,6 +41,7 @@ from .player.router_clarification import router as clarification_router
 from .player.router_reconnect import router as reconnect_router
 from .player.router_player_archive import router as player_archive_router
 from .player.router_actions_v2 import router as player_actions_v2_router
+from .player.router_action_decisions import router as player_action_decisions_router
 from .player.router_collaboration_contracts import router as collaboration_contracts_router
 from .player.router_player_settings import router as player_settings_router
 from .player.router_action_reviews import router as player_action_reviews_router
@@ -388,6 +389,7 @@ app.include_router(clarification_router)
 app.include_router(reconnect_router)
 app.include_router(player_archive_router)
 app.include_router(player_actions_v2_router)
+app.include_router(player_action_decisions_router)
 app.include_router(collaboration_contracts_router)
 app.include_router(player_settings_router)
 app.include_router(player_action_reviews_router)
