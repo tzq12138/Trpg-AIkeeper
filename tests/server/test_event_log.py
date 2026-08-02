@@ -77,7 +77,7 @@ def test_checkpoint_create_and_list(event_log, test_db):
     assert cps[0].checkpoint_id == "cp-1"
 
 
-def test_checkpoint_restore_overwrites_state(event_log, test_db):
+def test_checkpoint_restore_keeps_append_only_events(event_log, test_db):
     _seed_room_and_chars(test_db)
     event_log.log_event("room-1", "s2c_chat_stream", "party", {"text": "before"})
 
@@ -91,8 +91,12 @@ def test_checkpoint_restore_overwrites_state(event_log, test_db):
     event_log.restore_checkpoint("room-1", "cp-1")
 
     events_after = event_log.get_events("room-1")
-    assert len(events_after) == 1
-    assert events_after[0].payload["text"] == "before"
+    assert len(events_after) == 3
+    assert [event.payload.get("text") for event in events_after] == [
+        "before",
+        None,
+        "after",
+    ]
 
 
 def test_checkpoint_restore_nonexistent(event_log, test_db):
@@ -102,19 +106,21 @@ def test_checkpoint_restore_nonexistent(event_log, test_db):
         event_log.restore_checkpoint("room-1", "cp-999")
 
 
-def test_checkpoint_snapshot_preserves_characters(event_log, test_db):
+def test_checkpoint_restores_character_runtime_without_restoring_credentials(event_log, test_db):
     _seed_room_and_chars(test_db)
 
     event_log.create_checkpoint("room-1", "cp-1")
 
-    test_db.execute("DELETE FROM characters WHERE character_id = 'char-1'")
+    test_db.execute(
+        "UPDATE characters SET status = 'left', player_token = 'rotated-token' "
+        "WHERE character_id = 'char-1'"
+    )
     test_db.commit()
-
-    chars = test_db.execute("SELECT * FROM characters WHERE room_id = 'room-1'").fetchall()
-    assert len(chars) == 0
 
     event_log.restore_checkpoint("room-1", "cp-1")
 
-    chars = test_db.execute("SELECT * FROM characters WHERE room_id = 'room-1'").fetchall()
-    assert len(chars) == 1
-    assert chars[0]["player_name"] == "Alice"
+    char = test_db.execute(
+        "SELECT status, player_token FROM characters WHERE character_id = 'char-1'"
+    ).fetchone()
+    assert char["status"] == "joined"
+    assert char["player_token"] == "rotated-token"

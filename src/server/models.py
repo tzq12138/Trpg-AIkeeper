@@ -25,7 +25,7 @@ EngineEventType = Literal[
     "s2c_turn_resolved",
     "s2c_combat_round_locked",
     "s2c_clue_discovered", "s2c_clue_shared",
-    "s2c_checkpoint_created", "s2c_checkpoint_restored",
+    "s2c_checkpoint_created", "s2c_checkpoint_restored", "s2c_runtime_integrity_changed",
     "s2c_private_note_emergency_access",
     "s2c_ai_stage_changed", "s2c_player_clarification_required",
     "s2c_director_plan_validated", "s2c_narration_completed", "s2c_ai_recovery_required",
@@ -933,6 +933,13 @@ class Checkpoint(BaseModel):
     checkpoint_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     room_id: str
     state_snapshot: dict[str, Any]
+    schema_version: int = 1
+    state_version: int = 0
+    event_sequence: int = 0
+    snapshot_sha256: str = ""
+    invariant_report: dict[str, Any] = Field(default_factory=dict)
+    verification_status: str = "unverified"
+    checkpoint_type: str = "manual"
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -959,6 +966,9 @@ class EventLogEntry(BaseModel):
     event_type: str = Field(alias="eventType")
     audience: str
     payload: dict[str, Any]
+    action_id: str | None = Field(default=None, alias="actionId")
+    state_version: int | None = Field(default=None, alias="stateVersion")
+    payload_hash: str = Field(default="", alias="payloadHash")
     issued_at: str = Field(alias="issuedAt")
 
 

@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS rooms (
     risk_contract JSONB,
     risk_contract_version TEXT,
     risk_contract_hash TEXT,
+    integrity_status TEXT NOT NULL DEFAULT 'healthy',
+    integrity_reason TEXT,
+    integrity_source TEXT,
+    integrity_state_version INTEGER,
+    integrity_updated_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     started_at TIMESTAMP
 );
@@ -321,6 +326,9 @@ CREATE TABLE IF NOT EXISTS events (
     event_type TEXT NOT NULL,
     audience TEXT NOT NULL,
     payload JSONB NOT NULL,
+    action_id TEXT,
+    state_version INTEGER,
+    payload_hash TEXT NOT NULL DEFAULT '',
     issued_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -645,6 +653,13 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     checkpoint_id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL,
     state_snapshot JSONB NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    state_version INTEGER NOT NULL DEFAULT 0,
+    event_sequence BIGINT NOT NULL DEFAULT 0,
+    snapshot_sha256 TEXT NOT NULL DEFAULT '',
+    invariant_report JSONB NOT NULL DEFAULT '{}',
+    verification_status TEXT NOT NULL DEFAULT 'unverified',
+    checkpoint_type TEXT NOT NULL DEFAULT 'manual',
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 

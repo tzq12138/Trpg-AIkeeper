@@ -448,6 +448,15 @@ class ResolutionPipeline:
         if not character or not room:
             await self._reject(action, "missing room or character")
             return {"status": "rejected", "action_id": action_id}
+        if (room.get("integrity_status") or "healthy") != "healthy":
+            integrity_status = str(room.get("integrity_status") or "healthy")
+            reason = (
+                "room_provider_paused"
+                if integrity_status == "paused_provider"
+                else "room_read_only_recovery"
+            )
+            await self._reject(action, reason)
+            return {"status": "rejected", "action_id": action_id, "reason": reason}
         action_params = self._json_value(action.get("params")) or {}
         conflict_guard = action_params.get("_conflictGuard")
         allow_same_turn_scene_drift = False
@@ -1972,8 +1981,12 @@ class ResolutionPipeline:
                 transaction=tx,
             )
             tx.execute(
-                "UPDATE rooms SET status = 'paused' WHERE room_id = %s",
-                (action["room_id"],),
+                "UPDATE rooms SET status = 'paused', "
+                "integrity_status = 'read_only_recovery', integrity_reason = %s, "
+                "integrity_source = 'resolution_pipeline', "
+                "integrity_state_version = state_version, integrity_updated_at = NOW() "
+                "WHERE room_id = %s",
+                (reason, action["room_id"]),
             )
         await self.dispatcher.emit(
             action["room_id"],

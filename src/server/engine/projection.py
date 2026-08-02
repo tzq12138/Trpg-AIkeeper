@@ -3,6 +3,7 @@ import logging
 from typing import Any
 
 from ..models import EngineEvent
+from ..events.event_log import EventLog
 from ..host.ws_manager import manager as default_ws_manager
 from ..redis_cache import RedisCache
 
@@ -47,13 +48,12 @@ class ProjectionDispatcher:
                 room_id, event_type, audience, payload, character_id,
             )
 
-        cursor = self.conn.execute(
-            "INSERT INTO events (room_id, event_type, audience, payload) VALUES (%s, %s, %s, %s) RETURNING sequence",
-            (room_id, event_type, audience, json.dumps(payload, ensure_ascii=False)),
+        sequence = EventLog(self.conn).log_event(
+            room_id,
+            event_type,
+            audience,
+            payload,
         )
-        self.conn.commit()
-        row = cursor.fetchone()
-        sequence = row["sequence"] if row else 0
 
         logger.debug("emit: seq=%s type=%s audience=%s room=%s char=%s",
                      sequence, event_type, audience, room_id, character_id or "-")

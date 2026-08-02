@@ -194,6 +194,10 @@ ALL_EVENTS: dict[str, EventDef] = {
         "s2c_checkpoint_restored", EventDomain.SYSTEM, "host",
         "checkpoint 恢复审计事件——仅 Host 可见",
     ),
+    "s2c_runtime_integrity_changed": EventDef(
+        "s2c_runtime_integrity_changed", EventDomain.SYSTEM, "party",
+        "运行时完整性状态改变，通知参与者允许的后续操作",
+    ),
 
     # ── System ──
     "s2c_atmosphere": EventDef(

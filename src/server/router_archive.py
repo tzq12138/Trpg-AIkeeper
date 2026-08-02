@@ -2,6 +2,12 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from .events.event_log import EventLog
 from .campaign_archive import CampaignArchive
 from .models import CampaignArchiveQuery
+from .engine.runtime_integrity import (
+    CheckpointIntegrityError,
+    issue_recovery_dry_run_token,
+    recovery_proposal_hash,
+    verify_recovery_dry_run_token,
+)
 
 router = APIRouter(prefix="/api/rooms")
 
@@ -118,7 +124,8 @@ async def get_timeline_event(request: Request, room_id: str, sequence: int):
     _verify_owner_or_admin(request, room_id)
     conn = request.app.state.db
     row = conn.execute(
-        "SELECT sequence, room_id, event_type, audience, payload, issued_at "
+        "SELECT sequence, room_id, event_type, audience, payload, action_id, "
+        "state_version, payload_hash, issued_at "
         "FROM events WHERE room_id = %s AND sequence = %s",
         (room_id, sequence),
     ).fetchone()
@@ -130,6 +137,8 @@ async def get_timeline_event(request: Request, room_id: str, sequence: int):
         sequence=row["sequence"], room_id=row["room_id"],
         event_type=row["event_type"], audience=row["audience"],
         payload=_decode_json(row["payload"]), issued_at=_to_iso(row["issued_at"]),
+        action_id=row.get("action_id"), state_version=row.get("state_version"),
+        payload_hash=row.get("payload_hash") or "",
     )
     return entry.model_dump()
 
@@ -165,18 +174,73 @@ async def list_checkpoints(request: Request, room_id: str):
 async def restore_checkpoint(request: Request, room_id: str, checkpoint_id: str):
     _verify_owner_or_admin(request, room_id)
     body = await request.json()
+    proposal = body.get("proposal")
+    if not isinstance(proposal, dict):
+        raise HTTPException(400, "恢复 checkpoint 必须提供结构化 proposal")
+    if (
+        proposal.get("mode") != "checkpoint_restore"
+        or proposal.get("checkpointId") != checkpoint_id
+    ):
+        raise HTTPException(400, "恢复 proposal 与 checkpoint 不匹配")
+    dry_run_token = str(body.get("dryRunToken") or body.get("dry_run_token") or "")
+    if not dry_run_token:
+        raise HTTPException(400, "需要先完成 dry-run")
     if body.get("confirm") is not True:
         raise HTTPException(400, "需要二次确认（发送 confirm: true）")
     reason = body.get("reason", "").strip()
     if not reason:
         raise HTTPException(400, "恢复 checkpoint 必须提供 reason")
+    confirmations = body.get("confirmations")
+    if not isinstance(confirmations, dict):
+        raise HTTPException(400, "恢复 checkpoint 需要哈希与状态版本双确认")
     conn = request.app.state.db
     event_log = EventLog(conn)
     try:
-        snapshot = event_log.restore_checkpoint(room_id, checkpoint_id)
+        dry_run = event_log.dry_run_restore(room_id, checkpoint_id)
+        expected_claims = {
+            "roomId": room_id,
+            "checkpointId": checkpoint_id,
+            "checkpointHash": dry_run["checkpointHash"],
+            "currentStateVersion": dry_run["currentStateVersion"],
+            "proposalHash": recovery_proposal_hash(proposal, reason),
+        }
+        verify_recovery_dry_run_token(dry_run_token, expected_claims)
+        if confirmations.get("checkpointHash") != dry_run["checkpointHash"]:
+            raise CheckpointIntegrityError("checkpoint_confirmation_mismatch")
+        try:
+            confirmed_state_version = int(confirmations.get("currentStateVersion"))
+        except (TypeError, ValueError) as exc:
+            raise CheckpointIntegrityError("state_version_confirmation_mismatch") from exc
+        if confirmed_state_version != dry_run["currentStateVersion"]:
+            raise CheckpointIntegrityError("state_version_confirmation_mismatch")
+        event_log.restore_checkpoint(
+            room_id,
+            checkpoint_id,
+            expected_current_state_version=dry_run["currentStateVersion"],
+        )
+    except CheckpointIntegrityError as exc:
+        from .engine.projection import ProjectionDispatcher
+
+        room = conn.execute(
+            "SELECT state_version, integrity_status, integrity_reason FROM rooms WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()
+        if room and room.get("integrity_status") == "read_only_recovery":
+            await ProjectionDispatcher(conn).emit(
+                room_id,
+                "s2c_runtime_integrity_changed",
+                "party",
+                {
+                    "status": "read_only_recovery",
+                    "reasonCode": room.get("integrity_reason") or exc.code,
+                    "stateVersion": int(room.get("state_version") or 0),
+                    "allowedOperations": ["read", "export", "recovery_check"],
+                },
+            )
+        raise HTTPException(409, {"code": exc.code}) from exc
     except ValueError as e:
         raise HTTPException(404, str(e))
-    # Log strengthened audit event (host-only, NOT for player visibility)
+
     from datetime import datetime, timezone
     actor_id = "host"
     try:
@@ -190,10 +254,71 @@ async def restore_checkpoint(request: Request, room_id: str, checkpoint_id: str)
         "checkpointId": checkpoint_id,
         "actorAccountId": actor_id,
         "reason": reason,
-        "restoreMode": "full",
+        "restoreMode": "verified_checkpoint",
+        "proposalHash": recovery_proposal_hash(proposal, reason),
+        "snapshotSha256": dry_run["checkpointHash"],
+        "previousStateVersion": dry_run["currentStateVersion"],
         "createdAt": datetime.now(timezone.utc).isoformat(),
     })
-    return {"status": "restored", "snapshot": snapshot}
+    restored_room = conn.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    from .engine.projection import ProjectionDispatcher
+
+    await ProjectionDispatcher(conn).emit(
+        room_id,
+        "s2c_runtime_integrity_changed",
+        "party",
+        {
+            "status": "healthy",
+            "checkpointId": checkpoint_id,
+            "stateVersion": int(restored_room.get("state_version") or 0),
+            "allowedOperations": ["read", "export", "action"],
+        },
+    )
+    return {
+        "status": "restored",
+        "checkpointId": checkpoint_id,
+        "snapshotSha256": dry_run["checkpointHash"],
+        "stateVersion": int(restored_room.get("state_version") or 0),
+    }
+
+
+@router.post("/{room_id}/restore/{checkpoint_id}/dry-run")
+async def dry_run_restore_checkpoint(
+    request: Request,
+    room_id: str,
+    checkpoint_id: str,
+):
+    _verify_owner_or_admin(request, room_id)
+    body = await request.json()
+    proposal = body.get("proposal")
+    reason = str(body.get("reason") or "").strip()
+    if not isinstance(proposal, dict):
+        raise HTTPException(400, "恢复 checkpoint 必须提供结构化 proposal")
+    if (
+        proposal.get("mode") != "checkpoint_restore"
+        or proposal.get("checkpointId") != checkpoint_id
+    ):
+        raise HTTPException(400, "恢复 proposal 与 checkpoint 不匹配")
+    if not reason:
+        raise HTTPException(400, "恢复 checkpoint 必须提供 reason")
+    event_log = EventLog(request.app.state.db)
+    try:
+        result = event_log.dry_run_restore(room_id, checkpoint_id)
+    except CheckpointIntegrityError as exc:
+        raise HTTPException(409, {"code": exc.code}) from exc
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    claims = {
+        "roomId": room_id,
+        "checkpointId": checkpoint_id,
+        "checkpointHash": result["checkpointHash"],
+        "currentStateVersion": result["currentStateVersion"],
+        "proposalHash": recovery_proposal_hash(proposal, reason),
+    }
+    return {**result, "dryRunToken": issue_recovery_dry_run_token(claims)}
 
 
 # ── Campaign endpoints ──

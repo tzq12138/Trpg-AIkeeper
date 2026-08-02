@@ -395,7 +395,11 @@ class StateService:
             has_changes = True
             seq = self.event_log.log_event(
                 room_id, "s2c_scene_sync", "party",
-                {"currentScene": changes.scene_changes.current_scene or ""},
+                {
+                    "actionId": actor.get("action_id", ""),
+                    "currentScene": changes.scene_changes.current_scene or "",
+                    "stateVersion": base_version + 1,
+                },
                 commit=False,
             )
             event_seqs.append(seq)

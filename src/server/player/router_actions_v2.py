@@ -907,6 +907,21 @@ async def list_rule_questions(request: Request):
 @router.post("/action-drafts/analyze", response_model=ActionDraftDTO)
 async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
     character = _require_character(request)
+    integrity = request.app.state.db.execute(
+        "SELECT integrity_status, integrity_reason FROM rooms WHERE room_id = %s",
+        (character["room_id"],),
+    ).fetchone()
+    if integrity and (integrity.get("integrity_status") or "healthy") != "healthy":
+        status = str(integrity.get("integrity_status") or "healthy")
+        code = (
+            "room_provider_paused"
+            if status == "paused_provider"
+            else "room_read_only_recovery"
+        )
+        raise HTTPException(
+            409,
+            detail={"code": code, "reason": integrity.get("integrity_reason") or status},
+        )
     from ..engine.risk_contract import (
         current_risk_contract_confirmation,
         excluded_risk_boundary,

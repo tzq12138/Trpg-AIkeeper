@@ -101,6 +101,11 @@ CREATE TABLE IF NOT EXISTS rooms (
     risk_contract JSONB,
     risk_contract_version TEXT,
     risk_contract_hash TEXT,
+    integrity_status TEXT NOT NULL DEFAULT 'healthy',
+    integrity_reason TEXT,
+    integrity_source TEXT,
+    integrity_state_version INTEGER,
+    integrity_updated_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     started_at TIMESTAMP
 );
@@ -437,6 +442,9 @@ CREATE TABLE IF NOT EXISTS events (
     event_type TEXT NOT NULL,
     audience TEXT NOT NULL,
     payload JSONB NOT NULL,
+    action_id TEXT,
+    state_version INTEGER,
+    payload_hash TEXT NOT NULL DEFAULT '',
     issued_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -883,6 +891,13 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     checkpoint_id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL,
     state_snapshot JSONB NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    state_version INTEGER NOT NULL DEFAULT 0,
+    event_sequence BIGINT NOT NULL DEFAULT 0,
+    snapshot_sha256 TEXT NOT NULL DEFAULT '',
+    invariant_report JSONB NOT NULL DEFAULT '{}',
+    verification_status TEXT NOT NULL DEFAULT 'unverified',
+    checkpoint_type TEXT NOT NULL DEFAULT 'manual',
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -1470,6 +1485,21 @@ CREATE TABLE IF NOT EXISTS room_scene_state (
 );
 
 ALTER TABLE characters ADD COLUMN IF NOT EXISTS profile_id TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS integrity_status TEXT NOT NULL DEFAULT 'healthy';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS integrity_reason TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS integrity_source TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS integrity_state_version INTEGER;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS integrity_updated_at TIMESTAMP;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS action_id TEXT;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS state_version INTEGER;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS payload_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS state_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS event_sequence BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS snapshot_sha256 TEXT NOT NULL DEFAULT '';
+ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS invariant_report JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS verification_status TEXT NOT NULL DEFAULT 'unverified';
+ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS checkpoint_type TEXT NOT NULL DEFAULT 'manual';
 ALTER TABLE encounter_participants ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 0;
 ALTER TABLE encounter_participants ADD COLUMN IF NOT EXISTS display_name TEXT DEFAULT '';
 ALTER TABLE encounter_participants ADD COLUMN IF NOT EXISTS public_visibility TEXT NOT NULL DEFAULT 'hidden';
@@ -1482,6 +1512,7 @@ ALTER TABLE inventory ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_events_room ON events(room_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+CREATE INDEX IF NOT EXISTS idx_events_action ON events(action_id, sequence);
 
 UPDATE character_templates AS template
 SET attributes = COALESCE(template.attributes, '{}'::jsonb) ||

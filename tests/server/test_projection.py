@@ -17,6 +17,8 @@ class FakeConn:
 
     def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
+        if normalized.startswith("SELECT state_version FROM rooms"):
+            return Rows({"state_version": 4})
         if normalized.startswith("INSERT INTO events"):
             return Rows({"sequence": 7})
         raise AssertionError(f"Unhandled SQL: {normalized}")
