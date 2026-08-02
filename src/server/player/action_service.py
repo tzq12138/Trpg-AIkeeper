@@ -1271,6 +1271,22 @@ def confirm_action_draft(
             intent_type=draft["intent_type"],
             params=action_params,
         )
+        from ..engine.state_service import build_action_conflict_guard
+
+        conflict_guard = build_action_conflict_guard(
+            tx,
+            room_id=character["room_id"],
+            actor_character_id=character["character_id"],
+            intent_type=draft["intent_type"],
+            params=action_params,
+            base_state_version=int(draft.get("base_state_version") or 0),
+        )
+        if conflict_guard.get("validationError"):
+            raise ActionDraftError(
+                409,
+                {"code": str(conflict_guard["validationError"])},
+            )
+        action_params["_conflictGuard"] = conflict_guard
         action_id = str(uuid.uuid4())
         if is_prepared_action:
             initial_status = "armed"

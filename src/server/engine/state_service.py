@@ -7,6 +7,7 @@ Contract:
 - Phase A: character mutations + scene state + pass-through for map/clue/inventory.
 """
 
+import hashlib
 import json
 import logging
 import uuid
@@ -51,6 +52,274 @@ def _ensure_json(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False)
+
+
+def _runtime_version(conn, room_id: str, character_id: str) -> int | None:
+    row = conn.execute(
+        "SELECT version FROM character_runtime_state "
+        "WHERE room_id = %s AND character_id = %s",
+        (room_id, character_id),
+    ).fetchone()
+    return int(row["version"]) if row else None
+
+
+def build_action_conflict_guard(
+    conn,
+    *,
+    room_id: str,
+    actor_character_id: str,
+    intent_type: str,
+    params: dict[str, Any],
+    base_state_version: int,
+) -> dict[str, Any]:
+    """Capture only authoritative state that can change this action's meaning."""
+
+    room = conn.execute(
+        "SELECT state_version, risk_contract_hash FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    scene = conn.execute(
+        "SELECT current_scene, version FROM room_scene_state WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    actor = conn.execute(
+        "SELECT status FROM characters WHERE character_id = %s AND room_id = %s",
+        (actor_character_id, room_id),
+    ).fetchone()
+    resources: list[dict[str, Any]] = []
+    keys = {f"actor:{room_id}:{actor_character_id}"}
+    resources.append(
+        {
+            "kind": "actor",
+            "characterId": actor_character_id,
+            "status": actor.get("status") if actor else None,
+            "version": _runtime_version(conn, room_id, actor_character_id),
+        }
+    )
+
+    item_id = str(params.get("itemId") or "").strip()
+    validation_error = None
+    if item_id:
+        item = conn.execute(
+            "SELECT id, character_id, quantity, version FROM inventory "
+            "WHERE id = %s AND room_id = %s AND character_id = %s",
+            (item_id, room_id, actor_character_id),
+        ).fetchone()
+        if item:
+            keys.add(f"item:{room_id}:{item_id}")
+            resources.append(
+                {
+                    "kind": "inventory",
+                    "itemId": item_id,
+                    "characterId": actor_character_id,
+                    "quantity": int(item.get("quantity") or 0),
+                    "version": int(item.get("version") or 0),
+                }
+            )
+        elif intent_type in {"use_item", "show_item"}:
+            validation_error = "resource_not_available"
+
+    target_id = str(params.get("targetId") or "").strip()
+    if target_id and target_id != actor_character_id and intent_type in {
+        "combat_action",
+        "chase_action",
+        "skill_check",
+        "use_item",
+    }:
+        target = conn.execute(
+            "SELECT status FROM characters WHERE character_id = %s AND room_id = %s",
+            (target_id, room_id),
+        ).fetchone()
+        if target:
+            keys.add(f"target:{room_id}:{target_id}")
+            resources.append(
+                {
+                    "kind": "target",
+                    "characterId": target_id,
+                    "status": target.get("status"),
+                    "version": _runtime_version(conn, room_id, target_id),
+                }
+            )
+        else:
+            encounter_target = conn.execute(
+                "SELECT participants.character_id, participants.version "
+                "FROM encounter_participants AS participants "
+                "JOIN encounters ON encounters.encounter_id = participants.encounter_id "
+                "WHERE encounters.room_id = %s AND participants.character_id = %s "
+                "AND encounters.status IN ('suggested', 'active') "
+                "ORDER BY encounters.created_at DESC LIMIT 1",
+                (room_id, target_id),
+            ).fetchone()
+            if encounter_target:
+                keys.add(f"target:{room_id}:{target_id}")
+                resources.append(
+                    {
+                        "kind": "encounter_target",
+                        "characterId": target_id,
+                        "version": int(encounter_target.get("version") or 0),
+                    }
+                )
+
+    decision_kind = str(params.get("groupDecisionKind") or "").strip()
+    if decision_kind in {"shared_resource", "ending", "abandon_ally", "risk_expansion"}:
+        keys.add(f"shared:{room_id}:{decision_kind}")
+
+    same_turn_scene_target = ""
+    if intent_type == "move":
+        keys.add(f"scene:{room_id}")
+        same_turn_scene_target = str(params.get("targetNodeId") or "").strip()
+
+    return {
+        "version": 1,
+        "roomId": room_id,
+        "baseStateVersion": int(base_state_version or 0),
+        "capturedStateVersion": int(room.get("state_version") or 0) if room else 0,
+        "riskContractHash": room.get("risk_contract_hash") if room else None,
+        "scene": (
+            {
+                "currentScene": scene.get("current_scene") or "",
+                "version": int(scene.get("version") or 0),
+            }
+            if scene
+            else None
+        ),
+        "sameTurnSceneTarget": same_turn_scene_target or None,
+        "keys": sorted(keys),
+        "resources": resources,
+        "validationError": validation_error,
+    }
+
+
+def _advisory_lock_id(key: str) -> int:
+    return int.from_bytes(
+        hashlib.sha256(key.encode("utf-8")).digest()[:8],
+        byteorder="big",
+        signed=True,
+    )
+
+
+def acquire_action_conflict_locks(transaction, guard: dict[str, Any]) -> None:
+    """Acquire shared resource locks in stable order to avoid deadlocks."""
+
+    raw_keys = guard.get("keys") if isinstance(guard, dict) else None
+    keys = sorted({str(key) for key in raw_keys or [] if str(key)})
+    for key in keys:
+        transaction.execute(
+            "SELECT pg_advisory_xact_lock(%s)",
+            (_advisory_lock_id(key),),
+        ).fetchone()
+
+
+def validate_action_conflict_guard(
+    conn,
+    guard: dict[str, Any],
+    *,
+    allow_same_turn_scene_drift: bool = False,
+) -> str | None:
+    """Revalidate semantic/resource snapshots without using global version equality."""
+
+    if not isinstance(guard, dict) or guard.get("version") != 1:
+        return "conflict_guard_invalid"
+    room_id = str(guard.get("roomId") or "")
+    if not room_id:
+        return "conflict_guard_invalid"
+    room = conn.execute(
+        "SELECT risk_contract_hash FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    if not room:
+        return "room_context_missing"
+    if room.get("risk_contract_hash") != guard.get("riskContractHash"):
+        return "risk_context_changed"
+
+    if not allow_same_turn_scene_drift:
+        scene = conn.execute(
+            "SELECT current_scene, version FROM room_scene_state WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()
+        current_scene = (
+            {
+                "currentScene": scene.get("current_scene") or "",
+                "version": int(scene.get("version") or 0),
+            }
+            if scene
+            else None
+        )
+        if current_scene != guard.get("scene"):
+            return "scene_context_changed"
+    else:
+        scene = conn.execute(
+            "SELECT current_scene, version FROM room_scene_state WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()
+        current_scene_id = str(scene.get("current_scene") or "") if scene else ""
+        same_turn_target = str(guard.get("sameTurnSceneTarget") or "")
+        if (
+            ({
+                "currentScene": current_scene_id,
+                "version": int(scene.get("version") or 0),
+            } if scene else None)
+            != guard.get("scene")
+            and (not same_turn_target or current_scene_id != same_turn_target)
+        ):
+            return "scene_context_changed"
+
+    for snapshot in guard.get("resources") or []:
+        if not isinstance(snapshot, dict):
+            return "conflict_guard_invalid"
+        kind = snapshot.get("kind")
+        if kind == "inventory":
+            row = conn.execute(
+                "SELECT quantity, version FROM inventory "
+                "WHERE id = %s AND room_id = %s AND character_id = %s",
+                (
+                    snapshot.get("itemId"),
+                    room_id,
+                    snapshot.get("characterId"),
+                ),
+            ).fetchone()
+            current = (
+                {
+                    "quantity": int(row.get("quantity") or 0),
+                    "version": int(row.get("version") or 0),
+                }
+                if row
+                else None
+            )
+            expected = {
+                "quantity": snapshot.get("quantity"),
+                "version": snapshot.get("version"),
+            }
+            if current != expected:
+                return "resource_conflict"
+        elif kind in {"actor", "target"}:
+            character_id = str(snapshot.get("characterId") or "")
+            row = conn.execute(
+                "SELECT status FROM characters WHERE character_id = %s AND room_id = %s",
+                (character_id, room_id),
+            ).fetchone()
+            current = {
+                "status": row.get("status") if row else None,
+                "version": _runtime_version(conn, room_id, character_id),
+            }
+            expected = {
+                "status": snapshot.get("status"),
+                "version": snapshot.get("version"),
+            }
+            if current != expected:
+                return "actor_state_changed" if kind == "actor" else "target_state_changed"
+        elif kind == "encounter_target":
+            row = conn.execute(
+                "SELECT participants.version FROM encounter_participants AS participants "
+                "JOIN encounters ON encounters.encounter_id = participants.encounter_id "
+                "WHERE encounters.room_id = %s AND participants.character_id = %s "
+                "AND encounters.status IN ('suggested', 'active') "
+                "ORDER BY encounters.created_at DESC LIMIT 1",
+                (room_id, snapshot.get("characterId")),
+            ).fetchone()
+            if not row or int(row.get("version") or 0) != int(snapshot.get("version") or 0):
+                return "target_state_changed"
+    return None
 
 
 class StateService:

@@ -448,6 +448,29 @@ class ResolutionPipeline:
         if not character or not room:
             await self._reject(action, "missing room or character")
             return {"status": "rejected", "action_id": action_id}
+        action_params = self._json_value(action.get("params")) or {}
+        conflict_guard = action_params.get("_conflictGuard")
+        allow_same_turn_scene_drift = False
+        semantic_guard_valid = False
+        if isinstance(conflict_guard, dict):
+            try:
+                guard_base_version = int(conflict_guard.get("baseStateVersion") or 0)
+            except (TypeError, ValueError):
+                guard_base_version = -1
+            allow_same_turn_scene_drift = self._uses_current_turn_snapshot(
+                action,
+                guard_base_version,
+            )
+            from .state_service import validate_action_conflict_guard
+
+            conflict_reason = validate_action_conflict_guard(
+                self.conn,
+                conflict_guard,
+                allow_same_turn_scene_drift=allow_same_turn_scene_drift,
+            )
+            if conflict_reason:
+                return await self._require_action_resync(action, conflict_reason)
+            semantic_guard_valid = True
         character_data = dict(character)
         state_before = self._runtime_snapshot(
             self.conn,
@@ -524,7 +547,7 @@ class ResolutionPipeline:
             action_id=action["action_id"],
             intent_type=action["intent_type"],
             declared_intent=action.get("declared_intent") or "",
-            params=self._json_value(action.get("params")) or {},
+            params=action_params,
         )
         autonomy = decide_host_autonomy(
             policy=room.get("host_autonomy_policy"),
@@ -566,7 +589,12 @@ class ResolutionPipeline:
         solo_item_purchase = None
         if is_v2:
             await self._emit_ai_stage(action, "directing")
-            director_err = self._validate_director_plan(action, intent, dict(room))
+            director_err = self._validate_director_plan(
+                action,
+                intent,
+                dict(room),
+                semantic_guard_valid=semantic_guard_valid,
+            )
             if director_err:
                 if is_ai_only:
                     await self._reject(action, director_err)
@@ -891,62 +919,55 @@ class ResolutionPipeline:
                 "reason": reason_code,
             }
         state_mutations = self._state_service_mutations(resolution.mutations)
-        if state_mutations or inventory_changes or scene_change:
-            if not self.state_service:
-                if is_v2:
-                    if is_ai_only:
-                        await self._pause_room_for_integrity(
-                            action,
-                            "state_service_unavailable",
-                        )
-                    else:
-                        await self._await_host_exception(
-                            action,
-                            "state_service_unavailable",
-                        )
-                    return {
-                        "status": "rejected" if is_ai_only else "awaiting_host_exception",
-                        "action_id": action_id,
-                        "reason": "state_service_unavailable",
-                    }
+        has_state_changes = bool(state_mutations or inventory_changes or scene_change)
+        if has_state_changes and not self.state_service and is_v2:
+            if is_ai_only:
+                await self._pause_room_for_integrity(
+                    action,
+                    "state_service_unavailable",
+                )
             else:
-                try:
-                    from ..models import StateChangeSet, CharacterMutationItem
-                    state_changes = StateChangeSet(
-                        characterMutations=[
-                            CharacterMutationItem(
-                                characterId=action["character_id"],
-                                mutations=state_mutations,
-                            )
-                        ] if state_mutations else [],
-                        sceneChanges=scene_change,
-                        inventoryChanges=inventory_changes,
+                await self._await_host_exception(
+                    action,
+                    "state_service_unavailable",
+                )
+            return {
+                "status": "rejected" if is_ai_only else "awaiting_host_exception",
+                "action_id": action_id,
+                "reason": "state_service_unavailable",
+            }
+
+        state_changes = None
+        if has_state_changes:
+            from ..models import StateChangeSet, CharacterMutationItem
+
+            state_changes = StateChangeSet(
+                characterMutations=[
+                    CharacterMutationItem(
+                        characterId=action["character_id"],
+                        mutations=state_mutations,
                     )
-                    if is_v2:
-                        with self.conn.transaction() as tx:
-                            self.state_service.apply_change(
-                                room_id=action["room_id"],
-                                actor={
-                                    "character_id": action["character_id"],
-                                    "action_id": action["action_id"],
-                                },
-                                changes=state_changes,
-                                reason=f"Action {action['action_id']} resolved",
-                                transaction=tx,
-                            )
-                            rule_explanation = self._build_rule_explanation(
-                                action,
-                                character_data,
-                                resolution,
-                                state_before=state_before,
-                                state_after=self._runtime_snapshot(
-                                    tx,
-                                    action["character_id"],
-                                    action["room_id"],
-                                ),
-                            )
-                            rule_explanation_for_completion = rule_explanation
-                    else:
+                ] if state_mutations else [],
+                sceneChanges=scene_change,
+                inventoryChanges=inventory_changes,
+            )
+
+        try:
+            if is_v2 and isinstance(conflict_guard, dict):
+                from .state_service import (
+                    acquire_action_conflict_locks,
+                    validate_action_conflict_guard,
+                )
+
+                commit_conflict_reason = None
+                with self.conn.transaction() as tx:
+                    acquire_action_conflict_locks(tx, conflict_guard)
+                    commit_conflict_reason = validate_action_conflict_guard(
+                        tx,
+                        conflict_guard,
+                        allow_same_turn_scene_drift=allow_same_turn_scene_drift,
+                    )
+                    if not commit_conflict_reason and state_changes is not None:
                         self.state_service.apply_change(
                             room_id=action["room_id"],
                             actor={
@@ -955,25 +976,76 @@ class ResolutionPipeline:
                             },
                             changes=state_changes,
                             reason=f"Action {action['action_id']} resolved",
+                            transaction=tx,
                         )
-                except Exception:
-                    logger.exception("StateService failed for action %s", action["action_id"])
-                    if is_v2:
-                        if is_ai_only:
-                            await self._pause_room_for_integrity(
-                                action,
-                                "state_persistence_failed",
-                            )
-                        else:
-                            await self._await_host_exception(
-                                action,
-                                "state_persistence_failed",
-                            )
-                        return {
-                            "status": "rejected" if is_ai_only else "awaiting_host_exception",
-                            "action_id": action_id,
-                            "reason": "state_persistence_failed",
-                        }
+                        rule_explanation_for_completion = self._build_rule_explanation(
+                            action,
+                            character_data,
+                            resolution,
+                            state_before=state_before,
+                            state_after=self._runtime_snapshot(
+                                tx,
+                                action["character_id"],
+                                action["room_id"],
+                            ),
+                        )
+                if commit_conflict_reason:
+                    return await self._require_action_resync(
+                        action,
+                        commit_conflict_reason,
+                    )
+            elif state_changes is not None and self.state_service:
+                if is_v2:
+                    with self.conn.transaction() as tx:
+                        self.state_service.apply_change(
+                            room_id=action["room_id"],
+                            actor={
+                                "character_id": action["character_id"],
+                                "action_id": action["action_id"],
+                            },
+                            changes=state_changes,
+                            reason=f"Action {action['action_id']} resolved",
+                            transaction=tx,
+                        )
+                        rule_explanation_for_completion = self._build_rule_explanation(
+                            action,
+                            character_data,
+                            resolution,
+                            state_before=state_before,
+                            state_after=self._runtime_snapshot(
+                                tx,
+                                action["character_id"],
+                                action["room_id"],
+                            ),
+                        )
+                else:
+                    self.state_service.apply_change(
+                        room_id=action["room_id"],
+                        actor={
+                            "character_id": action["character_id"],
+                            "action_id": action["action_id"],
+                        },
+                        changes=state_changes,
+                        reason=f"Action {action['action_id']} resolved",
+                    )
+        except Exception:
+            logger.exception("StateService failed for action %s", action["action_id"])
+            if is_v2:
+                if is_ai_only:
+                    await self._pause_room_for_integrity(
+                        action,
+                        "state_persistence_failed",
+                    )
+                else:
+                    await self._await_host_exception(
+                        action,
+                        "state_persistence_failed",
+                    )
+                return {
+                    "status": "rejected" if is_ai_only else "awaiting_host_exception",
+                    "action_id": action_id,
+                    "reason": "state_persistence_failed",
+                }
 
         solo_transition = None
         solo_target_node_id = ""
@@ -1308,11 +1380,58 @@ class ResolutionPipeline:
         )
         return explanation.model_dump(mode="json")
 
+    async def _require_action_resync(
+        self,
+        action: dict[str, Any],
+        reason: str,
+    ) -> dict[str, Any]:
+        category = {
+            "scene_context_changed": "scene",
+            "risk_context_changed": "risk",
+            "resource_conflict": "resource",
+            "actor_state_changed": "actor",
+            "target_state_changed": "target",
+        }.get(reason, "context")
+        transitioned = transition_action(
+            self.conn,
+            action["action_id"],
+            from_statuses=("resolving",),
+            to_status="sync_required",
+            metadata={
+                "reason_code": reason,
+                "conflict_category": category,
+            },
+        )
+        if transitioned:
+            await self.dispatcher.emit(
+                action["room_id"],
+                "s2c_private_notice",
+                "player",
+                {
+                    "kind": "action_resync_required",
+                    "actionId": action["action_id"],
+                    "characterId": action["character_id"],
+                    "reasonCode": reason,
+                },
+                character_id=action["character_id"],
+            )
+        current = self.conn.execute(
+            "SELECT status FROM actions WHERE action_id = %s",
+            (action["action_id"],),
+        ).fetchone()
+        return {
+            "status": current["status"] if current else "missing",
+            "action_id": action["action_id"],
+            "reason": reason,
+        }
+
     def _validate_director_plan(
         self,
         action: dict[str, Any],
         intent: PlayerIntent,
         room: dict[str, Any],
+        *,
+        semantic_guard_valid: bool = False,
     ) -> str | None:
         plan = intent.params.get("director_plan")
         if not isinstance(plan, dict):
@@ -1332,6 +1451,7 @@ class ResolutionPipeline:
                 if (
                     expected_context_version != current_state_version
                     and not uses_turn_snapshot
+                    and not semantic_guard_valid
                 ):
                     return "director_context_stale"
             except (TypeError, ValueError):
@@ -1364,6 +1484,7 @@ class ResolutionPipeline:
                         expected is not None
                         and int(expected) != int(room.get("state_version") or 0)
                         and not uses_turn_snapshot
+                        and not semantic_guard_valid
                     ):
                         return "director_precondition_failed"
                 except (TypeError, ValueError):

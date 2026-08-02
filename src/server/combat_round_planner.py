@@ -27,21 +27,28 @@ def build_combat_round_plan(
     )
     ordered_actions = dexterity_order
     prepared_constraints = _prepared_rule_constraints(prepared_actions or [])
-    steps = [
-        {
+    steps = []
+    last_action_by_conflict_key: dict[str, str] = {}
+    for index, action in enumerate(ordered_actions, start=1):
+        dependencies = _declared_dependencies(action, ordered_actions)
+        for key in _server_conflict_keys(action):
+            previous_action_id = last_action_by_conflict_key.get(key)
+            if previous_action_id and previous_action_id not in dependencies:
+                dependencies.append(previous_action_id)
+        steps.append({
             "global_order": index,
             "cluster_id": _cluster_id(action),
             "action_id": action["action_id"],
             "character_id": action["character_id"],
             "effective_dex": _effective_dex(action),
-            "depends_on": _declared_dependencies(action, ordered_actions),
+            "depends_on": dependencies,
             "advisory_depends_on": [],
             "rule_binding": action.get("intent_type") or "combat_action",
             "visibility": _visibility(action),
             "segments": _declared_segments(action.get("declared_intent") or ""),
-        }
-        for index, action in enumerate(ordered_actions, start=1)
-    ]
+        })
+        for key in _server_conflict_keys(action):
+            last_action_by_conflict_key[key] = str(action["action_id"])
     return {
         "plan_version": "combat-round-v1",
         "turn_id": turn_id,
@@ -264,18 +271,34 @@ def _declared_dependencies(action: dict[str, Any], ordered_actions: list[dict[st
     return [str(action_id) for action_id in raw_dependencies if str(action_id) in valid_ids]
 
 
+def _server_conflict_keys(action: dict[str, Any]) -> list[str]:
+    params = _action_params(action)
+    guard = params.get("_conflictGuard") if isinstance(params, dict) else None
+    raw_keys = guard.get("keys") if isinstance(guard, dict) else None
+    if not isinstance(raw_keys, list):
+        return []
+    return sorted({str(key) for key in raw_keys if isinstance(key, str) and key})
+
+
 def dependency_resolution_order(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Order execution prerequisites first without changing the public DEX plan."""
     action_ids = [str(action.get("action_id") or "") for action in actions]
     known_action_ids = set(action_ids)
-    dependencies = {
-        str(action.get("action_id") or ""): [
+    dependencies: dict[str, list[str]] = {}
+    last_action_by_conflict_key: dict[str, str] = {}
+    for action in actions:
+        action_id = str(action.get("action_id") or "")
+        action_dependencies = [
             dependency
             for dependency in _declared_dependencies(action, actions)
             if dependency in known_action_ids
         ]
-        for action in actions
-    }
+        for key in _server_conflict_keys(action):
+            previous_action_id = last_action_by_conflict_key.get(key)
+            if previous_action_id and previous_action_id not in action_dependencies:
+                action_dependencies.append(previous_action_id)
+            last_action_by_conflict_key[key] = action_id
+        dependencies[action_id] = action_dependencies
     remaining = {str(action.get("action_id") or ""): action for action in actions}
     resolved: set[str] = set()
     ordered: list[dict[str, Any]] = []
