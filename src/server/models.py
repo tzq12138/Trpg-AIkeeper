@@ -583,6 +583,18 @@ class CocFollowUpDecisionRequest(BaseModel):
     decision: Literal["spend_luck", "push", "decline"]
 
 
+class CocBackgroundDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accept", "reject"]
+
+
+class ReplacementInvestigatorRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    template_id: str = Field(alias="templateId", min_length=1, max_length=120)
+
+
 class ActionDraftStepDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
     step_id: str = Field(min_length=1, max_length=80)

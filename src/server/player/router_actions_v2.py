@@ -62,6 +62,7 @@ from .router_player_settings import get_effective_draft_analysis_enabled
 from .router_campaign_v2 import claim_controller_device, record_campaign_activity
 from .private_data import PrivateDataDecryptionError, private_data_cipher_from_env
 from .team_messages import TeamMessageError, send_team_message
+from .auth import require_player_character
 
 
 router = APIRouter(prefix="/api/player")
@@ -293,16 +294,10 @@ def _begin_submission_analysis(conn, character: dict, body: ActionDraftAnalyzeRe
 
 
 def _require_character(request: Request) -> dict:
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
-    character = request.app.state.db.execute(
-        "SELECT * FROM characters WHERE player_token = %s",
-        (token,),
-    ).fetchone()
-    if not character or character.get("status") not in {"joined", "ready"}:
-        raise HTTPException(403, "Invalid token")
-    return dict(character)
+    return require_player_character(
+        request,
+        allowed_statuses={"joined", "ready"},
+    )
 
 
 def _apply_visible_solo_transition(

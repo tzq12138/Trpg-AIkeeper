@@ -1,6 +1,7 @@
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Request, HTTPException
 from ..models import ClarificationRequest, ClarificationResult
+from .auth import require_player_character
 
 router = APIRouter(prefix="/api/player")
 
@@ -9,16 +10,7 @@ RATE_LIMIT_COOLDOWN_SECONDS = 60
 
 
 def _get_character(request: Request):
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
-    conn = request.app.state.db
-    char = conn.execute(
-        "SELECT * FROM characters WHERE player_token = %s", (token,)
-    ).fetchone()
-    if not char:
-        raise HTTPException(403, "Invalid token")
-    return char
+    return require_player_character(request)
 
 
 @router.post("/clarification")

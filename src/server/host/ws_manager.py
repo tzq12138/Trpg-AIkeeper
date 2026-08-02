@@ -60,6 +60,24 @@ class ConnectionManager:
     def is_connected(self, room_id: str, connection_id: str) -> bool:
         return connection_id in self._connections.get(room_id, {})
 
+    async def revoke_player(self, room_id: str, character_id: str) -> bool:
+        connection_id = f"player:{character_id}"
+        websocket = self._connections.get(room_id, {}).get(connection_id)
+        if websocket is None:
+            return False
+        self.disconnect(room_id, connection_id, websocket=websocket)
+        self._last_sequence.get(room_id, {}).pop(connection_id, None)
+        try:
+            await websocket.close(code=4003, reason="character_control_revoked")
+        except Exception:
+            logger.debug(
+                "WS revoke close failed: room=%s conn=%s",
+                room_id,
+                connection_id,
+                exc_info=True,
+            )
+        return True
+
     async def send_event(self, room_id: str, connection_id: str, event: EngineEvent):
         ws = self._connections.get(room_id, {}).get(connection_id)
         if ws:

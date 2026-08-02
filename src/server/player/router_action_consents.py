@@ -6,6 +6,7 @@ from ..engine.action_consent import (
     expire_pending_action_consents,
     respond_to_action_consent,
 )
+from .auth import require_player_character
 
 
 router = APIRouter(prefix="/api/player")
@@ -16,16 +17,10 @@ class ActionConsentResponseRequest(BaseModel):
 
 
 def _require_character(request: Request) -> dict:
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
-    character = request.app.state.db.execute(
-        "SELECT character_id, room_id, status FROM characters WHERE player_token = %s",
-        (token,),
-    ).fetchone()
-    if not character or character.get("status") not in {"joined", "ready"}:
-        raise HTTPException(403, "Invalid token")
-    return dict(character)
+    return require_player_character(
+        request,
+        allowed_statuses={"joined", "ready"},
+    )
 
 
 def _consent_projection(row: dict) -> dict:

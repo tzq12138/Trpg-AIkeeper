@@ -397,6 +397,7 @@ def _build_runtime_package(
         "clue_dependencies": _collection(graph, "clues", items, "clue"),
         "rule_triggers": _list(graph.get("rule_triggers")) or _list(graph.get("rule_citations")),
         "runtime_policy": _json_object(graph.get("runtime_policy")),
+        "character_control": _character_control_package(graph),
         **(
             {"risk_contract": normalize_risk_contract(risk_contract)}
             if isinstance(risk_contract, dict) and risk_contract
@@ -474,6 +475,7 @@ def _quality_exceptions(
     issues.extend(_projection_diagnostic_issues(projection_diagnostics))
     issues.extend(_runtime_citation_issues(graph))
     issues.extend(_ending_condition_issues(graph))
+    issues.extend(_character_control_issues(graph, items))
     for edge in edges:
         if not edge.get("from_content_item_id") or not edge.get("to_content_item_id"):
             issues.append(_issue(
@@ -501,6 +503,93 @@ def _quality_exceptions(
     for issue in issues:
         deduped[issue["exception_key"]] = issue
     return sorted(deduped.values(), key=lambda issue: issue["exception_key"])
+
+
+def _character_control_package(graph: dict[str, Any]) -> dict[str, Any]:
+    runtime_policy = _json_object(graph.get("runtime_policy"))
+    raw = _json_object(graph.get("character_control")) or _json_object(
+        runtime_policy.get("character_control")
+    )
+    if not raw:
+        return {}
+    safe_scene_ids = raw.get("safe_replacement_scene_ids")
+    if not isinstance(safe_scene_ids, list):
+        safe_scene_ids = raw.get("safeReplacementSceneIds")
+    normalized_safe_scenes = []
+    for value in safe_scene_ids if isinstance(safe_scene_ids, list) else []:
+        scene_id = str(value or "").strip()
+        if scene_id and scene_id not in normalized_safe_scenes:
+            normalized_safe_scenes.append(scene_id)
+
+    recovery_nodes = raw.get("recovery_nodes")
+    if not isinstance(recovery_nodes, list):
+        recovery_nodes = raw.get("recoveryNodes")
+    normalized_recovery_nodes = []
+    for value in recovery_nodes if isinstance(recovery_nodes, list) else []:
+        if not isinstance(value, dict):
+            continue
+        node_id = str(value.get("node_id") or value.get("nodeId") or "").strip()
+        scene_id = str(value.get("scene_id") or value.get("sceneId") or "").strip()
+        if not node_id:
+            continue
+        normalized_recovery_nodes.append({
+            "node_id": node_id,
+            "scene_id": scene_id,
+            "citation": _json_object(value.get("citation")),
+        })
+    return {
+        "safe_replacement_scene_ids": normalized_safe_scenes,
+        "recovery_nodes": normalized_recovery_nodes,
+    }
+
+
+def _character_control_issues(
+    graph: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    control = _character_control_package(graph)
+    if not control:
+        return []
+    scene_ids = {
+        str(scene.get("scene_id") or scene.get("id") or "").strip()
+        for scene in _json_list(graph.get("scenes"))
+        if isinstance(scene, dict)
+    }
+    scene_ids.update(
+        str(item.get("logical_key") or "").strip()
+        for item in items
+        if item.get("item_type") == "scene"
+    )
+    issues = []
+    for scene_id in control["safe_replacement_scene_ids"]:
+        if scene_id not in scene_ids:
+            issues.append(_issue(
+                "invalid_character_control_safe_scene",
+                "Replacement investigators require a compiled scene target.",
+                target_type="character_control",
+                target_key=scene_id,
+                waivable=False,
+            ))
+    for node in control["recovery_nodes"]:
+        node_id = node["node_id"]
+        if not _has_citation(node.get("citation")):
+            issues.append(_issue(
+                "invalid_character_control_recovery_citation",
+                "Insanity recovery nodes require a traceable citation.",
+                target_type="character_control",
+                target_key=node_id,
+                waivable=False,
+            ))
+        scene_id = node.get("scene_id") or ""
+        if not scene_id or scene_id not in scene_ids:
+            issues.append(_issue(
+                "invalid_character_control_recovery_scene",
+                "Insanity recovery nodes require a compiled scene target.",
+                target_type="character_control",
+                target_key=node_id,
+                waivable=False,
+            ))
+    return issues
 
 
 def _runtime_diagnostic_issues(graph: dict[str, Any]) -> list[dict[str, Any]]:

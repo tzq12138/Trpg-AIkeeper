@@ -10,6 +10,7 @@ from .engine.runtime_integrity import (
     recovery_proposal_hash,
     verify_recovery_dry_run_token,
 )
+from .player.auth import find_player_character
 
 router = APIRouter(prefix="/api/rooms")
 
@@ -53,18 +54,10 @@ def _verify_player(request: Request, room_id: str = "") -> dict:
     if not token:
         raise HTTPException(401, "缺少 X-Room-Token")
     conn = request.app.state.db
-    if room_id:
-        char = conn.execute(
-            "SELECT * FROM characters WHERE player_token = %s AND room_id = %s",
-            (token, room_id),
-        ).fetchone()
-    else:
-        char = conn.execute(
-            "SELECT * FROM characters WHERE player_token = %s", (token,)
-        ).fetchone()
-    if not char:
+    char = find_player_character(conn, token)
+    if not char or (room_id and char.get("room_id") != room_id):
         raise HTTPException(403, "令牌无效")
-    return dict(char)
+    return char
 
 
 # ── Event endpoints ──

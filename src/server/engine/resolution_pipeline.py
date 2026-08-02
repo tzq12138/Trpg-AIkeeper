@@ -465,6 +465,93 @@ class ResolutionPipeline:
             "result": result_payload,
         }
 
+    async def _await_sanity_background(
+        self,
+        action: dict[str, Any],
+        character: dict[str, Any],
+        resolution: ResolutionResult,
+        *,
+        state_before: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw_background = (resolution.metadata or {}).get("background_change")
+        if not isinstance(raw_background, dict):
+            raise ValueError("sanity_background_missing")
+        background = json.loads(
+            json.dumps(raw_background, ensure_ascii=False, default=str)
+        )
+        engine = background.pop("_engine", None)
+        if not isinstance(engine, dict):
+            raise ValueError("sanity_background_engine_context_missing")
+        resolution.metadata = {
+            **dict(resolution.metadata or {}),
+            "background_change": background,
+        }
+        result_payload = resolution.model_dump(by_alias=True)
+        rule_explanation = self._build_rule_explanation(
+            action,
+            character,
+            resolution,
+            state_before=state_before,
+            state_after=state_before,
+        )
+        progress = {
+            "status": "pending",
+            "allowed_decisions": list(background.get("allowed_decisions") or []),
+            "engine": engine,
+            "initial_resolution": result_payload,
+        }
+        params = self._json_value(action.get("params")) or {}
+        params["sanity_background_progress"] = progress
+
+        with self.conn.transaction() as tx:
+            cursor = tx.execute(
+                "UPDATE actions SET status = 'awaiting_player_choice', params = %s, "
+                "result = %s, receipt = %s "
+                "WHERE action_id = %s AND status = 'resolving'",
+                (
+                    json.dumps(params, ensure_ascii=False, default=str),
+                    json.dumps(result_payload, ensure_ascii=False, default=str),
+                    json.dumps(rule_explanation, ensure_ascii=False, default=str),
+                    action["action_id"],
+                ),
+            )
+            if cursor.rowcount:
+                tx.execute(
+                    "INSERT INTO action_status_events (action_id, status, metadata) "
+                    "VALUES (%s, 'awaiting_player_choice', %s)",
+                    (
+                        action["action_id"],
+                        json.dumps({"reason_code": "coc_background_change_required"}),
+                    ),
+                )
+        if cursor.rowcount == 0:
+            return {"status": "sync_required", "action_id": action["action_id"]}
+
+        self._persist_resolution_bundle(
+            action,
+            "awaiting_player_choice",
+            result_payload,
+            rule_explanation,
+            resolution,
+        )
+        await self.dispatcher.emit(
+            action["room_id"],
+            "s2c_action_choice_requested",
+            "player",
+            {
+                "actionId": action["action_id"],
+                "status": "awaiting_player_choice",
+                "kind": "coc_background_change",
+                "backgroundChange": background,
+            },
+            character_id=action["character_id"],
+        )
+        return {
+            "status": "awaiting_player_choice",
+            "action_id": action["action_id"],
+            "result": result_payload,
+        }
+
     async def resolve_action(self, action_id: str) -> dict[str, Any]:
         action = self.conn.execute(
             "SELECT * FROM actions WHERE action_id = %s", (action_id,)
@@ -489,7 +576,18 @@ class ResolutionPipeline:
             and coc_followup_progress.get("status") == "submitted"
             and coc_followup_progress.get("decision") in {"spend_luck", "push", "decline"}
         )
-        is_player_choice_resume = is_composite_resume or is_coc_followup_resume
+        sanity_background_progress = action_params.get("sanity_background_progress")
+        is_sanity_background_resume = (
+            action["status"] == "awaiting_player_choice"
+            and isinstance(sanity_background_progress, dict)
+            and sanity_background_progress.get("status") == "submitted"
+            and sanity_background_progress.get("decision") in {"accept", "reject"}
+        )
+        is_player_choice_resume = (
+            is_composite_resume
+            or is_coc_followup_resume
+            or is_sanity_background_resume
+        )
         if action["status"] not in {"queued", "batched"} and not is_player_choice_resume:
             return {"status": action["status"], "action_id": action_id}
         if not is_player_choice_resume:
@@ -529,6 +627,8 @@ class ResolutionPipeline:
                     "reason_code": (
                         "coc_followup_submitted"
                         if is_coc_followup_resume
+                        else "coc_background_change_submitted"
+                        if is_sanity_background_resume
                         else "composite_choice_submitted"
                         if is_composite_resume
                         else "action_resolution_started"
@@ -576,10 +676,15 @@ class ResolutionPipeline:
             await self._reject(action, reason)
             return {"status": "rejected", "action_id": action_id, "reason": reason}
         action_params = self._json_value(action.get("params")) or {}
+        action_params.pop("_sanity_background", None)
         if is_coc_followup_resume:
             refreshed_progress = action_params.get("coc_followup_progress")
             if isinstance(refreshed_progress, dict):
                 action_params["_coc_followup"] = refreshed_progress
+        if is_sanity_background_resume:
+            refreshed_progress = action_params.get("sanity_background_progress")
+            if isinstance(refreshed_progress, dict):
+                action_params["_sanity_background"] = refreshed_progress
         conflict_guard = action_params.get("_conflictGuard")
         allow_same_turn_scene_drift = False
         semantic_guard_valid = False
@@ -631,11 +736,19 @@ class ResolutionPipeline:
                 "coc7_sanity"
             )
         ) or {}
+        runtime_package = self._runtime_package_for_room(action["room_id"])
+        compiled_bout_transition = self._has_compiled_bout_transition(
+            runtime_package,
+            action["intent_type"],
+            action_params,
+        )
         if (
             "permanent_insanity" in status_tags
             or sanity_state.get("insanity_type") == "permanent"
             or sanity_state.get("control") == "ai_keeper"
-            and sanity_state.get("phase") == "permanent"
+            and sanity_state.get("phase") in {"bout", "permanent"}
+        ) and not (
+            sanity_state.get("phase") == "bout" and compiled_bout_transition
         ):
             await self._reject(action, "investigator_not_player_controlled")
             return {
@@ -646,7 +759,6 @@ class ResolutionPipeline:
 
         scenario = self._load_scenario(room)
         scenario_assets = self._json_value(scenario.get("scenario_assets") if scenario else None) or {}
-        runtime_package = self._runtime_package_for_room(action["room_id"])
         runtime_rule_triggers = runtime_package.get("rule_triggers")
         if isinstance(runtime_rule_triggers, list):
             legacy_triggers = scenario_assets.get("triggers")
@@ -665,6 +777,23 @@ class ResolutionPipeline:
         scenario_assets["_party_luck_values"] = self._party_luck_values(
             action["room_id"]
         )
+        character_control = self._json_value(runtime_package.get("character_control"))
+        scenario_assets["_runtime_character_control"] = (
+            character_control if isinstance(character_control, dict) else {}
+        )
+        scene_row = None
+        if character_control or self._runtime_has_sanity_rules(runtime_package):
+            scene_row = self.conn.execute(
+                "SELECT current_scene, scene_variables FROM room_scene_state WHERE room_id = %s",
+                (action["room_id"],),
+            ).fetchone()
+        scene_variables = self._json_value(
+            scene_row.get("scene_variables") if scene_row else None
+        )
+        scenario_assets["_runtime_scene"] = {
+            "current_scene": str(scene_row.get("current_scene") or "") if scene_row else "",
+            **(scene_variables if isinstance(scene_variables, dict) else {}),
+        }
         runtime_policy = self._json_value(runtime_package.get("runtime_policy"))
         if not isinstance(runtime_policy, dict):
             runtime_policy = {}
@@ -687,14 +816,14 @@ class ResolutionPipeline:
             intent_type=intent.intent_type,
             params=intent.params,
         )
-        if autonomy.route == "deferred_host_review":
+        if not is_player_choice_resume and autonomy.route == "deferred_host_review":
             await self._await_host_exception(action, autonomy.reason_code or "host_offline_policy")
             return {
                 "status": "awaiting_host_exception",
                 "action_id": action_id,
                 "reason": autonomy.reason_code or "host_offline_policy",
             }
-        if autonomy.route == "engine_policy":
+        if not is_player_choice_resume and autonomy.route == "engine_policy":
             reason_code = autonomy.reason_code or "ai_only_policy_required"
             await self._reject(action, reason_code)
             return {
@@ -955,6 +1084,19 @@ class ResolutionPipeline:
                 resolution,
                 state_before=state_before,
             )
+        sanity_background = (resolution.metadata or {}).get("background_change")
+        if (
+            is_v2
+            and not is_sanity_background_resume
+            and isinstance(sanity_background, dict)
+            and sanity_background.get("status") == "pending"
+        ):
+            return await self._await_sanity_background(
+                action,
+                character_data,
+                resolution,
+                state_before=state_before,
+            )
 
         inventory_changes = []
         if retroactive_decision:
@@ -1026,6 +1168,8 @@ class ResolutionPipeline:
         result_payload = resolution.model_dump(by_alias=True)
         completion_status = "completed" if is_v2 else "resolved"
         completed_with_state = False
+        sanity_state_transition = self._has_sanity_state_transition(resolution)
+        character_control_revoked = False
         rule_explanation_for_completion = None
         pending_consequence = (resolution.metadata or {}).get("pending_consequence")
         if (
@@ -1078,6 +1222,36 @@ class ResolutionPipeline:
                 "action_id": action_id,
                 "reason": reason_code,
             }
+        narration_applied_before_state = False
+        if (
+            is_v2
+            and sanity_state_transition
+            and self.gateway
+            and hasattr(self.gateway, "narrate_action")
+        ):
+            await self._emit_ai_stage(action, "narrating")
+            narration_error = await self._apply_narrator(
+                action,
+                character_data,
+                dict(room),
+                resolution,
+                ai_only=is_ai_only,
+            )
+            if narration_error:
+                await self._emit_ai_stage(action, "recovering")
+                await self._await_host_exception(
+                    action,
+                    narration_error,
+                    result=resolution.model_dump(by_alias=True),
+                    ai_recovery=True,
+                )
+                return {
+                    "status": "awaiting_host_exception",
+                    "action_id": action_id,
+                    "reason": narration_error,
+                }
+            result_payload = resolution.model_dump(by_alias=True)
+            narration_applied_before_state = True
         state_mutations = self._state_service_mutations(resolution.mutations)
         has_state_changes = bool(state_mutations or inventory_changes or scene_change)
         if has_state_changes and not self.state_service and is_v2:
@@ -1168,6 +1342,17 @@ class ResolutionPipeline:
                             reason=f"Action {action['action_id']} resolved",
                             transaction=tx,
                         )
+                        state_version_row = tx.execute(
+                            "SELECT state_version FROM rooms WHERE room_id = %s",
+                            (action["room_id"],),
+                        ).fetchone()
+                        resolution.metadata = {
+                            **dict(resolution.metadata or {}),
+                            "receipt_state_version": int(
+                                state_version_row.get("state_version") or 0
+                            ) if state_version_row else 0,
+                        }
+                        result_payload = resolution.model_dump(by_alias=True)
                         rule_explanation_for_completion = self._build_rule_explanation(
                             action,
                             character_data,
@@ -1180,7 +1365,46 @@ class ResolutionPipeline:
                             ),
                         )
                     if not commit_conflict_reason:
+                        if sanity_state_transition:
+                            character_control_revoked = (
+                                self._apply_character_control_transition(
+                                    tx,
+                                    action,
+                                    resolution,
+                                )
+                                or character_control_revoked
+                            )
                         committed_reveals = commit_reveals(tx)
+                        if (
+                            state_changes is not None
+                            and sanity_state_transition
+                        ):
+                            rule_explanation_for_completion = (
+                                rule_explanation_for_completion
+                                or self._build_rule_explanation(
+                                    action,
+                                    character_data,
+                                    resolution,
+                                    state_before=state_before,
+                                    state_after=self._runtime_snapshot(
+                                        tx,
+                                        action["character_id"],
+                                        action["room_id"],
+                                    ),
+                                )
+                            )
+                            if not complete_action(
+                                self.conn,
+                                action_id,
+                                from_statuses=("resolving",),
+                                to_status=completion_status,
+                                result=result_payload,
+                                receipt=rule_explanation_for_completion,
+                                metadata={"has_rule_explanation": True},
+                                transaction=tx,
+                            ):
+                                raise RuntimeError("action_completion_conflict")
+                            completed_with_state = True
                 if commit_conflict_reason:
                     return await self._require_action_resync(
                         action,
@@ -1199,6 +1423,26 @@ class ResolutionPipeline:
                             reason=f"Action {action['action_id']} resolved",
                             transaction=tx,
                         )
+                        state_version_row = tx.execute(
+                            "SELECT state_version FROM rooms WHERE room_id = %s",
+                            (action["room_id"],),
+                        ).fetchone()
+                        resolution.metadata = {
+                            **dict(resolution.metadata or {}),
+                            "receipt_state_version": int(
+                                state_version_row.get("state_version") or 0
+                            ) if state_version_row else 0,
+                        }
+                        result_payload = resolution.model_dump(by_alias=True)
+                        if sanity_state_transition:
+                            character_control_revoked = (
+                                self._apply_character_control_transition(
+                                    tx,
+                                    action,
+                                    resolution,
+                                )
+                                or character_control_revoked
+                            )
                         rule_explanation_for_completion = self._build_rule_explanation(
                             action,
                             character_data,
@@ -1211,6 +1455,19 @@ class ResolutionPipeline:
                             ),
                         )
                         committed_reveals = commit_reveals(tx)
+                        if sanity_state_transition:
+                            if not complete_action(
+                                self.conn,
+                                action_id,
+                                from_statuses=("resolving",),
+                                to_status=completion_status,
+                                result=result_payload,
+                                receipt=rule_explanation_for_completion,
+                                metadata={"has_rule_explanation": True},
+                                transaction=tx,
+                            ):
+                                raise RuntimeError("action_completion_conflict")
+                            completed_with_state = True
                 else:
                     self.state_service.apply_change(
                         room_id=action["room_id"],
@@ -1249,6 +1506,9 @@ class ResolutionPipeline:
                     "action_id": action_id,
                     "reason": "state_persistence_failed",
                 }
+
+        if character_control_revoked:
+            await self._revoke_character_player_connection(action)
 
         if committed_reveals:
             resolution.metadata = {
@@ -1422,7 +1682,12 @@ class ResolutionPipeline:
                 }
                 result_payload = resolution.model_dump(by_alias=True)
 
-        if not solo_damage_terminal and self.gateway and hasattr(self.gateway, "narrate_action"):
+        if (
+            not solo_damage_terminal
+            and not narration_applied_before_state
+            and self.gateway
+            and hasattr(self.gateway, "narrate_action")
+        ):
             await self._emit_ai_stage(action, "narrating")
             narration_error = await self._apply_narrator(
                 action,
@@ -3188,6 +3453,44 @@ class ResolutionPipeline:
             package_row.get("runtime_package") if package_row else None
         ) or {}
 
+    @staticmethod
+    def _has_compiled_bout_transition(
+        runtime_package: dict[str, Any],
+        intent_type: str,
+        params: dict[str, Any],
+    ) -> bool:
+        triggers = runtime_package.get("rule_triggers")
+        if not isinstance(triggers, list):
+            return False
+        from ..rules.triggers import evaluate_triggers
+
+        for mechanic in evaluate_triggers(triggers, intent_type, params):
+            mechanic_params = mechanic.get("params", mechanic)
+            if (
+                mechanic.get("type") == "sanity_advance"
+                and isinstance(mechanic_params, dict)
+                and mechanic_params.get("event") == "bout_elapsed"
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _runtime_has_sanity_rules(runtime_package: dict[str, Any]) -> bool:
+        triggers = runtime_package.get("rule_triggers")
+        if not isinstance(triggers, list):
+            return False
+        for trigger in triggers:
+            mechanics = trigger.get("mechanics") if isinstance(trigger, dict) else None
+            if not isinstance(mechanics, list):
+                continue
+            if any(
+                isinstance(mechanic, dict)
+                and str(mechanic.get("type") or "").startswith("sanity_")
+                for mechanic in mechanics
+            ):
+                return True
+        return False
+
     async def _persist_named_runtime_clues(
         self,
         action: dict[str, Any],
@@ -3866,6 +4169,77 @@ class ResolutionPipeline:
             for mutation in mutations
             if str(mutation.get("path") or "").startswith("/character/")
         ]
+
+    @staticmethod
+    def _has_sanity_state_transition(resolution: ResolutionResult) -> bool:
+        insanity_tags = {
+            "temporary_insanity",
+            "indefinite_insanity",
+            "permanent_insanity",
+        }
+        return any(
+            mutation.get("path") in {
+                "/character/san",
+                "/character/temp_modifier/coc7_sanity",
+            }
+            or (
+                mutation.get("path") == "/character/status_tag"
+                and mutation.get("value") in insanity_tags
+            )
+            for mutation in resolution.mutations
+            if isinstance(mutation, dict)
+        )
+
+    async def _revoke_character_player_connection(
+        self,
+        action: dict[str, Any],
+    ) -> None:
+        manager = getattr(self.dispatcher, "ws_manager", None)
+        revoke_player = getattr(manager, "revoke_player", None)
+        if not callable(revoke_player):
+            return
+        try:
+            await revoke_player(action["room_id"], action["character_id"])
+        except Exception:
+            logger.exception(
+                "Failed to revoke player connection room=%s character=%s",
+                action["room_id"],
+                action["character_id"],
+            )
+
+    def _apply_character_control_transition(
+        self,
+        executor,
+        action: dict[str, Any],
+        _resolution: ResolutionResult,
+    ) -> bool:
+        runtime = executor.execute(
+            "SELECT san, temp_modifiers FROM character_runtime_state "
+            "WHERE character_id = %s AND room_id = %s FOR UPDATE",
+            (action["character_id"], action["room_id"]),
+        ).fetchone()
+        modifiers = self._json_value(runtime.get("temp_modifiers")) if runtime else {}
+        sanity = (
+            modifiers.get("coc7_sanity")
+            if isinstance(modifiers, dict)
+            else None
+        )
+        if (
+            not runtime
+            or int(runtime.get("san") or 0) != 0
+            or not isinstance(sanity, dict)
+            or sanity.get("insanity_type") != "permanent"
+            or sanity.get("phase") != "permanent"
+            or sanity.get("control") != "ai_keeper"
+        ):
+            return False
+        cursor = executor.execute(
+            "UPDATE characters SET status = 'restricted_npc', is_ready = FALSE "
+            "WHERE character_id = %s AND room_id = %s "
+            "AND status IN ('joined', 'ready')",
+            (action["character_id"], action["room_id"]),
+        )
+        return bool(cursor.rowcount)
 
     def _json_value(self, value):
         if value is None:

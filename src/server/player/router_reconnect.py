@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request, HTTPException
 from ..events.event_log import EventLog
 from ..host.ws_manager import NONTERMINAL_ACTION_STATUSES, manager
 from .private_data import PrivateDataDecryptionError, private_data_cipher_from_env
+from .auth import find_player_character
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,7 @@ def _scene_snapshot(conn, room_id: str) -> dict:
 
 
 def _get_character(conn, token: str):
-    return conn.execute(
-        "SELECT * FROM characters WHERE player_token = %s", (token,)
-    ).fetchone()
+    return find_player_character(conn, token)
 
 
 def _pending_submissions(conn, room_id: str, character_id: str) -> list[dict]:

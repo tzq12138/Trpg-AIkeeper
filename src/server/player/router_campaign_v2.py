@@ -12,6 +12,7 @@ from starlette.responses import FileResponse, Response
 from .private_data import PrivateDataDecryptionError, private_data_cipher_from_env
 from ..events.events_registry import event_type
 from ..models import CampaignHomeDTO, EvidenceDetailDTO, redact_citation
+from .auth import require_player_character
 
 
 router = APIRouter(prefix="/api/player")
@@ -156,15 +157,7 @@ _SESSION_ZERO_STEPS = (
 
 
 def _require_character(request: Request) -> dict:
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
-    character = request.app.state.db.execute(
-        "SELECT * FROM characters WHERE player_token = %s", (token,)
-    ).fetchone()
-    if not character:
-        raise HTTPException(403, "Invalid token")
-    return dict(character)
+    return require_player_character(request)
 
 
 def _device_session_payload(row: dict) -> dict:

@@ -45,6 +45,16 @@ _HIGH_RISK_SANITY_SYMPTOMS = {
     "summary": {2, 3, 4, 7, 8},
 }
 _SAFE_SANITY_FALLBACK = {"immediate": 8, "summary": 1}
+_BACKGROUND_CHANGE_SAFE_FALLBACK = {
+    "change_id": "engine-safe-behavioral-note",
+    "summary": "调查员在压力后变得更谨慎，但核心背景与关系保持不变。",
+    "selection_source": "engine_safe_fallback",
+}
+_BACKGROUND_CHANGE_REJECTION = {
+    "change_id": "engine-safe-no-change",
+    "summary": "玩家拒绝了背景变化；核心背景与关系保持不变。",
+    "selection_source": "engine_safe_rejection",
+}
 
 
 def roll_dice(notation: str) -> tuple[int, list[int], int]:
@@ -346,18 +356,39 @@ def _sanity_manifestation(
     selected_id = proposed_id
     selection_source = "ai_validated"
     retry_count = 0
+    validation_status = "accepted"
+    validation_reason = None
+    retry_proposal = None
+    retry_status = "not_needed"
     if selected_id is None or selected_id in _HIGH_RISK_SANITY_SYMPTOMS[mode]:
+        validation_status = "rejected"
+        validation_reason = (
+            "high_risk_manifestation"
+            if selected_id in _HIGH_RISK_SANITY_SYMPTOMS[mode]
+            else "invalid_manifestation"
+        )
         retry_count = 1
         replacement_id = candidate(safe_replacement)
+        retry_proposal = (
+            {"mode": mode, "symptom_id": replacement_id}
+            if replacement_id is not None
+            else None
+        )
         if (
             replacement_id is not None
             and replacement_id not in _HIGH_RISK_SANITY_SYMPTOMS[mode]
         ):
             selected_id = replacement_id
             selection_source = "ai_safe_replacement"
+            retry_status = "accepted"
         else:
             selected_id = _SAFE_SANITY_FALLBACK[mode]
             selection_source = "engine_safe_fallback"
+            retry_status = (
+                "high_risk"
+                if replacement_id in _HIGH_RISK_SANITY_SYMPTOMS[mode]
+                else "invalid"
+            )
     return {
         "mode": mode,
         "symptom_id": selected_id,
@@ -365,6 +396,101 @@ def _sanity_manifestation(
         "selection_source": selection_source,
         "retry_count": retry_count,
         "boundary_tags": ["distress", "non_graphic", "no_forced_harm"],
+        "proposal_audit": {
+            "ai_proposal": (
+                {"mode": mode, "symptom_id": proposed_id}
+                if proposed_id is not None
+                else None
+            ),
+            "engine_validation": {
+                "status": validation_status,
+                **(
+                    {"reason_code": validation_reason}
+                    if validation_reason
+                    else {}
+                ),
+            },
+            "constrained_retry": {
+                "attempted": retry_count == 1,
+                "proposal": retry_proposal,
+                "status": retry_status,
+            },
+            "final": {
+                "selection_source": selection_source,
+                "symptom_id": selected_id,
+            },
+        },
+    }
+
+
+def _background_change_proposal(
+    proposal: Any,
+    safe_replacement: Any,
+) -> dict[str, Any]:
+    def candidate(value: Any) -> dict[str, str] | None:
+        if not isinstance(value, dict):
+            return None
+        change_id = str(value.get("changeId") or value.get("change_id") or "").strip()
+        summary = str(value.get("summary") or "").strip()
+        risk_level = str(
+            value.get("riskLevel") or value.get("risk_level") or "low"
+        ).strip().lower()
+        if (
+            not change_id
+            or not summary
+            or len(change_id) > 120
+            or len(summary) > 500
+            or risk_level not in {"none", "low"}
+            or bool(value.get("forcesHarm") or value.get("forces_harm"))
+            or bool(value.get("changesIdentity") or value.get("changes_identity"))
+            or bool(value.get("mechanicalEffects") or value.get("mechanical_effects"))
+        ):
+            return None
+        return {"change_id": change_id, "summary": summary}
+
+    proposed = candidate(proposal)
+    selected = proposed
+    selection_source = "ai_validated"
+    validation = {"status": "accepted"}
+    retry_attempted = False
+    retry = None
+    retry_status = "not_needed"
+    if selected is None:
+        validation = {
+            "status": "rejected",
+            "reason_code": "unsafe_background_change",
+        }
+        retry_attempted = True
+        retry = candidate(safe_replacement)
+        if retry is not None:
+            selected = retry
+            selection_source = "ai_safe_replacement"
+            retry_status = "accepted"
+        else:
+            selected = dict(_BACKGROUND_CHANGE_SAFE_FALLBACK)
+            selection_source = "engine_safe_fallback"
+            retry_status = "invalid"
+    selected = {**selected, "selection_source": selection_source}
+    return {
+        "status": "pending",
+        "allowed_decisions": ["accept", "reject"],
+        "proposal": selected,
+        "proposal_audit": {
+            "ai_proposal": (
+                {"change_id": proposed["change_id"]} if proposed else None
+            ),
+            "engine_validation": validation,
+            "constrained_retry": {
+                "attempted": retry_attempted,
+                "proposal": ({"change_id": retry["change_id"]} if retry else None),
+                "status": retry_status,
+            },
+            "final": {
+                "change_id": selected["change_id"],
+                "selection_source": selection_source,
+            },
+        },
+        "_engine": {"proposal": selected},
     }
 
 
@@ -377,6 +503,58 @@ def _rule_citation(params: dict) -> dict:
         for key, value in raw.items()
         if not key.lower().endswith("_path") and key.lower() not in {"absolute_path", "storage_path"}
     }
+
+
+def _runtime_game_minute(params: dict) -> int | None:
+    scene = params.get("_runtime_scene")
+    if not isinstance(scene, dict):
+        return None
+    raw = scene.get("in_game_minutes")
+    if isinstance(raw, bool):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _compiled_sanity_recovery_node(params: dict) -> dict[str, Any] | None:
+    control = params.get("_runtime_character_control")
+    scene = params.get("_runtime_scene")
+    if not isinstance(control, dict) or not isinstance(scene, dict):
+        return None
+    requested_id = str(
+        params.get("recoveryNodeId") or params.get("recovery_node_id") or ""
+    ).strip()
+    current_scene = str(scene.get("current_scene") or "").strip()
+    if not requested_id or not current_scene:
+        return None
+    nodes = control.get("recovery_nodes")
+    if not isinstance(nodes, list):
+        return None
+    for raw_node in nodes:
+        if not isinstance(raw_node, dict):
+            continue
+        node_id = str(raw_node.get("node_id") or "").strip()
+        scene_id = str(raw_node.get("scene_id") or "").strip()
+        citation = raw_node.get("citation")
+        if (
+            node_id != requested_id
+            or scene_id != current_scene
+            or not isinstance(citation, dict)
+            or not any(
+                citation.get(key)
+                for key in ("source_part_id", "source_ref", "page_number")
+            )
+        ):
+            continue
+        return {
+            "node_id": node_id,
+            "scene_id": scene_id,
+            "citation": deepcopy(citation),
+        }
+    return None
 
 
 def _roll_step(result: dict, skill_name: str, *, pushed: bool = False) -> dict:
@@ -909,10 +1087,74 @@ class CocSanityAdvanceHandler(BaseRuleHandler):
         event = str(params.get("event") or "").strip()
         updated = deepcopy(current)
         mutations = []
+        background_change = None
         if event == "bout_elapsed" and current.get("phase") == "bout":
+            if current.get("insanity_type") == "temporary":
+                current_minute = _runtime_game_minute(params)
+                duration = current.get("underlying_duration")
+                duration_hours = (
+                    _as_int(duration.get("value"))
+                    if isinstance(duration, dict)
+                    else 0
+                )
+                existing_deadline = _as_int(
+                    current.get("underlying_ends_at_minute")
+                )
+                if existing_deadline <= 0 and (
+                    current_minute is None or duration_hours <= 0
+                ):
+                    return RuleResult(
+                        is_success=False,
+                        metadata={
+                            "status": "rejected",
+                            "reason_code": "authoritative_game_time_required",
+                        },
+                    )
             updated["phase"] = "underlying"
             updated["control"] = "player"
-            updated["background_change_pending_player_confirmation"] = True
+            background_progress = params.get("_sanity_background")
+            background_decision = (
+                str(background_progress.get("decision") or "")
+                if isinstance(background_progress, dict)
+                and background_progress.get("status") == "submitted"
+                else ""
+            )
+            if background_decision in {"accept", "reject"}:
+                engine = background_progress.get("engine")
+                selected = engine.get("proposal") if isinstance(engine, dict) else None
+                if not isinstance(selected, dict):
+                    selected = dict(_BACKGROUND_CHANGE_SAFE_FALLBACK)
+                applied = (
+                    deepcopy(selected)
+                    if background_decision == "accept"
+                    else dict(_BACKGROUND_CHANGE_REJECTION)
+                )
+                updated["background_change_pending_player_confirmation"] = False
+                updated["background_change_confirmed"] = background_decision == "accept"
+                updated["background_change"] = applied
+                background_change = {
+                    "status": "resolved",
+                    "decision": background_decision,
+                    "applied": applied,
+                }
+            else:
+                updated["background_change_pending_player_confirmation"] = True
+                background_change = _background_change_proposal(
+                    params.get("backgroundChangeProposal")
+                    or params.get("background_change_proposal"),
+                    params.get("backgroundChangeSafeReplacement")
+                    or params.get("background_change_safe_replacement"),
+                )
+            if current.get("insanity_type") == "temporary":
+                if (
+                    current_minute is not None
+                    and duration_hours > 0
+                    and existing_deadline <= 0
+                ):
+                    updated["underlying_started_at_minute"] = current_minute
+                    updated["underlying_ends_at_minute"] = (
+                        current_minute + duration_hours * 60
+                    )
             mutations.append({
                 "op": "replace",
                 "path": _SANITY_STATE_PATH,
@@ -921,25 +1163,44 @@ class CocSanityAdvanceHandler(BaseRuleHandler):
         elif event == "background_confirmed" and current.get(
             "background_change_pending_player_confirmation"
         ):
-            updated["background_change_pending_player_confirmation"] = False
-            updated["background_change_confirmed"] = True
-            mutations.append({
-                "op": "replace",
-                "path": _SANITY_STATE_PATH,
-                "value": updated,
-            })
-        elif (
-            event == "recovered"
-            and current.get("insanity_type") in {"temporary", "indefinite"}
-            and current.get("phase") == "underlying"
-        ):
-            insanity_type = str(current["insanity_type"])
+            return RuleResult(
+                is_success=False,
+                metadata={
+                    "status": "rejected",
+                    "reason_code": "player_background_decision_required",
+                },
+            )
+        elif event == "time_advanced" and current.get(
+            "insanity_type"
+        ) == "temporary" and current.get("phase") == "underlying":
+            current_minute = _runtime_game_minute(params)
+            recovery_minute = _as_int(current.get("underlying_ends_at_minute"))
+            if current_minute is None or recovery_minute <= 0:
+                return RuleResult(
+                    is_success=False,
+                    metadata={
+                        "status": "rejected",
+                        "reason_code": "authoritative_game_time_required",
+                    },
+                )
+            if current_minute < recovery_minute:
+                return RuleResult(
+                    is_success=False,
+                    metadata={
+                        "status": "rejected",
+                        "reason_code": "temporary_insanity_time_remaining",
+                        "remaining_game_minutes": recovery_minute - current_minute,
+                    },
+                )
+            insanity_type = "temporary"
             updated.update({
                 "insanity_type": "none",
                 "phase": "stable",
                 "control": "player",
                 "bout": None,
                 "underlying_duration": None,
+                "underlying_started_at_minute": None,
+                "underlying_ends_at_minute": None,
             })
             mutations.extend([
                 {
@@ -953,6 +1214,54 @@ class CocSanityAdvanceHandler(BaseRuleHandler):
                     "value": updated,
                 },
             ])
+        elif event == "recovered" and current.get("insanity_type") == "indefinite" and current.get(
+            "phase"
+        ) == "underlying":
+            recovery_node = _compiled_sanity_recovery_node(params)
+            if recovery_node is None:
+                return RuleResult(
+                    is_success=False,
+                    metadata={
+                        "status": "rejected",
+                        "reason_code": "compiled_recovery_node_required",
+                    },
+                )
+            insanity_type = "indefinite"
+            updated.update({
+                "insanity_type": "none",
+                "phase": "stable",
+                "control": "player",
+                "bout": None,
+                "underlying_duration": None,
+            })
+            mutations.extend([
+                {
+                    "op": "remove",
+                    "path": "/character/status_tag",
+                    "value": "indefinite_insanity",
+                },
+                {
+                    "op": "replace",
+                    "path": _SANITY_STATE_PATH,
+                    "value": updated,
+                },
+            ])
+        elif event == "recovered" and current.get("insanity_type") == "permanent":
+            return RuleResult(
+                is_success=False,
+                metadata={
+                    "status": "rejected",
+                    "reason_code": "permanent_insanity_not_recoverable",
+                },
+            )
+        elif event == "recovered" and current.get("insanity_type") == "temporary":
+            return RuleResult(
+                is_success=False,
+                metadata={
+                    "status": "rejected",
+                    "reason_code": "temporary_insanity_requires_game_time",
+                },
+            )
         else:
             return RuleResult(
                 is_success=False,
@@ -962,17 +1271,24 @@ class CocSanityAdvanceHandler(BaseRuleHandler):
                     "event": event,
                 },
             )
+        metadata = {
+            "event": event,
+            "insanity_type": updated.get("insanity_type"),
+            "sanity_phase": updated.get("phase"),
+            "background_change_pending_player_confirmation": updated.get(
+                "background_change_pending_player_confirmation",
+                False,
+            ),
+        }
+        if background_change is not None:
+            metadata["background_change"] = background_change
+        if event == "time_advanced":
+            metadata["recovered_at_game_minute"] = _runtime_game_minute(params)
+        if event == "recovered" and current.get("insanity_type") == "indefinite":
+            metadata["recovery_node"] = recovery_node
         return RuleResult(
             is_success=True,
-            metadata={
-                "event": event,
-                "insanity_type": updated.get("insanity_type"),
-                "sanity_phase": updated.get("phase"),
-                "background_change_pending_player_confirmation": updated.get(
-                    "background_change_pending_player_confirmation",
-                    False,
-                ),
-            },
+            metadata=metadata,
             mutations=mutations,
             reveal_steps=[{
                 "kind": "sanity_state",

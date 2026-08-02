@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import uuid
 import json
@@ -7,9 +8,16 @@ import random
 import tempfile
 import time
 from collections import defaultdict
-from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Header, Request, HTTPException, UploadFile, File, Form
 from starlette.responses import JSONResponse
-from ..models import InventoryTransferCreate, PlayerIntent, SkillCheckRequest
+from ..models import (
+    ActionReceiptV2,
+    CocBackgroundDecisionRequest,
+    InventoryTransferCreate,
+    PlayerIntent,
+    ReplacementInvestigatorRequest,
+    SkillCheckRequest,
+)
 from ..ai.mechanic_compiler import MechanicCompiler
 from ..engine.projection import ProjectionDispatcher
 from ..engine.resolution_pipeline import ResolutionPipeline
@@ -20,6 +28,11 @@ from ..engine.skill_check import roll_skill_check
 from ..scenario.character_presets import character_preview, find_preset, list_presets, preset_dir_from_app
 from ..scenario.xlsx_parser import parse_xlsx_character
 from ..router_auth import get_account_from_token
+from .action_service import (
+    ActionDraftError,
+    submit_coc_background_decision,
+)
+from .auth import require_player_character
 
 router = APIRouter(prefix="/api/player")
 logger = logging.getLogger(__name__)
@@ -41,16 +54,7 @@ def _join_rate_key(client_ip: str, account: dict | None) -> str:
 
 
 def _get_character(request: Request) -> dict:
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
-    conn = request.app.state.db
-    char = conn.execute(
-        "SELECT * FROM characters WHERE player_token = %s", (token,)
-    ).fetchone()
-    if not char:
-        raise HTTPException(403, "Invalid token")
-    return dict(char)
+    return require_player_character(request)
 
 
 @router.post("/rooms/{room_id}/join")
@@ -229,7 +233,7 @@ async def restore_session(request: Request, character_id: str):
             raise HTTPException(404, "Character not found")
         if char.get("account_id") != account["account_id"]:
             raise HTTPException(403, "Not your character")
-        if char.get("status") == "left":
+        if char.get("status") in {"left", "restricted_npc"}:
             raise HTTPException(409, detail={"code": "character_session_not_restorable"})
         if char.get("status") == "protected_inactive":
             rotated_token = str(uuid.uuid4())
@@ -338,33 +342,7 @@ async def join_room_with_character(
                 raise HTTPException(404, "Template not found")
             tpl_rows = [tpl]
         tpl = dict(tpl_rows[0])
-        template_attributes = {
-            str(key).lower(): value
-            for key, value in _json_val(tpl.get("attributes")).items()
-        }
-        con_score = int(template_attributes.get("con", 50) or 50)
-        size_score = template_attributes.get("siz")
-        template_hp = (
-            (con_score + int(size_score)) // 10
-            if size_score is not None
-            else con_score // 5 or 10
-        )
-        parsed = {
-            "name": tpl.get("name", ""), "occupation": tpl.get("occupation", ""),
-            "age": tpl.get("age", 25), "sex": tpl.get("gender", ""),
-            "hp": template_hp,
-            "max_hp": template_hp,
-            "san": template_attributes.get("pow", 50),
-            "max_san": template_attributes.get("pow", 50),
-            "mp": template_attributes.get("pow", 50) // 5,
-            "max_mp": template_attributes.get("pow", 50) // 5,
-            "luck": template_attributes.get("luck", 50),
-            "attributes": template_attributes,
-            "skills": _json_val(tpl.get("skills")) or {},
-            "background": tpl.get("background", ""),
-            "backstory": _json_val(tpl.get("backstory")) or {},
-            "raw": {"format": "template"},
-        }
+        parsed = _character_from_template(tpl)
         initial_inventory = _template_initial_inventory(parsed["backstory"])
         source = {"type": "template", "template_id": template_id}
     elif copy_character_id:
@@ -372,6 +350,11 @@ async def join_room_with_character(
         if not src:
             raise HTTPException(404, "Source character not found")
         src = dict(src)
+        if src.get("status") in {"left", "restricted_npc"}:
+            raise HTTPException(
+                409,
+                detail={"code": "character_copy_source_unavailable"},
+            )
         req_token = request.headers.get("X-Room-Token", "")
         if src.get("account_id"):
             if src["account_id"] != account_id:
@@ -436,15 +419,253 @@ async def join_room_with_character(
     }
 
 
+@router.post("/characters/{character_id}/replacement")
+async def replace_permanently_insane_investigator(
+    request: Request,
+    character_id: str,
+    body: ReplacementInvestigatorRequest,
+    idempotency_key: str = Header(
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=200,
+    ),
+):
+    token = request.headers.get("X-Room-Token", "")
+    if not token:
+        raise HTTPException(401, "Missing X-Room-Token")
+    conn = request.app.state.db
+    new_character_id = str(uuid.uuid4())[:8]
+    new_player_token = str(uuid.uuid4())
+    revoked_token = f"revoked-{uuid.uuid4()}"
+    normalized_idempotency_key = idempotency_key.strip()
+    if not normalized_idempotency_key:
+        raise HTTPException(422, detail={"code": "idempotency_key_required"})
+    idempotency_hash = hashlib.sha256(
+        normalized_idempotency_key.encode()
+    ).hexdigest()
+    replay_token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    with conn.transaction() as tx:
+        original = tx.execute(
+            "SELECT * FROM characters WHERE character_id = %s FOR UPDATE",
+            (character_id,),
+        ).fetchone()
+        if not original:
+            raise HTTPException(403, "Invalid token")
+        original = dict(original)
+        original_data = _json_val(original.get("xlsx_data")) or {}
+        prior_transition = original_data.get("_replacement_transition")
+        if isinstance(prior_transition, dict):
+            if prior_transition.get("replay_token_sha256") != replay_token_hash:
+                raise HTTPException(403, "Invalid token")
+            if (
+                prior_transition.get("idempotency_key_sha256") != idempotency_hash
+                or prior_transition.get("template_id") != body.template_id
+            ):
+                raise HTTPException(
+                    409,
+                    detail={"code": "replacement_already_completed"},
+                )
+            replacement = tx.execute(
+                "SELECT * FROM characters WHERE character_id = %s AND room_id = %s",
+                (
+                    prior_transition.get("new_character_id"),
+                    original["room_id"],
+                ),
+            ).fetchone()
+            if not replacement:
+                raise HTTPException(
+                    409,
+                    detail={"code": "replacement_transition_incomplete"},
+                )
+            replacement_data = _json_val(replacement.get("xlsx_data")) or {}
+            return {
+                "character_id": replacement["character_id"],
+                "player_token": replacement["player_token"],
+                "player_name": replacement.get("player_name") or "玩家",
+                "investigator_name": replacement_data.get("name") or "",
+                "status": replacement["status"],
+                "character": replacement_data,
+            }
+        if original.get("player_token") != token:
+            raise HTTPException(403, "Invalid token")
+        if original.get("status") != "restricted_npc":
+            raise HTTPException(
+                409,
+                detail={"code": "replacement_not_available"},
+            )
+
+        runtime = tx.execute(
+            "SELECT san, temp_modifiers FROM character_runtime_state "
+            "WHERE character_id = %s AND room_id = %s FOR UPDATE",
+            (character_id, original["room_id"]),
+        ).fetchone()
+        modifiers = _json_val(runtime.get("temp_modifiers")) if runtime else {}
+        sanity = (
+            modifiers.get("coc7_sanity")
+            if isinstance(modifiers, dict)
+            else None
+        )
+        if (
+            not runtime
+            or int(runtime.get("san") or 0) != 0
+            or not isinstance(sanity, dict)
+            or sanity.get("insanity_type") != "permanent"
+        ):
+            raise HTTPException(
+                409,
+                detail={"code": "replacement_not_available"},
+            )
+
+        room = tx.execute(
+            "SELECT * FROM rooms WHERE room_id = %s FOR UPDATE",
+            (original["room_id"],),
+        ).fetchone()
+        if not room or room.get("status") != "active":
+            raise HTTPException(
+                409,
+                detail={"code": "replacement_room_not_active"},
+            )
+        if (room.get("integrity_status") or "healthy") != "healthy":
+            raise HTTPException(
+                409,
+                detail={"code": "replacement_room_not_healthy"},
+            )
+        package_row = tx.execute(
+            "SELECT runtime_package FROM runtime_package_versions "
+            "WHERE runtime_package_version_id = %s "
+            "AND scenario_version_id = %s AND gate_status = 'ready'",
+            (
+                room.get("runtime_package_version_id"),
+                room.get("scenario_version_id"),
+            ),
+        ).fetchone()
+        package = _json_val(package_row.get("runtime_package")) if package_row else {}
+        character_control = (
+            package.get("character_control")
+            if isinstance(package, dict)
+            else None
+        )
+        safe_scene_ids = (
+            character_control.get("safe_replacement_scene_ids")
+            if isinstance(character_control, dict)
+            else []
+        )
+        scene = tx.execute(
+            "SELECT current_scene FROM room_scene_state WHERE room_id = %s FOR UPDATE",
+            (original["room_id"],),
+        ).fetchone()
+        current_scene = str(scene.get("current_scene") or "") if scene else ""
+        if not isinstance(safe_scene_ids, list) or current_scene not in {
+            str(value) for value in safe_scene_ids
+        }:
+            raise HTTPException(
+                409,
+                detail={"code": "replacement_scene_not_safe"},
+            )
+
+        package_templates = (
+            package.get("character_and_items", {}).get("templates", [])
+            if isinstance(package, dict)
+            and isinstance(package.get("character_and_items"), dict)
+            else []
+        )
+        allowed_template_ids = {
+            str(item.get("template_id") or item.get("templateId") or "")
+            for item in package_templates
+            if isinstance(item, dict)
+        }
+        if body.template_id not in allowed_template_ids:
+            raise HTTPException(
+                404,
+                detail={"code": "replacement_template_not_compiled"},
+            )
+        template = tx.execute(
+            "SELECT * FROM character_templates WHERE template_id = %s AND scenario_id = %s",
+            (body.template_id, room.get("scenario_id")),
+        ).fetchone()
+        if not template:
+            raise HTTPException(
+                404,
+                detail={"code": "replacement_template_not_found"},
+            )
+        parsed = _character_from_template(dict(template))
+        parsed["source"] = {
+            "type": "template",
+            "template_id": body.template_id,
+        }
+        tx.execute(
+            "INSERT INTO characters "
+            "(character_id, room_id, player_name, player_token, xlsx_data, account_id, "
+            "status, is_ready) VALUES (%s, %s, %s, %s, %s, %s, 'ready', TRUE)",
+            (
+                new_character_id,
+                original["room_id"],
+                original.get("player_name") or "玩家",
+                new_player_token,
+                json.dumps(parsed, ensure_ascii=False),
+                original.get("account_id"),
+            ),
+        )
+        for item in _template_initial_inventory(parsed.get("backstory")):
+            tx.execute(
+                "INSERT INTO inventory "
+                "(id, character_id, room_id, name, description, quantity, is_secret, source) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, 'scenario_template')",
+                (
+                    str(uuid.uuid4()),
+                    new_character_id,
+                    original["room_id"],
+                    item["name"],
+                    item["description"],
+                    item["quantity"],
+                    item["is_secret"],
+                ),
+            )
+        original_data["_replacement_transition"] = {
+            "idempotency_key_sha256": idempotency_hash,
+            "new_character_id": new_character_id,
+            "replay_token_sha256": replay_token_hash,
+            "template_id": body.template_id,
+        }
+        tx.execute(
+            "UPDATE characters SET account_id = NULL, player_token = %s, "
+            "xlsx_data = %s, is_ready = FALSE "
+            "WHERE character_id = %s AND status = 'restricted_npc'",
+            (
+                revoked_token,
+                json.dumps(original_data, ensure_ascii=False),
+                character_id,
+            ),
+        )
+        from ..engine.state_service import StateService
+
+        StateService(tx).initialize_character_state(
+            new_character_id,
+            original["room_id"],
+            commit=False,
+        )
+
+    _index_character_if_available(
+        request,
+        original["room_id"],
+        new_character_id,
+        parsed,
+    )
+    return {
+        "character_id": new_character_id,
+        "player_token": new_player_token,
+        "player_name": original.get("player_name") or "玩家",
+        "investigator_name": parsed.get("name") or "",
+        "status": "ready",
+        "character": parsed,
+    }
+
+
 @router.post("/character/import-xlsx")
 async def import_character_xlsx(request: Request, file: UploadFile = File(...)):
-    token = request.headers.get("X-Room-Token", "")
     conn = request.app.state.db
-    char = conn.execute(
-        "SELECT * FROM characters WHERE player_token = %s", (token,)
-    ).fetchone()
-    if not char:
-        raise HTTPException(403, "Invalid token")
+    char = _get_character(request)
 
     content = await file.read()
     tmp_path = os.path.join(tempfile.gettempdir(), f"{char['character_id']}.xlsx")
@@ -487,15 +708,8 @@ async def speech_to_text(
     durationMs: int = Form(default=0),
 ):
     """Upload audio recording, return transcribed text."""
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
     conn = request.app.state.db
-    char = conn.execute(
-        "SELECT * FROM characters WHERE player_token = %s", (token,)
-    ).fetchone()
-    if not char:
-        raise HTTPException(403, "Invalid token")
+    char = _get_character(request)
 
     # Validate MIME
     mime = (audio.content_type or "audio/webm").lower()
@@ -534,15 +748,8 @@ async def speech_to_text(
 @router.post("/team-message")
 async def team_message(request: Request):
     """Send a team chat message (not an action, not resolved by AI)."""
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
     conn = request.app.state.db
-    char = conn.execute(
-        "SELECT * FROM characters WHERE player_token = %s", (token,)
-    ).fetchone()
-    if not char:
-        raise HTTPException(403, "Invalid token")
+    char = _get_character(request)
 
     body = await request.json()
     from .team_messages import TeamMessageError, send_team_message
@@ -563,15 +770,8 @@ async def team_message(request: Request):
 @router.post("/intent")
 async def submit_intent(request: Request, intent: PlayerIntent):
     engine = request.app.state.engine
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
     conn = request.app.state.db
-    char = conn.execute(
-        "SELECT * FROM characters WHERE player_token = %s", (token,)
-    ).fetchone()
-    if not char:
-        raise HTTPException(403, "Invalid token")
+    char = _get_character(request)
 
     room = conn.execute(
         "SELECT status, player_experience_version FROM rooms WHERE room_id = %s",
@@ -640,16 +840,8 @@ async def submit_intent(request: Request, intent: PlayerIntent):
 @router.get("/combat-round")
 async def get_combat_round(request: Request):
     """Return the caller's safe view of an active combat declaration round."""
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
     conn = request.app.state.db
-    character = conn.execute(
-        "SELECT character_id, room_id FROM characters WHERE player_token = %s",
-        (token,),
-    ).fetchone()
-    if not character:
-        raise HTTPException(403, "Invalid token")
+    character = _get_character(request)
 
     from ..encounter_persistence import get_active_encounter
     from ..turn_manager import TurnManager
@@ -1158,10 +1350,13 @@ async def _resolve_action_background(app, action_id: str):
         conn = pg_db.get_connection()
         try:
             compiler = getattr(app.state, "compiler", None) or MechanicCompiler(api_key="")
+            from ..engine.state_service import StateService
+
             pipeline = ResolutionPipeline(
                 conn,
                 compiler=compiler,
                 dispatcher=ProjectionDispatcher(conn),
+                state_service=StateService(conn),
                 host_connection_checker=lambda room_id: ws_manager.is_connected(room_id, "host"),
             )
             await pipeline.resolve_action(action_id)
@@ -1178,6 +1373,35 @@ async def _resolve_action_background(app, action_id: str):
         await pipeline.resolve_action(action_id)
     except Exception:
         logger.exception("Background resolution failed for action %s", action_id)
+
+
+@router.post(
+    "/actions/{action_id}/background-change",
+    response_model=ActionReceiptV2,
+)
+async def submit_background_change_decision(
+    request: Request,
+    action_id: str,
+    body: CocBackgroundDecisionRequest,
+    idempotency_key: str = Header(
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=200,
+    ),
+):
+    character = _get_character(request)
+    try:
+        receipt = submit_coc_background_decision(
+            request.app.state.db,
+            character["character_id"],
+            action_id,
+            body.decision,
+            idempotency_key,
+        )
+    except ActionDraftError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    asyncio.create_task(_resolve_action_background(request.app, action_id))
+    return receipt
 
 
 async def _resolve_collaboration_batch_background(app, contract_id: str):
@@ -1977,6 +2201,39 @@ def _template_initial_inventory(backstory: dict | None) -> list[dict]:
             "is_secret": bool(value.get("is_secret", False)),
         })
     return items[:50]
+
+
+def _character_from_template(template: dict) -> dict:
+    attributes = {
+        str(key).lower(): value
+        for key, value in (_json_val(template.get("attributes")) or {}).items()
+    }
+    con_score = int(attributes.get("con", 50) or 50)
+    size_score = attributes.get("siz")
+    pow_score = int(attributes.get("pow", 50) or 50)
+    template_hp = (
+        (con_score + int(size_score)) // 10
+        if size_score is not None
+        else con_score // 5 or 10
+    )
+    return {
+        "name": template.get("name", ""),
+        "occupation": template.get("occupation", ""),
+        "age": template.get("age", 25),
+        "sex": template.get("gender", ""),
+        "hp": template_hp,
+        "max_hp": template_hp,
+        "san": pow_score,
+        "max_san": pow_score,
+        "mp": pow_score // 5,
+        "max_mp": pow_score // 5,
+        "luck": int(attributes.get("luck", 50) or 50),
+        "attributes": attributes,
+        "skills": _json_val(template.get("skills")) or {},
+        "background": template.get("background", ""),
+        "backstory": _json_val(template.get("backstory")) or {},
+        "raw": {"format": "template"},
+    }
 
 
 def _build_lobby_snapshot(conn, room_id: str) -> dict:

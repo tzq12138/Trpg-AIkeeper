@@ -364,6 +364,22 @@ async def test_high_risk_ai_manifestation_is_replaced_by_engine_safe_fallback(mo
     assert bout["symptom_id"] == 8
     assert bout["selection_source"] == "engine_safe_fallback"
     assert bout["retry_count"] == 1
+    assert bout["proposal_audit"] == {
+        "ai_proposal": {"mode": "immediate", "symptom_id": 3},
+        "engine_validation": {
+            "status": "rejected",
+            "reason_code": "high_risk_manifestation",
+        },
+        "constrained_retry": {
+            "attempted": True,
+            "proposal": None,
+            "status": "invalid",
+        },
+        "final": {
+            "selection_source": "engine_safe_fallback",
+            "symptom_id": 8,
+        },
+    }
     assert "rawText" not in str(result.metadata)
     assert "attack another investigator" not in str(result.metadata)
 
@@ -387,7 +403,10 @@ async def test_bout_completion_enters_underlying_insanity_and_background_change_
 
     result = await CocSanityAdvanceHandler().execute(
         GameState(character={"temp_modifiers": {"coc7_sanity": current}}),
-        {"event": "bout_elapsed"},
+        {
+            "event": "bout_elapsed",
+            "_runtime_scene": {"in_game_minutes": 100},
+        },
     )
 
     state = _sanity_state(result)
@@ -761,6 +780,7 @@ async def test_engine_sanity_handler_can_write_room_scoped_state_but_ai_patch_ca
         },
         [],
         {
+            "_runtime_scene": {"in_game_minutes": 100},
             "triggers": [
                 {
                     "condition": {"$action": "dialogue"},

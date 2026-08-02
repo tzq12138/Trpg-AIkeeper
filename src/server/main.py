@@ -34,6 +34,7 @@ from .engine.projection import ProjectionDispatcher
 from .engine.resolution_pipeline import ResolutionPipeline
 from .router_rooms import router as rooms_router
 from .player.router_player import router as player_router
+from .player.auth import find_player_character
 from .scenario.router_scenarios import router as scenarios_router
 from .player.router_clues import router as clues_router
 from .player.router_objectives import router as objectives_router
@@ -317,11 +318,8 @@ async def health(request: Request):
 
 async def player_ws_endpoint(websocket: WebSocket, room_id: str, token: str, last_sequence: int = 0):
     conn = websocket.app.state.db
-    char = conn.execute(
-        "SELECT character_id, room_id FROM characters WHERE player_token = %s AND room_id = %s",
-        (token, room_id),
-    ).fetchone()
-    if not char:
+    char = find_player_character(conn, token)
+    if not char or char["room_id"] != room_id:
         await websocket.accept()
         await websocket.close(code=4003, reason="Invalid token")
         return
@@ -330,6 +328,14 @@ async def player_ws_endpoint(websocket: WebSocket, room_id: str, token: str, las
     connection_id = f"player:{character_id}"
 
     await ws_manager.connect(websocket, room_id, connection_id)
+    current = find_player_character(conn, token)
+    if (
+        not current
+        or current["room_id"] != room_id
+        or current["character_id"] != character_id
+    ):
+        await ws_manager.revoke_player(room_id, character_id)
+        return
     logger.info("Player %s connected to room %s", character_id, room_id)
 
     try:

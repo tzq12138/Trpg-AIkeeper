@@ -16,6 +16,7 @@ from .action_service import (
     insert_action_draft,
     redact_backstage_references,
 )
+from .auth import require_player_character
 
 
 router = APIRouter(prefix="/api/player")
@@ -31,16 +32,10 @@ _ACTIVE_ACTION_STATUSES = {
 
 
 def _require_character(request: Request) -> dict:
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
-    character = request.app.state.db.execute(
-        "SELECT character_id, room_id, status FROM characters WHERE player_token = %s",
-        (token,),
-    ).fetchone()
-    if not character or character.get("status") not in {"joined", "ready"}:
-        raise HTTPException(403, "Invalid token")
-    return dict(character)
+    return require_player_character(
+        request,
+        allowed_statuses={"joined", "ready"},
+    )
 
 
 def _contract_dto(conn, contract_id: str) -> CollaborationContractDTO:

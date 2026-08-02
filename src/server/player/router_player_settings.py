@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, StrictBool, model_validator
+from .auth import require_player_character
 
 
 router = APIRouter(prefix="/api/player")
@@ -28,16 +29,7 @@ class PlayerSettingsUpdate(BaseModel):
 
 
 def _require_character(request: Request) -> dict:
-    token = request.headers.get("X-Room-Token", "")
-    if not token:
-        raise HTTPException(401, "Missing X-Room-Token")
-    character = request.app.state.db.execute(
-        "SELECT character_id, room_id FROM characters WHERE player_token = %s",
-        (token,),
-    ).fetchone()
-    if not character:
-        raise HTTPException(403, "Invalid token")
-    return dict(character)
+    return require_player_character(request)
 
 
 def get_effective_draft_analysis_enabled(conn, character: dict) -> bool:

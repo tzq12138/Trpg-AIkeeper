@@ -90,6 +90,19 @@ class RuleExecutor:
             params["_rule_policy"] = dict(
                 (scenario_assets or {}).get("rule_policy") or {}
             )
+            if mechanic_type in {"sanity_check", "sanity_advance"}:
+                params["_runtime_character_control"] = dict(
+                    (scenario_assets or {}).get("_runtime_character_control") or {}
+                )
+                params["_runtime_scene"] = dict(
+                    (scenario_assets or {}).get("_runtime_scene") or {}
+                )
+            if mechanic_type == "sanity_advance":
+                sanity_background = (intent.params or {}).get(
+                    "_sanity_background"
+                )
+                if isinstance(sanity_background, dict):
+                    params["_sanity_background"] = sanity_background
             if mechanic_type == "apply_patch":
                 mutation = {
                     "op": params.get("op", "replace"),
@@ -226,6 +239,9 @@ class RuleExecutor:
         follow_up = intent_params.get("_coc_followup")
         if isinstance(follow_up, dict):
             params["_coc_followup"] = follow_up
+        sanity_background = intent_params.get("_sanity_background")
+        if isinstance(sanity_background, dict):
+            params["_sanity_background"] = sanity_background
         params.update({
             "difficulty": compiled.difficulty,
             "itemConsumed": compiled.item_consumed,

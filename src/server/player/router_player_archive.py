@@ -3,6 +3,7 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from typing import Literal
 
 from ..events.event_log import EventLog
+from .auth import find_player_character
 
 router = APIRouter(prefix="/api")
 
@@ -105,9 +106,7 @@ def _released_bundle_entries(conn, room_id: str, character_id: str, archive_type
 
 
 def _get_character(conn, token: str):
-    return conn.execute(
-        "SELECT * FROM characters WHERE player_token = %s", (token,)
-    ).fetchone()
+    return find_player_character(conn, token)
 
 
 @router.get("/player/archive")

@@ -1820,6 +1820,59 @@ def submit_coc_followup_decision(
     return build_action_receipt(conn, character_id, action_id)
 
 
+def submit_coc_background_decision(
+    conn,
+    character_id: str,
+    action_id: str,
+    decision: str,
+    idempotency_key: str,
+) -> ActionReceiptV2:
+    if decision not in {"accept", "reject"}:
+        raise ActionDraftError(422, {"code": "coc_background_decision_invalid"})
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        raise ActionDraftError(422, {"code": "idempotency_key_required"})
+    idempotency_key = idempotency_key.strip()
+    if len(idempotency_key) > 200:
+        raise ActionDraftError(422, {"code": "idempotency_key_invalid"})
+
+    with conn.transaction() as tx:
+        action = tx.execute(
+            "SELECT * FROM actions WHERE action_id = %s AND character_id = %s FOR UPDATE",
+            (action_id, character_id),
+        ).fetchone()
+        if not action:
+            raise ActionDraftError(404, {"code": "action_not_found"})
+        params = _json_value(action.get("params")) or {}
+        progress = params.get("sanity_background_progress")
+        if not isinstance(progress, dict):
+            raise ActionDraftError(409, {"code": "coc_background_not_pending"})
+
+        submitted_decision = progress.get("decision")
+        submitted_key = progress.get("decision_idempotency_key")
+        if submitted_decision:
+            if submitted_decision == decision and submitted_key == idempotency_key:
+                return build_action_receipt(tx, character_id, action_id)
+            if submitted_key == idempotency_key:
+                raise ActionDraftError(409, {"code": "idempotency_key_reused"})
+            raise ActionDraftError(409, {"code": "coc_background_already_submitted"})
+
+        if action["status"] != "awaiting_player_choice" or progress.get("status") != "pending":
+            raise ActionDraftError(409, {"code": "coc_background_not_pending"})
+        allowed = progress.get("allowed_decisions")
+        if not isinstance(allowed, list) or decision not in allowed:
+            raise ActionDraftError(409, {"code": "coc_background_decision_unavailable"})
+
+        progress["decision"] = decision
+        progress["decision_idempotency_key"] = idempotency_key
+        progress["status"] = "submitted"
+        params["sanity_background_progress"] = progress
+        tx.execute(
+            "UPDATE actions SET params = %s WHERE action_id = %s",
+            (json.dumps(params, ensure_ascii=False), action_id),
+        )
+    return build_action_receipt(conn, character_id, action_id)
+
+
 def _parse_utc_datetime(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
