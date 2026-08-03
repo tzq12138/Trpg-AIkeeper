@@ -171,7 +171,7 @@
         "order": 4,
         "npcs_present": ["mei-maintainer"],
         "clues_available": ["maintenance-radio", "g17-pipe"],
-        "exits": ["orchid-hall", "control-room"],
+        "exits": [],
         "visibility": "public",
         "citation_ids": ["cit-glass-scene-cistern"]
       }

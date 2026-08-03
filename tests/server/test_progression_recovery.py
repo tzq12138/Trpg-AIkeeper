@@ -152,6 +152,53 @@ def test_runtime_package_makes_compiled_alternative_paths_executable(test_db):
     )["status"] == "path_available"
 
 
+def test_alternative_path_preserves_canonical_edge_citation_identity():
+    from src.server.scenario.module_compiler import _build_runtime_package
+
+    graph = _progression_graph()
+    graph["alternative_paths"][0]["citation"] = {
+        "source_ref": "module.json#/alternative_paths/0",
+    }
+    items = [
+        {
+            "content_item_id": f"item-{scene_id}",
+            "item_type": "scene",
+            "logical_key": scene_id,
+            "title": scene_id,
+            "citation": _citation(f"item-{scene_id}"),
+        }
+        for scene_id in ("gate", "control")
+    ]
+    package = _build_runtime_package(
+        {"scenario_version_id": "citation-version", "scenario_title": "Citation"},
+        graph,
+        {},
+        items,
+        [{
+            "from_content_item_id": "item-gate",
+            "to_content_item_id": "item-control",
+            "relation_type": "transitions_to",
+            "conditions": [],
+            "citation": {
+                "source_ref": "module.json#/scenes/0",
+                "source_part_id": "canonical-scene-part",
+            },
+        }],
+        [],
+        [{"template_id": "investigator", "name": "Investigator"}],
+    )
+
+    edge = next(
+        item
+        for item in package["semantic_progression_rules"]["edges"]
+        if item.get("alternative_path_id") == "backup"
+    )
+    assert edge["citation"] == {
+        "source_ref": "module.json#/alternative_paths/0",
+        "source_part_id": "canonical-scene-part",
+    }
+
+
 def test_alternative_path_conditions_cannot_be_bypassed_by_content_edge(test_db):
     from src.server.ai.director import select_progression_recovery
     from src.server.scenario.module_compiler import _build_runtime_package

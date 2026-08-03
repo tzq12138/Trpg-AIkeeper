@@ -45,6 +45,8 @@ class _RecordingDispatcher:
 def _install_glass_rain(client, test_db):
     setup_auth_test_data(test_db)
     create_account(test_db, "acc-player-2", "testplayer2", "player")
+    create_account(test_db, "acc-player-3", "testplayer3", "player")
+    create_account(test_db, "acc-player-4", "testplayer4", "player")
     test_db.execute(
         "INSERT INTO rule_sets "
         "(rule_set_id, name, slug, system, license_type, created_by, status) "
@@ -60,6 +62,8 @@ def _install_glass_rain(client, test_db):
         "admin": login(client, "admin"),
         "player_1": login(client, "testplayer"),
         "player_2": login(client, "testplayer2"),
+        "player_3": login(client, "testplayer3"),
+        "player_4": login(client, "testplayer4"),
     }
     installed = client.post(
         "/api/admin/golden-modules/golden-team-glass-rain/install",
@@ -85,7 +89,9 @@ def _create_started_room(client, test_db, installed, tokens, templates):
     assert created.status_code == 200, created.text
     room = created.json()
     joined = []
-    for ordinal, player_key in enumerate(("player_1", "player_2")):
+    for ordinal, player_key in enumerate(
+        ("player_1", "player_2", "player_3", "player_4")
+    ):
         response = client.post(
             f"/api/player/rooms/{room['room_id']}/join-with-character",
             headers={"Authorization": f"Bearer {tokens[player_key]}"},
@@ -102,14 +108,36 @@ def _create_started_room(client, test_db, installed, tokens, templates):
             character["character_id"],
             room["room_id"],
         )
+        headers = {"X-Room-Token": character["player_token"]}
+        for step in (
+            "character_rules",
+            "safety",
+            "ai_host",
+            "private_data",
+            "connection",
+        ):
+            confirmation = {"confirmed": True}
+            if step == "safety":
+                confirmation["contract_hash"] = room["risk_contract_hash"]
+            confirmed = client.post(
+                f"/api/player/session-zero/{step}",
+                headers=headers,
+                json=confirmation,
+            )
+            assert confirmed.status_code == 200, confirmed.text
+        ready = client.post(
+            "/api/player/intent",
+            headers=headers,
+            json={
+                "action_id": f"glass-ready-{character['character_id']}",
+                "intent_type": "ready_toggle",
+                "declared_intent": "准备就绪",
+            },
+        )
+        assert ready.status_code == 202, ready.text
     started = client.post(
         f"/api/rooms/{room['room_id']}/start",
         headers={"X-Owner-Token": room["owner_token"]},
-        json={
-            "force_start": True,
-            "confirm": True,
-            "reason": "golden-flow integration test",
-        },
     )
     assert started.status_code == 200, started.text
     return room, joined, state_service

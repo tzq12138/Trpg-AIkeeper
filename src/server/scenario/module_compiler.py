@@ -432,7 +432,10 @@ def _build_runtime_package(
                     *_json_list(base_edge.get("conditions")),
                     *_json_list(path.get("conditions")),
                 ],
-                "citation": _json_object(path.get("citation")),
+                "citation": {
+                    **_json_object(base_edge.get("citation")),
+                    **_json_object(path.get("citation")),
+                },
                 "alternative_path_id": path_id,
                 "progression_id": str(path.get("progression_id") or ""),
             }
