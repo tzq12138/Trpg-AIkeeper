@@ -2,6 +2,7 @@ import json
 from fastapi import APIRouter, Request, HTTPException, Query
 from typing import Literal
 
+from ..campaign_archive import project_campaign_archive
 from ..events.event_log import EventLog
 from .auth import find_player_character
 
@@ -107,6 +108,34 @@ def _released_bundle_entries(conn, room_id: str, character_id: str, archive_type
 
 def _get_character(conn, token: str):
     return find_player_character(conn, token)
+
+
+@router.get("/player/campaign-archive")
+async def player_campaign_archive(request: Request):
+    char = _get_character(request.app.state.db, request.headers.get("X-Room-Token", ""))
+    if not char:
+        raise HTTPException(403, "Invalid token")
+    row = request.app.state.db.execute(
+        "SELECT archive_id, room_id, ending_type, summary, highlights, "
+        "character_arcs, created_at "
+        "FROM campaign_archives WHERE room_id = %s ORDER BY created_at DESC LIMIT 1",
+        (char["room_id"],),).fetchone()
+    if not row:
+        raise HTTPException(404, "Archive not found")
+    return project_campaign_archive(
+        row,
+        scope="player",
+        character_id=char["character_id"],
+    )
+
+
+@router.get("/player/campaign-archive/arcs/{character_id}")
+async def player_campaign_arc(request: Request, character_id: str):
+    char = _get_character(request.app.state.db, request.headers.get("X-Room-Token", ""))
+    if not char or char["character_id"] != character_id:
+        raise HTTPException(403, "Character arc is private")
+    archive = await player_campaign_archive(request)
+    return {"character_arc": archive["character_arc"]}
 
 
 @router.get("/player/archive")
@@ -237,13 +266,15 @@ async def archive_clues(request: Request):
         raise HTTPException(403, "Invalid token")
 
     rows = conn.execute(
-        "SELECT sequence, event_type, payload, issued_at FROM events "
+        "SELECT sequence, room_id, event_type, audience, payload, action_id, "
+        "state_version, issued_at FROM events "
         "WHERE room_id = %s AND event_type IN ('s2c_private_notice', 's2c_public_observation') "
         "ORDER BY sequence ASC",
         (char["room_id"],),
     ).fetchall()
 
     clues = []
+    event_log = EventLog(conn)
     for r in rows:
         payload = r["payload"]
         if isinstance(payload, str):
@@ -252,10 +283,17 @@ async def archive_clues(request: Request):
             except (json.JSONDecodeError, TypeError):
                 payload = {}
 
-        if r["event_type"] == "s2c_private_notice":
-            owner = payload.get("characterId", "")
-            if owner and owner != char["character_id"]:
-                continue
+        if not event_log._can_player_see_event(
+            r["event_type"],
+            r["audience"],
+            payload,
+            char["character_id"],
+            r["sequence"],
+            r.get("action_id"),
+            r.get("state_version"),
+            r.get("room_id"),
+        ):
+            continue
 
         clues.append({
             "sequence": r["sequence"],

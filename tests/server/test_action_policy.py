@@ -203,6 +203,8 @@ def test_private_move_stops_before_ai_and_cannot_be_confirmed(client, test_db):
 
 
 def test_expired_investigation_draft_is_atomically_canceled_without_action(client, test_db):
+    from src.server.ai.decision_audit import DecisionAuditRecorder
+
     setup_auth_test_data(test_db)
     room = create_room(client)
     player = client.post(f"/api/player/rooms/{room['room_id']}/join").json()
@@ -212,6 +214,15 @@ def test_expired_investigation_draft_is_atomically_canceled_without_action(clien
         headers=headers,
         json={"declared_intent": "我检查门锁"},
     ).json()
+    audit_id = DecisionAuditRecorder(test_db).record(
+        room_id=room["room_id"],
+        action_id=draft["draft_id"],
+        draft_id=draft["draft_id"],
+        draft_revision=draft["revision"],
+        task_type="analyze_director_action",
+        provider="draft-terminal-test",
+        model="deterministic",
+    )
     test_db.execute(
         "UPDATE action_drafts SET expires_at = NOW() - INTERVAL '1 second' "
         "WHERE draft_id = %s",
@@ -244,6 +255,23 @@ def test_expired_investigation_draft_is_atomically_canceled_without_action(clien
         "SELECT COUNT(*) AS count FROM actions WHERE room_id = %s",
         (room["room_id"],),
     ).fetchone()["count"] == 0
+    audit = test_db.execute(
+        "SELECT action_id, audit_state, final_delta FROM ai_call_logs "
+        "WHERE decision_audit_id = %s",
+        (audit_id,),
+    ).fetchone()
+    assert audit["action_id"] is None
+    assert audit["audit_state"] == "expired"
+    assert audit["final_delta"] == {
+        "draft_status": "timeout",
+        "reason_code": "draft_timed_out",
+        "draft_revision": draft["revision"],
+        "safe_effect": {
+            "effect": "cancel",
+            "mechanical_delta": [],
+            "rng_draws": [],
+        },
+    }
 
 
 def test_expired_combat_draft_uses_declared_safe_withdraw_without_rng(client, test_db):

@@ -52,13 +52,16 @@ def test_clue_history(client, test_db):
     _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "public clue"})
     _insert_event(test_db, room_id, 2, "s2c_private_notice", "player", {"text": "private clue", "characterId": char_id})
     _insert_event(test_db, room_id, 3, "s2c_private_notice", "player", {"text": "other clue", "characterId": "other-char"})
+    _insert_event(test_db, room_id, 4, "s2c_private_notice", "player", {"text": "snake clue", "character_id": char_id})
+    _insert_event(test_db, room_id, 5, "s2c_private_notice", "player", {"text": "unowned legacy clue"})
 
     resp = client.get("/api/player/archive/clues", headers={"X-Room-Token": token})
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["clues"]) == 2
+    assert len(data["clues"]) == 3
     assert data["clues"][0]["data"]["text"] == "public clue"
     assert data["clues"][1]["data"]["text"] == "private clue"
+    assert data["clues"][2]["data"]["text"] == "snake clue"
 
 
 def test_skill_check_history(client, test_db):
@@ -171,6 +174,205 @@ def test_end_campaign_emits_campaign_ended_event(client, test_db):
     payload = json.loads(event["payload"]) if isinstance(event["payload"], str) else event["payload"]
     assert payload["ending_type"] == "victory"
     assert payload["endingName"] == "成功逃脱"
+
+
+def test_campaign_archive_highlights_exclude_host_and_player_only_events(
+    client,
+    test_db,
+):
+    room_id, owner_token, character_id, _ = _setup_player(client, test_db)
+    _insert_event(
+        test_db,
+        room_id,
+        1,
+        "s2c_reveal_transaction",
+        "host",
+        {"text": "host-only-ending-secret"},
+    )
+    _insert_event(
+        test_db,
+        room_id,
+        2,
+        "s2c_scene_sync",
+        "player",
+        {"text": "player-only-ending-secret", "characterId": character_id},
+    )
+    _insert_event(
+        test_db,
+        room_id,
+        3,
+        "s2c_scene_sync",
+        "party",
+        {"text": "public-ending-highlight"},
+    )
+    test_db.execute(
+        "SELECT setval(pg_get_serial_sequence('events', 'sequence'), "
+        "(SELECT MAX(sequence) FROM events))"
+    )
+    test_db.commit()
+
+    response = client.post(
+        f"/api/rooms/{room_id}/end",
+        headers={"X-Owner-Token": owner_token},
+        json={"ending_type": "mixed"},
+    )
+
+    assert response.status_code == 200, response.text
+    archive = test_db.execute(
+        "SELECT highlights FROM campaign_archives WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    rendered = json.dumps(archive["highlights"], ensure_ascii=False)
+    assert "public-ending-highlight" in rendered
+    assert "host-only-ending-secret" not in rendered
+    assert "player-only-ending-secret" not in rendered
+
+
+def test_player_campaign_summary_key_events_respect_event_audience(client, test_db):
+    from src.server.campaign_archive import CampaignArchive
+
+    room_id, _, character_id, _ = _setup_player(client, test_db)
+    other = client.post(f"/api/player/rooms/{room_id}/join").json()
+    _insert_event(
+        test_db,
+        room_id,
+        901,
+        "s2c_reveal_transaction",
+        "host",
+        {"text": "hidden reveal timing"},
+    )
+    _insert_event(
+        test_db,
+        room_id,
+        902,
+        "s2c_scene_sync",
+        "party",
+        {"summary": "public scene"},
+    )
+    _insert_event(
+        test_db,
+        room_id,
+        903,
+        "s2c_scene_sync",
+        "player",
+        {"characterId": character_id, "summary": "own private scene"},
+    )
+    _insert_event(
+        test_db,
+        room_id,
+        904,
+        "s2c_scene_sync",
+        "player",
+        {"characterId": other["character_id"], "summary": "other private scene"},
+    )
+    test_db.commit()
+
+    summary = CampaignArchive(test_db).get_campaign_summary(
+        room_id,
+        character_id=character_id,
+    )
+
+    assert [event["sequence"] for event in summary.key_events] == [902, 903]
+
+
+def test_account_delete_cannot_race_stale_identity_back_into_campaign_archive(
+    client,
+    test_db,
+    monkeypatch,
+):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from src.server.campaign_archive import CampaignArchive
+    from src.server.db_adapter import PgConnection
+    import src.server.router_admin as admin_module
+    from tests.server.conftest import create_account
+
+    setup_auth_test_data(test_db)
+    account_id = "archive-race-account"
+    room_id = "archive-race-room"
+    character_id = "archive-race-character"
+    create_account(test_db, account_id, "archive-race", "player")
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token, owner_account_id, status) "
+        "VALUES (%s, 'archive-race-owner', 'acc-host', 'active')",
+        (room_id,),
+    )
+    test_db.execute(
+        "INSERT INTO characters "
+        "(character_id, room_id, player_name, player_token, account_id, xlsx_data) "
+        "VALUES (%s, %s, 'Archive Race Name', 'archive-race-token', %s, %s)",
+        (
+            character_id,
+            room_id,
+            account_id,
+            json.dumps({"name": "Archive Investigator Name"}),
+        ),
+    )
+    test_db.commit()
+
+    arcs_built = threading.Event()
+    deletion_reached_archive_redaction = threading.Event()
+    release_ending = threading.Event()
+    original_build = CampaignArchive._build_character_arcs
+
+    def pause_after_arc_snapshot(self, target_room_id, characters, **kwargs):
+        arcs = original_build(self, target_room_id, characters, **kwargs)
+        arcs_built.set()
+        assert release_ending.wait(timeout=5)
+        return arcs
+
+    monkeypatch.setattr(CampaignArchive, "_build_character_arcs", pause_after_arc_snapshot)
+    original_pseudonymize = admin_module._pseudonymize_account_archives
+
+    def observe_archive_redaction(*args, **kwargs):
+        result = original_pseudonymize(*args, **kwargs)
+        deletion_reached_archive_redaction.set()
+        return result
+
+    monkeypatch.setattr(
+        admin_module,
+        "_pseudonymize_account_archives",
+        observe_archive_redaction,
+    )
+    ending_conn = PgConnection(test_db._pool)
+    deletion_conn = PgConnection(test_db._pool)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            ending_future = pool.submit(
+                CampaignArchive(ending_conn).generate_ending,
+                room_id,
+            )
+            assert arcs_built.wait(timeout=5)
+
+            def delete_account():
+                with deletion_conn.transaction() as tx:
+                    return admin_module._delete_account_rows(
+                        tx,
+                        [account_id],
+                        requested_by="acc-admin",
+                    )
+
+            deletion_future = pool.submit(delete_account)
+            deletion_reached_archive_redaction.wait(timeout=0.25)
+            release_ending.set()
+            ending_future.result(timeout=10)
+            deletion_future.result(timeout=10)
+    finally:
+        release_ending.set()
+        ending_conn.close()
+        deletion_conn.close()
+
+    archive = test_db.execute(
+        "SELECT summary, highlights, character_arcs FROM campaign_archives "
+        "WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    rendered = json.dumps(dict(archive), ensure_ascii=False)
+    assert character_id not in rendered
+    assert "Archive Race Name" not in rendered
+    assert "Archive Investigator Name" not in rendered
 
 
 def test_archive_filter_by_type(client, test_db):
@@ -392,10 +594,40 @@ def test_campaign_finalization_atomically_completes_room_archives_and_cancels_pe
     client,
     test_db,
 ):
+    from src.server.ai.decision_audit import DecisionAuditRecorder
     from src.server.campaign_archive import finalize_campaign
 
     room_id, _, character_id, _ = _setup_player(client, test_db)
     _insert_ending_actions(test_db, room_id, character_id)
+    draft_id = "pending-ending-draft"
+    test_db.execute(
+        "INSERT INTO action_drafts "
+        "(draft_id, room_id, character_id, intent_type, declared_intent, status) "
+        "VALUES (%s, %s, %s, 'dialogue', 'unfinished choice', "
+        "'awaiting_confirmation')",
+        (draft_id, room_id, character_id),
+    )
+    recorder = DecisionAuditRecorder(test_db)
+    audit_ids = [
+        recorder.record(
+            room_id=room_id,
+            action_id=action_id,
+            task_type="analyze_director_action",
+            provider="terminal-audit-test",
+            model="deterministic",
+        )
+        for action_id in ("pending-action", "pending-choice")
+    ]
+    draft_audit_id = recorder.record(
+        room_id=room_id,
+        action_id=draft_id,
+        draft_id=draft_id,
+        draft_revision=1,
+        task_type="analyze_director_action",
+        provider="terminal-audit-test",
+        model="deterministic",
+    )
+    test_db.commit()
 
     outcome = finalize_campaign(
         test_db,
@@ -425,6 +657,31 @@ def test_campaign_finalization_atomically_completes_room_archives_and_cancels_pe
         "SELECT ending_type FROM campaign_archives WHERE room_id = %s",
         (room_id,),
     ).fetchone()["ending_type"] == "victory"
+    audit_rows = test_db.execute(
+        "SELECT final_delta FROM ai_call_logs "
+        "WHERE decision_audit_id = ANY(%s) ORDER BY decision_audit_id",
+        (audit_ids,),
+    ).fetchall()
+    assert len(audit_rows) == 2
+    assert all(row["final_delta"]["action_status"] == "canceled" for row in audit_rows)
+    assert all(row["final_delta"]["reason_code"] == "campaign_ended" for row in audit_rows)
+    assert all(isinstance(row["final_delta"]["state_version"], int) for row in audit_rows)
+    assert test_db.execute(
+        "SELECT status FROM action_drafts WHERE draft_id = %s",
+        (draft_id,),
+    ).fetchone()["status"] == "canceled"
+    draft_audit = test_db.execute(
+        "SELECT action_id, audit_state, final_delta FROM ai_call_logs "
+        "WHERE decision_audit_id = %s",
+        (draft_audit_id,),
+    ).fetchone()
+    assert draft_audit["action_id"] is None
+    assert draft_audit["audit_state"] == "canceled"
+    assert draft_audit["final_delta"] == {
+        "draft_status": "canceled",
+        "reason_code": "campaign_ended",
+        "draft_revision": 1,
+    }
 
 
 def test_campaign_finalization_rolls_back_everything_when_archive_insert_fails(

@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -102,6 +103,7 @@ def test_confirmed_prepared_action_arms_without_queuing_a_reaction(client, test_
 
 
 def test_authoritative_rule_event_consumes_an_armed_reaction_only_once(client, test_db):
+    from src.server.ai.decision_audit import DecisionAuditRecorder
     from src.server.engine.prepared_rule_actions import (
         PreparedRuleEvent,
         complete_triggered_prepared_reaction,
@@ -127,6 +129,13 @@ def test_authoritative_rule_event_consumes_an_armed_reaction_only_once(client, t
         headers={**headers, "Idempotency-Key": "arm-cover-trigger"},
         json={"confirmations": draft["confirmation_requirements"]},
     ).json()
+    audit_id = DecisionAuditRecorder(test_db).record(
+        room_id=room_id,
+        action_id=armed["action_id"],
+        task_type="analyze_director_action",
+        provider="terminal-audit-test",
+        model="deterministic",
+    )
     test_db.execute(
         "INSERT INTO actions (action_id, room_id, character_id, intent_type, status) "
         "VALUES (%s, %s, %s, 'combat_action', 'completed')",
@@ -157,6 +166,13 @@ def test_authoritative_rule_event_consumes_an_armed_reaction_only_once(client, t
         (armed["action_id"],),
     ).fetchone()
     assert dict(prepared) == {"status": "triggered", "source_action_id": "enemy-action-1"}
+    final_delta = test_db.execute(
+        "SELECT final_delta FROM ai_call_logs WHERE decision_audit_id = %s",
+        (audit_id,),
+    ).fetchone()["final_delta"]
+    assert final_delta["action_status"] == "completed"
+    assert final_delta["reason_code"] == "prepared_rule_event_triggered"
+    assert isinstance(final_delta["state_version"], int)
     queued = test_db.execute(
         "SELECT intent_type, params FROM actions WHERE action_id = %s",
         (first[0]["reaction_action_id"],),
@@ -755,7 +771,10 @@ async def test_source_combat_resolution_automatically_settles_triggered_reaction
     )
     test_db.commit()
 
-    source_result = await ResolutionPipeline(test_db).resolve_action("bear-source-auto")
+    source_result = await asyncio.wait_for(
+        ResolutionPipeline(test_db).resolve_action("bear-source-auto"),
+        timeout=1.0,
+    )
 
     assert source_result["status"] in {"completed", "resolved"}
     reaction = test_db.execute(

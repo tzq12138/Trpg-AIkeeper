@@ -11,12 +11,13 @@ def transition_action(
     to_status: str,
     metadata: dict | None = None,
     result: dict | None = None,
+    transaction=None,
 ) -> bool:
     if not from_statuses:
         raise ValueError("from_statuses must not be empty")
     if any(not is_allowed_transition(status, to_status) for status in from_statuses):
         raise ValueError(f"Illegal action transition: {from_statuses} -> {to_status}")
-    with conn.transaction() as tx:
+    def execute(tx):
         if result is None:
             cursor = tx.execute(
                 "UPDATE actions SET status = %s WHERE action_id = %s AND status = ANY(%s)",
@@ -39,7 +40,12 @@ def transition_action(
             "INSERT INTO action_status_events (action_id, status, metadata) VALUES (%s, %s, %s)",
             (action_id, to_status, json.dumps(metadata or {}, ensure_ascii=False)),
         )
-    return True
+        return True
+
+    if transaction is not None:
+        return execute(transaction)
+    with conn.transaction() as tx:
+        return execute(tx)
 
 
 def complete_action(

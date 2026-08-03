@@ -57,8 +57,12 @@ class DeepSeekProvider(BaseAiProvider):
             result = await self._call_api(context.get("system_prompt", ""),
                                           context.get("user_message", ""))
             return result
-        except Exception as e:
-            logger.warning("DeepSeek provider failed for %s: %s", task_type, e)
+        except Exception as exc:
+            logger.warning(
+                "DeepSeek provider failed for %s error_type=%s",
+                task_type,
+                type(exc).__name__,
+            )
             return None
 
     async def _call_api(self, system_prompt: str, user_message: str) -> dict:
@@ -80,10 +84,10 @@ class DeepSeekProvider(BaseAiProvider):
                 },
             )
             if resp.status_code >= 400:
-                body_preview = (resp.text or "")[:500]
                 logger.warning(
-                    "DeepSeek API error: status=%s model=%s body=%s",
-                    resp.status_code, self.model, body_preview,
+                    "DeepSeek API error: status=%s model=%s",
+                    resp.status_code,
+                    self.model,
                 )
             resp.raise_for_status()
         data = resp.json()
@@ -184,8 +188,8 @@ class KpMcpProvider(BaseAiProvider):
                         self._session_id = sid
                     self._req_headers = None  # rebuild on next access
                     return True
-        except Exception as e:
-            logger.debug("MCP initialize failed: %s", e)
+        except Exception as exc:
+            logger.debug("MCP initialize failed error_type=%s", type(exc).__name__)
         return False
 
     async def call(self, task_type: str, context: dict) -> dict | None:
@@ -224,11 +228,11 @@ class KpMcpProvider(BaseAiProvider):
                     logger.warning("MCP empty response for %s", task_type)
                     return None
                 if "error" in data:
-                    logger.warning("MCP error for %s: %s", task_type, data["error"])
+                    logger.warning("MCP error for %s", task_type)
                     return None
                 result = data.get("result", {})
                 if result.get("isError") is True:
-                    logger.warning("MCP tool error for %s: %s", task_type, result)
+                    logger.warning("MCP tool error for %s", task_type)
                     return None
                 content = result.get("content", [])
                 if content and isinstance(content, list):
@@ -241,8 +245,12 @@ class KpMcpProvider(BaseAiProvider):
         except httpx.TimeoutException:
             logger.warning("MCP timeout for %s after %ds", task_type, self.timeout)
             return None
-        except Exception as e:
-            logger.warning("MCP call failed for %s: %s", task_type, e)
+        except Exception as exc:
+            logger.warning(
+                "MCP call failed for %s error_type=%s",
+                task_type,
+                type(exc).__name__,
+            )
             return None
 
     async def health_check(self) -> bool:

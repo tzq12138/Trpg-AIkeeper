@@ -17,6 +17,7 @@ from ..ai.narrator import (
     validate_narration_result,
 )
 from ..campaign_archive import (
+    CampaignFinalization,
     CampaignReadOnlyError,
     ensure_campaign_writable,
     finalize_campaign,
@@ -558,15 +559,49 @@ class ResolutionPipeline:
         }
 
     async def resolve_action(self, action_id: str) -> dict[str, Any]:
+        lifecycle_row = self.conn.execute(
+            "SELECT * FROM actions WHERE action_id = %s",
+            (action_id,),
+        ).fetchone()
+        if not lifecycle_row:
+            return {"status": "missing", "action_id": action_id}
+        from ..runtime_lifecycle import character_lifecycle_guard
+
+        lifecycle_character_ids = {str(lifecycle_row["character_id"])}
+        try:
+            lifecycle_character_ids.update(
+                str(row["affected_character_id"])
+                for row in self.conn.execute(
+                    "SELECT affected_character_id FROM action_consents "
+                    "WHERE action_id = %s ORDER BY affected_character_id",
+                    (action_id,),
+                ).fetchall()
+                if row.get("affected_character_id")
+            )
+        except Exception:
+            if getattr(self.conn, "_pool", None) is not None:
+                raise
+        async with character_lifecycle_guard(
+            lifecycle_character_ids,
+            conn=self.conn,
+        ):
+            result = await self._resolve_action_locked(action_id)
+        prepared_reaction_ids = result.pop("_prepared_reaction_ids", [])
+        for reaction_action_id in prepared_reaction_ids:
+            await self.resolve_action(reaction_action_id)
+        return result
+
+    async def _resolve_action_locked(self, action_id: str) -> dict[str, Any]:
         action = self.conn.execute(
             "SELECT * FROM actions WHERE action_id = %s", (action_id,)
         ).fetchone()
         if not action:
             return {"status": "missing", "action_id": action_id}
         if action["status"] in ("resolved", "completed"):
+            self._backfill_completed_decision_delta(dict(action))
             return {"status": action["status"], "action_id": action_id}
-        if action["status"] == "rejected":
-            return {"status": "rejected", "action_id": action_id}
+        if action["status"] in {"rejected", "canceled", "timeout"}:
+            return {"status": action["status"], "action_id": action_id}
         action_params = self._json_value(action.get("params")) or {}
         composite_progress = action_params.get("composite_progress")
         is_composite_resume = (
@@ -862,6 +897,16 @@ class ResolutionPipeline:
                 semantic_guard_valid=semantic_guard_valid,
             )
             if director_err:
+                self._finalize_decision_audit(
+                    action_id,
+                    task_type="analyze_director_action",
+                    engine_validation={
+                        "validated": False,
+                        "stage": "director_plan",
+                        "reason": director_err,
+                    },
+                    final_delta={},
+                )
                 if is_ai_only:
                     await self._reject(action, director_err)
                 else:
@@ -871,6 +916,15 @@ class ResolutionPipeline:
                     "action_id": action_id,
                     "reason": director_err,
                 }
+            self._finalize_decision_audit(
+                action_id,
+                task_type="analyze_director_action",
+                engine_validation={
+                    "validated": True,
+                    "stage": "director_plan",
+                },
+                final_delta={},
+            )
             director_plan = intent.params.get("director_plan")
             raw_reveal_proposals = (
                 director_plan.get("reveal_proposals")
@@ -1201,6 +1255,7 @@ class ResolutionPipeline:
         completed_with_ending = False
         ending_committed = False
         ending_finalization = None
+        ending_bundle: dict[str, Any] | None = None
         verified_ending = None
         sanity_state_transition = self._has_sanity_state_transition(resolution)
         character_control_revoked = False
@@ -1358,6 +1413,7 @@ class ResolutionPipeline:
             nonlocal committed_runtime_clues
             nonlocal ending_committed
             nonlocal ending_finalization
+            nonlocal ending_bundle
             nonlocal result_payload
             nonlocal rule_explanation_for_completion
             nonlocal runtime_clues_checked_with_state
@@ -1417,25 +1473,20 @@ class ResolutionPipeline:
                     completion_status=completion_status,
                     result=result_payload,
                     receipt=rule_explanation_for_completion,
+                    resolution=resolution,
                     complete_current_action=True,
                     transaction=transaction,
                 )
                 ending_committed = ending_finalization is not None
+                ending_bundle = (
+                    ending_finalization.resolution_bundle
+                    if ending_finalization is not None
+                    else None
+                )
                 if not ending_committed:
                     raise RuntimeError("campaign_ending_commit_conflict")
                 completed_with_ending = True
-            elif not complete_action(
-                self.conn,
-                action_id,
-                from_statuses=("resolving",),
-                to_status=completion_status,
-                result=result_payload,
-                receipt=rule_explanation_for_completion,
-                metadata={"has_rule_explanation": True},
-                transaction=transaction,
-            ):
-                raise RuntimeError("action_completion_conflict")
-            completed_with_state = True
+                completed_with_state = True
 
         try:
             if is_v2 and isinstance(conflict_guard, dict):
@@ -1791,11 +1842,17 @@ class ResolutionPipeline:
                             completion_status=completion_status,
                             result=result_payload,
                             receipt=rule_explanation_for_completion,
+                            resolution=resolution,
                             complete_current_action=True,
                             revalidate=False,
                             transaction=tx,
                         )
                         ending_committed = ending_finalization is not None
+                        ending_bundle = (
+                            ending_finalization.resolution_bundle
+                            if ending_finalization is not None
+                            else None
+                        )
                         if not ending_committed:
                             raise RuntimeError("solo_campaign_ending_conflict")
                         completed_with_ending = True
@@ -1921,10 +1978,16 @@ class ResolutionPipeline:
                     completion_status=completion_status,
                     result=result_payload,
                     receipt=rule_explanation_for_completion,
+                    resolution=resolution,
                     complete_current_action=not completed_with_state,
                     revalidate=not solo_damage_terminal,
                 )
                 ending_committed = ending_finalization is not None
+                ending_bundle = (
+                    ending_finalization.resolution_bundle
+                    if ending_finalization is not None
+                    else None
+                )
             except Exception:
                 logger.exception(
                     "Atomic campaign ending failed for action %s",
@@ -1950,6 +2013,21 @@ class ResolutionPipeline:
                 completed_with_ending = not completed_with_state
                 result_payload = resolution.model_dump(by_alias=True)
 
+        prepared_reactions = []
+        deferred_effect_events: list[dict[str, Any]] = []
+        deferred_effect_sequences: list[int] = []
+        bundle: dict[str, Any] | None = ending_bundle
+        room_before_completion = self.conn.execute(
+            "SELECT status FROM rooms WHERE room_id = %s",
+            (action["room_id"],),
+        ).fetchone()
+        post_resolution_writable = bool(
+            not ending_committed
+            and room_before_completion
+            and str(room_before_completion.get("status") or "")
+            not in {"completed", "archived"}
+        )
+
         if is_v2:
             if not completed_with_state and not completed_with_ending:
                 rule_explanation = rule_explanation_for_completion or self._build_rule_explanation(
@@ -1960,15 +2038,66 @@ class ResolutionPipeline:
                     state_after=state_before,
                 )
                 rule_explanation_for_completion = rule_explanation
-                action_completed = complete_action(
-                    self.conn,
-                    action_id,
-                    from_statuses=("resolving",),
-                    to_status=completion_status,
-                    result=result_payload,
-                    receipt=rule_explanation,
-                    metadata={"has_rule_explanation": True},
-                )
+                with self.conn.transaction() as tx:
+                    action_completed = complete_action(
+                        self.conn,
+                        action_id,
+                        from_statuses=("resolving",),
+                        to_status=completion_status,
+                        result=result_payload,
+                        receipt=rule_explanation,
+                        metadata={"has_rule_explanation": True},
+                        transaction=tx,
+                    )
+                    if action_completed:
+                        deferred_effect_events, prepared_reactions = (
+                            await self._apply_authoritative_post_resolution_effects(
+                                action,
+                                intent,
+                                resolution,
+                                transaction=tx,
+                                writable=post_resolution_writable,
+                            )
+                        )
+                        self._finalize_decision_audit(
+                            action_id,
+                            engine_validation=None,
+                            final_delta=self._terminal_decision_delta(
+                                tx,
+                                action,
+                                completion_status,
+                                verified_ending=verified_ending,
+                                resolution=resolution,
+                            ),
+                            transaction=tx,
+                        )
+                        rule_explanation_for_bundle = (
+                            rule_explanation_for_completion
+                            or self._build_rule_explanation(
+                                action,
+                                character_data,
+                                resolution,
+                                state_before=state_before,
+                                state_after=self._runtime_snapshot(
+                                    tx,
+                                    action["character_id"],
+                                    action["room_id"],
+                                ) or state_before,
+                            )
+                        )
+                        bundle = self._persist_resolution_bundle(
+                            action,
+                            completion_status,
+                            result_payload,
+                            rule_explanation_for_bundle,
+                            resolution,
+                            transaction=tx,
+                        )
+                        deferred_effect_sequences = self._persist_deferred_effect_events(
+                            tx,
+                            action,
+                            deferred_effect_events,
+                        )
                 if not action_completed:
                     current = self.conn.execute(
                         "SELECT status FROM actions WHERE action_id = %s",
@@ -1980,35 +2109,115 @@ class ResolutionPipeline:
                         "reason": "action_completion_conflict",
                     }
         else:
-            self.conn.execute(
-                "UPDATE actions SET status = %s, result = %s, completed_at = %s WHERE action_id = %s",
-                (
-                    completion_status,
-                    json.dumps(result_payload, ensure_ascii=False),
-                    datetime.now(timezone.utc).isoformat(),
+            with self.conn.transaction() as tx:
+                tx.execute(
+                    "UPDATE actions SET status = %s, result = %s, completed_at = %s "
+                    "WHERE action_id = %s",
+                    (
+                        completion_status,
+                        json.dumps(result_payload, ensure_ascii=False),
+                        datetime.now(timezone.utc).isoformat(),
+                        action_id,
+                    ),
+                )
+                deferred_effect_events, prepared_reactions = (
+                    await self._apply_authoritative_post_resolution_effects(
+                        action,
+                        intent,
+                        resolution,
+                        transaction=tx,
+                        writable=post_resolution_writable,
+                    )
+                )
+                self._finalize_decision_audit(
                     action_id,
-                ),
-            )
-            self.conn.commit()
+                    engine_validation=None,
+                    final_delta=self._terminal_decision_delta(
+                        tx,
+                        action,
+                        completion_status,
+                        verified_ending=verified_ending,
+                        resolution=resolution,
+                    ),
+                    transaction=tx,
+                )
+                rule_explanation_for_bundle = (
+                    rule_explanation_for_completion
+                    or self._build_rule_explanation(
+                        action,
+                        character_data,
+                        resolution,
+                        state_before=state_before,
+                        state_after=self._runtime_snapshot(
+                            tx,
+                            action["character_id"],
+                            action["room_id"],
+                        ) or state_before,
+                    )
+                )
+                bundle = self._persist_resolution_bundle(
+                    action,
+                    completion_status,
+                    result_payload,
+                    rule_explanation_for_bundle,
+                    resolution,
+                    transaction=tx,
+                )
+                deferred_effect_sequences = self._persist_deferred_effect_events(
+                    tx,
+                    action,
+                    deferred_effect_events,
+                )
 
-        rule_explanation_for_bundle = rule_explanation_for_completion or self._build_rule_explanation(
-            action,
-            character_data,
-            resolution,
-            state_before=state_before,
-            state_after=self._runtime_snapshot(
-                self.conn,
-                action["character_id"],
-                action["room_id"],
-            ) or state_before,
-        )
-        bundle = self._persist_resolution_bundle(
-            action,
-            completion_status,
-            result_payload,
-            rule_explanation_for_bundle,
-            resolution,
-        )
+        publisher = getattr(self.dispatcher, "publish_committed_event", None)
+        for sequence in deferred_effect_sequences:
+            if not publisher:
+                logger.warning(
+                    "Authoritative effect event persisted without live publisher "
+                    "action=%s sequence=%s",
+                    action_id,
+                    sequence,
+                )
+                continue
+            try:
+                published = await publisher(action["room_id"], sequence)
+                if not published:
+                    logger.warning(
+                        "Authoritative effect event remains pending "
+                        "action=%s sequence=%s",
+                        action_id,
+                        sequence,
+                    )
+            except Exception:
+                logger.exception(
+                    "Authoritative effect event publish failed "
+                    "action=%s sequence=%s",
+                    action_id,
+                    sequence,
+                )
+
+        if bundle is None:
+            rule_explanation_for_bundle = (
+                rule_explanation_for_completion
+                or self._build_rule_explanation(
+                    action,
+                    character_data,
+                    resolution,
+                    state_before=state_before,
+                    state_after=self._runtime_snapshot(
+                        self.conn,
+                        action["character_id"],
+                        action["room_id"],
+                    ) or state_before,
+                )
+            )
+            bundle = self._persist_resolution_bundle(
+                action,
+                completion_status,
+                result_payload,
+                rule_explanation_for_bundle,
+                resolution,
+            )
         try:
             await self._project(action, resolution, bundle)
         except Exception:
@@ -2048,84 +2257,315 @@ class ResolutionPipeline:
                 },
             )
 
-        room_after_projection = self.conn.execute(
-            "SELECT status FROM rooms WHERE room_id = %s",
-            (action["room_id"],),
+        return {
+            "status": completion_status,
+            "action_id": action_id,
+            "result": result_payload,
+            "_prepared_reaction_ids": [
+                prepared_reaction["reaction_action_id"]
+                for prepared_reaction in prepared_reactions
+            ],
+        }
+
+    def _finalize_decision_audit(
+        self,
+        action_id: str,
+        *,
+        engine_validation: dict[str, Any] | None,
+        final_delta: dict[str, Any] | None,
+        task_type: str | None = None,
+        transaction=None,
+    ) -> None:
+        try:
+            from ..ai.decision_audit import DecisionAuditRecorder
+
+            if transaction is not None:
+                required = self._decision_audit_required(
+                    transaction,
+                    action_id,
+                    task_type=task_type,
+                    final_delta=final_delta,
+                )
+                updated = DecisionAuditRecorder(transaction).finalize(
+                    action_id,
+                    engine_validation=engine_validation,
+                    final_delta=final_delta,
+                    task_type=task_type,
+                )
+                if required and updated < 1:
+                    raise RuntimeError("decision_audit_not_found")
+                return
+            with self.conn.transaction() as tx:
+                required = self._decision_audit_required(
+                    tx,
+                    action_id,
+                    task_type=task_type,
+                    final_delta=final_delta,
+                )
+                updated = DecisionAuditRecorder(tx).finalize(
+                    action_id,
+                    engine_validation=engine_validation,
+                    final_delta=final_delta,
+                    task_type=task_type,
+                )
+                if required and updated < 1:
+                    raise RuntimeError("decision_audit_not_found")
+        except Exception as exc:
+            logger.error(
+                "Failed to finalize AI decision audit action=%s error_type=%s",
+                action_id,
+                type(exc).__name__,
+            )
+            from ..ai.decision_audit import DecisionAuditPersistenceError
+
+            raise DecisionAuditPersistenceError(
+                "decision_audit_finalize_failed"
+            ) from None
+
+    def _decision_audit_required(
+        self,
+        executor,
+        action_id: str,
+        *,
+        task_type: str | None,
+        final_delta: dict[str, Any] | None,
+    ) -> bool:
+        if task_type == "narrate_action":
+            return bool(
+                getattr(self.gateway, "authoritative_audit_required", False)
+            )
+        is_director_validation = task_type == "analyze_director_action"
+        is_terminal = bool(
+            isinstance(final_delta, dict) and "action_status" in final_delta
+        )
+        if not is_director_validation and not is_terminal:
+            return False
+        row = executor.execute(
+            "SELECT params FROM actions WHERE action_id = %s",
+            (action_id,),
         ).fetchone()
-        post_resolution_writable = bool(
-            not ending_committed
-            and room_after_projection
-            and str(room_after_projection.get("status") or "")
-            not in {"completed", "archived"}
+        params = self._json_value(row.get("params") if row else None) or {}
+        analysis = params.get("analysis")
+        return bool(
+            isinstance(analysis, dict)
+            and analysis.get("analysis_source")
+            in {"configured_provider", "fallback_provider"}
         )
 
-        # ── Post-resolution map updates for move intent ──
-        if (
-            post_resolution_writable
-            and action["intent_type"] == "move"
-            and resolution.is_success
-        ):
-            try:
-                await self._apply_move_result(action, resolution)
-            except Exception:
-                current_room = self.conn.execute(
-                    "SELECT status FROM rooms WHERE room_id = %s",
+    def _terminal_decision_delta(
+        self,
+        executor,
+        action: dict[str, Any],
+        action_status: str,
+        *,
+        verified_ending=None,
+        resolution: ResolutionResult | None = None,
+    ) -> dict[str, Any]:
+        room = executor.execute(
+            "SELECT state_version, status FROM rooms WHERE room_id = %s",
+            (action["room_id"],),
+        ).fetchone()
+        delta: dict[str, Any] = {
+            "action_status": action_status,
+            "state_version": int(room.get("state_version") or 0) if room else 0,
+            "room_status": str(room.get("status") or "") if room else "",
+            "boundary": (
+                "campaign_terminal_commit"
+                if verified_ending is not None
+                else "action_terminal_commit"
+            ),
+        }
+        if verified_ending is not None:
+            delta.update({
+                "ending_id": verified_ending.ending_id,
+                "ending_type": verified_ending.ending_type,
+            })
+        if resolution is not None:
+            authoritative_effects = self._authoritative_effect_delta(
+                executor,
+                action,
+                resolution,
+            )
+            if authoritative_effects:
+                delta["authoritative_effects"] = authoritative_effects
+        return delta
+
+    def _authoritative_effect_delta(
+        self,
+        executor,
+        action: dict[str, Any],
+        resolution: ResolutionResult,
+    ) -> dict[str, Any]:
+        effects: dict[str, Any] = {}
+        params = self._json_value(action.get("params")) or {}
+        if action.get("intent_type") == "move" and resolution.is_success:
+            position = executor.execute(
+                "SELECT node_id FROM character_map_positions "
+                "WHERE character_id = %s AND room_id = %s",
+                (action["character_id"], action["room_id"]),
+            ).fetchone()
+            if position:
+                map_effect = {
+                    "character_id": action["character_id"],
+                    "position_node_id": str(position.get("node_id") or ""),
+                }
+                map_state = executor.execute(
+                    "SELECT state_version FROM room_map_state WHERE room_id = %s",
                     (action["room_id"],),
                 ).fetchone()
-                if not current_room or str(current_room.get("status") or "") not in {
-                    "completed",
-                    "archived",
-                }:
-                    raise
-                logger.info(
-                    "Skipped post-ending map effects action=%s room=%s",
-                    action_id,
-                    action["room_id"],
-                )
+                if map_state:
+                    map_effect["map_state_version"] = int(
+                        map_state.get("state_version") or 0
+                    )
+                effects["map"] = map_effect
 
-        # ── Post-resolution encounter updates ──
-        prepared_reactions = []
-        if post_resolution_writable:
-            if action["intent_type"] in (
-                "combat_action",
-                "chase_action",
-                "system_skip",
-            ):
-                try:
-                    prepared_reactions = await self._apply_encounter_result(
+        encounter_id = str(params.get("encounterId") or "")
+        if encounter_id and action.get("intent_type") in {
+            "combat_action",
+            "chase_action",
+            "system_skip",
+        }:
+            participant_ids = sorted({
+                match.group(2)
+                for mutation in resolution.mutations
+                if isinstance(mutation, dict)
+                for match in [re.match(
+                    r"^/encounter/([^/]+)/participants/([^/]+)/"
+                    r"(?:hp_delta|distance_band_delta|status_tag)$",
+                    str(mutation.get("path") or ""),
+                )]
+                if match and match.group(1) == encounter_id
+            } | {str(action.get("character_id") or "")})
+            participant_ids = [item for item in participant_ids if item]
+            participants = []
+            for character_id in participant_ids:
+                participant = executor.execute(
+                    "SELECT character_id, hp, distance_band, status_tags, acted_this_round "
+                    "FROM encounter_participants "
+                    "WHERE encounter_id = %s AND character_id = %s",
+                    (encounter_id, character_id),
+                ).fetchone()
+                if participant:
+                    participants.append({
+                        "character_id": str(participant.get("character_id") or ""),
+                        "hp": int(participant.get("hp") or 0),
+                        "distance_band": str(participant.get("distance_band") or ""),
+                        "status_tags": self._json_value(participant.get("status_tags")) or [],
+                        "acted_this_round": bool(participant.get("acted_this_round")),
+                    })
+            encounter = executor.execute(
+                "SELECT status, current_round FROM encounters WHERE encounter_id = %s",
+                (encounter_id,),
+            ).fetchone()
+            pending_reaction_ids = [
+                str(row["reaction_id"])
+                for row in executor.execute(
+                    "SELECT reaction_id FROM encounter_pending_reactions "
+                    "WHERE source_action_id = %s ORDER BY reaction_id",
+                    (action["action_id"],),
+                ).fetchall()
+            ]
+            prepared_action_ids = [
+                str(row["action_id"])
+                for row in executor.execute(
+                    "SELECT action_id FROM prepared_rule_actions "
+                    "WHERE source_action_id = %s ORDER BY action_id",
+                    (action["action_id"],),
+                ).fetchall()
+            ]
+            prepared_reaction_action_ids = [
+                str(row["action_id"])
+                for row in executor.execute(
+                    "SELECT action_id FROM actions "
+                    "WHERE params->>'sourceActionId' = %s "
+                    "AND params->>'preparedReaction' = 'true' ORDER BY action_id",
+                    (action["action_id"],),
+                ).fetchall()
+            ]
+            effects["encounter"] = {
+                "encounter_id": encounter_id,
+                "status": str(encounter.get("status") or "") if encounter else "",
+                "current_round": int(encounter.get("current_round") or 0) if encounter else 0,
+                "participants": participants,
+                "pending_reaction_ids": pending_reaction_ids,
+                "prepared_action_ids": prepared_action_ids,
+                "prepared_reaction_action_ids": prepared_reaction_action_ids,
+            }
+        return effects
+
+    async def _apply_authoritative_post_resolution_effects(
+        self,
+        action: dict[str, Any],
+        intent: PlayerIntent,
+        resolution: ResolutionResult,
+        *,
+        transaction,
+        writable: bool,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        if not writable:
+            return [], []
+        events: list[dict[str, Any]] = []
+        prepared_reactions: list[dict[str, str]] = []
+        if action["intent_type"] == "move" and resolution.is_success:
+            move_events = await self._apply_move_result(
+                action,
+                resolution,
+                transaction=transaction,
+                publish=False,
+            )
+            events.extend(move_events or [])
+        if action["intent_type"] in {
+            "combat_action",
+            "chase_action",
+            "system_skip",
+        }:
+            encounter_result = await self._apply_encounter_result(
+                action,
+                intent,
+                resolution,
+                transaction=transaction,
+                publish=False,
+            )
+            if isinstance(encounter_result, tuple):
+                prepared_reactions, encounter_events = encounter_result
+                events.extend(encounter_events)
+            else:
+                prepared_reactions = encounter_result or []
+        if isinstance(intent.params, dict) and intent.params.get("preparedReaction"):
+            from .prepared_rule_actions import complete_triggered_prepared_reaction
+
+            complete_triggered_prepared_reaction(
+                self.conn,
+                reaction_action_id=action["action_id"],
+                terminal_status="completed",
+                transaction=transaction,
+            )
+        return events, prepared_reactions
+
+    def _backfill_completed_decision_delta(self, action: dict[str, Any]) -> None:
+        try:
+            from ..ai.decision_audit import DecisionAuditRecorder
+
+            with self.conn.transaction() as tx:
+                DecisionAuditRecorder(tx).backfill_final_delta(
+                    action["action_id"],
+                    self._terminal_decision_delta(
+                        tx,
                         action,
-                        intent,
-                        resolution,
-                    )
-                except Exception:
-                    current_room = self.conn.execute(
-                        "SELECT status FROM rooms WHERE room_id = %s",
-                        (action["room_id"],),
-                    ).fetchone()
-                    if not current_room or str(current_room.get("status") or "") not in {
-                        "completed",
-                        "archived",
-                    }:
-                        raise
-                    logger.info(
-                        "Skipped post-ending encounter effects action=%s room=%s",
-                        action_id,
-                        action["room_id"],
-                    )
-
-            if isinstance(intent.params, dict) and intent.params.get("preparedReaction"):
-                from .prepared_rule_actions import complete_triggered_prepared_reaction
-
-                complete_triggered_prepared_reaction(
-                    self.conn,
-                    reaction_action_id=action_id,
-                    terminal_status="completed",
+                        str(action["status"]),
+                    ),
                 )
+        except Exception as exc:
+            logger.error(
+                "Failed to backfill AI decision audit action=%s error_type=%s",
+                action.get("action_id"),
+                type(exc).__name__,
+            )
+            from ..ai.decision_audit import DecisionAuditPersistenceError
 
-            for prepared_reaction in prepared_reactions:
-                await self.resolve_action(prepared_reaction["reaction_action_id"])
-
-        return {"status": completion_status, "action_id": action_id, "result": result_payload}
+            raise DecisionAuditPersistenceError(
+                "decision_audit_finalize_failed"
+            ) from None
 
     def _build_rule_explanation(
         self,
@@ -2786,25 +3226,66 @@ class ResolutionPipeline:
     async def _reject(self, action: dict[str, Any], reason: str):
         payload = {"reason": reason}
         if action.get("draft_id"):
-            complete_action(
-                self.conn,
-                action["action_id"],
-                from_statuses=("resolving",),
-                to_status="rejected",
-                result=payload,
-                metadata={"reason_code": "resolution_rejected"},
-            )
-        else:
-            self.conn.execute(
-                "UPDATE actions SET status = %s, result = %s, completed_at = %s WHERE action_id = %s",
-                (
-                    "rejected",
-                    json.dumps(payload, ensure_ascii=False),
-                    datetime.now(timezone.utc).isoformat(),
+            with self.conn.transaction() as tx:
+                completed = complete_action(
+                    self.conn,
                     action["action_id"],
-                ),
+                    from_statuses=("resolving",),
+                    to_status="rejected",
+                    result=payload,
+                    metadata={"reason_code": "resolution_rejected"},
+                    transaction=tx,
+                )
+                if completed:
+                    self._finalize_decision_audit(
+                        action["action_id"],
+                        engine_validation=None,
+                        final_delta=self._terminal_decision_delta(
+                            tx,
+                            action,
+                            "rejected",
+                        ),
+                        transaction=tx,
+                    )
+        else:
+            from contextlib import nullcontext
+
+            transaction = (
+                self.conn.transaction()
+                if hasattr(self.conn, "transaction")
+                else nullcontext(self.conn)
             )
-            self.conn.commit()
+            with transaction as tx:
+                tx.execute(
+                    "UPDATE actions SET status = %s, result = %s, completed_at = %s "
+                    "WHERE action_id = %s",
+                    (
+                        "rejected",
+                        json.dumps(payload, ensure_ascii=False),
+                        datetime.now(timezone.utc).isoformat(),
+                        action["action_id"],
+                    ),
+                )
+                if self.gateway:
+                    terminal_delta = self._terminal_decision_delta(
+                        tx,
+                        action,
+                        "rejected",
+                    )
+                    if self._decision_audit_required(
+                        tx,
+                        action["action_id"],
+                        task_type=None,
+                        final_delta=terminal_delta,
+                    ):
+                        self._finalize_decision_audit(
+                            action["action_id"],
+                            engine_validation=None,
+                            final_delta=terminal_delta,
+                            transaction=tx,
+                        )
+            if not hasattr(self.conn, "transaction") and hasattr(self.conn, "commit"):
+                self.conn.commit()
         params = self._json_value(action.get("params")) or {}
         if params.get("preparedReaction"):
             from .prepared_rule_actions import complete_triggered_prepared_reaction
@@ -2845,6 +3326,16 @@ class ResolutionPipeline:
                 "integrity_state_version = state_version, integrity_updated_at = NOW() "
                 "WHERE room_id = %s",
                 (reason, action["room_id"]),
+            )
+            self._finalize_decision_audit(
+                action["action_id"],
+                engine_validation=None,
+                final_delta=self._terminal_decision_delta(
+                    tx,
+                    action,
+                    "rejected",
+                ),
+                transaction=tx,
             )
         await self.dispatcher.emit(
             action["room_id"],
@@ -3037,6 +3528,16 @@ class ResolutionPipeline:
                 return "narrator_invalid_response"
             violation = validate_narration_result(narration, context)
             if violation:
+                self._finalize_decision_audit(
+                    action["action_id"],
+                    task_type="narrate_action",
+                    engine_validation={
+                        "validated": False,
+                        "stage": "narrator_result",
+                        "reason": violation,
+                    },
+                    final_delta={},
+                )
                 if ai_only or (
                     violation in {
                         "narrator_fact_violation",
@@ -3055,12 +3556,25 @@ class ResolutionPipeline:
                     )
                     return None
                 return violation
+            self._finalize_decision_audit(
+                action["action_id"],
+                task_type="narrate_action",
+                engine_validation={
+                    "validated": True,
+                    "stage": "narrator_result",
+                },
+                final_delta={},
+            )
             resolution.narrative = narration.narrative_text
             metadata = dict(resolution.metadata or {})
             metadata["narration"] = narration.model_dump(mode="json")
             resolution.metadata = metadata
             return None
         except Exception as exc:
+            from ..ai.decision_audit import DecisionAuditPersistenceError
+
+            if isinstance(exc, DecisionAuditPersistenceError):
+                raise
             if (
                 context is not None
                 and (
@@ -3125,8 +3639,11 @@ class ResolutionPipeline:
         result_payload: dict[str, Any],
         rule_explanation: dict[str, Any],
         resolution: ResolutionResult,
+        *,
+        transaction=None,
     ) -> dict[str, Any]:
-        state_row = self.conn.execute(
+        executor = transaction or self.conn
+        state_row = executor.execute(
             "SELECT state_version FROM rooms WHERE room_id = %s",
             (action["room_id"],),
         ).fetchone()
@@ -3161,7 +3678,7 @@ class ResolutionPipeline:
                 "narration": (resolution.metadata or {}).get("narration"),
             },
         }
-        self.conn.execute(
+        executor.execute(
             "INSERT INTO resolution_bundles "
             "(action_id, room_id, character_id, canonical_result, rule_explanation, "
             "actor_projection, stage_projection, host_console, release_status) "
@@ -3185,8 +3702,37 @@ class ResolutionPipeline:
                 "ready",
             ),
         )
-        self.conn.commit()
+        if transaction is None:
+            self.conn.commit()
         return bundle
+
+    @staticmethod
+    def _persist_deferred_effect_events(
+        transaction,
+        action: dict[str, Any],
+        events: list[dict[str, Any]],
+    ) -> list[int]:
+        """Write authoritative effect events in the terminal transaction."""
+        from ..events.event_log import EventLog
+
+        sequences: list[int] = []
+        event_log = EventLog(transaction)
+        for event in events:
+            payload = dict(event.get("payload") or {})
+            character_id = event.get("character_id")
+            if event.get("audience") == "player" and character_id:
+                payload.setdefault("characterId", character_id)
+            sequence = event_log.log_event(
+                action["room_id"],
+                str(event["event_type"]),
+                str(event["audience"]),
+                payload,
+                commit=False,
+                action_id=action.get("action_id"),
+            )
+            if sequence > 0:
+                sequences.append(sequence)
+        return sequences
 
     @staticmethod
     def _player_result_projection(result_payload: dict[str, Any]) -> dict[str, Any]:
@@ -3462,23 +4008,12 @@ class ResolutionPipeline:
     async def _retry_with_constraint(
         self, action: dict[str, Any], resolution: ResolutionResult, retry_prompt: str,
     ) -> str | None:
-        """Attempt AI retry with spoiler constraint. Returns new narrative text or None."""
-        if not self.gateway:
-            return None
-        try:
-            context = {
-                "room_id": action["room_id"],
-                "character_id": action["character_id"],
-                "declared_intent": action.get("declared_intent", ""),
-                "intent_type": action.get("intent_type", ""),
-                "previous_narrative": resolution.narrative,
-                "spoiler_constraint": retry_prompt,
-            }
-            result = await self.gateway.generate_narrative(context, action["room_id"])
-            return self._extract_public_narrative(result)
-        except Exception as e:
-            logger.warning("Spoiler retry failed for action %s: %s", action["action_id"], e)
-            return None
+        """Use the deterministic safe fallback instead of an unaudited AI retry."""
+        logger.info(
+            "Spoiler retry skipped in favor of deterministic fallback action=%s",
+            action.get("action_id"),
+        )
+        return None
 
     def _render_fallback_narrative(
         self,
@@ -4044,6 +4579,7 @@ class ResolutionPipeline:
         completion_status: str,
         result: dict[str, Any],
         receipt: dict[str, Any],
+        resolution: ResolutionResult,
         complete_current_action: bool,
         revalidate: bool = True,
         transaction=None,
@@ -4094,6 +4630,33 @@ class ResolutionPipeline:
                 },
                 transaction=tx,
             )
+            if finalized is not None:
+                self._finalize_decision_audit(
+                    action["action_id"],
+                    engine_validation=None,
+                    final_delta=self._terminal_decision_delta(
+                        tx,
+                        action,
+                        completion_status,
+                        verified_ending=ending,
+                    ),
+                    transaction=tx,
+                )
+                bundle = self._persist_resolution_bundle(
+                    action,
+                    completion_status,
+                    result,
+                    receipt,
+                    resolution,
+                    transaction=tx,
+                )
+                finalized = CampaignFinalization(
+                    archive_id=finalized.archive_id,
+                    canceled_action_ids=finalized.canceled_action_ids,
+                    state_version=finalized.state_version,
+                    ending_event_sequence=finalized.ending_event_sequence,
+                    resolution_bundle=bundle,
+                )
             return finalized
 
         if transaction is not None:
@@ -4106,19 +4669,27 @@ class ResolutionPipeline:
 
         return build_character_arcs(executor, room_id)
 
-    async def _apply_move_result(self, action: dict[str, Any], resolution: ResolutionResult):
-        """Post-resolution: update character position, mark node explored, emit map events."""
+    async def _apply_move_result(
+        self,
+        action: dict[str, Any],
+        resolution: ResolutionResult,
+        *,
+        transaction=None,
+        publish: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Persist a move and publish its projections only after commit."""
         params = (self._json_value(action.get("params")) or {}) if isinstance(action.get("params"), str) else (action.get("params") or {})
         target = params.get("targetNodeId", "")
         room_id = action["room_id"]
         character_id = action["character_id"]
 
         if isinstance(params.get("generic_scene_progression"), dict):
-            return
+            return []
 
+        executor = transaction or self.conn
         from ..scenario.solo_runtime import SoloAdventureRuntime
-        if SoloAdventureRuntime(self.conn).current(room_id) is not None:
-            return
+        if SoloAdventureRuntime(executor).current(room_id) is not None:
+            return []
 
         from ..map_persistence import (
             get_all_positions_in_room,
@@ -4129,9 +4700,23 @@ class ResolutionPipeline:
             set_token_visibility,
         )
 
-        mark_node_explored(self.conn, room_id, target)
-        revealed_region_ids = reveal_regions_for_node(self.conn, room_id, target)
-        set_character_position(self.conn, character_id, room_id, target)
+        executor.execute(
+            "SELECT room_id FROM room_map_state WHERE room_id = %s FOR UPDATE",
+            (room_id,),
+        ).fetchone()
+        mark_node_explored(
+            self.conn, room_id, target, transaction=transaction
+        )
+        revealed_region_ids = reveal_regions_for_node(
+            self.conn, room_id, target, transaction=transaction
+        )
+        set_character_position(
+            self.conn,
+            character_id,
+            room_id,
+            target,
+            transaction=transaction,
+        )
         analysis = params.get("analysis") if isinstance(params.get("analysis"), dict) else {}
         private_move = analysis.get("visibility") == "private"
         set_token_visibility(
@@ -4139,32 +4724,26 @@ class ResolutionPipeline:
             room_id,
             character_id,
             "hidden" if private_move else "party",
+            transaction=transaction,
         )
         audience = "player" if private_move else "party"
         event_character_id = character_id if private_move else None
-
-        # Emit s2c_player_moved
-        await self.dispatcher.emit(
-            room_id,
-            "s2c_player_moved",
-            audience,
-            {
+        map_state = get_room_map_state(executor, room_id)
+        positions = get_all_positions_in_room(executor, room_id)
+        events = [{
+            "event_type": "s2c_player_moved",
+            "audience": audience,
+            "payload": {
                 "characterId": character_id,
                 "fromNodeId": params.get("fromNodeId", ""),
                 "toNodeId": target,
                 "private": private_move,
             },
-            character_id=event_character_id,
-        )
-
-        # Emit s2c_map_updated with current state
-        map_state = get_room_map_state(self.conn, room_id)
-        positions = get_all_positions_in_room(self.conn, room_id)
-        await self.dispatcher.emit(
-            room_id,
-            "s2c_map_updated",
-            audience,
-            {
+            "character_id": event_character_id,
+        }, {
+            "event_type": "s2c_map_updated",
+            "audience": audience,
+            "payload": {
                 "exploredNodes": map_state.get("explored_nodes", []) if map_state else [],
                 "currentPositions": (
                     {character_id: positions.get(character_id)} if private_move else positions
@@ -4173,8 +4752,19 @@ class ResolutionPipeline:
                 "revealedRegionIds": revealed_region_ids,
                 "mapVersion": map_state.get("state_version", 0) if map_state else 0,
             },
-            character_id=event_character_id,
-        )
+            "character_id": event_character_id,
+        }]
+        if publish:
+            for event in events:
+                await self.dispatcher.emit(
+                    room_id,
+                    event["event_type"],
+                    event["audience"],
+                    event["payload"],
+                    character_id=event.get("character_id"),
+                )
+            return []
+        return events
 
     async def _validate_encounter_action(self, action: dict[str, Any], intent: PlayerIntent) -> str | None:
         """Validate encounter pre-conditions. Returns error string or None."""
@@ -4360,8 +4950,14 @@ class ResolutionPipeline:
         return get_encounter(self.conn, encounter_id) or encounter
 
     async def _apply_encounter_result(
-        self, action: dict[str, Any], intent: PlayerIntent, resolution: ResolutionResult,
-    ) -> list[dict[str, str]]:
+        self,
+        action: dict[str, Any],
+        intent: PlayerIntent,
+        resolution: ResolutionResult,
+        *,
+        transaction=None,
+        publish: bool = True,
+    ) -> list[dict[str, str]] | tuple[list[dict[str, str]], list[dict[str, Any]]]:
         """Post-resolution: update participant state from mutations, emit encounter events."""
         params = intent.params or {}
         encounter_id = params.get("encounterId", "")
@@ -4371,12 +4967,14 @@ class ResolutionPipeline:
         if not encounter_id:
             return []
 
+        executor = transaction or self.conn
+
         from ..encounter_persistence import (
             get_participant, update_participant, get_participants,
             update_encounter_status, get_active_encounter, shift_band,
         )
 
-        participant = get_participant(self.conn, encounter_id, character_id)
+        participant = get_participant(executor, encounter_id, character_id)
         if not participant:
             return []
 
@@ -4409,7 +5007,7 @@ class ResolutionPipeline:
                 continue
             target_character_id = match.group(2)
             target_participant = get_participant(
-                self.conn, encounter_id, target_character_id
+                executor, encounter_id, target_character_id
             )
             if not target_participant:
                 continue
@@ -4419,8 +5017,14 @@ class ResolutionPipeline:
                 status_tags = list(target_participant.get("status_tags", []) or [])
                 if new_hp <= 0 and "unconscious" not in status_tags:
                     status_tags.append("unconscious")
-                update_participant(self.conn, encounter_id, target_character_id,
-                                   hp=new_hp, status_tags=status_tags)
+                update_participant(
+                    self.conn,
+                    encounter_id,
+                    target_character_id,
+                    hp=new_hp,
+                    status_tags=status_tags,
+                    transaction=transaction,
+                )
                 if (
                     is_public_rule_event
                     and delta < 0
@@ -4436,7 +5040,13 @@ class ResolutionPipeline:
                 if delta != 0:
                     current_band = target_participant.get("distance_band", "medium")
                     new_band = shift_band(current_band, delta)
-                    update_participant(self.conn, encounter_id, target_character_id, distance_band=new_band)
+                    update_participant(
+                        self.conn,
+                        encounter_id,
+                        target_character_id,
+                        distance_band=new_band,
+                        transaction=transaction,
+                    )
                     if (
                         target_participant.get("side") == "enemy"
                         and target_participant.get("public_visibility") == "visible"
@@ -4460,6 +5070,7 @@ class ResolutionPipeline:
                                 current_band,
                                 "视野边缘",
                             ),
+                            transaction=transaction,
                         )
                         target_participant["public_visibility"] = "lost"
             # Apply status tag additions
@@ -4469,7 +5080,13 @@ class ResolutionPipeline:
                     status_tags = list(target_participant.get("status_tags", []) or [])
                     if tag not in status_tags:
                         status_tags.append(tag)
-                    update_participant(self.conn, encounter_id, target_character_id, status_tags=status_tags)
+                    update_participant(
+                        self.conn,
+                        encounter_id,
+                        target_character_id,
+                        status_tags=status_tags,
+                        transaction=transaction,
+                    )
             if (
                 target_participant.get("side") == "enemy"
                 and target_participant.get("public_visibility") != "visible"
@@ -4477,7 +5094,7 @@ class ResolutionPipeline:
                 and mutation.get("value", 0) != 0
             ):
                 enemies = [
-                    item for item in get_participants(self.conn, encounter_id)
+                    item for item in get_participants(executor, encounter_id)
                     if item.get("side") == "enemy"
                 ]
                 enemy_ids = sorted(str(item.get("character_id") or "") for item in enemies)
@@ -4493,6 +5110,7 @@ class ResolutionPipeline:
                     target_character_id,
                     public_visibility="visible",
                     public_label=public_label or f"敌对身影 {ordinal}",
+                    transaction=transaction,
                 )
                 target_participant["public_visibility"] = "visible"
 
@@ -4504,15 +5122,22 @@ class ResolutionPipeline:
                     room_id=room_id,
                     source_action_id=source_action_id,
                     rule_event=rule_event,
+                    transaction=transaction,
                 )
             )
 
         # Mark acted_this_round
-        update_participant(self.conn, encounter_id, character_id, acted_this_round=True)
+        update_participant(
+            self.conn,
+            encounter_id,
+            character_id,
+            acted_this_round=True,
+            transaction=transaction,
+        )
 
         # Check auto-resolve conditions
-        all_parts = get_participants(self.conn, encounter_id)
-        enc = get_active_encounter(self.conn, room_id)
+        all_parts = get_participants(executor, encounter_id)
+        enc = get_active_encounter(executor, room_id)
         should_resolve = False
         resolve_reason = ""
 
@@ -4548,60 +5173,73 @@ class ResolutionPipeline:
                 encounter_id=encounter_id,
                 character_id=character_id,
                 source_action_id=str(action.get("action_id") or resolution.action_id),
+                transaction=transaction,
             )
             if pending_reaction:
                 prepared_reactions.extend(pending_reaction.get("prepared_reactions") or [])
 
         if should_resolve:
-            update_encounter_status(self.conn, encounter_id, "resolved", resolve_reason)
+            update_encounter_status(
+                self.conn,
+                encounter_id,
+                "resolved",
+                resolve_reason,
+                transaction=transaction,
+            )
 
-        # Emit s2c_encounter_updated
-        updated_enc = get_active_encounter(self.conn, room_id) or enc
-        updated_parts = get_participants(self.conn, encounter_id)
+        # Build projections inside the transaction; publish them only after the
+        # authoritative effect/action/audit transaction commits.
+        updated_enc = get_active_encounter(executor, room_id) or enc
+        updated_parts = get_participants(executor, encounter_id)
         from ..host.public_stage import (
             build_public_combat_unit_projection,
             build_public_encounter_event_projection,
         )
-        await self.dispatcher.emit(
-            room_id,
-            "s2c_encounter_updated",
-            "party",
-            build_public_encounter_event_projection(
+        events = [{
+            "event_type": "s2c_encounter_updated",
+            "audience": "party",
+            "payload": build_public_encounter_event_projection(
                 updated_enc,
                 build_public_combat_unit_projection(updated_parts),
             ),
-        )
-        await self.dispatcher.emit(
-            room_id,
-            "s2c_encounter_updated",
-            "host",
-            {
+        }, {
+            "event_type": "s2c_encounter_updated",
+            "audience": "host",
+            "payload": {
                 "encounterId": encounter_id,
                 "encounter": self._event_safe_record(updated_enc) if updated_enc else {},
                 "participants": [self._event_safe_record(participant) for participant in updated_parts],
             },
-        )
+        }]
 
         if pending_reaction:
-            await self.dispatcher.emit(
-                room_id,
-                "s2c_solo_combat_reaction_requested",
-                "player",
-                {"reaction": reaction_projection(pending_reaction)},
-                character_id=character_id,
-            )
+            events.append({
+                "event_type": "s2c_solo_combat_reaction_requested",
+                "audience": "player",
+                "payload": {"reaction": reaction_projection(pending_reaction)},
+                "character_id": character_id,
+            })
 
         if should_resolve:
-            await self.dispatcher.emit(
-                room_id,
-                "s2c_encounter_resolved",
-                "party",
-                {
+            events.append({
+                "event_type": "s2c_encounter_resolved",
+                "audience": "party",
+                "payload": {
                     "encounterId": encounter_id,
                     "reason": resolve_reason,
                 },
-            )
-        return prepared_reactions
+            })
+        if publish:
+            for event in events:
+                await self.dispatcher.emit(
+                    room_id,
+                    event["event_type"],
+                    event["audience"],
+                    event["payload"],
+                    character_id=event.get("character_id"),
+                )
+            return prepared_reactions
+        return prepared_reactions, events
 
     @staticmethod
     def _event_safe_record(value: Any) -> dict[str, Any]:

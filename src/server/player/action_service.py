@@ -945,7 +945,7 @@ def insert_action_draft(
 
 def persist_action_draft(conn, character: dict, draft: ActionDraftDTO) -> ActionDraftDTO:
     with conn.transaction() as tx:
-        draft_id = insert_action_draft(tx, character, draft)
+        draft_id = insert_action_draft(tx, character, draft, draft_id=draft.draft_id)
     return draft.model_copy(update={"draft_id": draft_id})
 
 
@@ -985,6 +985,12 @@ def revise_action_draft(conn, character: dict, draft_id: str, body: ActionDraftU
         if row["status"] not in ("analyzing", "awaiting_confirmation"):
             raise ActionDraftError(409, {"code": "draft_not_editable"})
         revision = row["current_revision"] + 1
+        from ..ai.decision_audit import DecisionAuditRecorder
+
+        DecisionAuditRecorder(tx).supersede_draft_revision(
+            draft_id,
+            int(row["current_revision"]),
+        )
         previous_analysis = _json_value(row.get("analysis")) or {}
         previous_params = _json_value(row.get("params")) or previous_analysis.get("params", {})
         requested_params = body.params if body.params is not None else previous_params
@@ -1036,19 +1042,37 @@ def revise_action_draft(conn, character: dict, draft_id: str, body: ActionDraftU
 
 
 def cancel_action_draft(conn, character: dict, draft_id: str) -> None:
-    cursor = conn.execute(
-        "UPDATE action_drafts SET status = 'canceled', updated_at = NOW() "
-        "WHERE draft_id = %s AND character_id = %s AND status IN ('analyzing', 'awaiting_confirmation')",
-        (draft_id, character["character_id"]),
-    )
-    if cursor.rowcount == 0:
-        existing = conn.execute(
-            "SELECT draft_id FROM action_drafts WHERE draft_id = %s AND character_id = %s",
+    from ..ai.decision_audit import DecisionAuditRecorder
+
+    with conn.transaction() as tx:
+        cursor = tx.execute(
+            "UPDATE action_drafts SET status = 'canceled', updated_at = NOW() "
+            "WHERE draft_id = %s AND character_id = %s "
+            "AND status IN ('analyzing', 'awaiting_confirmation') "
+            "RETURNING current_revision",
             (draft_id, character["character_id"]),
-        ).fetchone()
-        if not existing:
-            raise ActionDraftError(404, {"code": "draft_not_found"})
-        raise ActionDraftError(409, {"code": "draft_not_cancelable"})
+        )
+        canceled = cursor.fetchone()
+        if not canceled:
+            existing = tx.execute(
+                "SELECT draft_id FROM action_drafts "
+                "WHERE draft_id = %s AND character_id = %s",
+                (draft_id, character["character_id"]),
+            ).fetchone()
+            if not existing:
+                raise ActionDraftError(404, {"code": "draft_not_found"})
+            raise ActionDraftError(409, {"code": "draft_not_cancelable"})
+        revision = int(canceled.get("current_revision") or 1)
+        DecisionAuditRecorder(tx).finalize_draft_revision(
+            draft_id,
+            revision,
+            audit_state="canceled",
+            final_delta={
+                "draft_status": "canceled",
+                "reason_code": "player_canceled_draft",
+                "draft_revision": revision,
+            },
+        )
 
 
 def _expire_action_draft_if_needed(
@@ -1056,36 +1080,38 @@ def _expire_action_draft_if_needed(
     character_id: str,
     draft_id: str,
 ) -> dict[str, Any] | None:
-    row = conn.execute(
-        "SELECT intent_type, declared_intent, params, analysis FROM action_drafts "
-        "WHERE draft_id = %s AND character_id = %s "
-        "AND status IN ('analyzing', 'awaiting_confirmation') "
-        "AND expires_at IS NOT NULL AND expires_at <= NOW()",
-        (draft_id, character_id),
-    ).fetchone()
-    if not row:
-        return None
     from ..engine.action_policy import evaluate_action_policy
+    from ..ai.decision_audit import DecisionAuditRecorder
 
-    params = _json_value(row.get("params")) or {}
-    phase = (
-        "combat"
-        if row["intent_type"] in {"combat_action", "chase_action"}
-        else "investigation"
-    )
-    decision = evaluate_action_policy(
-        {
-            "intent_type": row["intent_type"],
-            "declared_intent": row.get("declared_intent") or "",
-            "params": params,
-        },
-        current_state={"phase": phase},
-        risk_contract={},
-        timed_out=True,
-    )
-    analysis = _json_value(row.get("analysis")) or {}
-    analysis["timeout_safe_effect"] = decision.safe_effect
     with conn.transaction() as tx:
+        row = tx.execute(
+            "SELECT intent_type, declared_intent, params, analysis, current_revision "
+            "FROM action_drafts "
+            "WHERE draft_id = %s AND character_id = %s "
+            "AND status IN ('analyzing', 'awaiting_confirmation') "
+            "AND expires_at IS NOT NULL AND expires_at <= NOW() FOR UPDATE",
+            (draft_id, character_id),
+        ).fetchone()
+        if not row:
+            return None
+        params = _json_value(row.get("params")) or {}
+        phase = (
+            "combat"
+            if row["intent_type"] in {"combat_action", "chase_action"}
+            else "investigation"
+        )
+        decision = evaluate_action_policy(
+            {
+                "intent_type": row["intent_type"],
+                "declared_intent": row.get("declared_intent") or "",
+                "params": params,
+            },
+            current_state={"phase": phase},
+            risk_contract={},
+            timed_out=True,
+        )
+        analysis = _json_value(row.get("analysis")) or {}
+        analysis["timeout_safe_effect"] = decision.safe_effect
         cursor = tx.execute(
             "UPDATE action_drafts SET status = 'timeout', analysis = %s, updated_at = NOW() "
             "WHERE draft_id = %s AND character_id = %s "
@@ -1093,8 +1119,20 @@ def _expire_action_draft_if_needed(
             "AND expires_at IS NOT NULL AND expires_at <= NOW()",
             (json.dumps(analysis, ensure_ascii=False), draft_id, character_id),
         )
-    if cursor.rowcount == 0:
-        return None
+        if cursor.rowcount == 0:
+            return None
+        revision = int(row.get("current_revision") or 1)
+        DecisionAuditRecorder(tx).finalize_draft_revision(
+            draft_id,
+            revision,
+            audit_state="expired",
+            final_delta={
+                "draft_status": "timeout",
+                "reason_code": "draft_timed_out",
+                "draft_revision": revision,
+                "safe_effect": decision.safe_effect,
+            },
+        )
     return {
         "code": "draft_timed_out",
         "safe_effect": decision.safe_effect,
@@ -1128,10 +1166,12 @@ def confirm_action_draft(
         raise ActionDraftError(409, timeout_detail)
 
     with conn.transaction() as tx:
-        tx.execute(
+        locked_character = tx.execute(
             "SELECT character_id FROM characters WHERE character_id = %s FOR UPDATE",
             (character["character_id"],),
         ).fetchone()
+        if not locked_character:
+            raise ActionDraftError(404, {"code": "character_not_found"})
         existing = tx.execute(
             "SELECT action_id, draft_id FROM actions WHERE character_id = %s AND idempotency_key = %s",
             (character["character_id"], idempotency_key),
@@ -1327,6 +1367,22 @@ def confirm_action_draft(
                 initial_status,
             ),
         )
+        from ..ai.decision_audit import DecisionAuditRecorder
+
+        relinked_audits = DecisionAuditRecorder(tx).relink_draft(
+            draft_id,
+            action_id,
+            int(draft["current_revision"]),
+        )
+        if (
+            analysis.get("analysis_source")
+            in {"configured_provider", "fallback_provider"}
+            and relinked_audits != 1
+        ):
+            raise ActionDraftError(
+                409,
+                {"code": "decision_audit_missing"},
+            )
         tx.execute(
             "UPDATE action_drafts SET status = 'confirmed', updated_at = NOW() WHERE draft_id = %s",
             (draft_id,),
@@ -1594,6 +1650,8 @@ def _stable_topological_action_order(
 
 
 def cancel_action(conn, character_id: str, action_id: str) -> ActionReceiptV2:
+    from ..ai.decision_audit import finalize_terminal_decision_audit
+
     with conn.transaction() as tx:
         action = tx.execute(
             "SELECT action_id, status, params, turn_id FROM actions "
@@ -1634,10 +1692,18 @@ def cancel_action(conn, character_id: str, action_id: str) -> ActionReceiptV2:
                 "INSERT INTO action_status_events (action_id, status, metadata) VALUES (%s, 'canceled', '{}')",
                 (action_id,),
             )
+            finalize_terminal_decision_audit(
+                tx,
+                action_id,
+                action_status="canceled",
+                reason_code="player_canceled",
+            )
     return build_action_receipt(conn, character_id, action_id)
 
 
 def _cancel_collaboration_batch(tx, contract_id: str) -> None:
+    from ..ai.decision_audit import finalize_terminal_decision_audit
+
     batch = tx.execute(
         "SELECT status FROM collaboration_contract_batches WHERE contract_id = %s FOR UPDATE",
         (contract_id,),
@@ -1646,27 +1712,36 @@ def _cancel_collaboration_batch(tx, contract_id: str) -> None:
         raise ActionDraftError(409, {"code": "collaboration_batch_locked"})
     tx.execute(
         "UPDATE collaboration_contracts SET status = 'canceled', canceled_at = NOW(), updated_at = NOW() "
-        "WHERE contract_id = %s AND status = 'accepted'",
+        "WHERE contract_id = %s AND status IN ('pending', 'accepted')",
         (contract_id,),
     )
     if batch:
         tx.execute(
             "UPDATE collaboration_contract_batches SET status = 'canceled', updated_at = NOW() "
-            "WHERE contract_id = %s AND status = 'queued'",
+            "WHERE contract_id = %s AND status IN ('queued', 'blocked')",
             (contract_id,),
         )
     rows = tx.execute(
-        "SELECT actions.action_id FROM collaboration_contract_drafts AS links "
+        "SELECT actions.action_id, actions.status "
+        "FROM collaboration_contract_drafts AS links "
         "JOIN actions ON actions.draft_id = links.draft_id "
         "WHERE links.contract_id = %s "
-        "AND actions.status IN ('batched', 'awaiting_player_consent') FOR UPDATE",
+        "AND actions.status IN ("
+        "'batched', 'awaiting_player_consent', 'queued', 'resolving', "
+        "'awaiting_player_choice', 'awaiting_host_exception'"
+        ") ORDER BY actions.action_id FOR UPDATE OF actions",
         (contract_id,),
     ).fetchall()
+    if any(str(row["status"]) == "resolving" for row in rows):
+        raise ActionDraftError(409, {"code": "collaboration_batch_locked"})
     for row in rows:
         linked_action_id = row["action_id"]
         tx.execute(
             "UPDATE actions SET status = 'canceled', canceled_at = NOW() "
-            "WHERE action_id = %s AND status IN ('batched', 'awaiting_player_consent')",
+            "WHERE action_id = %s AND status IN ("
+            "'batched', 'awaiting_player_consent', 'queued', "
+            "'awaiting_player_choice', 'awaiting_host_exception'"
+            ")",
             (linked_action_id,),
         )
         tx.execute(
@@ -1683,6 +1758,12 @@ def _cancel_collaboration_batch(tx, contract_id: str) -> None:
                     ensure_ascii=False,
                 ),
             ),
+        )
+        finalize_terminal_decision_audit(
+            tx,
+            linked_action_id,
+            action_status="canceled",
+            reason_code="collaboration_participant_canceled",
         )
     tx.execute(
         "UPDATE action_drafts SET status = 'canceled', updated_at = NOW() "
@@ -1795,6 +1876,14 @@ def submit_coc_followup_decision(
                     action_id,
                     json.dumps({"reason_code": "coc_followup_timed_out"}),
                 ),
+            )
+            from ..ai.decision_audit import finalize_terminal_decision_audit
+
+            finalize_terminal_decision_audit(
+                tx,
+                action_id,
+                action_status="timeout",
+                reason_code="coc_followup_timed_out",
             )
             timed_out = True
         else:

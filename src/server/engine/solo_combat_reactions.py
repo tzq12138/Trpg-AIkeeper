@@ -127,18 +127,21 @@ def queue_enemy_reaction(
     encounter_id: str,
     character_id: str,
     source_action_id: str,
+    transaction=None,
 ) -> dict[str, Any] | None:
     """Create one outstanding enemy melee attack for the player to answer."""
     from ..encounter_persistence import get_encounter, get_participants
 
+    executor = transaction or conn
+
     existing = get_pending_reaction(
-        conn, character_id, room_id=room_id, encounter_id=encounter_id,
+        executor, character_id, room_id=room_id, encounter_id=encounter_id,
     )
     if existing:
         return existing
 
-    encounter = get_encounter(conn, encounter_id)
-    participants = get_participants(conn, encounter_id)
+    encounter = get_encounter(executor, encounter_id)
+    participants = get_participants(executor, encounter_id)
     enemy = next(
         (
             item
@@ -162,7 +165,7 @@ def queue_enemy_reaction(
         attacks = _BEAR_ATTACKS.get(round_number)
         if not attacks:
             return None
-        count_row = conn.execute(
+        count_row = executor.execute(
             "SELECT COUNT(*) AS count FROM encounter_pending_reactions "
             "WHERE encounter_id = %s AND character_id = %s AND round_number = %s",
             (encounter_id, character_id, round_number),
@@ -172,7 +175,7 @@ def queue_enemy_reaction(
             return None
         attack = attacks[attack_index - 1]
     else:
-        prior = conn.execute(
+        prior = executor.execute(
             "SELECT 1 FROM encounter_pending_reactions "
             "WHERE encounter_id = %s AND character_id = %s AND round_number = %s "
             "LIMIT 1",
@@ -187,7 +190,7 @@ def queue_enemy_reaction(
                 or enemy.get("main_skill")
                 or "近战攻击"
             ),
-            "skill": _participant_skill_value(conn, enemy),
+            "skill": _participant_skill_value(executor, enemy),
             "damage_expression": str(
                 enemy.get("damage_expression") or "1d3"
             ),
@@ -206,7 +209,7 @@ def queue_enemy_reaction(
     }
 
     reaction_id = f"reaction:{uuid.uuid4()}"
-    conn.execute(
+    executor.execute(
         """
         INSERT INTO encounter_pending_reactions (
             reaction_id, room_id, encounter_id, source_action_id, character_id,
@@ -220,7 +223,7 @@ def queue_enemy_reaction(
             attack["damage_expression"],
         ),
     )
-    conn.execute(
+    executor.execute(
         "UPDATE encounter_pending_reactions SET result = %s "
         "WHERE reaction_id = %s",
         (json.dumps(pending_metadata, ensure_ascii=False), reaction_id),
@@ -234,8 +237,9 @@ def queue_enemy_reaction(
         room_id=room_id,
         source_action_id=source_action_id,
         rule_event=PreparedRuleEvent.enemy_public_attack_declared(),
+        transaction=transaction,
     )
-    queued_reaction = _row(conn.execute(
+    queued_reaction = _row(executor.execute(
         "SELECT * FROM encounter_pending_reactions WHERE reaction_id = %s",
         (reaction_id,),
     ).fetchone())

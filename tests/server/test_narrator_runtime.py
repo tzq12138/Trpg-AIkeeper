@@ -211,6 +211,7 @@ def test_narrator_context_uses_visible_solo_scene_when_runtime_brief_is_missing(
         "fact_ref": "fact:scene-brief",
         "text": context["scene_brief"],
     } in context["allowed_facts"]
+    assert context["rule_version"] != "unversioned"
 
 
 def test_narrator_context_uses_compiled_generic_scene_description(client, test_db):

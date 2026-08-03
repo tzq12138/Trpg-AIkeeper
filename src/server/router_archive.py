@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/rooms")
 # ── Auth helpers ──
 
 def _verify_owner_or_admin(request: Request, room_id: str) -> dict:
-    """Verify room owner (X-Owner-Token or account) or admin account."""
+    """Verify the room owner; admin role alone never grants private room access."""
     token = request.headers.get("X-Owner-Token", "")
     conn = request.app.state.db
     room = conn.execute(
@@ -37,8 +37,6 @@ def _verify_owner_or_admin(request: Request, room_id: str) -> dict:
         from .router_auth import get_account_from_token
         account = get_account_from_token(request)
         if account:
-            if account.get("role") == "admin":
-                return room
             if account.get("account_id") == room.get("owner_account_id"):
                 return room
     except Exception as exc:
@@ -46,7 +44,7 @@ def _verify_owner_or_admin(request: Request, room_id: str) -> dict:
         logging.getLogger(__name__).warning(
             "_verify_owner_or_admin: account lookup failed room=%s: %s", room_id, exc)
 
-    raise HTTPException(403, "不是房间所有者或管理员")
+    raise HTTPException(403, "不是房间所有者")
 
 
 def _verify_player(request: Request, room_id: str = "") -> dict:
@@ -323,13 +321,17 @@ async def get_campaign_summary(request: Request, room_id: str,
                                 scope: Literal["public", "full"] = Query("public")):
     """Get campaign summary. scope=public for players, scope=full for owner/admin."""
     conn = request.app.state.db
+    character_id = None
     if scope == "full":
         _verify_owner_or_admin(request, room_id)
     else:
-        _verify_player(request, room_id)
+        character_id = _verify_player(request, room_id)["character_id"]
     archive = CampaignArchive(conn)
     try:
-        summary = archive.get_campaign_summary(room_id)
+        summary = archive.get_campaign_summary(
+            room_id,
+            character_id=character_id,
+        )
     except ValueError as e:
         raise HTTPException(404, str(e))
     return summary.model_dump() if hasattr(summary, 'model_dump') else summary

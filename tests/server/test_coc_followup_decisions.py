@@ -381,6 +381,8 @@ async def test_requeued_follow_up_reuses_initial_draw_instead_of_rolling_it_agai
 
 @pytest.mark.asyncio
 async def test_expired_follow_up_times_out_without_luck_spend_or_push(test_db, monkeypatch):
+    from src.server.ai.decision_audit import DecisionAuditRecorder
+
     monkeypatch.setenv("JWT_SECRET", "followup-receipt-secret")
     _insert_action(test_db, luck=10)
     calls = _sequence_rng(monkeypatch, [6, 5, 3, 0])
@@ -393,6 +395,14 @@ async def test_expired_follow_up_times_out_without_luck_spend_or_push(test_db, m
         state_service=state_service,
     )
     await pipeline.resolve_action("action-followup")
+    audit_id = DecisionAuditRecorder(test_db).record(
+        room_id="room-followup",
+        action_id="action-followup",
+        task_type="analyze_director_action",
+        provider="terminal-audit-test",
+        model="deterministic",
+    )
+    test_db.commit()
     row = test_db.execute(
         "SELECT params FROM actions WHERE action_id = 'action-followup'"
     ).fetchone()
@@ -418,6 +428,13 @@ async def test_expired_follow_up_times_out_without_luck_spend_or_push(test_db, m
     ).fetchone()
     assert timed_out["status"] == "timeout"
     assert timed_out["result"]["metadata"]["follow_up"]["status"] == "timed_out"
+    final_delta = test_db.execute(
+        "SELECT final_delta FROM ai_call_logs WHERE decision_audit_id = %s",
+        (audit_id,),
+    ).fetchone()["final_delta"]
+    assert final_delta["action_status"] == "timeout"
+    assert final_delta["reason_code"] == "coc_followup_timed_out"
+    assert isinstance(final_delta["state_version"], int)
     assert state_service.get_runtime_state("char-followup", "room-followup")["luck"] == 10
     assert calls == [6, 5]
 

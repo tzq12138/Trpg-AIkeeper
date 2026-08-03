@@ -27,6 +27,7 @@ from ..scenario.content_package import ContentPackage
 
 logger = logging.getLogger(__name__)
 _IMPORT_STRUCTURE_TIMEOUT_SECONDS = 180
+_AUTHORITATIVE_AUDIT_TASKS = {"analyze_director_action", "narrate_action"}
 
 SCENARIO_STRUCTURE_SYSTEM_PROMPT = """你是TRPG剧本分析器。只返回JSON对象。
 提取 scenes、npcs、clues、branches、truth、endings。
@@ -200,6 +201,8 @@ DIRECTOR_SUPPORTED_INTENT_TYPES = {
 
 class AiGateway:
     """Unified gateway for all AI calls. Provider order from env/DB config."""
+
+    authoritative_audit_required = True
 
     def __init__(self, settings: Settings | None = None, db_conn=None):
         self.settings = settings or Settings.from_env()
@@ -432,13 +435,17 @@ class AiGateway:
             prepared,
             room_id,
             disable_local_fallback=True,
+            audit_context=context,
+            template_version="m0-runtime-v1",
         )
         if isinstance(result, DirectorPlanDTO):
             if local_action_id:
                 result = result.model_copy(
                     update={"action_id": local_action_id}
                 )
-            return result.model_dump(mode="json", by_alias=True)
+            return _drop_empty_citation_versions(
+                result.model_dump(mode="json", by_alias=True)
+            )
         if not isinstance(result, dict):
             return None
         if local_action_id:
@@ -447,7 +454,9 @@ class AiGateway:
             validated = DirectorPlanDTO(**result)
         except Exception:
             return None
-        return validated.model_dump(mode="json", by_alias=True)
+        return _drop_empty_citation_versions(
+            validated.model_dump(mode="json", by_alias=True)
+        )
 
     async def narrate_action(
         self,
@@ -474,6 +483,8 @@ class AiGateway:
             prepared,
             room_id,
             disable_local_fallback=True,
+            audit_context={**context, "action_id": local_action_id},
+            template_version="m0-runtime-v1",
         )
         if not isinstance(result, dict):
             return None
@@ -843,6 +854,8 @@ class AiGateway:
         room_id: str | None = None,
         required_capabilities: str | set[str] | None = None,
         disable_local_fallback: bool = False,
+        audit_context: dict | None = None,
+        template_version: str = "",
     ) -> Any:
         providers = self._get_ordered_providers(room_id)
         required_set = _normalize_required_capabilities(required_capabilities)
@@ -854,6 +867,7 @@ class AiGateway:
         t_start = time.monotonic()
         last_error = ""
         provider_used = "none"
+        model_used = ""
         status = "error"
         final_result: Any = None
 
@@ -905,13 +919,27 @@ class AiGateway:
                         validated = schema(**raw)
                         final_result = validated
                     except Exception as ve:
-                        logger.warning("%s schema validation failed for %s: %s", task_type, provider.name, ve)
+                        if task_type in _AUTHORITATIVE_AUDIT_TASKS:
+                            logger.warning(
+                                "%s schema validation failed for %s error_type=%s",
+                                task_type,
+                                provider.name,
+                                type(ve).__name__,
+                            )
+                        else:
+                            logger.warning(
+                                "%s schema validation failed for %s: %s",
+                                task_type,
+                                provider.name,
+                                ve,
+                            )
                         fallback_chain.append(f"{provider.name}:schema_fail")
                         continue
                 else:
                     final_result = raw
 
                 provider_used = provider.name
+                model_used = _provider_model(provider)
                 status = "success"
                 if task_type == "analyze_director_action":
                     source = _analysis_source_for_provider(provider.name)
@@ -932,9 +960,17 @@ class AiGateway:
                 fallback_chain.append(f"{provider.name}:ok")
                 break
             except Exception as e:
-                last_error = str(e)
+                last_error = "" if task_type in _AUTHORITATIVE_AUDIT_TASKS else str(e)
                 fallback_chain.append(f"{provider.name}:{type(e).__name__}")
-                logger.warning("Provider %s failed for %s: %s", provider.name, task_type, e)
+                if task_type in _AUTHORITATIVE_AUDIT_TASKS:
+                    logger.warning(
+                        "Provider %s failed for %s error_type=%s",
+                        provider.name,
+                        task_type,
+                        type(e).__name__,
+                    )
+                else:
+                    logger.warning("Provider %s failed for %s: %s", provider.name, task_type, e)
         else:
             # All providers failed
             final_result = await self._fallback_for_task(
@@ -947,8 +983,20 @@ class AiGateway:
             status = "fallback"
 
         duration_ms = int((time.monotonic() - t_start) * 1000)
-        self._log_call(task_type, room_id, provider_used, status, duration_ms,
-                       fallback_chain, last_error, final_result, context=context)
+        self._log_call(
+            task_type,
+            room_id,
+            provider_used,
+            status,
+            duration_ms,
+            fallback_chain,
+            last_error,
+            final_result,
+            context=context,
+            audit_context=audit_context,
+            model=model_used,
+            template_version=template_version,
+        )
         return final_result
 
     async def _fallback_for_task(
@@ -1036,13 +1084,91 @@ class AiGateway:
 
     def _log_call(self, task_type: str, room_id: str | None, provider: str,
                   status: str, duration_ms: int, fallback_chain: list[str],
-                  error_message: str, response: Any, context: dict | None = None):
+                  error_message: str, response: Any, context: dict | None = None,
+                  audit_context: dict | None = None, model: str = "",
+                  template_version: str = ""):
         if not self.db:
             return
-        if (context or {}).get("suppress_response_log"):
+        if (audit_context or context or {}).get("suppress_response_log"):
             return
+        authoritative_success = bool(
+            task_type in _AUTHORITATIVE_AUDIT_TASKS
+            and status == "success"
+            and response is not None
+            and room_id
+        )
         try:
             ctx = context or {}
+            audit_ctx = audit_context or ctx
+            if authoritative_success:
+                from .decision_audit import DecisionAuditRecorder
+
+                proposal = (
+                    response.model_dump(mode="json", by_alias=True)
+                    if hasattr(response, "model_dump")
+                    else dict(response) if isinstance(response, dict) else {}
+                )
+                local_analysis = audit_ctx.get("local_analysis")
+                if not isinstance(local_analysis, dict):
+                    local_analysis = {}
+                draft_id = str(local_analysis.get("draft_id") or "")
+                draft_revision = (
+                    int(local_analysis.get("revision") or 1)
+                    if draft_id
+                    else None
+                )
+                action_id = str(
+                    audit_ctx.get("action_id")
+                    or audit_ctx.get("local_action_id")
+                    or local_analysis.get("draft_id")
+                    or proposal.get("action_id")
+                    or ""
+                )
+                citations = proposal.get("citations") or proposal.get(
+                    "redacted_citations"
+                ) or []
+                if not isinstance(citations, list):
+                    citations = []
+                with self.db.transaction() as tx:
+                    audit_id = DecisionAuditRecorder(tx).record(
+                        room_id=room_id,
+                        action_id=action_id,
+                        task_type=task_type,
+                        provider=provider,
+                        model=model,
+                        context={
+                            **audit_ctx,
+                            "room_id": room_id,
+                            "action_id": action_id,
+                            "template_version": template_version,
+                        },
+                        template_version=template_version,
+                        draft_id=draft_id,
+                        draft_revision=draft_revision,
+                        rule_version=str(
+                            audit_ctx.get("rule_version") or "unversioned"
+                        ),
+                        citations=[
+                            item for item in citations if isinstance(item, dict)
+                        ],
+                        structured_proposal=proposal,
+                    )
+                    updated = tx.execute(
+                        "UPDATE ai_call_logs SET provider_order = %s, duration_ms = %s, "
+                        "status = %s, fallback_chain = %s, error_message = %s "
+                        "WHERE decision_audit_id = %s",
+                        (
+                            ",".join(self._provider_order),
+                            duration_ms,
+                            status,
+                            fallback_chain,
+                            "",
+                            audit_id,
+                        ),
+                    )
+                    if int(updated.rowcount) != 1:
+                        raise RuntimeError("decision_audit_metadata_update_failed")
+                return
             summary = ""
             if isinstance(response, KpResponse) and response.narrative:
                 summary = (response.narrative.public or response.keeper_notes or "")[:256]
@@ -1054,8 +1180,10 @@ class AiGateway:
                 "INSERT INTO ai_call_logs "
                 "(room_id, task_type, provider, provider_order, duration_ms, status, "
                 "fallback_chain, response_summary, error_message, "
-                "spoiler_review_status, spoiler_hit_items, retry_count) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "spoiler_review_status, spoiler_hit_items, retry_count, "
+                "record_kind, expires_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "'diagnostic', NOW() + INTERVAL '24 hours')",
                 (room_id, task_type, provider, ",".join(self._provider_order),
                  duration_ms, status, fallback_chain, summary[:256], error_message[:256],
                  ctx.get("spoiler_review_status", ""),
@@ -1064,6 +1192,13 @@ class AiGateway:
             )
             self.db.commit()
         except Exception as e:
+            if authoritative_success:
+                logger.error(
+                    "Authoritative decision audit failed task=%s error_type=%s",
+                    task_type,
+                    type(e).__name__,
+                )
+                raise RuntimeError("authoritative_decision_audit_failed") from None
             logger.debug("Failed to log AI call: %s", e)
 
 
@@ -1081,6 +1216,29 @@ def _analysis_source_for_provider(provider_name: str) -> str:
     if provider_name == "local":
         return "local_fallback"
     return "fallback_provider"
+
+
+def _provider_model(provider: Any) -> str:
+    model = str(getattr(provider, "model", "") or "")
+    if model:
+        return model
+    if getattr(provider, "name", "") == "mcp":
+        return "mcp-managed"
+    if getattr(provider, "name", "") == "local":
+        return "deterministic-local"
+    return "provider-managed"
+
+
+def _drop_empty_citation_versions(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _drop_empty_citation_versions(item)
+            for key, item in value.items()
+            if not (key == "version" and item is None)
+        }
+    if isinstance(value, list):
+        return [_drop_empty_citation_versions(item) for item in value]
+    return value
 
 
 def _normalize_director_provider_result(
@@ -1185,6 +1343,7 @@ def _normalize_director_citation(value: dict[str, Any]) -> dict[str, Any]:
         "content_item_id": (
             str(value["content_item_id"]) if value.get("content_item_id") else None
         ),
+        "version": str(value["version"]) if value.get("version") else None,
         "page_number": page_number,
         "location": str(value["location"]) if value.get("location") else None,
     }

@@ -47,6 +47,8 @@ def build_narrator_context(
     room: dict[str, Any],
     resolution: ResolutionResult,
 ) -> dict[str, Any]:
+    from .director import _rule_version
+
     params = _json_object(action.get("params"))
     director_plan = _json_object(params.get("director_plan"))
     runtime_package = _latest_runtime_package(
@@ -109,6 +111,7 @@ def build_narrator_context(
         "interactable_objects": interactables,
         "adventure_ended": adventure_ended,
         "context_version": int(room.get("state_version") or 0),
+        "rule_version": _rule_version(conn, str(room.get("room_id") or "")),
         "director_plan_digest": _director_plan_digest(director_plan),
     }
     return _strip_denied(context)

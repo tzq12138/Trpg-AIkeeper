@@ -2,7 +2,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from .engine.action_lifecycle import complete_action
 from .events.event_log import EventLog
@@ -34,6 +34,7 @@ class CampaignFinalization:
     canceled_action_ids: tuple[str, ...]
     state_version: int
     ending_event_sequence: int | None = None
+    resolution_bundle: dict[str, Any] | None = None
 
 
 class CampaignArchive:
@@ -46,42 +47,63 @@ class CampaignArchive:
         *,
         ending_event_payload: dict[str, Any] | None = None,
     ) -> CampaignEnding:
-        events = self._get_all_events(room_id)
-        characters = self.conn.execute(
-            "SELECT * FROM characters WHERE room_id = %s", (room_id,)
-        ).fetchall()
+        with self.conn.transaction() as tx:
+            room = tx.execute(
+                "SELECT room_id, status FROM rooms WHERE room_id = %s FOR UPDATE",
+                (room_id,),
+            ).fetchone()
+            if not room:
+                raise CampaignReadOnlyError("campaign_room_missing")
+            if str(room.get("status") or "") == "completed":
+                raise CampaignReadOnlyError("campaign_already_completed")
 
-        ending_type = str(
-            (ending_event_payload or {}).get("ending_type")
-            or self._determine_ending_type(events)
-        )
-        summary = self._build_summary(room_id, events, characters)
-        highlights = self._extract_highlights(events)
-        character_arcs = self._build_character_arcs(room_id, characters)
+            events = self._get_all_events(room_id, executor=tx)
+            public_events = [
+                event
+                for event in events
+                if str(event.get("audience") or "") in {"party", "system"}
+            ]
+            characters = tx.execute(
+                "SELECT * FROM characters WHERE room_id = %s ORDER BY character_id",
+                (room_id,),
+            ).fetchall()
+            ending_type = str(
+                (ending_event_payload or {}).get("ending_type")
+                or self._determine_ending_type(public_events)
+            )
+            ending = CampaignEnding(
+                ending_type=ending_type,
+                summary=self._build_summary(room_id, public_events, characters),
+                highlights=self._extract_highlights(public_events),
+                character_arcs=self._build_character_arcs(
+                    room_id,
+                    characters,
+                    executor=tx,
+                ),
+            )
 
-        ending = CampaignEnding(
-            ending_type=ending_type,
-            summary=summary,
-            highlights=highlights,
-            character_arcs=character_arcs,
-        )
-
-        finalized = finalize_campaign(
-            self.conn,
-            room_id,
-            ending_type=ending.ending_type,
-            summary=ending.summary,
-            highlights=ending.highlights,
-            character_arcs=ending.character_arcs,
-            expected_room_statuses=("lobby", "suggested", "active", "paused"),
-            ending_event_payload=ending_event_payload,
-        )
-        if finalized is None:
-            raise CampaignReadOnlyError("campaign_already_completed")
+            finalized = finalize_campaign(
+                self.conn,
+                room_id,
+                ending_type=ending.ending_type,
+                summary=ending.summary,
+                highlights=ending.highlights,
+                character_arcs=ending.character_arcs,
+                expected_room_statuses=("lobby", "suggested", "active", "paused"),
+                ending_event_payload=ending_event_payload,
+                transaction=tx,
+            )
+            if finalized is None:
+                raise CampaignReadOnlyError("campaign_already_completed")
 
         return ending
 
-    def get_campaign_summary(self, room_id: str) -> CampaignSummary:
+    def get_campaign_summary(
+        self,
+        room_id: str,
+        *,
+        character_id: str | None = None,
+    ) -> CampaignSummary:
         room = self.conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
         if not room:
             raise ValueError(f"Room {room_id} not found")
@@ -90,6 +112,22 @@ class CampaignArchive:
             "SELECT COUNT(*) as cnt FROM actions WHERE room_id = %s", (room_id,)
         ).fetchone()
         events = self._get_all_events(room_id)
+        if character_id:
+            event_log = EventLog(self.conn)
+            events = [
+                event
+                for event in events
+                if event_log._can_player_see_event(
+                    str(event.get("event_type") or ""),
+                    str(event.get("audience") or ""),
+                    _json_value(event.get("payload")),
+                    character_id,
+                    event.get("sequence"),
+                    event.get("action_id"),
+                    event.get("state_version"),
+                    event.get("room_id"),
+                )
+            ]
 
         duration = 0
         if room["started_at"]:
@@ -111,11 +149,21 @@ class CampaignArchive:
             (room_id,),
         ).fetchone()
         if archive_row:
+            projection = project_campaign_archive(
+                archive_row,
+                scope="player" if character_id else "full",
+                character_id=character_id,
+            )
+            if character_id:
+                own_arc = projection.get("character_arc")
+                character_arcs = [own_arc] if own_arc else []
+            else:
+                character_arcs = projection["character_arcs"]
             ending = CampaignEnding(
-                ending_type=archive_row["ending_type"],
-                summary=archive_row["summary"],
-                highlights=_json_value(archive_row["highlights"]),
-                character_arcs=_json_value(archive_row["character_arcs"]),
+                ending_type=projection["ending_type"],
+                summary=projection["summary"],
+                highlights=projection["highlights"],
+                character_arcs=character_arcs,
             )
 
         return CampaignSummary(
@@ -163,8 +211,8 @@ class CampaignArchive:
             for r in rows
         ]
 
-    def _get_all_events(self, room_id: str) -> list[dict]:
-        rows = self.conn.execute(
+    def _get_all_events(self, room_id: str, *, executor=None) -> list[dict]:
+        rows = (executor or self.conn).execute(
             "SELECT * FROM events WHERE room_id = %s ORDER BY sequence", (room_id,)
         ).fetchall()
         return [dict(r) for r in rows]
@@ -185,6 +233,8 @@ class CampaignArchive:
     def _extract_highlights(self, events: list[dict]) -> list[str]:
         highlights = []
         for e in events:
+            if str(e.get("audience") or "") not in {"party", "system"}:
+                continue
             if e["event_type"] in (event_type("s2c_reveal_transaction"), event_type("s2c_scene_sync")):
                 payload = _json_value(e["payload"])
                 if "text" in payload:
@@ -193,8 +243,14 @@ class CampaignArchive:
                     highlights.append(payload["summary"])
         return highlights[:10]
 
-    def _build_character_arcs(self, room_id: str, characters: list) -> list[dict]:
-        return build_character_arcs(self.conn, room_id, characters)
+    def _build_character_arcs(
+        self,
+        room_id: str,
+        characters: list,
+        *,
+        executor=None,
+    ) -> list[dict]:
+        return build_character_arcs(executor or self.conn, room_id, characters)
 
     def _save_archive(self, room_id: str, ending: CampaignEnding):
         with self.conn.transaction() as tx:
@@ -234,6 +290,11 @@ def finalize_campaign(
     ending_event_payload: dict[str, Any] | None = None,
     transaction=None,
 ) -> CampaignFinalization | None:
+    from .ai.decision_audit import (
+        DecisionAuditRecorder,
+        finalize_terminal_decision_audit,
+    )
+
     def execute(tx) -> CampaignFinalization | None:
         room = tx.execute(
             "SELECT room_id, status, state_version FROM rooms "
@@ -319,6 +380,34 @@ def finalize_campaign(
                     ),
                 ),
             )
+            finalize_terminal_decision_audit(
+                tx,
+                action_id,
+                action_status="canceled",
+                reason_code="campaign_ended",
+                state_version=int(room_row.get("state_version") or 0),
+            )
+
+        canceled_drafts = tx.execute(
+            "UPDATE action_drafts SET status = 'canceled', updated_at = NOW() "
+            "WHERE room_id = %s "
+            "AND status IN ('analyzing', 'awaiting_confirmation') "
+            "RETURNING draft_id, current_revision",
+            (room_id,),
+        ).fetchall()
+        draft_audits = DecisionAuditRecorder(tx)
+        for draft in canceled_drafts:
+            revision = int(draft.get("current_revision") or 1)
+            draft_audits.finalize_draft_revision(
+                str(draft["draft_id"]),
+                revision,
+                audit_state="canceled",
+                final_delta={
+                    "draft_status": "canceled",
+                    "reason_code": "campaign_ended",
+                    "draft_revision": revision,
+                },
+            )
 
         archive_id = _insert_minimal_archive(
             tx,
@@ -377,6 +466,44 @@ def _json_value(value):
     if isinstance(value, (dict, list)):
         return value
     return json.loads(value)
+
+
+def project_campaign_archive(
+    archive_row,
+    *,
+    scope: Literal["full", "player", "admin_ops"],
+    character_id: str | None = None,
+) -> dict[str, Any]:
+    """Return only the campaign archive fields allowed for the requested scope."""
+    row = dict(archive_row)
+    metadata = {
+        key: row.get(key)
+        for key in ("archive_id", "room_id", "ending_type", "created_at")
+        if key in row
+    }
+    if scope == "admin_ops":
+        return metadata
+
+    projection = {
+        **metadata,
+        "ending_type": row["ending_type"],
+        "summary": row["summary"],
+        "highlights": list(_json_value(row.get("highlights")) or []),
+    }
+    arcs = list(_json_value(row.get("character_arcs")) or [])
+    if scope == "full":
+        return {**projection, "character_arcs": arcs}
+    if not character_id:
+        raise ValueError("player archive projection requires character_id")
+    own_arc = next(
+        (
+            arc
+            for arc in arcs
+            if str(arc.get("character_id") or "") == character_id
+        ),
+        None,
+    )
+    return {**projection, "character_arc": own_arc}
 
 
 def build_character_arcs(conn, room_id: str, characters: list | None = None) -> list[dict]:

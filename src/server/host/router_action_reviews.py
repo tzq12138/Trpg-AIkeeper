@@ -12,6 +12,7 @@ from ..engine.compensation_service import (
     resolve_action_review,
 )
 from ..events.event_log import EventLog
+from ..runtime_lifecycle import character_lifecycle_guard
 from .router_host import _verify_owner
 
 
@@ -311,36 +312,101 @@ async def resolve_action_exception(
     if action["status"] != "awaiting_host_exception":
         raise HTTPException(409, detail={"code": "exception_already_resolved"})
 
+    async with character_lifecycle_guard(
+        [str(action["character_id"])],
+        conn=conn,
+    ):
+        current = conn.execute(
+            "SELECT action_id, character_id, status FROM actions "
+            "WHERE action_id = %s AND room_id = %s",
+            (action_id, room_id),
+        ).fetchone()
+        if not current:
+            raise HTTPException(404, detail={"code": "action_not_found"})
+        if current["status"] != "awaiting_host_exception":
+            raise HTTPException(
+                409,
+                detail={"code": "exception_already_resolved"},
+            )
+        return _resolve_action_exception_locked(
+            conn,
+            room_id=room_id,
+            action=dict(current),
+            body=body,
+        )
+
+
+def _resolve_action_exception_locked(
+    conn,
+    *,
+    room_id: str,
+    action: dict[str, Any],
+    body: ActionExceptionResolution,
+):
+    action_id = str(action["action_id"])
+
     if body.decision == "request_player_choice":
-        transitioned = transition_action(
-            conn,
-            action_id,
-            from_statuses=("awaiting_host_exception",),
-            to_status="awaiting_player_choice",
-            metadata={"reason": body.reason.strip()},
-        )
-        status = "awaiting_player_choice"
+        with conn.transaction() as tx:
+            transitioned = transition_action(
+                conn,
+                action_id,
+                from_statuses=("awaiting_host_exception",),
+                to_status="awaiting_player_choice",
+                metadata={"reason": body.reason.strip()},
+                transaction=tx,
+            )
+            if not transitioned:
+                raise HTTPException(
+                    409,
+                    detail={"code": "exception_already_resolved"},
+                )
+            EventLog(tx).log_event(
+                room_id,
+                "s2c_action_choice_requested",
+                "player",
+                {
+                    "actionId": action_id,
+                    "characterId": action["character_id"],
+                    "status": "awaiting_player_choice",
+                    "reason": body.reason.strip(),
+                },
+                commit=False,
+            )
+        return {"action_id": action_id, "status": "awaiting_player_choice"}
     else:
-        transitioned = complete_action(
-            conn,
-            action_id,
-            from_statuses=("awaiting_host_exception",),
-            to_status="rejected",
-            result={"reason": body.reason.strip()},
-            metadata={"reason_code": "host_exception_rejected"},
-        )
-        status = "rejected"
-    if not transitioned:
-        raise HTTPException(409, detail={"code": "exception_already_resolved"})
-    EventLog(conn).log_event(
-        room_id,
-        "s2c_action_choice_requested" if status == "awaiting_player_choice" else "s2c_action_completed",
-        "player",
-        {
-            "actionId": action_id,
-            "characterId": action["character_id"],
-            "status": status,
-            "reason": body.reason.strip(),
-        },
-    )
-    return {"action_id": action_id, "status": status}
+        from ..ai.decision_audit import finalize_terminal_decision_audit
+
+        with conn.transaction() as tx:
+            transitioned = complete_action(
+                conn,
+                action_id,
+                from_statuses=("awaiting_host_exception",),
+                to_status="rejected",
+                result={"reason": body.reason.strip()},
+                metadata={"reason_code": "host_exception_rejected"},
+                transaction=tx,
+            )
+            if not transitioned:
+                raise HTTPException(
+                    409,
+                    detail={"code": "exception_already_resolved"},
+                )
+            finalize_terminal_decision_audit(
+                tx,
+                action_id,
+                action_status="rejected",
+                reason_code="host_exception_rejected",
+            )
+            EventLog(tx).log_event(
+                room_id,
+                "s2c_action_completed",
+                "player",
+                {
+                    "actionId": action_id,
+                    "characterId": action["character_id"],
+                    "status": "rejected",
+                    "reason": body.reason.strip(),
+                },
+                commit=False,
+            )
+        return {"action_id": action_id, "status": "rejected"}

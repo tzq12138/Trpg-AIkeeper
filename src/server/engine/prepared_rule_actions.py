@@ -1,6 +1,7 @@
 """Deterministic consumption of player-confirmed prepared reactions."""
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 import json
 import uuid
 from typing import Literal
@@ -65,6 +66,7 @@ def consume_prepared_actions_for_rule_event(
     room_id: str,
     source_action_id: str,
     rule_event: PreparedRuleEvent,
+    transaction=None,
 ) -> list[dict[str, str]]:
     """Consume matching armed records after an authoritative public rule event.
 
@@ -77,7 +79,11 @@ def consume_prepared_actions_for_rule_event(
         return []
 
     triggered: list[dict[str, str]] = []
-    with conn.transaction() as tx:
+    with (
+        nullcontext(transaction)
+        if transaction is not None
+        else conn.transaction()
+    ) as tx:
         from ..campaign_archive import CampaignReadOnlyError, ensure_campaign_writable
 
         try:
@@ -183,7 +189,7 @@ def consume_prepared_actions_for_rule_event(
                     ),
                 ),
             )
-            tx.execute(
+            completed = tx.execute(
                 "UPDATE actions SET status = 'completed', completed_at = NOW(), result = %s "
                 "WHERE action_id = %s AND status = 'armed'",
                 (
@@ -198,6 +204,8 @@ def consume_prepared_actions_for_rule_event(
                     prepared_action_id,
                 ),
             )
+            if completed.rowcount != 1:
+                raise RuntimeError("prepared_action_completion_conflict")
             tx.execute(
                 "INSERT INTO action_status_events (action_id, status, metadata) "
                 "VALUES (%s, 'completed', %s)",
@@ -212,6 +220,14 @@ def consume_prepared_actions_for_rule_event(
                         ensure_ascii=False,
                     ),
                 ),
+            )
+            from ..ai.decision_audit import finalize_terminal_decision_audit
+
+            finalize_terminal_decision_audit(
+                tx,
+                prepared_action_id,
+                action_status="completed",
+                reason_code="prepared_rule_event_triggered",
             )
             triggered.append(
                 {
@@ -228,9 +244,10 @@ def complete_triggered_prepared_reaction(
     *,
     reaction_action_id: str,
     terminal_status: Literal["completed", "rejected", "timeout"],
+    transaction=None,
 ) -> bool:
     """Close the source preparation after its internally queued reaction ends."""
-    with conn.transaction() as tx:
+    def execute(tx) -> bool:
         from ..campaign_archive import CampaignReadOnlyError, ensure_campaign_writable
 
         reaction = tx.execute(
@@ -253,6 +270,10 @@ def complete_triggered_prepared_reaction(
             (terminal_status, prepared_action_id, reaction["room_id"]),
         )
         return cursor.rowcount == 1
+    if transaction is not None:
+        return execute(transaction)
+    with conn.transaction() as tx:
+        return execute(tx)
 
 
 def _json_value(value):

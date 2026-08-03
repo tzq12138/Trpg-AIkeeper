@@ -849,10 +849,11 @@ CREATE TABLE IF NOT EXISTS note_attachments (
 
 CREATE TABLE IF NOT EXISTS private_data_access_audits (
     private_data_access_audit_id TEXT PRIMARY KEY,
-    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
-    note_id TEXT NOT NULL REFERENCES player_notes(note_id) ON DELETE CASCADE,
-    owner_character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
-    host_account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE RESTRICT,
+    room_id TEXT REFERENCES rooms(room_id) ON DELETE SET NULL,
+    note_id TEXT REFERENCES player_notes(note_id) ON DELETE SET NULL,
+    owner_character_id TEXT REFERENCES characters(character_id) ON DELETE SET NULL,
+    host_account_id TEXT REFERENCES accounts(account_id) ON DELETE SET NULL,
+    actor_tombstone TEXT,
     reason TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -1519,6 +1520,82 @@ CREATE INDEX IF NOT EXISTS idx_spoiler_audits_room ON spoiler_audits(room_id, cr
 ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS spoiler_review_status VARCHAR(32);
 ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS spoiler_hit_items JSONB;
 ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;
+ALTER TABLE ai_call_logs ALTER COLUMN provider TYPE TEXT;
+ALTER TABLE ai_call_logs ALTER COLUMN provider_order TYPE TEXT;
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS decision_audit_id TEXT;
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT '';
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS template_version TEXT NOT NULL DEFAULT '';
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS rule_version TEXT NOT NULL DEFAULT '';
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS context_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS citations JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS structured_proposal JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS engine_validation JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS final_delta JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS record_kind TEXT NOT NULL DEFAULT 'diagnostic';
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS draft_id TEXT;
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS draft_revision INTEGER;
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS audit_state TEXT NOT NULL DEFAULT 'current';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_call_logs_decision_audit
+    ON ai_call_logs(decision_audit_id) WHERE decision_audit_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ai_call_logs_draft_revision
+    ON ai_call_logs(draft_id, draft_revision, audit_state)
+    WHERE draft_id IS NOT NULL;
+
+ALTER TABLE private_data_access_audits ALTER COLUMN note_id DROP NOT NULL;
+ALTER TABLE private_data_access_audits ALTER COLUMN owner_character_id DROP NOT NULL;
+ALTER TABLE private_data_access_audits ALTER COLUMN room_id DROP NOT NULL;
+ALTER TABLE private_data_access_audits ALTER COLUMN host_account_id DROP NOT NULL;
+ALTER TABLE private_data_access_audits ADD COLUMN IF NOT EXISTS actor_tombstone TEXT;
+ALTER TABLE private_data_access_audits ADD COLUMN IF NOT EXISTS incident_id TEXT;
+ALTER TABLE private_data_access_audits ADD COLUMN IF NOT EXISTS scope TEXT;
+ALTER TABLE private_data_access_audits ADD COLUMN IF NOT EXISTS resource_type TEXT;
+ALTER TABLE private_data_access_audits ADD COLUMN IF NOT EXISTS resource_id TEXT;
+ALTER TABLE private_data_access_audits
+    DROP CONSTRAINT IF EXISTS private_data_access_audits_room_id_fkey;
+ALTER TABLE private_data_access_audits
+    ADD CONSTRAINT private_data_access_audits_room_id_fkey
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE SET NULL;
+ALTER TABLE private_data_access_audits
+    DROP CONSTRAINT IF EXISTS private_data_access_audits_note_id_fkey;
+ALTER TABLE private_data_access_audits
+    ADD CONSTRAINT private_data_access_audits_note_id_fkey
+    FOREIGN KEY (note_id) REFERENCES player_notes(note_id) ON DELETE SET NULL;
+ALTER TABLE private_data_access_audits
+    DROP CONSTRAINT IF EXISTS private_data_access_audits_owner_character_id_fkey;
+ALTER TABLE private_data_access_audits
+    ADD CONSTRAINT private_data_access_audits_owner_character_id_fkey
+    FOREIGN KEY (owner_character_id) REFERENCES characters(character_id) ON DELETE SET NULL;
+ALTER TABLE private_data_access_audits
+    DROP CONSTRAINT IF EXISTS private_data_access_audits_host_account_id_fkey;
+ALTER TABLE private_data_access_audits
+    ADD CONSTRAINT private_data_access_audits_host_account_id_fkey
+    FOREIGN KEY (host_account_id) REFERENCES accounts(account_id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS retention_runs (
+    retention_run_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    cutoff TIMESTAMPTZ NOT NULL,
+    actor_id TEXT NOT NULL,
+    counts JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'retention_runs'
+          AND column_name = 'cutoff'
+          AND data_type = 'timestamp without time zone'
+    ) THEN
+        ALTER TABLE retention_runs
+            ALTER COLUMN cutoff TYPE TIMESTAMPTZ
+            USING cutoff AT TIME ZONE 'UTC';
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS character_profiles (
     profile_id TEXT PRIMARY KEY,
@@ -1537,6 +1614,40 @@ CREATE TABLE IF NOT EXISTS character_profiles (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     version INTEGER NOT NULL DEFAULT 0
 );
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'rooms_owner_account_id_fkey'
+          AND conrelid = 'rooms'::regclass
+    ) THEN
+        ALTER TABLE rooms
+            ADD CONSTRAINT rooms_owner_account_id_fkey
+            FOREIGN KEY (owner_account_id) REFERENCES accounts(account_id)
+            ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'characters_account_id_fkey'
+          AND conrelid = 'characters'::regclass
+    ) THEN
+        ALTER TABLE characters
+            ADD CONSTRAINT characters_account_id_fkey
+            FOREIGN KEY (account_id) REFERENCES accounts(account_id)
+            ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'character_profiles_account_id_fkey'
+          AND conrelid = 'character_profiles'::regclass
+    ) THEN
+        ALTER TABLE character_profiles
+            ADD CONSTRAINT character_profiles_account_id_fkey
+            FOREIGN KEY (account_id) REFERENCES accounts(account_id)
+            ON DELETE RESTRICT NOT VALID;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS character_runtime_state (
     character_id TEXT NOT NULL,

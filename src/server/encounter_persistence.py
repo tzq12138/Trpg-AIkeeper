@@ -66,23 +66,32 @@ def create_encounter(
     return get_encounter(conn, encounter_id)
 
 
-def update_encounter_status(conn, encounter_id: str, status: str, summary: str | None = None):
+def update_encounter_status(
+    conn,
+    encounter_id: str,
+    status: str,
+    summary: str | None = None,
+    *,
+    transaction=None,
+):
+    executor = transaction or conn
     if summary is not None:
-        conn.execute(
+        executor.execute(
             "UPDATE encounters SET status = %s, summary = %s WHERE encounter_id = %s",
             (status, summary, encounter_id),
         )
     else:
-        conn.execute(
+        executor.execute(
             "UPDATE encounters SET status = %s WHERE encounter_id = %s",
             (status, encounter_id),
         )
     if status == "resolved":
-        conn.execute(
+        executor.execute(
             "UPDATE encounters SET resolved_at = NOW() WHERE encounter_id = %s",
             (encounter_id,),
         )
-    conn.commit()
+    if transaction is None:
+        conn.commit()
 
 
 def update_encounter_round(conn, encounter_id: str, round_num: int):
@@ -139,7 +148,14 @@ def add_participant(
     return get_participant(conn, encounter_id, character_id)
 
 
-def update_participant(conn, encounter_id: str, character_id: str, **fields):
+def update_participant(
+    conn,
+    encounter_id: str,
+    character_id: str,
+    *,
+    transaction=None,
+    **fields,
+):
     """Update specific participant fields. Only non-None values are applied."""
     if not fields:
         return
@@ -160,12 +176,14 @@ def update_participant(conn, encounter_id: str, character_id: str, **fields):
     if not set_parts:
         return
     params.extend([encounter_id, character_id])
-    conn.execute(
+    executor = transaction or conn
+    executor.execute(
         f"UPDATE encounter_participants SET {', '.join(set_parts)} "
         "WHERE encounter_id = %s AND character_id = %s",
         tuple(params),
     )
-    conn.commit()
+    if transaction is None:
+        conn.commit()
 
 
 def remove_participant(conn, encounter_id: str, character_id: str):

@@ -124,6 +124,8 @@ def test_only_current_target_identity_can_answer_and_response_is_idempotent(clie
 
 
 def test_rejection_or_expiry_ends_the_action_without_effects(client, test_db):
+    from src.server.ai.decision_audit import DecisionAuditRecorder
+
     room, (actor, target) = _setup_players(client, test_db)
     before_version = test_db.execute(
         "SELECT state_version FROM rooms WHERE room_id = %s",
@@ -137,6 +139,14 @@ def test_rejection_or_expiry_ends_the_action_without_effects(client, test_db):
         params={"targetId": target["character_id"], "pvpEffect": "restrict_action"},
         key="pvp-reject-1",
     )
+    rejected_audit_id = DecisionAuditRecorder(test_db).record(
+        room_id=room["room_id"],
+        action_id=rejected_action["action_id"],
+        task_type="analyze_director_action",
+        provider="terminal-audit-test",
+        model="deterministic",
+    )
+    test_db.commit()
     rejected_consent = test_db.execute(
         "SELECT consent_id FROM action_consents WHERE action_id = %s",
         (rejected_action["action_id"],),
@@ -154,6 +164,13 @@ def test_rejection_or_expiry_ends_the_action_without_effects(client, test_db):
     ).fetchone()
     assert rejected_row["status"] == "rejected"
     assert rejected_row["result"]["outcome"] == "no_effect"
+    rejected_delta = test_db.execute(
+        "SELECT final_delta FROM ai_call_logs WHERE decision_audit_id = %s",
+        (rejected_audit_id,),
+    ).fetchone()["final_delta"]
+    assert rejected_delta["action_status"] == "rejected"
+    assert rejected_delta["reason_code"] == "player_consent_rejected"
+    assert rejected_delta["effect"] == "no_effect"
 
     expired_action = _confirm_action(
         client,
@@ -163,6 +180,14 @@ def test_rejection_or_expiry_ends_the_action_without_effects(client, test_db):
         params={"targetId": target["character_id"], "pvpEffect": "status_change"},
         key="pvp-expire-1",
     )
+    expired_audit_id = DecisionAuditRecorder(test_db).record(
+        room_id=room["room_id"],
+        action_id=expired_action["action_id"],
+        task_type="analyze_director_action",
+        provider="terminal-audit-test",
+        model="deterministic",
+    )
+    test_db.commit()
     expired_consent = test_db.execute(
         "SELECT consent_id FROM action_consents WHERE action_id = %s",
         (expired_action["action_id"],),
@@ -186,6 +211,13 @@ def test_rejection_or_expiry_ends_the_action_without_effects(client, test_db):
     ).fetchone()
     assert expired_row["status"] == "timeout"
     assert expired_row["result"]["outcome"] == "no_effect"
+    expired_delta = test_db.execute(
+        "SELECT final_delta FROM ai_call_logs WHERE decision_audit_id = %s",
+        (expired_audit_id,),
+    ).fetchone()["final_delta"]
+    assert expired_delta["action_status"] == "timeout"
+    assert expired_delta["reason_code"] == "player_consent_expired"
+    assert expired_delta["effect"] == "no_effect"
     assert test_db.execute(
         "SELECT state_version FROM rooms WHERE room_id = %s",
         (room["room_id"],),

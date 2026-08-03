@@ -68,7 +68,7 @@ def test_db():
     pg.initialize()
     conn = pg.get_connection()
     conn.execute(
-        "TRUNCATE TABLE admin_data_purge_audits, ai_provider_config_audits, ai_provider_configs, "
+        "TRUNCATE TABLE retention_runs, admin_data_purge_audits, ai_provider_config_audits, ai_provider_configs, "
         "document_chunks, content_item_edges, content_items, content_projection_runs, "
         "runtime_package_exception_confirmations, runtime_package_versions, v2_cutover_records, "
         "import_jobs, source_parts, source_documents, "

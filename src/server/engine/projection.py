@@ -45,6 +45,9 @@ class ProjectionDispatcher:
         if event_type.startswith("s2c_fact_"):
             raise ValueError("fact_event_requires_reveal_ledger")
 
+        if audience == "player" and character_id:
+            payload = {**payload, "characterId": character_id}
+
         # ── SpoilerGuard safety-net scan ──
         if not _skip_spoiler_check and audience in ("player", "party") and self.spoiler_guard:
             payload = await self._scan_payload_for_spoilers(

@@ -23,6 +23,7 @@ from ..ai.director import (
     resolve_conditional_solo_target,
 )
 from ..ai.narrator import build_manual_action_hints
+from ..ai.decision_audit import DecisionAuditPersistenceError
 from ..events.events_registry import event_type
 from ..engine.projection import ProjectionDispatcher
 from ..engine.solo_combat_reactions import (
@@ -83,6 +84,50 @@ _TEAM_CHANNEL_INPUT_MODES = {
 }
 _RULE_QUESTION_INPUT_MODE = "rule_question"
 _SAFETY_INPUT_MODE = "safety"
+
+
+def _finalize_director_draft_audit(
+    conn,
+    draft: ActionDraftDTO,
+    *,
+    validated: bool,
+    reason: str = "",
+    required: bool = False,
+) -> None:
+    if not draft.draft_id:
+        return
+    validation = {
+        "validated": validated,
+        "stage": "draft_projection",
+        "route": str(draft.resolution_route or ""),
+    }
+    if reason:
+        validation["reason"] = reason
+    try:
+        from ..ai.decision_audit import DecisionAuditRecorder
+
+        updated = DecisionAuditRecorder(conn).finalize(
+            draft.draft_id,
+            task_type="analyze_director_action",
+            engine_validation=validation,
+            final_delta={},
+        )
+        if required and updated < 1:
+            raise DecisionAuditPersistenceError("decision_audit_finalize_failed")
+    except DecisionAuditPersistenceError:
+        logger.error(
+            "Failed to finalize Director draft audit error_type=%s",
+            "DecisionAuditPersistenceError",
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "Failed to finalize Director draft audit error_type=%s",
+            type(exc).__name__,
+        )
+        raise DecisionAuditPersistenceError(
+            "decision_audit_finalize_failed"
+        ) from None
 
 
 def _active_safety_pauses(conn, room_id: str) -> list[dict]:
@@ -902,6 +947,26 @@ async def list_rule_questions(request: Request):
 @router.post("/action-drafts/analyze", response_model=ActionDraftDTO)
 async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
     character = _require_character(request)
+    from ..runtime_lifecycle import character_lifecycle_guard
+
+    async with character_lifecycle_guard(
+        [character["character_id"]],
+        conn=request.app.state.db,
+    ):
+        current = request.app.state.db.execute(
+            "SELECT 1 FROM characters WHERE character_id = %s AND room_id = %s",
+            (character["character_id"], character["room_id"]),
+        ).fetchone()
+        if not current:
+            raise HTTPException(404, detail={"code": "character_not_found"})
+        return await _analyze_draft_locked(request, body, character)
+
+
+async def _analyze_draft_locked(
+    request: Request,
+    body: ActionDraftAnalyzeRequest,
+    character: dict,
+):
     integrity = request.app.state.db.execute(
         "SELECT integrity_status, integrity_reason FROM rooms WHERE room_id = %s",
         (character["room_id"],),
@@ -956,9 +1021,14 @@ async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
         request.app.state.db, character, draft,
     )
     draft = apply_engine_action_policy(draft)
+    if not body.ephemeral and not draft.draft_id:
+        draft = draft.model_copy(update={"draft_id": str(uuid.uuid4())})
     policy_blocks_ai = draft.params.get("policyOutcome") in {"clarify", "reject"}
     gateway = None if policy_blocks_ai else getattr(request.app.state, "gateway", None)
     if gateway and hasattr(gateway, "analyze_director_action"):
+        audit_required = bool(
+            getattr(gateway, "authoritative_audit_required", False)
+        )
         director_context = build_director_context(
             request.app.state.db,
             character,
@@ -992,6 +1062,7 @@ async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
                 director_context,
             )
         else:
+            authoritative_audit_created = False
             try:
                 ai_result = await asyncio.wait_for(
                     gateway.analyze_director_action(
@@ -1003,6 +1074,9 @@ async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
                     ),
                     timeout=_DIRECTOR_ANALYSIS_TIMEOUT_SECONDS,
                 )
+                authoritative_audit_created = bool(
+                    audit_required and isinstance(ai_result, dict)
+                )
                 if isinstance(ai_result, dict):
                     director_plan = normalize_director_plan(ai_result, director_context)
                     applied_draft = apply_director_plan(
@@ -1012,10 +1086,12 @@ async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
                         director_plan,
                         director_context,
                     )
+                    recovered_local = False
                     if _can_recover_local_draft_after_rejected_progression(
                         draft,
                         applied_draft,
                     ):
+                        recovered_local = True
                         draft = _apply_local_director_plan(
                             request.app.state.db,
                             character,
@@ -1035,6 +1111,17 @@ async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
                             draft,
                             allow_implicit_single_target=True,
                         )
+                    _finalize_director_draft_audit(
+                        request.app.state.db,
+                        draft,
+                        validated=not recovered_local,
+                        reason=(
+                            "director_progression_rejected"
+                            if recovered_local
+                            else ""
+                        ),
+                        required=audit_required,
+                    )
                 elif _can_use_local_director_fallback(draft):
                     draft = _apply_local_director_plan(
                         request.app.state.db,
@@ -1042,7 +1129,16 @@ async def analyze_draft(request: Request, body: ActionDraftAnalyzeRequest):
                         draft,
                         director_context,
                     )
+            except DecisionAuditPersistenceError:
+                raise
             except Exception as exc:
+                _finalize_director_draft_audit(
+                    request.app.state.db,
+                    draft,
+                    validated=False,
+                    reason="director_analysis_failed",
+                    required=authoritative_audit_created,
+                )
                 logger.warning(
                     "Director analysis failed room=%s character=%s error_type=%s",
                     character["room_id"],
@@ -1108,10 +1204,16 @@ async def get_current_draft(request: Request):
 @router.patch("/action-drafts/{draft_id}", response_model=ActionDraftDTO)
 async def revise_draft(request: Request, draft_id: str, body: ActionDraftUpdateRequest):
     character = _require_character(request)
-    try:
-        return revise_action_draft(request.app.state.db, character, draft_id, body)
-    except ActionDraftError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
+    from ..runtime_lifecycle import character_lifecycle_guard
+
+    async with character_lifecycle_guard(
+        [character["character_id"]],
+        conn=request.app.state.db,
+    ):
+        try:
+            return revise_action_draft(request.app.state.db, character, draft_id, body)
+        except ActionDraftError as exc:
+            raise HTTPException(exc.status_code, exc.detail) from exc
 
 
 @router.delete("/action-drafts/{draft_id}", status_code=204)
@@ -1133,22 +1235,28 @@ async def confirm_draft(
     device_id: str = Header(default="", alias="X-Device-Id", max_length=128),
 ):
     character = _require_character(request)
+    from ..runtime_lifecycle import character_lifecycle_guard
+
     try:
-        claim_controller_device(
-            request.app.state.db,
-            character,
-            device_id or f"legacy:{character['character_id']}",
-        )
-        receipt = confirm_action_draft(
-            request.app.state.db,
-            character,
-            draft_id,
-            idempotency_key,
-            body.confirmations,
-            body.selected_skill,
-            body.composite_step_order,
-        )
-        record_campaign_activity(request.app.state.db, character)
+        async with character_lifecycle_guard(
+            [character["character_id"]],
+            conn=request.app.state.db,
+        ):
+            claim_controller_device(
+                request.app.state.db,
+                character,
+                device_id or f"legacy:{character['character_id']}",
+            )
+            receipt = confirm_action_draft(
+                request.app.state.db,
+                character,
+                draft_id,
+                idempotency_key,
+                body.confirmations,
+                body.selected_skill,
+                body.composite_step_order,
+            )
+            record_campaign_activity(request.app.state.db, character)
         if receipt.status == "queued":
             _schedule_action_resolution(
                 request.app,

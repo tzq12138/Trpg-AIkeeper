@@ -269,6 +269,7 @@ class DirectorCitationDTO(BaseModel):
     source: str | None = None
     source_part_id: str | None = None
     content_item_id: str | None = None
+    version: str | None = None
     page_number: int | None = None
     location: str | None = None
 

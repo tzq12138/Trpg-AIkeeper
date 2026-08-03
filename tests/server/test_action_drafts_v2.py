@@ -388,6 +388,11 @@ def test_safety_submission_anonymously_pauses_engine_until_triggering_player_res
         "AND event_type = 's2c_safety_request'",
         (room_id,),
     ).fetchone()
+    private_marker = test_db.execute(
+        "SELECT payload FROM events WHERE room_id = %s "
+        "AND event_type = 's2c_private_notice' ORDER BY sequence DESC LIMIT 1",
+        (room_id,),
+    ).fetchone()
     host_view = client.get(
         f"/api/host/{room_id}/safety-requests",
         headers={"X-Owner-Token": owner["owner_token"]},
@@ -432,6 +437,7 @@ def test_safety_submission_anonymously_pauses_engine_until_triggering_player_res
     assert created.json()["status"] == "safety_paused"
     assert marker["audience"] == "host"
     assert marker["payload"] == {"requestId": "safety-1"}
+    assert private_marker["payload"]["characterId"] == character_id
     assert message not in json.dumps(marker["payload"], ensure_ascii=False)
     assert host_view.status_code == 200
     assert host_view.json()["items"] == [{
@@ -1203,7 +1209,58 @@ def test_host_exception_queue_is_owner_only_and_can_request_player_choice(client
     assert receipt["timeline"][-1]["status"] == "awaiting_player_choice"
 
 
+def test_host_choice_request_rolls_back_when_notification_persistence_fails(
+    client,
+    test_db,
+    monkeypatch,
+):
+    from src.server.events.event_log import EventLog
+
+    room_id, _, player_token = _setup_player(client, test_db)
+    owner_token = test_db.execute(
+        "SELECT owner_token FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["owner_token"]
+    headers = {"X-Room-Token": player_token}
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我用无法确定规则的方式改变现实"},
+    ).json()
+    action = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "host-choice-atomicity"},
+        json={"confirmations": ["stateful_action"]},
+    ).json()
+
+    def fail_event(*_args, **_kwargs):
+        raise RuntimeError("injected-choice-event-failure")
+
+    monkeypatch.setattr(EventLog, "log_event", fail_event)
+    with pytest.raises(RuntimeError, match="injected-choice-event-failure"):
+        client.post(
+            f"/api/host/{room_id}/action-exceptions/{action['action_id']}/resolve",
+            headers={"X-Owner-Token": owner_token},
+            json={
+                "decision": "request_player_choice",
+                "reason": "请说明具体实现方式",
+            },
+        )
+
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = %s",
+        (action["action_id"],),
+    ).fetchone()["status"] == "awaiting_host_exception"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM action_status_events "
+        "WHERE action_id = %s AND status = 'awaiting_player_choice'",
+        (action["action_id"],),
+    ).fetchone()["count"] == 0
+
+
 def test_host_can_reject_an_exception_without_applying_state_changes(client, test_db):
+    from src.server.ai.decision_audit import DecisionAuditRecorder
+
     room_id, _, player_token = _setup_player(client, test_db)
     room = test_db.execute(
         "SELECT owner_token, state_version FROM rooms WHERE room_id = %s",
@@ -1220,6 +1277,14 @@ def test_host_can_reject_an_exception_without_applying_state_changes(client, tes
         headers={**headers, "Idempotency-Key": "host-reject-exception"},
         json={"confirmations": ["stateful_action"]},
     ).json()
+    audit_id = DecisionAuditRecorder(test_db).record(
+        room_id=room_id,
+        action_id=action["action_id"],
+        task_type="analyze_director_action",
+        provider="terminal-audit-test",
+        model="deterministic",
+    )
+    test_db.commit()
 
     resolved = client.post(
         f"/api/host/{room_id}/action-exceptions/{action['action_id']}/resolve",
@@ -1234,6 +1299,13 @@ def test_host_can_reject_an_exception_without_applying_state_changes(client, tes
         headers=headers,
     ).json()
     assert receipt["status"] == "rejected"
+    final_delta = test_db.execute(
+        "SELECT final_delta FROM ai_call_logs WHERE decision_audit_id = %s",
+        (audit_id,),
+    ).fetchone()["final_delta"]
+    assert final_delta["action_status"] == "rejected"
+    assert final_delta["reason_code"] == "host_exception_rejected"
+    assert isinstance(final_delta["state_version"], int)
     current_room = test_db.execute(
         "SELECT state_version FROM rooms WHERE room_id = %s",
         (room_id,),
@@ -1838,7 +1910,9 @@ def test_one_effective_action_per_player_per_turn(client, test_db):
 
 
 def test_cancel_action_is_atomic_before_resolving(client, test_db):
-    _, _, player_token = _setup_player(client, test_db)
+    from src.server.ai.decision_audit import DecisionAuditRecorder
+
+    room_id, _, player_token = _setup_player(client, test_db)
     headers = {"X-Room-Token": player_token}
     draft = client.post(
         "/api/player/action-drafts/analyze",
@@ -1850,6 +1924,14 @@ def test_cancel_action_is_atomic_before_resolving(client, test_db):
         headers={**headers, "Idempotency-Key": "cancel-me"},
         json={"confirmations": []},
     ).json()
+    audit_id = DecisionAuditRecorder(test_db).record(
+        room_id=room_id,
+        action_id=receipt["action_id"],
+        task_type="analyze_director_action",
+        provider="terminal-audit-test",
+        model="deterministic",
+    )
+    test_db.commit()
 
     response = client.post(
         f"/api/player/actions/{receipt['action_id']}/cancel",
@@ -1861,6 +1943,13 @@ def test_cancel_action_is_atomic_before_resolving(client, test_db):
     assert canceled["status"] == "canceled"
     assert canceled["can_cancel"] is False
     assert [event["status"] for event in canceled["timeline"]] == ["queued", "canceled"]
+    final_delta = test_db.execute(
+        "SELECT final_delta FROM ai_call_logs WHERE decision_audit_id = %s",
+        (audit_id,),
+    ).fetchone()["final_delta"]
+    assert final_delta["action_status"] == "canceled"
+    assert final_delta["reason_code"] == "player_canceled"
+    assert isinstance(final_delta["state_version"], int)
 
     second = client.post(
         f"/api/player/actions/{receipt['action_id']}/cancel",
@@ -1982,13 +2071,25 @@ def test_player_can_cancel_retryable_semantic_progression_recovery(client, test_
 
 
 def test_delete_draft_preserves_a_canceled_audit_record(client, test_db):
-    _, _, player_token = _setup_player(client, test_db)
+    from src.server.ai.decision_audit import DecisionAuditRecorder
+
+    room_id, _, player_token = _setup_player(client, test_db)
     headers = {"X-Room-Token": player_token}
     draft = client.post(
         "/api/player/action-drafts/analyze",
         headers=headers,
         json={"declared_intent": "我看看桌上的旧报纸"},
     ).json()
+    audit_id = DecisionAuditRecorder(test_db).record(
+        room_id=room_id,
+        action_id=draft["draft_id"],
+        draft_id=draft["draft_id"],
+        draft_revision=draft["revision"],
+        task_type="analyze_director_action",
+        provider="draft-terminal-test",
+        model="deterministic",
+    )
+    test_db.commit()
 
     response = client.delete(
         f"/api/player/action-drafts/{draft['draft_id']}",
@@ -2001,3 +2102,15 @@ def test_delete_draft_preserves_a_canceled_audit_record(client, test_db):
         (draft["draft_id"],),
     ).fetchone()
     assert row["status"] == "canceled"
+    audit = test_db.execute(
+        "SELECT action_id, audit_state, final_delta FROM ai_call_logs "
+        "WHERE decision_audit_id = %s",
+        (audit_id,),
+    ).fetchone()
+    assert audit["action_id"] is None
+    assert audit["audit_state"] == "canceled"
+    assert audit["final_delta"] == {
+        "draft_status": "canceled",
+        "reason_code": "player_canceled_draft",
+        "draft_revision": draft["revision"],
+    }

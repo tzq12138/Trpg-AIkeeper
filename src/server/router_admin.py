@@ -6,11 +6,17 @@ import os
 import logging
 import hashlib
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Request, Response, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 
+from .campaign_archive import project_campaign_archive
 from .router_auth import verify_token, get_account_from_token, _hash_password
+from .runtime_lifecycle import (
+    account_lifecycle_guard,
+    character_lifecycle_guard,
+)
 
 router = APIRouter(prefix="/api/admin")
 logger = logging.getLogger(__name__)
@@ -75,6 +81,28 @@ def _require_admin(request: Request) -> dict:
     return dict(account)
 
 
+@asynccontextmanager
+async def _governance_actor_guard(request: Request, account_id: str):
+    conn = request.app.state.db
+    async with account_lifecycle_guard([account_id], conn=conn):
+        _assert_live_admin_actor(conn, account_id)
+        yield conn
+
+
+def _assert_live_admin_actor(conn, account_id: str) -> None:
+    account = conn.execute(
+        "SELECT account_id, role FROM accounts WHERE account_id = %s",
+        (account_id,),
+    ).fetchone()
+    if not account:
+        raise HTTPException(
+            409,
+            detail={"code": "governance_actor_deleted"},
+        )
+    if str(account.get("role") or "") != "admin":
+        raise HTTPException(403, "administrator role required")
+
+
 async def _get_id_list(request: Request, key: str) -> list[str]:
     payload = await _safe_json(request)
     value = payload.get(key, [])
@@ -114,6 +142,15 @@ def _table_exists(conn, table_name: str) -> bool:
         (f"public.{table_name}",),
     ).fetchone()
     return bool(row and row.get("exists"))
+
+
+def _column_exists(conn, table_name: str, column_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = %s AND column_name = %s",
+        (table_name, column_name),
+    ).fetchone()
+    return bool(row)
 
 
 def _in_clause(ids: list[str]) -> tuple[str, tuple[str, ...]]:
@@ -162,23 +199,84 @@ def _json_value(value, fallback):
         return fallback
 
 
-def _replace_archive_identifiers(value, replacements: dict[str, str]):
+def _replace_archive_identifiers(
+    value,
+    replacements: dict[str, str],
+    *,
+    global_sources: set[str] | None = None,
+    protected: set[str] | None = None,
+):
     if isinstance(value, str):
         result = value
-        for source, replacement in replacements.items():
-            result = result.replace(source, replacement)
+        protected_tokens: dict[str, str] = {}
+        for index, source in enumerate(
+            sorted(protected or set(), key=len, reverse=True)
+        ):
+            if not source or source in replacements:
+                continue
+            token = f"\ue000archive-identity-{index}-{uuid.uuid4().hex}\ue001"
+            if source in result:
+                result = result.replace(source, token)
+                protected_tokens[token] = source
+        global_keys = global_sources or set()
+        for source in sorted(global_keys, key=len, reverse=True):
+            replacement = replacements.get(source)
+            if source and replacement is not None:
+                result = result.replace(source, replacement)
+        bounded_keys = [
+            source
+            for source in replacements
+            if source and source not in global_keys
+        ]
+        for source in sorted(bounded_keys, key=len, reverse=True):
+            replacement = replacements[source]
+            result = re.sub(
+                rf"(?<![\w\u3400-\u9fff]){re.escape(source)}"
+                rf"(?![\w\u3400-\u9fff])",
+                replacement,
+                result,
+            )
+        if any(source in result for source in bounded_keys):
+            return "已匿名化内容"
+        for token, source in protected_tokens.items():
+            result = result.replace(token, source)
         return result
     if isinstance(value, list):
         return [
-            _replace_archive_identifiers(item, replacements)
+            _replace_archive_identifiers(
+                item,
+                replacements,
+                global_sources=global_sources,
+                protected=protected,
+            )
             for item in value
         ]
     if isinstance(value, dict):
         return {
-            key: _replace_archive_identifiers(item, replacements)
+            key: _replace_archive_identifiers(
+                item,
+                replacements,
+                global_sources=global_sources,
+                protected=protected,
+            )
             for key, item in value.items()
         }
     return value
+
+
+def _character_identity_aliases(character: dict) -> set[str]:
+    aliases = {str(character.get("player_name") or "").strip()}
+    xlsx_data = _json_value(character.get("xlsx_data"), {})
+    if isinstance(xlsx_data, dict):
+        for key in (
+            "name",
+            "investigator_name",
+            "investigatorName",
+            "character_name",
+            "characterName",
+        ):
+            aliases.add(str(xlsx_data.get(key) or "").strip())
+    return {alias for alias in aliases if alias}
 
 
 def _pseudonymize_account_archives(conn, characters: list[dict]) -> int:
@@ -193,27 +291,62 @@ def _pseudonymize_account_archives(conn, characters: list[dict]) -> int:
     ).fetchall()
     replacements: dict[str, str] = {}
     deleted_characters: dict[str, dict[str, str]] = {}
+    deleted_action_ids: set[str] = set()
     for character in characters:
         character_id = str(character["character_id"])
         player_name = str(character.get("player_name") or "").strip()
         deleted_characters[character_id] = {
             "player_name": player_name,
-            "pseudonym": f"deleted-character:{uuid.uuid4().hex}",
+            "pseudonym": str(
+                character.get("_pseudonym")
+                or f"deleted-character:{uuid.uuid4().hex}"
+            ),
         }
         replacements[character_id] = "已删除玩家"
-        if player_name:
-            replacements[player_name] = "已删除玩家"
+        for action_id in character.get("_action_ids", []):
+            normalized_action_id = str(action_id)
+            if normalized_action_id:
+                deleted_action_ids.add(normalized_action_id)
+                replacements[normalized_action_id] = "deleted-action"
+        for alias in _character_identity_aliases(character):
+            replacements[alias] = "已删除玩家"
+
+    deleted_reference_ids = {*deleted_characters, *deleted_action_ids}
 
     updated = 0
     conn.execute("SET LOCAL aikeeper.archive_redaction = 'on'")
     for archive in archives:
         highlights = _json_value(archive.get("highlights"), [])
         character_arcs = _json_value(archive.get("character_arcs"), [])
+        protected_identities: set[str] = set()
+        for raw_arc in character_arcs if isinstance(character_arcs, list) else []:
+            if not isinstance(raw_arc, dict):
+                continue
+            arc_character_id = str(raw_arc.get("character_id") or "").strip()
+            arc_player_name = str(raw_arc.get("player_name") or "").strip()
+            if arc_character_id in deleted_characters:
+                continue
+            if (
+                not arc_character_id
+                and any(
+                    item["player_name"] == arc_player_name
+                    for item in deleted_characters.values()
+                )
+            ):
+                continue
+            protected_identities.update(
+                item for item in (arc_character_id, arc_player_name) if item
+            )
         sanitized_arcs = []
         for raw_arc in character_arcs if isinstance(character_arcs, list) else []:
             if not isinstance(raw_arc, dict):
                 sanitized_arcs.append(
-                    _replace_archive_identifiers(raw_arc, replacements)
+                    _replace_archive_identifiers(
+                        raw_arc,
+                        replacements,
+                        global_sources=deleted_reference_ids,
+                        protected=protected_identities,
+                    )
                 )
                 continue
             arc_character_id = str(raw_arc.get("character_id") or "")
@@ -231,7 +364,12 @@ def _pseudonymize_account_archives(conn, characters: list[dict]) -> int:
                 )
             if target is None:
                 sanitized_arcs.append(
-                    _replace_archive_identifiers(raw_arc, replacements)
+                    _replace_archive_identifiers(
+                        raw_arc,
+                        replacements,
+                        global_sources=deleted_reference_ids,
+                        protected=protected_identities,
+                    )
                 )
                 continue
             public_arc = {
@@ -252,13 +390,285 @@ def _pseudonymize_account_archives(conn, characters: list[dict]) -> int:
                 _replace_archive_identifiers(
                     str(archive.get("summary") or ""),
                     replacements,
+                    global_sources=deleted_reference_ids,
+                    protected=protected_identities,
                 ),
                 json.dumps(
-                    _replace_archive_identifiers(highlights, replacements),
+                    _replace_archive_identifiers(
+                        highlights,
+                        replacements,
+                        global_sources=deleted_reference_ids,
+                        protected=protected_identities,
+                    ),
                     ensure_ascii=False,
                 ),
                 json.dumps(sanitized_arcs, ensure_ascii=False),
                 archive["archive_id"],
+            ),
+        )
+        updated += int(conn.rowcount)
+    return updated
+
+
+def _pseudonymize_account_public_events(conn, characters: list[dict]) -> int:
+    """Redact identity fields in the small set of party event schemas we expose."""
+    if not characters or not _table_exists(conn, "events"):
+        return 0
+    room_ids = sorted({str(item["room_id"]) for item in characters})
+    room_filter, room_params = _in_clause(room_ids)
+    rows = conn.execute(
+        "SELECT sequence, event_type, payload, action_id FROM events "
+        f"WHERE room_id IN {room_filter} "
+        "AND audience IN ('party', 'system')",
+        room_params,
+    ).fetchall()
+    identities = []
+    for character in characters:
+        action_tombstones = dict(character.get("_action_tombstones") or {})
+        if not action_tombstones:
+            action_tombstones = {
+                str(action_id): f"deleted-action:{uuid.uuid4().hex}"
+                for action_id in character.get("_action_ids", [])
+                if str(action_id)
+            }
+        identities.append({
+            "character_id": str(character["character_id"]),
+            "pseudonym": str(
+                character.get("_pseudonym")
+                or f"deleted-character:{uuid.uuid4().hex}"
+            ),
+            "aliases": _character_identity_aliases(character),
+            "action_ids": set(action_tombstones),
+            "action_tombstones": action_tombstones,
+            "account_id": str(character.get("_account_id") or ""),
+        })
+
+    id_keys = {"characterId", "character_id", "sharedBy", "shared_by"}
+    action_keys = {"actionId", "action_id"}
+    name_keys = {
+        "playerName",
+        "player_name",
+        "investigatorName",
+        "investigator_name",
+        "characterName",
+        "character_name",
+        "label",
+    }
+    text_keys = {
+        "text",
+        "narrative",
+        "narrativeText",
+        "summary",
+        "publicVersion",
+    }
+
+    def redact(value, identity: dict, *, field: str = ""):
+        character_id = identity["character_id"]
+        pseudonym = identity["pseudonym"]
+        aliases = identity["aliases"]
+        action_ids = identity["action_ids"]
+        action_tombstones = identity["action_tombstones"]
+        account_id = identity["account_id"]
+        if isinstance(value, list):
+            return [redact(item, identity) for item in value]
+        if isinstance(value, dict):
+            sanitized: dict = {}
+            for key, item in value.items():
+                sanitized_key = str(key)
+                if sanitized_key == character_id:
+                    sanitized_key = pseudonym
+                elif sanitized_key in action_ids:
+                    sanitized_key = action_tombstones[sanitized_key]
+                elif account_id and sanitized_key == account_id:
+                    sanitized_key = "deleted-account"
+                if key == "currentPositions" and isinstance(item, dict):
+                    positions = dict(item)
+                    if character_id in positions:
+                        positions[pseudonym] = positions.pop(character_id)
+                    sanitized[sanitized_key] = {
+                        position_key: redact(position, identity)
+                        for position_key, position in positions.items()
+                    }
+                else:
+                    sanitized[sanitized_key] = redact(
+                        item,
+                        identity,
+                        field=str(key),
+                    )
+            return sanitized
+        if isinstance(value, str):
+            if field in id_keys and value == character_id:
+                return pseudonym
+            if field in action_keys and value in action_ids:
+                return action_tombstones[value]
+            if field in name_keys and value in aliases:
+                return "已删除玩家"
+            if value in aliases:
+                return "已删除玩家"
+            if character_id in value or any(
+                action_id in value for action_id in action_ids
+            ) or (account_id and account_id in value):
+                replacements = {
+                    character_id: pseudonym,
+                    **action_tombstones,
+                }
+                if account_id:
+                    replacements[account_id] = "deleted-account"
+                return _replace_archive_identifiers(
+                    value,
+                    replacements,
+                    global_sources=set(replacements),
+                )
+            if field in text_keys:
+                replacements = {
+                    character_id: "已删除玩家",
+                    **action_tombstones,
+                    **{alias: "已删除玩家" for alias in aliases},
+                }
+                return _replace_archive_identifiers(
+                    value,
+                    replacements,
+                    global_sources={character_id, *action_ids},
+                )
+        return value
+
+    updated = 0
+    for row in rows:
+        payload = _json_value(row.get("payload"), {})
+        if not isinstance(payload, dict):
+            continue
+        sanitized = json.loads(json.dumps(payload, ensure_ascii=False))
+        for identity in identities:
+            sanitized = redact(sanitized, identity)
+        action_id = str(row.get("action_id") or "")
+        replacement_action_id = next(
+            (
+                identity["action_tombstones"][action_id]
+                for identity in identities
+                if action_id in identity["action_tombstones"]
+            ),
+            None,
+        )
+        if sanitized == payload and replacement_action_id is None:
+            continue
+        from .engine.runtime_integrity import (
+            checkpoint_snapshot_hash,
+            sanitize_checkpoint_value,
+        )
+        normalized = sanitize_checkpoint_value(sanitized)
+        conn.execute(
+            "UPDATE events SET payload = %s, payload_hash = %s, "
+            "action_id = COALESCE(%s, action_id) "
+            "WHERE sequence = %s",
+            (
+                json.dumps(normalized, ensure_ascii=False),
+                checkpoint_snapshot_hash(normalized),
+                replacement_action_id,
+                row["sequence"],
+            ),
+        )
+        updated += int(conn.rowcount)
+    return updated
+
+
+def _pseudonymize_character_fact_reveals(conn, characters: list[dict]) -> int:
+    if not characters or not _table_exists(conn, "fact_reveals"):
+        return 0
+    room_ids = sorted({str(item["room_id"]) for item in characters})
+    room_filter, room_params = _in_clause(room_ids)
+    rows = conn.execute(
+        "SELECT reveal_id, source_action_id, target_character_id, trigger_snapshot "
+        f"FROM fact_reveals WHERE room_id IN {room_filter} FOR UPDATE",
+        room_params,
+    ).fetchall()
+
+    identities = []
+    for character in characters:
+        action_tombstones = dict(character.get("_action_tombstones") or {})
+        if not action_tombstones:
+            action_tombstones = {
+                str(action_id): f"deleted-action:{uuid.uuid4().hex}"
+                for action_id in character.get("_action_ids", [])
+                if str(action_id)
+            }
+        identities.append({
+            "character_id": str(character["character_id"]),
+            "pseudonym": str(
+                character.get("_pseudonym")
+                or f"deleted-character:{uuid.uuid4().hex}"
+            ),
+            "aliases": _character_identity_aliases(character),
+            "account_id": str(character.get("_account_id") or ""),
+            "action_tombstones": action_tombstones,
+        })
+
+    def scrub(value, replacements: dict[str, str], global_sources: set[str]):
+        if isinstance(value, list):
+            return [scrub(item, replacements, global_sources) for item in value]
+        if isinstance(value, dict):
+            return {
+                str(scrub(str(key), replacements, global_sources)): scrub(
+                    item,
+                    replacements,
+                    global_sources,
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, str):
+            return _replace_archive_identifiers(
+                value,
+                replacements,
+                global_sources=global_sources,
+            )
+        return value
+
+    updated = 0
+    for row in rows:
+        source_action_id = str(row.get("source_action_id") or "")
+        target_character_id = str(row.get("target_character_id") or "")
+        trigger_snapshot = _json_value(row.get("trigger_snapshot"), {})
+        sanitized_trigger = trigger_snapshot
+        sanitized_source_action_id = source_action_id
+        sanitized_target_character_id = target_character_id
+        for identity in identities:
+            action_tombstones = identity["action_tombstones"]
+            replacements = {
+                identity["character_id"]: identity["pseudonym"],
+                **action_tombstones,
+                **{alias: "已删除玩家" for alias in identity["aliases"]},
+            }
+            if identity["account_id"]:
+                replacements[identity["account_id"]] = "deleted-account"
+            global_sources = {
+                identity["character_id"],
+                *action_tombstones,
+                *([identity["account_id"]] if identity["account_id"] else []),
+            }
+            sanitized_trigger = scrub(
+                sanitized_trigger,
+                replacements,
+                global_sources,
+            )
+            if sanitized_source_action_id in action_tombstones:
+                sanitized_source_action_id = action_tombstones[
+                    sanitized_source_action_id
+                ]
+            if sanitized_target_character_id == identity["character_id"]:
+                sanitized_target_character_id = identity["pseudonym"]
+        if (
+            sanitized_source_action_id == source_action_id
+            and sanitized_target_character_id == target_character_id
+            and sanitized_trigger == trigger_snapshot
+        ):
+            continue
+        conn.execute(
+            "UPDATE fact_reveals SET source_action_id = %s, "
+            "target_character_id = %s, trigger_snapshot = %s WHERE reveal_id = %s",
+            (
+                sanitized_source_action_id,
+                sanitized_target_character_id,
+                json.dumps(sanitized_trigger, ensure_ascii=False),
+                row["reveal_id"],
             ),
         )
         updated += int(conn.rowcount)
@@ -285,17 +695,33 @@ def _unlink_action_audits(conn, action_ids: list[str]) -> dict[str, int]:
         conn.execute(
             f"""
             UPDATE ai_call_logs
-            SET action_id = NULL, response_summary = '', error_message = '',
-                spoiler_hit_items = %s
-            WHERE action_id IN {action_filter}
+            SET action_id = NULL, draft_id = NULL, draft_revision = NULL,
+                audit_state = 'minimized', context_hash = '',
+                response_summary = '', error_message = '',
+                spoiler_hit_items = %s, citations = %s, structured_proposal = %s,
+                engine_validation = %s, final_delta = %s
+            WHERE action_id IN {action_filter} OR draft_id IN {action_filter}
             """,
-            (json.dumps([]), *action_params),
+            (
+                json.dumps([]),
+                json.dumps([]),
+                json.dumps({}),
+                json.dumps({}),
+                json.dumps({}),
+                *action_params,
+                *action_params,
+            ),
         )
         counts["ai_call_logs_minimized"] = int(conn.rowcount)
     return counts
 
 
-def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
+def _delete_room_rows(
+    conn,
+    room_ids: list[str],
+    *,
+    affected_players: set[tuple[str, str]] | None = None,
+) -> dict[str, int]:
     counts: dict[str, int] = {}
     if not room_ids:
         return counts
@@ -335,7 +761,7 @@ def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
         for table, count in _delete_character_rows(
             conn,
             character_ids,
-            preserve_audits=True,
+            affected_players=affected_players,
         ).items():
             counts[table] = counts.get(table, 0) + count
 
@@ -364,11 +790,21 @@ def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
         conn.execute(
             f"""
             UPDATE ai_call_logs
-            SET action_id = NULL, response_summary = '', error_message = '',
-                spoiler_hit_items = %s
+            SET action_id = NULL, draft_id = NULL, draft_revision = NULL,
+                audit_state = 'minimized', context_hash = '',
+                response_summary = '', error_message = '',
+                spoiler_hit_items = %s, citations = %s, structured_proposal = %s,
+                engine_validation = %s, final_delta = %s
             WHERE room_id IN {room_filter}
             """,
-            (json.dumps([]), *params),
+            (
+                json.dumps([]),
+                json.dumps([]),
+                json.dumps({}),
+                json.dumps({}),
+                json.dumps({}),
+                *params,
+            ),
         )
         counts["ai_call_logs_minimized"] = max(
             counts.get("ai_call_logs_minimized", 0),
@@ -382,7 +818,6 @@ def _delete_room_rows(conn, room_ids: list[str]) -> dict[str, int]:
         "session_summaries",
         "session_zero_confirmations",
         "player_notes",
-        "private_data_access_audits",
         "evidence_cards",
         "evidence_links",
         "action_drafts",
@@ -526,11 +961,285 @@ def _delete_scenario_rows(conn, scenario_ids: list[str]) -> dict[str, int]:
     return counts
 
 
+_DROP_RUNTIME_VALUE = object()
+
+
+def _scrub_character_runtime_snapshots(
+    conn,
+    characters: list[dict],
+    action_ids: list[str],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if not characters:
+        return counts
+    character_ids = {str(row["character_id"]) for row in characters}
+    aliases = set().union(*(
+        _character_identity_aliases(character) for character in characters
+    ))
+    deleted_action_ids = set(action_ids)
+    room_ids = sorted({str(row["room_id"]) for row in characters})
+    identity_fields = {
+        "character_id",
+        "characterId",
+        "actor",
+        "actor_character_id",
+        "actorCharacterId",
+        "owner_character_id",
+    }
+    action_fields = {"action_id", "actionId"}
+
+    def scrub(value, *, nested: bool = False):
+        if isinstance(value, list):
+            sanitized = []
+            for item in value:
+                cleaned = scrub(item, nested=True)
+                if cleaned is not _DROP_RUNTIME_VALUE:
+                    sanitized.append(cleaned)
+            return sanitized
+        if isinstance(value, dict):
+            if nested and any(
+                str(value.get(field) or "") in character_ids
+                for field in identity_fields
+            ):
+                return _DROP_RUNTIME_VALUE
+            if nested and any(
+                str(value.get(field) or "") in deleted_action_ids
+                for field in action_fields
+            ):
+                return _DROP_RUNTIME_VALUE
+            sanitized: dict = {}
+            for key, item in value.items():
+                if str(key) in character_ids or str(key) in deleted_action_ids:
+                    continue
+                cleaned = scrub(item, nested=True)
+                if cleaned is not _DROP_RUNTIME_VALUE:
+                    sanitized[key] = cleaned
+            return sanitized
+        if isinstance(value, str):
+            replacements = {
+                **{character_id: "deleted-character" for character_id in character_ids},
+                **{action_id: "deleted-action" for action_id in deleted_action_ids},
+                **{alias: "已删除玩家" for alias in aliases},
+            }
+            return _replace_archive_identifiers(
+                value,
+                replacements,
+                global_sources={*character_ids, *deleted_action_ids},
+            )
+        return value
+
+    room_filter, room_params = _in_clause(room_ids)
+    if _table_exists(conn, "host_states"):
+        rows = conn.execute(
+            "SELECT room_id, state FROM host_states "
+            f"WHERE room_id IN {room_filter}",
+            room_params,
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            state = scrub(_json_value(row.get("state"), {}))
+            conn.execute(
+                "UPDATE host_states SET state = %s, updated_at = NOW() "
+                "WHERE room_id = %s",
+                (json.dumps(state, ensure_ascii=False), row["room_id"]),
+            )
+            updated += int(conn.rowcount)
+        counts["host_states_scrubbed"] = updated
+
+    if _table_exists(conn, "checkpoints"):
+        from .engine.runtime_integrity import (
+            checkpoint_snapshot_hash,
+            sanitize_checkpoint_value,
+            validate_runtime_snapshot,
+        )
+
+        rows = conn.execute(
+            "SELECT checkpoint_id, room_id, state_snapshot FROM checkpoints "
+            f"WHERE room_id IN {room_filter}",
+            room_params,
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            snapshot = _json_value(row.get("state_snapshot"), {})
+            sanitized = sanitize_checkpoint_value(scrub(snapshot))
+            report = validate_runtime_snapshot(sanitized, str(row["room_id"]))
+            conn.execute(
+                "UPDATE checkpoints SET state_snapshot = %s, snapshot_sha256 = %s, "
+                "invariant_report = %s, verification_status = %s "
+                "WHERE checkpoint_id = %s",
+                (
+                    json.dumps(sanitized, ensure_ascii=False),
+                    checkpoint_snapshot_hash(sanitized),
+                    json.dumps(report, ensure_ascii=False),
+                    "verified" if report.get("valid") else "invalid",
+                    row["checkpoint_id"],
+                ),
+            )
+            updated += int(conn.rowcount)
+        counts["checkpoints_scrubbed"] = updated
+
+    if _table_exists(conn, "room_turns"):
+        rows = conn.execute(
+            "SELECT turn_id, combat_plan, combat_summary FROM room_turns "
+            f"WHERE room_id IN {room_filter}",
+            room_params,
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            combat_plan = scrub(_json_value(row.get("combat_plan"), {}))
+            combat_summary = scrub(_json_value(row.get("combat_summary"), {}))
+            conn.execute(
+                "UPDATE room_turns SET combat_plan = %s, combat_summary = %s, "
+                "summary = '' WHERE turn_id = %s",
+                (
+                    json.dumps(combat_plan, ensure_ascii=False),
+                    json.dumps(combat_summary, ensure_ascii=False),
+                    row["turn_id"],
+                ),
+            )
+            updated += int(conn.rowcount)
+        counts["room_turns_scrubbed"] = updated
+    return counts
+
+
+def _lock_character_collaboration_contracts(
+    conn,
+    character_ids: list[str],
+) -> list[str]:
+    if not character_ids:
+        return []
+    char_filter, char_params = _in_clause(character_ids)
+    rows = conn.execute(
+        "SELECT contracts.contract_id FROM collaboration_contracts AS contracts "
+        f"WHERE contracts.initiator_character_id IN {char_filter} "
+        "OR EXISTS ("
+        "SELECT 1 FROM collaboration_contract_participants AS participants "
+        "WHERE participants.contract_id = contracts.contract_id "
+        f"AND participants.character_id IN {char_filter}"
+        ") ORDER BY contracts.contract_id FOR UPDATE",
+        char_params * 2,
+    ).fetchall()
+    return [str(row["contract_id"]) for row in rows]
+
+
+def _cancel_character_collaboration_contracts(
+    conn,
+    contract_ids: list[str],
+) -> dict[str, int]:
+    if not contract_ids:
+        return {}
+    from .player.action_service import ActionDraftError, _cancel_collaboration_batch
+
+    canceled_contracts = 0
+    canceled_batches = 0
+    for contract_id in contract_ids:
+        before_contract = conn.execute(
+            "SELECT status FROM collaboration_contracts WHERE contract_id = %s",
+            (contract_id,),
+        ).fetchone()
+        before_batch = conn.execute(
+            "SELECT status FROM collaboration_contract_batches WHERE contract_id = %s",
+            (contract_id,),
+        ).fetchone()
+        try:
+            _cancel_collaboration_batch(conn, contract_id)
+        except ActionDraftError as exc:
+            raise HTTPException(exc.status_code, exc.detail) from exc
+        canceled_contracts += int(
+            bool(before_contract)
+            and str(before_contract["status"]) in {"pending", "accepted"}
+        )
+        canceled_batches += int(
+            bool(before_batch)
+            and str(before_batch["status"]) in {"queued", "blocked"}
+        )
+    return {
+        "collaboration_contracts_canceled": canceled_contracts,
+        "collaboration_contract_batches_canceled": canceled_batches,
+    }
+
+
+def _cancel_actions_waiting_on_deleted_characters(
+    conn,
+    character_ids: list[str],
+) -> dict[str, int]:
+    if not character_ids:
+        return {}
+    char_filter, char_params = _in_clause(character_ids)
+    rows = conn.execute(
+        "SELECT actions.action_id FROM actions "
+        "WHERE actions.status IN ("
+        "'awaiting_player_consent', 'queued', 'batched', 'resolving', "
+        "'awaiting_player_choice', 'awaiting_host_exception', 'sync_required'"
+        ") "
+        f"AND actions.character_id NOT IN {char_filter} "
+        "AND EXISTS ("
+        "SELECT 1 FROM action_consents AS consents "
+        "WHERE consents.action_id = actions.action_id "
+        f"AND consents.affected_character_id IN {char_filter}"
+        ") ORDER BY actions.action_id FOR UPDATE",
+        char_params * 2,
+    ).fetchall()
+    if not rows:
+        return {}
+    result = json.dumps(
+        {"outcome": "no_effect", "reason": "affected_character_deleted"},
+        ensure_ascii=False,
+    )
+    metadata = json.dumps(
+        {"reason_code": "affected_character_deleted", "effect": "no_effect"},
+        ensure_ascii=False,
+    )
+    for row in rows:
+        action_id = str(row["action_id"])
+        conn.execute(
+            "UPDATE actions SET status = 'canceled', result = %s, canceled_at = NOW() "
+            "WHERE action_id = %s AND status IN ("
+            "'awaiting_player_consent', 'queued', 'batched', 'resolving', "
+            "'awaiting_player_choice', 'awaiting_host_exception', 'sync_required'"
+            ")",
+            (result, action_id),
+        )
+        conn.execute(
+            "UPDATE action_consents SET decision = 'expired', responded_at = NOW() "
+            "WHERE action_id = %s AND decision = 'pending'",
+            (action_id,),
+        )
+        conn.execute(
+            "INSERT INTO action_status_events (action_id, status, metadata) "
+            "VALUES (%s, 'canceled', %s)",
+            (action_id, metadata),
+        )
+        if _table_exists(conn, "ai_call_logs"):
+            from .ai.decision_audit import (
+                DecisionAuditRecorder,
+                finalize_terminal_decision_audit,
+            )
+
+            DecisionAuditRecorder(conn).finalize(
+                action_id,
+                engine_validation={
+                    "valid": False,
+                    "reasonCode": "affected_character_deleted",
+                },
+                final_delta=None,
+            )
+            finalize_terminal_decision_audit(
+                conn,
+                action_id,
+                action_status="canceled",
+                reason_code="affected_character_deleted",
+                effect="no_effect",
+            )
+    return {"actions_canceled_for_deleted_consent_target": len(rows)}
+
+
 def _delete_character_rows(
     conn,
     character_ids: list[str],
     *,
-    preserve_audits: bool = False,
+    affected_players: set[tuple[str, str]] | None = None,
+    public_identities: list[dict] | None = None,
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     if not character_ids:
@@ -538,11 +1247,155 @@ def _delete_character_rows(
     char_filter = "(" + ",".join(["%s"] * len(character_ids)) + ")"
     char_params = tuple(character_ids)
 
+    collaboration_contract_ids = _lock_character_collaboration_contracts(
+        conn,
+        character_ids,
+    )
+
+    locked_characters = [
+        dict(row)
+        for row in conn.execute(
+            f"SELECT character_id, room_id, account_id, player_name, xlsx_data FROM characters "
+            f"WHERE character_id IN {char_filter} "
+            "ORDER BY character_id FOR UPDATE",
+            char_params,
+        ).fetchall()
+    ]
+    locked_ids = {str(row["character_id"]) for row in locked_characters}
+    missing_ids = [character_id for character_id in character_ids if character_id not in locked_ids]
+    if missing_ids:
+        raise HTTPException(404, f"character not found: {', '.join(missing_ids)}")
+    affected_room_ids = sorted({str(row["room_id"]) for row in locked_characters})
+    if affected_players is not None:
+        affected_players.update(
+            (str(row["room_id"]), str(row["character_id"]))
+            for row in locked_characters
+        )
+
+    _merge_delete_counts(
+        counts,
+        _cancel_character_collaboration_contracts(
+            conn,
+            collaboration_contract_ids,
+        ),
+    )
+    _merge_delete_counts(
+        counts,
+        _cancel_actions_waiting_on_deleted_characters(conn, character_ids),
+    )
+
+    if affected_room_ids:
+        room_filter, room_params = _in_clause(affected_room_ids)
+        conn.execute(
+            f"SELECT room_id FROM rooms WHERE room_id IN {room_filter} "
+            "ORDER BY room_id FOR UPDATE",
+            room_params,
+        ).fetchall()
+        if _table_exists(conn, "room_map_state"):
+            scrubbed = 0
+            for row in locked_characters:
+                conn.execute(
+                    "UPDATE room_map_state "
+                    "SET token_visibility = COALESCE(token_visibility, '{}'::jsonb) - %s "
+                    "WHERE room_id = %s",
+                    (str(row["character_id"]), str(row["room_id"])),
+                )
+                scrubbed += int(conn.rowcount)
+            counts["room_map_state_token_visibility_scrubbed"] = scrubbed
+
     action_rows = conn.execute(
-        f"SELECT action_id FROM actions WHERE character_id IN {char_filter}",
+        f"SELECT action_id, character_id FROM actions "
+        f"WHERE character_id IN {char_filter}",
         char_params,
     ).fetchall()
     action_ids = [str(row["action_id"]) for row in action_rows]
+    draft_rows = conn.execute(
+        f"SELECT draft_id FROM action_drafts WHERE character_id IN {char_filter}",
+        char_params,
+    ).fetchall()
+    draft_ids = [str(row["draft_id"]) for row in draft_rows]
+    action_ids_by_character: dict[str, list[str]] = {}
+    for row in action_rows:
+        action_ids_by_character.setdefault(
+            str(row["character_id"]),
+            [],
+        ).append(str(row["action_id"]))
+    identities = [
+        dict(row) for row in (public_identities or locked_characters)
+    ]
+    for identity in identities:
+        identity.setdefault("_pseudonym", f"deleted-character:{uuid.uuid4().hex}")
+        identity.setdefault("_account_id", str(identity.get("account_id") or ""))
+        identity.setdefault(
+            "_action_ids",
+            action_ids_by_character.get(str(identity["character_id"]), []),
+        )
+        identity.setdefault(
+            "_action_tombstones",
+            {
+                str(action_id): f"deleted-action:{uuid.uuid4().hex}"
+                for action_id in identity["_action_ids"]
+                if str(action_id)
+            },
+        )
+    counts["campaign_archives_pseudonymized"] = _pseudonymize_account_archives(
+        conn,
+        identities,
+    )
+    counts["public_events_pseudonymized"] = _pseudonymize_account_public_events(
+        conn,
+        identities,
+    )
+    counts["fact_reveals_pseudonymized"] = _pseudonymize_character_fact_reveals(
+        conn,
+        identities,
+    )
+    _merge_delete_counts(
+        counts,
+        _scrub_character_runtime_snapshots(
+            conn,
+            locked_characters,
+            action_ids,
+        ),
+    )
+
+    counts["private_evidence_cards"] = _delete_rows_with_filter(
+        conn,
+        "evidence_cards",
+        f"visibility = 'private' AND created_by_character_id IN {char_filter}",
+        char_params,
+    )
+    if _table_exists(conn, "evidence_cards"):
+        conn.execute(
+            "UPDATE evidence_cards SET "
+            f"question_closed_by_character_id = CASE WHEN question_closed_by_character_id IN {char_filter} "
+            "THEN NULL ELSE question_closed_by_character_id END, "
+            f"question_undo_until = CASE WHEN question_closed_by_character_id IN {char_filter} "
+            "THEN NULL ELSE question_undo_until END, "
+            f"hypothesis_status_changed_by_character_id = CASE WHEN hypothesis_status_changed_by_character_id IN {char_filter} "
+            "THEN NULL ELSE hypothesis_status_changed_by_character_id END, "
+            f"hypothesis_status_undo_until = CASE WHEN hypothesis_status_changed_by_character_id IN {char_filter} "
+            "THEN NULL ELSE hypothesis_status_undo_until END "
+            f"WHERE question_closed_by_character_id IN {char_filter} "
+            f"OR hypothesis_status_changed_by_character_id IN {char_filter}",
+            char_params * 6,
+        )
+        counts["party_evidence_actor_ids_scrubbed"] = int(conn.rowcount)
+    counts["encounter_participants"] = _delete_rows_with_filter(
+        conn,
+        "encounter_participants",
+        f"character_id IN {char_filter}",
+        char_params,
+    )
+
+    counts["private_character_events"] = _delete_rows_with_filter(
+        conn,
+        "events",
+        "audience = 'player' AND "
+        f"(payload->>'characterId' IN {char_filter} "
+        f"OR payload->>'character_id' IN {char_filter})",
+        char_params * 2,
+    )
 
     if action_ids:
         action_filter = "(" + ",".join(["%s"] * len(action_ids)) + ")"
@@ -551,6 +1404,15 @@ def _delete_character_rows(
         )
         counts["action_status_events"] = _delete_rows_with_filter(
             conn, "action_status_events", f"action_id IN {action_filter}", tuple(action_ids)
+        )
+        counts["private_action_events"] = _delete_rows_with_filter(
+            conn,
+            "events",
+            "audience = 'player' AND "
+            f"(action_id IN {action_filter} "
+            f"OR payload->>'actionId' IN {action_filter} "
+            f"OR payload->>'action_id' IN {action_filter})",
+            tuple(action_ids) * 3,
         )
 
     clue_rows = conn.execute(
@@ -609,12 +1471,6 @@ def _delete_character_rows(
             conn, table, f"character_id IN {char_filter}", char_params
         )
 
-    counts["private_data_access_audits"] = _delete_rows_with_filter(
-        conn,
-        "private_data_access_audits",
-        f"owner_character_id IN {char_filter}",
-        char_params,
-    )
     counts["inventory_transfer_requests"] = _delete_rows_with_filter(
         conn,
         "inventory_transfer_requests",
@@ -628,18 +1484,16 @@ def _delete_character_rows(
         char_params * 2,
     )
 
+    audit_reference_ids = list(dict.fromkeys([*action_ids, *draft_ids]))
+    if audit_reference_ids:
+        _merge_delete_counts(
+            counts,
+            _unlink_action_audits(conn, audit_reference_ids),
+        )
+
     if action_ids:
         action_filter = "(" + ",".join(["%s"] * len(action_ids)) + ")"
         action_params = tuple(action_ids)
-        if preserve_audits:
-            _merge_delete_counts(counts, _unlink_action_audits(conn, action_ids))
-        else:
-            counts["spoiler_audits"] = _delete_rows_with_filter(
-                conn, "spoiler_audits", f"action_id IN {action_filter}", action_params
-            )
-            counts["ai_call_logs"] = _delete_rows_with_filter(
-                conn, "ai_call_logs", f"action_id IN {action_filter}", action_params
-            )
         counts["encounter_pending_reactions"] += _delete_rows_with_filter(
             conn,
             "encounter_pending_reactions",
@@ -656,12 +1510,67 @@ def _delete_character_rows(
     return counts
 
 
-def _delete_account_rows(conn, account_ids: list[str]) -> dict[str, int]:
+_ACCOUNT_ACTOR_REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "source_documents": ("created_by",),
+    "scenario_versions": ("created_by", "reviewed_by"),
+    "scenario_review_drafts": ("created_by",),
+    "scenario_review_patches": ("created_by",),
+    "scenario_review_issue_resolutions": ("resolved_by",),
+    "content_projection_runs": ("requested_by",),
+    "runtime_package_versions": ("created_by",),
+    "runtime_package_exception_confirmations": ("confirmed_by",),
+    "v2_cutover_records": ("requested_by",),
+    "rag_rebuild_records": ("requested_by",),
+    "rule_sets": ("created_by",),
+    "rule_set_versions": ("created_by",),
+    "scenario_asset_bindings": ("reviewed_by",),
+}
+
+
+def _tombstone_account_actor_references(
+    conn,
+    account_id: str,
+    tombstone: str,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for table, columns in _ACCOUNT_ACTOR_REFERENCE_COLUMNS.items():
+        if not _table_exists(conn, table):
+            continue
+        for column in columns:
+            if not _column_exists(conn, table, column):
+                continue
+            conn.execute(
+                f"UPDATE {table} SET {column} = %s WHERE {column} = %s",
+                (tombstone, account_id),
+            )
+            count = int(conn.rowcount)
+            if count:
+                counts[f"{table}.{column}_tombstoned"] = count
+    return counts
+
+
+def _delete_account_rows(
+    conn,
+    account_ids: list[str],
+    *,
+    requested_by: str,
+    affected_players: set[tuple[str, str]] | None = None,
+) -> dict[str, int]:
     counts: dict[str, int] = {}
     if not account_ids:
         return counts
     account_filter = "(" + ",".join(["%s"] * len(account_ids)) + ")"
     account_params = tuple(account_ids)
+
+    locked_accounts = conn.execute(
+        f"SELECT account_id FROM accounts WHERE account_id IN {account_filter} "
+        "ORDER BY account_id FOR UPDATE",
+        account_params,
+    ).fetchall()
+    locked_ids = {str(row["account_id"]) for row in locked_accounts}
+    missing_ids = [account_id for account_id in account_ids if account_id not in locked_ids]
+    if missing_ids:
+        raise HTTPException(404, f"account not found: {', '.join(missing_ids)}")
 
     blocked_room_rows = conn.execute(
         f"SELECT room_id FROM rooms WHERE owner_account_id IN {account_filter}",
@@ -677,29 +1586,63 @@ def _delete_account_rows(conn, account_ids: list[str]) -> dict[str, int]:
     character_rows = [
         dict(row)
         for row in conn.execute(
-            f"SELECT character_id, room_id, player_name "
-            f"FROM characters WHERE account_id IN {account_filter}",
+            f"SELECT character_id, room_id, account_id, player_name, xlsx_data "
+            f"FROM characters WHERE account_id IN {account_filter} "
+            "ORDER BY character_id FOR UPDATE",
             account_params,
         ).fetchall()
     ]
+    for character in character_rows:
+        character["_pseudonym"] = f"deleted-character:{uuid.uuid4().hex}"
+        character["_account_id"] = str(character.get("account_id") or "")
+        character["_action_ids"] = [
+            str(row["action_id"])
+            for row in conn.execute(
+                "SELECT action_id FROM actions WHERE character_id = %s",
+                (str(character["character_id"]),),
+            ).fetchall()
+        ]
     character_ids = [str(row["character_id"]) for row in character_rows]
-    counts["campaign_archives_pseudonymized"] = _pseudonymize_account_archives(
-        conn,
-        character_rows,
-    )
+    character_room_ids = sorted({str(row["room_id"]) for row in character_rows})
+    if character_room_ids:
+        room_filter, room_params = _in_clause(character_room_ids)
+        conn.execute(
+            f"SELECT room_id FROM rooms WHERE room_id IN {room_filter} "
+            "ORDER BY room_id FOR UPDATE",
+            room_params,
+        ).fetchall()
     if character_ids:
         for table, count in _delete_character_rows(
             conn,
             character_ids,
-            preserve_audits=True,
+            affected_players=affected_players,
+            public_identities=character_rows,
         ).items():
             counts[table] = counts.get(table, 0) + count
 
-    counts["private_data_access_audits"] = _delete_rows_with_filter(
-        conn, "private_data_access_audits", f"host_account_id IN {account_filter}", account_params
+    counts["character_profiles"] = _delete_rows_with_filter(
+        conn,
+        "character_profiles",
+        f"account_id IN {account_filter}",
+        account_params,
     )
+
+    audit_actor_id = requested_by
     for account_id in account_ids:
         tombstone = f"deleted-account:{uuid.uuid4().hex}"
+        if account_id == requested_by:
+            audit_actor_id = tombstone
+        if _table_exists(conn, "private_data_access_audits"):
+            conn.execute(
+                "UPDATE private_data_access_audits "
+                "SET host_account_id = NULL, actor_tombstone = %s "
+                "WHERE host_account_id = %s",
+                (tombstone, account_id),
+            )
+            counts["private_data_access_audits_tombstoned"] = (
+                counts.get("private_data_access_audits_tombstoned", 0)
+                + int(conn.rowcount)
+            )
         if _table_exists(conn, "ai_provider_config_audits"):
             conn.execute(
                 "UPDATE ai_provider_config_audits SET actor_id = %s WHERE actor_id = %s",
@@ -733,7 +1676,34 @@ def _delete_account_rows(conn, account_ids: list[str]) -> dict[str, int]:
                 counts.get("admin_data_purge_audits_tombstoned", 0)
                 + int(conn.rowcount)
             )
+        if _table_exists(conn, "retention_runs"):
+            conn.execute(
+                "UPDATE retention_runs SET actor_id = %s WHERE actor_id = %s",
+                (tombstone, account_id),
+            )
+            counts["retention_runs_tombstoned"] = (
+                counts.get("retention_runs_tombstoned", 0)
+                + int(conn.rowcount)
+            )
+        _merge_delete_counts(
+            counts,
+            _tombstone_account_actor_references(conn, account_id, tombstone),
+        )
     counts["accounts"] = _delete_rows_by_ids(conn, "accounts", "account_id", account_ids)
+    if counts["accounts"] != len(account_ids):
+        raise HTTPException(409, "account deletion conflict")
+    conn.execute(
+        "INSERT INTO admin_data_purge_audits "
+        "(audit_id, action, actor_id, target_count, details) "
+        "VALUES (%s, 'account_delete', %s, %s, %s)",
+        (
+            f"account-delete-{uuid.uuid4().hex}",
+            audit_actor_id,
+            len(account_ids),
+            json.dumps({}),
+        ),
+    )
+    counts["account_delete_audits"] = int(conn.rowcount)
     return counts
 
 
@@ -743,6 +1713,28 @@ def _merge_delete_counts(
 ) -> None:
     for key, value in source.items():
         target[key] = target.get(key, 0) + value
+
+
+async def _invalidate_deleted_players(
+    affected_players: set[tuple[str, str]],
+) -> None:
+    """Drop runtime caches and revoke sockets only after the DB commit succeeds."""
+    if not affected_players:
+        return
+    from .host.router_host import remove_host_store
+    from .host.ws_manager import manager as ws_manager
+
+    for room_id in sorted({room_id for room_id, _ in affected_players}):
+        remove_host_store(room_id)
+    for room_id, character_id in sorted(affected_players):
+        try:
+            await ws_manager.revoke_player(room_id, character_id)
+        except Exception:
+            logger.exception(
+                "Failed to revoke deleted player socket room=%s character=%s",
+                room_id,
+                character_id,
+            )
 
 
 def _batch_delete_response(
@@ -770,8 +1762,22 @@ async def delete_room(request: Request, room_id: str):
     room = conn.execute("SELECT 1 FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "銆婏oom涓嶅瓨鍦ㄦ瘡")
-    with conn.transaction() as tx:
-        counts = _delete_room_rows(tx, [room_id])
+    character_ids = [
+        str(row["character_id"])
+        for row in conn.execute(
+            "SELECT character_id FROM characters WHERE room_id = %s",
+            (room_id,),
+        ).fetchall()
+    ]
+    affected_players: set[tuple[str, str]] = set()
+    async with character_lifecycle_guard(character_ids, conn=conn):
+        with conn.transaction() as tx:
+            counts = _delete_room_rows(
+                tx,
+                [room_id],
+                affected_players=affected_players,
+            )
+    await _invalidate_deleted_players(affected_players)
     return {"status": "deleted", "deleted_ids": [room_id], "counts": counts}
 
 
@@ -787,8 +1793,22 @@ async def delete_rooms(request: Request):
     errors: list[dict[str, str]] = []
     for room_id in found_ids:
         try:
-            with conn.transaction() as tx:
-                counts = _delete_room_rows(tx, [room_id])
+            character_ids = [
+                str(row["character_id"])
+                for row in conn.execute(
+                    "SELECT character_id FROM characters WHERE room_id = %s",
+                    (room_id,),
+                ).fetchall()
+            ]
+            affected_players: set[tuple[str, str]] = set()
+            async with character_lifecycle_guard(character_ids, conn=conn):
+                with conn.transaction() as tx:
+                    counts = _delete_room_rows(
+                        tx,
+                        [room_id],
+                        affected_players=affected_players,
+                    )
+            await _invalidate_deleted_players(affected_players)
             _merge_delete_counts(deleted_counts, counts)
             deleted_ids.append(room_id)
         except HTTPException as exc:
@@ -844,8 +1864,15 @@ async def delete_character(request: Request, character_id: str):
     row = conn.execute("SELECT 1 FROM characters WHERE character_id = %s", (character_id,)).fetchone()
     if not row:
         raise HTTPException(404, "瑙掕壊涓嶅瓨鍦?")
-    with conn.transaction() as tx:
-        counts = _delete_character_rows(tx, [character_id])
+    affected_players: set[tuple[str, str]] = set()
+    async with character_lifecycle_guard([character_id], conn=conn):
+        with conn.transaction() as tx:
+            counts = _delete_character_rows(
+                tx,
+                [character_id],
+                affected_players=affected_players,
+            )
+    await _invalidate_deleted_players(affected_players)
     return {"status": "deleted", "deleted_ids": [character_id], "counts": counts}
 
 
@@ -861,8 +1888,15 @@ async def delete_characters(request: Request):
     errors: list[dict[str, str]] = []
     for character_id in found_ids:
         try:
-            with conn.transaction() as tx:
-                counts = _delete_character_rows(tx, [character_id])
+            affected_players: set[tuple[str, str]] = set()
+            async with character_lifecycle_guard([character_id], conn=conn):
+                with conn.transaction() as tx:
+                    counts = _delete_character_rows(
+                        tx,
+                        [character_id],
+                        affected_players=affected_players,
+                    )
+            await _invalidate_deleted_players(affected_players)
             _merge_delete_counts(deleted_counts, counts)
             deleted_ids.append(character_id)
         except HTTPException as exc:
@@ -874,54 +1908,137 @@ async def delete_characters(request: Request):
     return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
 
 
+async def _delete_account_with_character_guard(
+    conn,
+    account_id: str,
+    *,
+    requested_by: str,
+) -> tuple[dict[str, int], set[tuple[str, str]]]:
+    affected_players: set[tuple[str, str]] = set()
+    character_ids = [
+        str(row["character_id"])
+        for row in conn.execute(
+            "SELECT character_id FROM characters WHERE account_id = %s",
+            (account_id,),
+        ).fetchall()
+    ]
+    async with character_lifecycle_guard(character_ids, conn=conn):
+        with conn.transaction() as tx:
+            counts = _delete_account_rows(
+                tx,
+                [account_id],
+                requested_by=requested_by,
+                affected_players=affected_players,
+            )
+    return counts, affected_players
+
+
 @router.delete("/accounts/{account_id}")
 async def delete_account(request: Request, account_id: str):
-    _require_admin(request)
+    admin = _require_admin(request)
     conn = request.app.state.db
-    row = conn.execute(
-        "SELECT account_id, username FROM accounts WHERE account_id = %s",
-        (account_id,),
-    ).fetchone()
-    if not row:
-        raise HTTPException(404, "璐﹀彿涓嶅瓨鍦ㄣ?")
-    if row.get("username") == "admin":
-        raise HTTPException(409, "管理员账号受保护，无法删除")
-    with conn.transaction() as tx:
-        counts = _delete_account_rows(tx, [account_id])
+    admin_id = str(admin["account_id"])
+    if account_id == admin_id:
+        raise HTTPException(409, "不能删除当前登录的管理员账号")
+    async with account_lifecycle_guard([admin_id, account_id], conn=conn):
+        _assert_live_admin_actor(conn, admin_id)
+        row = conn.execute(
+            "SELECT account_id, username FROM accounts WHERE account_id = %s",
+            (account_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "账号不存在")
+        if row.get("username") == "admin":
+            raise HTTPException(409, "管理员账号受保护，无法删除")
+        counts, affected_players = await _delete_account_with_character_guard(
+            conn,
+            account_id,
+            requested_by=admin_id,
+        )
+    await _invalidate_deleted_players(affected_players)
     return {"status": "deleted", "deleted_ids": [account_id], "counts": counts}
 
 
 @router.post("/accounts/batch-delete")
 async def delete_accounts(request: Request):
-    _require_admin(request)
+    admin = _require_admin(request)
     ids = await _get_confirmed_id_list(request, "ids")
     conn = request.app.state.db
-    found_ids, not_found_ids = _split_found_and_missing(conn, "accounts", "account_id", ids)
-    found_rows = conn.execute(
-        f"SELECT account_id, username FROM accounts WHERE account_id IN { '(' + ','.join(['%s'] * len(found_ids)) + ')' if found_ids else '()' }",
-        tuple(found_ids),
-    ).fetchall() if found_ids else []
-    protected_accounts = {row["account_id"] for row in found_rows if row.get("username") == "admin"}
-
+    admin_id = str(admin["account_id"])
     deleted_ids: list[str] = []
     deleted_counts: dict[str, int] = {}
     errors: list[dict[str, str]] = []
-    for account_id in found_ids:
-        if account_id in protected_accounts:
-            errors.append({"id": account_id, "error": "管理员账号受保护，无法删除", "status": "409"})
-            continue
-        try:
-            with conn.transaction() as tx:
-                counts = _delete_account_rows(tx, [account_id])
-            _merge_delete_counts(deleted_counts, counts)
-            deleted_ids.append(account_id)
-        except HTTPException as exc:
-            errors.append({"id": account_id, "error": str(exc.detail), "status": str(exc.status_code)})
-        except Exception as exc:
-            logger.exception("Failed to delete account %s", account_id)
-            errors.append({"id": account_id, "error": str(exc), "status": "500"})
+    invalidated_players: set[tuple[str, str]] = set()
+    async with account_lifecycle_guard([admin_id, *ids], conn=conn):
+        _assert_live_admin_actor(conn, admin_id)
+        found_ids, not_found_ids = _split_found_and_missing(
+            conn,
+            "accounts",
+            "account_id",
+            ids,
+        )
+        found_rows = conn.execute(
+            f"SELECT account_id, username FROM accounts WHERE account_id IN "
+            f"{ '(' + ','.join(['%s'] * len(found_ids)) + ')' if found_ids else '()' }",
+            tuple(found_ids),
+        ).fetchall() if found_ids else []
+        protected_accounts = {
+            str(row["account_id"])
+            for row in found_rows
+            if row.get("username") == "admin"
+        }
 
+        for account_id in found_ids:
+            if account_id == admin_id:
+                errors.append({
+                    "id": account_id,
+                    "error": "不能删除当前登录的管理员账号",
+                    "status": "409",
+                })
+                continue
+            if account_id in protected_accounts:
+                errors.append({
+                    "id": account_id,
+                    "error": "管理员账号受保护，无法删除",
+                    "status": "409",
+                })
+                continue
+            try:
+                counts, affected_players = await _delete_account_with_character_guard(
+                    conn,
+                    account_id,
+                    requested_by=admin_id,
+                )
+                invalidated_players.update(affected_players)
+                _merge_delete_counts(deleted_counts, counts)
+                deleted_ids.append(account_id)
+            except HTTPException as exc:
+                errors.append({
+                    "id": account_id,
+                    "error": str(exc.detail),
+                    "status": str(exc.status_code),
+                })
+            except Exception as exc:
+                logger.exception("Failed to delete account %s", account_id)
+                errors.append({"id": account_id, "error": str(exc), "status": "500"})
+
+    await _invalidate_deleted_players(invalidated_players)
     return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
+
+
+@router.get("/campaign-archives")
+async def list_campaign_archive_metadata(request: Request, limit: int = 100):
+    _require_admin(request)
+    rows = request.app.state.db.execute(
+        "SELECT archive_id, room_id, ending_type, created_at "
+        "FROM campaign_archives ORDER BY created_at DESC LIMIT %s",
+        (min(max(limit, 1), 200),),
+    ).fetchall()
+    return {
+        "archives": [
+            project_campaign_archive(row, scope="admin_ops") for row in rows
+        ]
+    }
 
 
 @router.post("/campaign-archives/purge")
@@ -936,58 +2053,62 @@ async def purge_campaign_archives(request: Request):
     if not reason:
         raise HTTPException(400, "彻底清除必须填写原因")
     archive_ids = _normalize_id_list(payload.get("archive_ids", []), "archive_ids")
-    audit_reason = reason[:500]
+    audit_reason = reason
     for archive_id in sorted(archive_ids, key=len, reverse=True):
         audit_reason = audit_reason.replace(archive_id, "[redacted-archive]")
-    conn = request.app.state.db
-    found_ids, not_found_ids = _split_found_and_missing(
-        conn,
-        "campaign_archives",
-        "archive_id",
-        archive_ids,
-    )
-    deleted_count = 0
-    if found_ids:
-        archive_filter, archive_params = _in_clause(found_ids)
+    audit_reason = audit_reason[:500]
+    async with _governance_actor_guard(
+        request,
+        str(admin["account_id"]),
+    ) as conn:
+        archive_filter, archive_params = _in_clause(archive_ids)
         with conn.transaction() as tx:
             tx.execute("SET LOCAL aikeeper.archive_purge = 'on'")
-            tx.execute(
-                f"DELETE FROM campaign_archives WHERE archive_id IN {archive_filter}",
+            deleted_rows = tx.execute(
+                f"DELETE FROM campaign_archives WHERE archive_id IN {archive_filter} "
+                "RETURNING archive_id",
                 archive_params,
-            )
-            deleted_count = int(tx.rowcount)
-            target_hashes = [
-                hashlib.sha256(
-                    f"{uuid.uuid4().hex}:{archive_id}".encode("utf-8")
-                ).hexdigest()
-                for archive_id in found_ids
+            ).fetchall()
+            deleted_set = {str(row["archive_id"]) for row in deleted_rows}
+            deleted_ids = [
+                archive_id for archive_id in archive_ids if archive_id in deleted_set
             ]
-            tx.execute(
-                """
-                INSERT INTO admin_data_purge_audits (
-                    audit_id, action, actor_id, target_count, details
-                ) VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    f"purge-audit-{uuid.uuid4().hex}",
-                    "campaign_archive_full_purge",
-                    admin["account_id"],
-                    deleted_count,
-                    json.dumps(
-                        {
-                            "reason": audit_reason,
-                            "target_hashes": target_hashes,
-                            "retention_days": 365,
-                        },
-                        ensure_ascii=False,
+            not_found_ids = [
+                archive_id for archive_id in archive_ids if archive_id not in deleted_set
+            ]
+            if deleted_ids:
+                target_hashes = [
+                    hashlib.sha256(
+                        f"{uuid.uuid4().hex}:{archive_id}".encode("utf-8")
+                    ).hexdigest()
+                    for archive_id in deleted_ids
+                ]
+                tx.execute(
+                    """
+                    INSERT INTO admin_data_purge_audits (
+                        audit_id, action, actor_id, target_count, details
+                    ) VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        f"purge-audit-{uuid.uuid4().hex}",
+                        "campaign_archive_full_purge",
+                        admin["account_id"],
+                        len(deleted_ids),
+                        json.dumps(
+                            {
+                                "reason": audit_reason,
+                                "target_hashes": target_hashes,
+                                "retention_days": 365,
+                            },
+                            ensure_ascii=False,
+                        ),
                     ),
-                ),
-            )
+                )
     return _batch_delete_response(
         archive_ids,
-        found_ids,
+        deleted_ids,
         not_found_ids,
-        {"campaign_archives": deleted_count},
+        {"campaign_archives": len(deleted_ids)},
         [],
     )
 
@@ -2304,13 +3425,14 @@ async def create_ai_provider(request: Request):
     body = await request.json()
     from .ai.provider_config import AiProviderConfigStore, ProviderConfigError
 
-    try:
-        return AiProviderConfigStore(request.app.state.db).create(
-            body,
-            actor_id=account["account_id"],
-        )
-    except ProviderConfigError as exc:
-        raise _provider_config_http_error(exc) from exc
+    async with _governance_actor_guard(request, str(account["account_id"])) as conn:
+        try:
+            return AiProviderConfigStore(conn).create(
+                body,
+                actor_id=account["account_id"],
+            )
+        except ProviderConfigError as exc:
+            raise _provider_config_http_error(exc) from exc
 
 
 @router.patch("/ai/providers/{provider_config_id}")
@@ -2319,14 +3441,15 @@ async def update_ai_provider(request: Request, provider_config_id: str):
     body = await request.json()
     from .ai.provider_config import AiProviderConfigStore, ProviderConfigError
 
-    try:
-        return AiProviderConfigStore(request.app.state.db).update(
-            provider_config_id,
-            body,
-            actor_id=account["account_id"],
-        )
-    except ProviderConfigError as exc:
-        raise _provider_config_http_error(exc) from exc
+    async with _governance_actor_guard(request, str(account["account_id"])) as conn:
+        try:
+            return AiProviderConfigStore(conn).update(
+                provider_config_id,
+                body,
+                actor_id=account["account_id"],
+            )
+        except ProviderConfigError as exc:
+            raise _provider_config_http_error(exc) from exc
 
 
 @router.delete("/ai/providers/{provider_config_id}")
@@ -2334,13 +3457,14 @@ async def delete_ai_provider(request: Request, provider_config_id: str):
     account = _require_admin(request)
     from .ai.provider_config import AiProviderConfigStore, ProviderConfigError
 
-    store = AiProviderConfigStore(request.app.state.db)
-    try:
-        was_active = store.get_public(provider_config_id)["is_active"]
-        store.delete(provider_config_id, actor_id=account["account_id"])
-        return {"status": "deleted", "was_active": was_active}
-    except ProviderConfigError as exc:
-        raise _provider_config_http_error(exc) from exc
+    async with _governance_actor_guard(request, str(account["account_id"])) as conn:
+        store = AiProviderConfigStore(conn)
+        try:
+            was_active = store.get_public(provider_config_id)["is_active"]
+            store.delete(provider_config_id, actor_id=account["account_id"])
+            return {"status": "deleted", "was_active": was_active}
+        except ProviderConfigError as exc:
+            raise _provider_config_http_error(exc) from exc
 
 
 @router.post("/ai/providers/{provider_config_id}/test")
@@ -2349,19 +3473,20 @@ async def test_ai_provider(request: Request, provider_config_id: str):
     from .ai.provider_config import AiProviderConfigStore, ProviderConfigError
     from .ai.providers import ConfiguredOpenAIProvider
 
-    store = AiProviderConfigStore(request.app.state.db)
-    try:
-        config = store.get_internal(provider_config_id)
-        result = await ConfiguredOpenAIProvider(config).test_connection()
-        store.record_test(
-            provider_config_id,
-            passed=bool(result["ok"]),
-            latency_ms=int(result.get("latency_ms") or 0),
-            actor_id=account["account_id"],
-        )
-        return result
-    except ProviderConfigError as exc:
-        raise _provider_config_http_error(exc) from exc
+    async with _governance_actor_guard(request, str(account["account_id"])) as conn:
+        store = AiProviderConfigStore(conn)
+        try:
+            config = store.get_internal(provider_config_id)
+            result = await ConfiguredOpenAIProvider(config).test_connection()
+            store.record_test(
+                provider_config_id,
+                passed=bool(result["ok"]),
+                latency_ms=int(result.get("latency_ms") or 0),
+                actor_id=account["account_id"],
+            )
+            return result
+        except ProviderConfigError as exc:
+            raise _provider_config_http_error(exc) from exc
 
 
 @router.post("/ai/providers/{provider_config_id}/activate")
@@ -2369,13 +3494,14 @@ async def activate_ai_provider(request: Request, provider_config_id: str):
     account = _require_admin(request)
     from .ai.provider_config import AiProviderConfigStore, ProviderConfigError
 
-    try:
-        return AiProviderConfigStore(request.app.state.db).activate(
-            provider_config_id,
-            actor_id=account["account_id"],
-        )
-    except ProviderConfigError as exc:
-        raise _provider_config_http_error(exc) from exc
+    async with _governance_actor_guard(request, str(account["account_id"])) as conn:
+        try:
+            return AiProviderConfigStore(conn).activate(
+                provider_config_id,
+                actor_id=account["account_id"],
+            )
+        except ProviderConfigError as exc:
+            raise _provider_config_http_error(exc) from exc
 
 
 @router.get("/ai/logs")
@@ -2395,10 +3521,127 @@ async def get_ai_logs(request: Request, room_id: str = "", task_type: str = "",
         where.append("status = %s"); params.append(status)
     where_clause = " AND ".join(where) if where else "TRUE"
     rows = conn.execute(
-        f"SELECT * FROM ai_call_logs WHERE {where_clause} ORDER BY created_at DESC LIMIT %s",
-        tuple(params + [min(limit, 200)]),
+        f"SELECT id, decision_audit_id, room_id, action_id, task_type, provider, model, "
+        f"duration_ms, status, record_kind, created_at, expires_at FROM ai_call_logs "
+        f"WHERE {where_clause} ORDER BY created_at DESC LIMIT %s",
+        tuple(params + [min(max(limit, 1), 200)]),
     ).fetchall()
     return {"logs": [dict(r) for r in rows]}
+
+
+def _retention_request_fields(payload: dict) -> tuple[str, str]:
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = str(payload.get("cutoff") or "").strip()
+    idempotency_key = str(payload.get("idempotency_key") or "").strip()
+    if not cutoff or not idempotency_key or len(idempotency_key) > 128:
+        raise HTTPException(400, "cutoff and idempotency_key are required")
+    try:
+        parsed = datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(400, "cutoff must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise HTTPException(400, "cutoff must include a timezone")
+    if parsed > datetime.now(timezone.utc) + timedelta(seconds=5):
+        raise HTTPException(400, "cutoff must not be in the future")
+    return cutoff, idempotency_key
+
+
+@router.post("/retention/dry-run")
+async def retention_dry_run(request: Request):
+    _require_admin(request)
+    payload = await _safe_json(request)
+    cutoff, idempotency_key = _retention_request_fields(payload)
+    from .governance.retention import RetentionService
+
+    return RetentionService(request.app.state.db).dry_run(
+        cutoff=cutoff,
+        idempotency_key=idempotency_key,
+    )
+
+
+@router.post("/retention/apply")
+async def retention_apply(request: Request):
+    account = _require_admin(request)
+    payload = await _safe_json(request)
+    if payload.get("confirm") is not True:
+        raise HTTPException(400, "retention apply requires explicit confirmation")
+    cutoff, idempotency_key = _retention_request_fields(payload)
+    dry_run_token = str(payload.get("dry_run_token") or "").strip()
+    if not dry_run_token:
+        raise HTTPException(400, "dry_run_token is required")
+    from .governance.retention import RetentionError, RetentionService
+
+    async with _governance_actor_guard(request, str(account["account_id"])) as conn:
+        try:
+            return RetentionService(conn).apply(
+                cutoff=cutoff,
+                idempotency_key=idempotency_key,
+                dry_run_token=dry_run_token,
+                actor_id=account["account_id"],
+            )
+        except RetentionError as exc:
+            raise HTTPException(409, detail={"code": exc.code}) from exc
+
+
+@router.post("/sensitive-access/grants", status_code=201)
+async def create_sensitive_access_grant(request: Request):
+    account = _require_admin(request)
+    body = await _safe_json(request)
+    incident_id = str(body.get("incident_id") or "").strip()
+    reason = str(body.get("reason") or "").strip()
+    scope = str(body.get("scope") or "").strip()
+    try:
+        ttl = int(body.get("ttl_seconds") or 0)
+    except (TypeError, ValueError):
+        ttl = 0
+    if (
+        not incident_id
+        or not reason
+        or scope != "ai_decision:read"
+        or ttl < 1
+        or ttl > 900
+    ):
+        raise HTTPException(400, "incident_id, reason, scope and short ttl are required")
+    from .governance.retention import issue_sensitive_access_grant
+    async with _governance_actor_guard(request, str(account["account_id"])):
+        return {"grant": issue_sensitive_access_grant(actor_id=account["account_id"],
+                 incident_id=incident_id, reason=reason, scope=scope, ttl_seconds=ttl)}
+
+
+@router.post("/ai/logs/{log_id}/sensitive")
+async def get_sensitive_ai_log(request: Request, response: Response, log_id: int):
+    account = _require_admin(request)
+    body = await _safe_json(request)
+    incident_id = str(body.get("incident_id") or "").strip()
+    reason = str(body.get("reason") or "").strip()
+    grant = request.headers.get("X-Sensitive-Access-Grant", "")
+    from .governance.retention import RetentionError, verify_sensitive_access_grant
+    async with _governance_actor_guard(request, str(account["account_id"])) as conn:
+        try:
+            verify_sensitive_access_grant(grant, actor_id=account["account_id"],
+                incident_id=incident_id, reason=reason, scope="ai_decision:read")
+        except RetentionError as exc:
+            raise HTTPException(403, detail={"code": exc.code}) from exc
+        with conn.transaction() as tx:
+            row = tx.execute(
+                "SELECT * FROM ai_call_logs WHERE id = %s AND record_kind = 'decision'",
+                (log_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, "AI audit not found")
+            room_link = tx.execute(
+                "SELECT room_id FROM rooms WHERE room_id = %s",
+                (row.get("room_id"),),
+            ).fetchone() if row.get("room_id") else None
+            tx.execute("INSERT INTO private_data_access_audits "
+                "(private_data_access_audit_id, room_id, host_account_id, reason, incident_id, scope, resource_type, resource_id) "
+                "VALUES (%s, %s, %s, %s, %s, 'ai_decision:read', 'ai_call_log', %s)",
+                (f"access-{uuid.uuid4().hex}", room_link["room_id"] if room_link else None,
+                 account["account_id"], reason, incident_id, str(log_id)))
+            result = dict(row)
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 @router.post("/ai/query")

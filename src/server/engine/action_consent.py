@@ -205,6 +205,8 @@ def insert_action_consents(
 
 
 def _set_terminal_no_effect(tx, action_id: str, status: str, reason: str, outcome: str) -> str:
+    from ..ai.decision_audit import finalize_terminal_decision_audit
+
     result = {"outcome": outcome, "reason": reason}
     cursor = tx.execute(
         "UPDATE actions SET status = %s, result = %s, completed_at = NOW() "
@@ -219,6 +221,13 @@ def _set_terminal_no_effect(tx, action_id: str, status: str, reason: str, outcom
                 status,
                 json.dumps({"reason_code": reason, "effect": outcome}, ensure_ascii=False),
             ),
+        )
+        finalize_terminal_decision_audit(
+            tx,
+            action_id,
+            action_status=status,
+            reason_code=reason,
+            effect=outcome,
         )
     return status
 

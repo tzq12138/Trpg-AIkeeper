@@ -144,6 +144,80 @@ async def test_mcp_provider_forwards_structure_scenario_content_package(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_deepseek_provider_logs_no_response_or_exception_body(
+    monkeypatch,
+    caplog,
+):
+    secret = "deepseek-provider-private-response-sentinel"
+
+    class FakeResponse:
+        status_code = 500
+        text = secret
+
+        def raise_for_status(self):
+            raise RuntimeError(secret)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("src.server.ai.providers.httpx.AsyncClient", FakeClient)
+
+    result = await DeepSeekProvider(api_key="configured").call(
+        "analyze_director_action",
+        {"system_prompt": "system", "user_message": "user"},
+    )
+
+    assert result is None
+    assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_mcp_provider_logs_no_error_payload(monkeypatch, caplog):
+    secret = "mcp-private-error-payload-sentinel"
+
+    class FakeResponse:
+        status_code = 200
+        text = json.dumps({"error": {"message": secret}})
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    async def fake_initialized(self):
+        return True
+
+    monkeypatch.setattr("src.server.ai.providers.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr(KpMcpProvider, "_ensure_initialized", fake_initialized)
+
+    result = await KpMcpProvider().call(
+        "analyze_director_action",
+        {"declared_intent": "inspect"},
+    )
+
+    assert result is None
+    assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_mcp_provider_rejects_tool_error_content(monkeypatch):
     class FakeResponse:
         status_code = 200
