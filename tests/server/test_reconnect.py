@@ -127,6 +127,38 @@ def test_reconnect_first_time_returns_snapshot(client, test_db):
     assert len(data["recent_events"]) == 2
 
 
+def test_reconnect_and_character_projection_include_redacted_runtime_pause(client, test_db):
+    room_id, _, _, token = _setup_player(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET integrity_status = 'paused_provider', "
+        "integrity_reason = 'provider_unavailable' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    reconnect = client.get("/api/player/reconnect", headers={"X-Room-Token": token})
+    character = client.get("/api/player/character", headers={"X-Room-Token": token})
+
+    assert reconnect.status_code == 200
+    assert reconnect.json()["runtimeIntegrity"] == {
+        "status": "paused_provider",
+        "reasonCode": "provider_unavailable",
+        "allowedActions": ["read", "export", "wait_for_recovery"],
+    }
+    assert character.status_code == 200
+    assert character.json()["runtime_integrity"] == reconnect.json()["runtimeIntegrity"]
+
+    test_db.execute(
+        "UPDATE rooms SET integrity_status = 'read_only_recovery', "
+        "integrity_reason = 'private stack trace with token' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+    redacted = client.get("/api/player/reconnect", headers={"X-Room-Token": token})
+    assert redacted.json()["runtimeIntegrity"]["reasonCode"] == "runtime_integrity_failed"
+    assert "private stack trace" not in redacted.text
+
+
 def test_reconnect_snapshot_excludes_host_and_other_player_private_events(client, test_db):
     room_id, _, char_id, token = _setup_player(client, test_db)
     other = client.post(f"/api/player/rooms/{room_id}/join").json()

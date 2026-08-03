@@ -508,4 +508,70 @@ describe('player V2 API', () => {
       body: JSON.stringify({ title: '修订后的推测', body: '新的私密内容。' }),
     }));
   });
+
+  test('loads and answers only the current player pending action consents', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        items: [{
+          consentId: 'consent-1',
+          actionId: 'action-pvp',
+          requesterCharacterId: 'character-2',
+          consentKind: 'pvp_attack',
+          decision: 'pending',
+          declaredIntent: '夺走你的钥匙',
+          expiresAt: '2026-08-02T10:05:00Z',
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        actionId: 'action-pvp',
+        actionStatus: 'rejected',
+        decision: 'rejected',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const { getPendingActionConsents, respondToActionConsent } = await import('../src/shared/player-api');
+
+    await expect(getPendingActionConsents()).resolves.toEqual(expect.objectContaining({
+      items: [expect.objectContaining({ consentId: 'consent-1' })],
+    }));
+    await expect(respondToActionConsent('consent-1', false)).resolves.toEqual(
+      expect.objectContaining({ accepted: false, actionStatus: 'rejected' }),
+    );
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, '/api/player/action-consents', expect.any(Object));
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, '/api/player/action-consents/consent-1', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ accepted: false }),
+    }));
+  });
+
+  test('submits a CoC follow-up decision against the existing action receipt', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      action_id: 'action-1',
+      status: 'awaiting_player_choice',
+      timeline: [],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const { submitCocFollowUp } = await import('../src/shared/player-api');
+
+    await submitCocFollowUp('action-1', 'spend_luck', 'follow-up:action-1:spend_luck');
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/player/actions/action-1/follow-up', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ 'Idempotency-Key': 'follow-up:action-1:spend_luck' }),
+      body: JSON.stringify({ decision: 'spend_luck' }),
+    }));
+  });
+
+  test('confirms the exact Session Zero safety contract hash', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    const { confirmSessionZero } = await import('../src/shared/player-api');
+
+    await confirmSessionZero('safety', 'hash-current');
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/player/session-zero/safety', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ confirmed: true, contract_hash: 'hash-current' }),
+    }));
+  });
 });

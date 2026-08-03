@@ -131,6 +131,26 @@ describe('PlayerActionComposer', () => {
     expect(html).toContain('disabled');
   });
 
+  test('disables mechanical input while the server runtime is paused', () => {
+    const html = renderToStaticMarkup(
+      <PlayerActionComposer
+        inputText="我继续调查"
+        inputMode="action"
+        phase="typing"
+        runtimeIntegrity={{ status: 'paused_provider', reasonCode: 'provider_unavailable' }}
+        onInputChange={() => {}}
+        onAnalyze={() => {}}
+        onConfirm={() => {}}
+        onDiscard={() => {}}
+        onCancelAction={() => {}}
+      />,
+    );
+
+    expect(html).toContain('AI 服务连续失败');
+    expect(html).toContain('textarea');
+    expect(html).toContain('disabled');
+  });
+
   test('renders explicit high-risk confirmation preview', () => {
     const html = renderToStaticMarkup(
       <PlayerActionComposer
@@ -407,8 +427,8 @@ describe('PlayerActionComposer', () => {
     expect(html).toContain('成功等级');
     expect(html).toContain('d100 42');
     expect(html).toContain('hard');
-    expect(html).toContain('隐藏来源');
-    expect(html).toContain('1 penalty die');
+    expect(html).toContain('已应用 1 项隐藏机械影响');
+    expect(html).not.toContain('1 penalty die');
     expect(html).toContain('依据已校验');
     expect(html).toContain('规则依据');
     expect(html).not.toContain('撤回行动');

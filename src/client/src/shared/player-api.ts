@@ -1,6 +1,8 @@
 import { authHeaders } from './api';
 import type {
   ActionDraftDTO,
+  ActionConsentDTO,
+  ActionConsentOutcomeDTO,
   ActionReceiptDTO,
   CampaignHomeDTO,
   EvidenceCardDTO,
@@ -11,6 +13,7 @@ import type {
   PlayerReconnectDTO,
   SoloCombatReactionDTO,
   SoloCombatReactionResolutionDTO,
+  SessionZeroDTO,
 } from './types';
 import type { PlayerInputMode } from './player-input-modes';
 
@@ -215,6 +218,36 @@ export async function getActionReceipt(actionId: string): Promise<ActionReceiptD
   return requestJson(`/api/player/actions/${encodeURIComponent(actionId)}`);
 }
 
+export async function getPendingActionConsents(): Promise<{ items: ActionConsentDTO[] }> {
+  return requestJson('/api/player/action-consents');
+}
+
+export async function respondToActionConsent(
+  consentId: string,
+  accepted: boolean,
+): Promise<ActionConsentOutcomeDTO> {
+  const response = await requestJson<ActionConsentOutcomeDTO>(`/api/player/action-consents/${encodeURIComponent(consentId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ accepted }),
+  });
+  return {
+    ...response,
+    accepted: response.decision ? response.decision === 'accepted' : Boolean(response.accepted),
+  };
+}
+
+export async function submitCocFollowUp(
+  actionId: string,
+  decision: 'spend_luck' | 'push' | 'decline',
+  idempotencyKey: string,
+): Promise<ActionReceiptDTO> {
+  return requestJson(`/api/player/actions/${encodeURIComponent(actionId)}/follow-up`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify({ decision }),
+  });
+}
+
 export async function getPendingEncounterReaction(): Promise<{
   reaction: SoloCombatReactionDTO | null;
 }> {
@@ -319,19 +352,20 @@ export async function createPersonalObjective(text: string): Promise<{ objective
   });
 }
 
-export interface SessionZeroDTO {
-  steps: Array<{ step: string; confirmed: boolean; confirmed_at: string | null }>;
-  complete: boolean;
-}
-
 export async function getSessionZero(): Promise<SessionZeroDTO> {
   return requestJson('/api/player/session-zero');
 }
 
-export async function confirmSessionZero(step: string): Promise<void> {
+export async function confirmSessionZero(
+  step: string,
+  contractHash?: string,
+): Promise<void> {
   await requestJson(`/api/player/session-zero/${encodeURIComponent(step)}`, {
     method: 'POST',
-    body: JSON.stringify({ confirmed: true }),
+    body: JSON.stringify({
+      confirmed: true,
+      ...(contractHash ? { contract_hash: contractHash } : {}),
+    }),
   });
 }
 

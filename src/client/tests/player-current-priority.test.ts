@@ -184,4 +184,38 @@ describe('player current priority', () => {
       detail: 'AI 与规则引擎正在校验结果；世界状态会保持同步。',
     });
   });
+
+  test('puts an authoritative runtime pause before ordinary mechanical work', () => {
+    const input = {
+      runtimeIntegrityStatus: 'paused_provider' as const,
+      runtimeIntegrityReason: 'provider_unavailable',
+      hasPendingConsent: true,
+      hasCocFollowUp: true,
+      hasPendingCombatReaction: false,
+      hasConfirmationDraft: true,
+      actionStatus: 'awaiting_confirmation' as const,
+      hasInputText: true,
+    };
+
+    expect(getPlayerCurrentPriority(input)).toEqual({
+      kind: 'danger',
+      title: '机械行动已暂停',
+      detail: '固定 AI 服务连续失败；你仍可查看记录，等待 Host 恢复或显式切换服务。',
+      targetTab: 'action',
+    });
+  });
+
+  test('prioritizes affected-player consent and CoC follow-up before ordinary actions', () => {
+    const base = {
+      hasPendingCombatReaction: false,
+      hasConfirmationDraft: false,
+      actionStatus: 'idle' as const,
+      hasInputText: true,
+    };
+
+    expect(getPlayerCurrentPriority({ ...base, hasPendingConsent: true, hasCocFollowUp: true }))
+      .toMatchObject({ title: '回应受影响行动', kind: 'decision' });
+    expect(getPlayerCurrentPriority({ ...base, hasPendingConsent: false, hasCocFollowUp: true }))
+      .toMatchObject({ title: '决定失败判定后续', kind: 'decision' });
+  });
 });

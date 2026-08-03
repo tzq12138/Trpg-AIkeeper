@@ -4,6 +4,7 @@ import { apiFetch, authHeaders } from '../shared/api';
 import { PlayerWS } from '../shared/ws';
 import { buildPlayerLobbyChecklist } from '../shared/lobby-checklist';
 import { teamMessageChannelLabel } from '../shared/team-message';
+import type { CampaignEndingDTO } from '../shared/types';
 
 // ── types ──────────────────────────────────────────────────────────
 
@@ -32,20 +33,35 @@ interface ChatMsg {
   channel?: string;
 }
 
-interface CampaignEnding {
-  ending_type: 'victory' | 'defeat' | 'mixed' | 'abandoned';
-  summary: string;
-  highlights: string[];
-}
-
 interface CampaignSummary {
-  ending: CampaignEnding | null;
+  ending: CampaignEndingDTO | null;
 }
 
 // ── helpers ────────────────────────────────────────────────────────
 
 function playerToken(): string {
   return getSlotValue('player_token') || '';
+}
+
+export function CampaignEndingCard({ ending }: { ending: CampaignEndingDTO | null }) {
+  const labels: Record<CampaignEndingDTO['ending_type'], string> = {
+    victory: '胜利结局',
+    defeat: '失败结局',
+    mixed: '混合结局',
+    abandoned: '中止结局',
+  };
+  return (
+    <section className="bh-panel" role="status" style={{ gridColumn: '1 / -1' }}>
+      <span className="bh-eyebrow">ADVENTURE COMPLETE</span>
+      <h2 className="bh-panel-title">{ending ? labels[ending.ending_type] : '本次冒险已结束'}</h2>
+      <p className="bh-panel-desc">
+        {ending?.summary || '结局条件已验证，正在读取已保存的战役归档。'}
+      </p>
+      {ending?.highlights.map((highlight) => (
+        <p key={highlight} style={{ fontSize: 13, color: 'var(--bh-dim)' }}>{highlight}</p>
+      ))}
+    </section>
+  );
 }
 
 // ── component ──────────────────────────────────────────────────────
@@ -58,7 +74,7 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
   const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [error, setError] = useState('');
-  const [campaignEnding, setCampaignEnding] = useState<CampaignEnding | null>(null);
+  const [campaignEnding, setCampaignEnding] = useState<CampaignEndingDTO | null>(null);
   const [entering, setEntering] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<PlayerWS | null>(null);
@@ -79,7 +95,10 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
     setMyCharId(c.character_id);
     setIsReady(c.is_ready || c.status === 'ready');
     setMyStatus(c.status || 'joined');
-    if (c.room_status === 'active' && c.status !== 'pending_approval') {
+    const integrityStatus = c.runtime_integrity?.status;
+    const usesPlayerRuntime = c.room_status === 'active'
+      || (c.room_status === 'paused' && integrityStatus && integrityStatus !== 'healthy');
+    if (usesPlayerRuntime && c.status !== 'pending_approval') {
       window.location.href = `/player/${roomId}`;
     }
     return c;
@@ -292,16 +311,7 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
         {/* Two-column layout */}
         <div className="bh-lobby-layout">
           {roomStatus === 'completed' && (
-            <section className="bh-panel" role="status" style={{ gridColumn: '1 / -1' }}>
-              <span className="bh-eyebrow">ADVENTURE COMPLETE</span>
-              <h2 className="bh-panel-title">本次冒险已结束</h2>
-              <p className="bh-panel-desc">
-                {campaignEnding?.summary || '结局条件已验证，战报正在整理。'}
-              </p>
-              {campaignEnding?.highlights.map((highlight) => (
-                <p key={highlight} style={{ fontSize: 13, color: 'var(--bh-dim)' }}>{highlight}</p>
-              ))}
-            </section>
+            <CampaignEndingCard ending={campaignEnding} />
           )}
           {/* LEFT: Player list */}
           <section className="bh-panel">

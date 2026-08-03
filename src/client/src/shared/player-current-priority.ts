@@ -1,10 +1,14 @@
-import type { ActionStatus } from './types';
+import type { ActionStatus, RuntimeIntegrityStatus } from './types';
 
 export type PlayerCurrentPriorityKind = 'danger' | 'decision' | 'waiting' | 'free_action';
 
 export interface PlayerCurrentPriorityInput {
   hasPendingCombatReaction: boolean;
   hasConfirmationDraft: boolean;
+  hasPendingConsent?: boolean;
+  hasCocFollowUp?: boolean;
+  runtimeIntegrityStatus?: RuntimeIntegrityStatus;
+  runtimeIntegrityReason?: string | null;
   hasPendingInventoryTransfer?: boolean;
   hasCollaborationInvite?: boolean;
   hasUnresolvedPartyQuestion?: boolean;
@@ -28,6 +32,7 @@ const WAITING_STATUSES = new Set<ActionStatus>([
   'batched',
   'resolving',
   'awaiting_player_choice',
+  'awaiting_player_consent',
   'awaiting_host_exception',
 ]);
 
@@ -37,10 +42,13 @@ function positiveCount(value: number | undefined): number {
 
 export function getPlayerPendingTaskCount(input: PlayerCurrentPriorityInput): number {
   return [
+    Boolean(input.runtimeIntegrityStatus && input.runtimeIntegrityStatus !== 'healthy'),
     input.hasPendingCombatReaction,
     input.hasConfirmationDraft,
+    input.hasPendingConsent,
+    input.hasCocFollowUp,
     input.hasPendingInventoryTransfer,
-    WAITING_STATUSES.has(input.actionStatus),
+    WAITING_STATUSES.has(input.actionStatus) && !input.hasCocFollowUp,
     input.hasCollaborationInvite,
     input.hasUnresolvedPartyQuestion,
   ].filter(Boolean).length
@@ -49,6 +57,24 @@ export function getPlayerPendingTaskCount(input: PlayerCurrentPriorityInput): nu
 }
 
 export function getPlayerCurrentPriority(input: PlayerCurrentPriorityInput): PlayerCurrentPriority {
+  if (input.runtimeIntegrityStatus === 'paused_provider') {
+    return {
+      kind: 'danger',
+      title: '机械行动已暂停',
+      detail: '固定 AI 服务连续失败；你仍可查看记录，等待 Host 恢复或显式切换服务。',
+      targetTab: 'action',
+    };
+  }
+
+  if (input.runtimeIntegrityStatus === 'read_only_recovery') {
+    return {
+      kind: 'danger',
+      title: '房间处于只读恢复',
+      detail: '状态完整性需要 Host 处理；当前只能查看既有记录，不能提交机械行动。',
+      targetTab: 'action',
+    };
+  }
+
   if (input.hasPendingCombatReaction) {
     return {
       kind: 'danger',
@@ -57,11 +83,29 @@ export function getPlayerCurrentPriority(input: PlayerCurrentPriorityInput): Pla
     };
   }
 
+  if (input.hasPendingConsent) {
+    return {
+      kind: 'decision',
+      title: '回应受影响行动',
+      detail: '只有你能决定是否接受这次对你产生机械影响的行动；沉默不会视为同意。',
+      targetTab: 'action',
+    };
+  }
+
   if (input.hasConfirmationDraft) {
     return {
       kind: 'decision',
       title: '确认你的行动',
       detail: '已生成理解预览；确认后才会进入裁决。',
+    };
+  }
+
+  if (input.hasCocFollowUp) {
+    return {
+      kind: 'decision',
+      title: '决定失败判定后续',
+      detail: '从现有回执选择精确消耗幸运、承担推骰风险，或保留原失败。',
+      targetTab: 'action',
     };
   }
 

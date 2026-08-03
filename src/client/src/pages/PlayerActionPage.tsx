@@ -21,6 +21,7 @@ import {
   declareCombatRoundIdle as declareCombatRoundIdleApi,
   deleteActionDraft,
   getActionHints,
+  getPendingActionConsents,
   getActionReceipt,
   getCampaignHome,
   resolveCompositeActionChoice,
@@ -35,6 +36,7 @@ import {
   nextPlayerActionSequence,
   PlayerApiError,
   respondToCollaborationContract,
+  respondToActionConsent,
   type CollaborationContractDTO,
   type CollaborationParticipantDTO,
   type PlayerRuleQuestionDTO,
@@ -42,6 +44,7 @@ import {
   receiveActionSubmission,
   reconnectPlayer,
   resumeSafetyPause,
+  submitCocFollowUp,
   reviseActionDraft,
   resolveEncounterReaction,
   updatePlayerSettings,
@@ -77,12 +80,16 @@ import {
   canStartNewAction,
   createConfirmIdempotencyKey,
   isActionInFlight,
+  hasPendingCocFollowUp,
   mergeAuthoritativeReceipt,
   AUTO_CONFIRM_GRACE_MS,
   shouldAutoConfirmDraft,
+  shouldUsePlayerRuntime,
 } from '../shared/player-action-controller';
 import type {
   ActionDraftDTO,
+  ActionConsentDTO,
+  ActionConsentOutcomeDTO,
   ActionReceiptDTO,
   ActionStatus,
   AiStageName,
@@ -91,6 +98,7 @@ import type {
   EngineEvent,
   PlayerChatMessage,
   PlayerCombatRoundDTO,
+  RuntimeIntegrityDTO,
   SemanticMapProjectionDTO,
   SkillCheckResult,
   SoloCombatReactionDTO,
@@ -300,6 +308,13 @@ export default function PlayerActionPage({
   const [draft, setDraft] = useState<ActionDraftDTO | null>(null);
   const [ephemeralPreview, setEphemeralPreview] = useState<ActionDraftDTO | null>(null);
   const [receipt, setReceipt] = useState<ActionReceiptDTO | null>(null);
+  const [pendingConsents, setPendingConsents] = useState<ActionConsentDTO[]>([]);
+  const [consentOutcome, setConsentOutcome] = useState<ActionConsentOutcomeDTO | null>(null);
+  const [runtimeIntegrity, setRuntimeIntegrity] = useState<RuntimeIntegrityDTO>({
+    status: 'healthy',
+    reasonCode: null,
+    allowedActions: ['read', 'mechanical_action'],
+  });
   const [actionError, setActionError] = useState('');
   const [stateVersion, setStateVersion] = useState(0);
   const [connectionStatus, setConnectionStatus] = useState<PlayerWSStatus>('connecting');
@@ -380,6 +395,24 @@ export default function PlayerActionPage({
 
   useEffect(() => {
     let cancelled = false;
+    const load = async () => {
+      try {
+        const response = await getPendingActionConsents();
+        if (!cancelled) setPendingConsents(response.items || []);
+      } catch {
+        if (!cancelled) setPendingConsents([]);
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [roomId]);
+
+  useEffect(() => {
+    let cancelled = false;
     getSafetyState()
       .then((state) => {
         if (!cancelled) setSafetyState(state);
@@ -441,6 +474,11 @@ export default function PlayerActionPage({
       .then(async (data) => {
         if (cancelled) return;
         setStateVersion(data.stateVersion || 0);
+        setRuntimeIntegrity(data.runtimeIntegrity || {
+          status: 'healthy',
+          reasonCode: null,
+          allowedActions: ['read', 'mechanical_action'],
+        });
         if (data.sceneState?.currentScene) {
           setMapRefresh((value) => value + 1);
         }
@@ -549,10 +587,12 @@ export default function PlayerActionPage({
     apiFetch<any>('/api/player/character', { headers: authHeaders() })
       .then((c) => {
         // Redirect to lobby if the game hasn't started yet
-        if (c.room_status && c.room_status !== 'active') {
+        const integrity = c.runtime_integrity as RuntimeIntegrityDTO | undefined;
+        if (c.room_status && !shouldUsePlayerRuntime(c.room_status, integrity)) {
           window.location.href = `/player/${roomId}/lobby`;
           return;
         }
+        if (integrity) setRuntimeIntegrity(integrity);
         setIsReady(c.is_ready || c.status === 'ready');
         setCharStatus(c.status || 'joined');
       })
@@ -616,7 +656,7 @@ export default function PlayerActionPage({
 
   useEffect(() => {
     const text = inputText.trim();
-    if (!text || !isStatefulPlayerInputMode(inputMode, speechRouting === 'npc_dialogue') || draft || (receipt && isActionInFlight(receipt.status))) return;
+    if (runtimeIntegrity.status !== 'healthy' || !text || !isStatefulPlayerInputMode(inputMode, speechRouting === 'npc_dialogue') || draft || (receipt && isActionInFlight(receipt.status))) return;
     if (!['idle', 'typing'].includes(actionStatus) || lastEphemeralText.current === text) return;
     const timer = window.setTimeout(async () => {
       const requestEpoch = ++analysisEpoch.current;
@@ -645,7 +685,7 @@ export default function PlayerActionPage({
       }
     }, 2000);
     return () => window.clearTimeout(timer);
-  }, [actionStatus, draft, inputMode, inputText, receipt, speechRouting, stateVersion]);
+  }, [actionStatus, draft, inputMode, inputText, receipt, runtimeIntegrity.status, speechRouting, stateVersion]);
 
   useEffect(() => {
     if (reconnectedRoomId !== roomId) return;
@@ -766,7 +806,12 @@ export default function PlayerActionPage({
           }]);
         }
       } else if (event.type === 's2c_private_notice') {
-        const payload = event.payload as { text?: unknown };
+        const payload = event.payload as { text?: unknown; kind?: unknown };
+        if (payload.kind === 'action_consent_requested') {
+          getPendingActionConsents()
+            .then((response) => setPendingConsents(response.items || []))
+            .catch(() => {});
+        }
         const text = typeof payload.text === 'string' && payload.text.trim()
           ? payload.text
           : '收到一条新的私密结果。';
@@ -833,6 +878,23 @@ export default function PlayerActionPage({
             })
             .catch(() => {});
         }
+      } else if (event.type === 's2c_runtime_integrity_changed') {
+        const payload = event.payload as {
+          status?: RuntimeIntegrityDTO['status'];
+          reasonCode?: string;
+          allowedActions?: string[];
+        };
+        if (payload.status) {
+          setRuntimeIntegrity({
+            status: payload.status,
+            reasonCode: payload.reasonCode || null,
+            allowedActions: payload.allowedActions || (
+              payload.status === 'healthy'
+                ? ['read', 'mechanical_action']
+                : ['read', 'export', 'wait_for_recovery']
+            ),
+          });
+        }
       } else if (event.type === 's2c_director_plan_validated') {
         setAiProgress({ stage: 'validating_rules', status: 'completed', label: '导演计划已验证' });
       } else if (event.type === 's2c_narration_completed') {
@@ -871,6 +933,8 @@ export default function PlayerActionPage({
         }
       } else if (event.type === 's2c_safety_state_changed') {
         getSafetyState().then(setSafetyState).catch(() => {});
+      } else if (event.type === 's2c_campaign_ended') {
+        window.location.href = `/player/${roomId}/lobby`;
       }
     });
     ws.connect(token);
@@ -891,6 +955,12 @@ export default function PlayerActionPage({
     }
     setAutoConfirmPending(false);
     if (!nextDraft.draft_id) return;
+    if (runtimeIntegrity.status !== 'healthy') {
+      setActionError(runtimeIntegrity.status === 'paused_provider'
+        ? '固定 AI 服务连续失败；机械行动已暂停。'
+        : '房间处于只读恢复；当前不能确认机械行动。');
+      return;
+    }
     if (deviceControl === false) {
       setActionError('此设备为只读。请先接管主控设备，再提交行动。');
       return;
@@ -950,6 +1020,42 @@ export default function PlayerActionPage({
     }
   };
 
+  const applyClarificationCandidate = async (
+    candidate: NonNullable<ActionDraftDTO['candidate_interpretations']>[number],
+  ) => {
+    if (!draft?.draft_id) return;
+    if (candidate.interpreted_intent === 'cancel_action') {
+      await discardDraft();
+      updateInputText('');
+      return;
+    }
+    const replacementIntent = String(
+      candidate.replacement_intent
+      || (candidate.interpreted_intent === 'public_reproposal' ? candidate.label : '')
+      || candidate.interpreted_intent
+      || candidate.label
+      || '',
+    ).trim();
+    if (!replacementIntent) return;
+    setActionError('');
+    setActionStatus('analyzing');
+    try {
+      const updated = await reviseActionDraft(draft.draft_id, {
+        declared_intent: replacementIntent,
+        intent_type: draft.intent_type,
+        base_state_version: draft.base_state_version,
+        params: draft.params,
+      });
+      setInputText(replacementIntent);
+      setDraft(updated);
+      setEphemeralPreview(null);
+      setActionStatus(updated.status);
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+      setActionStatus(draft.status);
+    }
+  };
+
   const resolveCompositeChoice = async (proceed: boolean) => {
     if (!receipt?.action_id) return;
     setActionError('');
@@ -957,6 +1063,41 @@ export default function PlayerActionPage({
       const nextReceipt = await resolveCompositeActionChoice(receipt.action_id, proceed);
       setReceipt(nextReceipt);
       setActionStatus(nextReceipt.status);
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
+  const answerActionConsent = async (consentId: string, accepted: boolean) => {
+    setActionError('');
+    try {
+      const outcome = await respondToActionConsent(consentId, accepted);
+      setConsentOutcome(outcome);
+      setPendingConsents((current) => current.filter((item) => item.consentId !== consentId));
+      setMessages((current) => [...current.slice(-49), {
+        id: `consent:${consentId}`,
+        sender: 'system',
+        text: accepted
+          ? '你已接受这次机械影响；行动将继续由服务器裁决。'
+          : '你已拒绝，本行动不产生机械效果。',
+        timestamp: Date.now(),
+      }]);
+    } catch (error) {
+      setActionError(formatPlayerApiError(error));
+    }
+  };
+
+  const submitFollowUpDecision = async (decision: 'spend_luck' | 'push' | 'decline') => {
+    if (!receipt?.action_id || !hasPendingCocFollowUp(receipt)) return;
+    setActionError('');
+    try {
+      const updated = await submitCocFollowUp(
+        receipt.action_id,
+        decision,
+        `follow-up:${receipt.action_id}:${decision}`,
+      );
+      setReceipt(updated);
+      setActionStatus(updated.status);
     } catch (error) {
       setActionError(formatPlayerApiError(error));
     }
@@ -977,6 +1118,12 @@ export default function PlayerActionPage({
       mode,
       speechRouting === 'npc_dialogue',
     );
+    if (statefulSubmission && runtimeIntegrity.status !== 'healthy') {
+      setActionError(runtimeIntegrity.status === 'paused_provider'
+        ? '固定 AI 服务连续失败；机械行动已暂停。'
+        : '房间处于只读恢复；当前不能提交机械行动。');
+      return;
+    }
     if (!declaredIntent || (statefulSubmission && (draft || (receipt && isActionInFlight(receipt.status)))) ) return;
     if (pendingCombatReaction && statefulSubmission) {
       setActionError('黑熊正在发动攻击；请先选择闪避或反击。');
@@ -1295,8 +1442,12 @@ export default function PlayerActionPage({
   };
 
   const terminalPriorityInput = {
+    runtimeIntegrityStatus: runtimeIntegrity.status,
+    runtimeIntegrityReason: runtimeIntegrity.reasonCode,
     hasPendingCombatReaction: Boolean(pendingCombatReaction),
     hasConfirmationDraft: Boolean(draft),
+    hasPendingConsent: pendingConsents.length > 0,
+    hasCocFollowUp: hasPendingCocFollowUp(receipt),
     hasPendingInventoryTransfer,
     hasUnresolvedPartyQuestion,
     unreadPrivateResultCount: unreadNotifications.privateResults,
@@ -1339,6 +1490,9 @@ export default function PlayerActionPage({
           recoveryText={recoveryText}
           pendingActions={pendingActions}
           pendingCombatReaction={pendingCombatReaction}
+          pendingConsent={pendingConsents[0] || null}
+          consentOutcome={consentOutcome}
+          runtimeIntegrity={runtimeIntegrity}
           hasPendingInventoryTransfer={hasPendingInventoryTransfer}
           hasUnresolvedPartyQuestion={hasUnresolvedPartyQuestion}
           unreadPrivateResultCount={unreadNotifications.privateResults}
@@ -1369,6 +1523,9 @@ export default function PlayerActionPage({
           onDiscardAction={() => void discardDraft()}
           onCancelAction={() => void cancelSubmittedAction()}
           onResolveCompositeChoice={(proceed) => void resolveCompositeChoice(proceed)}
+          onApplyClarification={(candidate) => void applyClarificationCandidate(candidate)}
+          onRespondConsent={(consentId, accepted) => void answerActionConsent(consentId, accepted)}
+          onSubmitFollowUp={(decision) => void submitFollowUpDecision(decision)}
           onSubmitRetroClaim={submitRetroClaim}
           onTacticalSelect={submitTacticalAction}
           onResolveCombatReaction={(choice) => void resolveCombatReaction(choice)}
@@ -1427,6 +1584,9 @@ interface ActionPanelProps {
   recoveryText: string;
   pendingActions: TacticalAction[];
   pendingCombatReaction: SoloCombatReactionDTO | null;
+  pendingConsent: ActionConsentDTO | null;
+  consentOutcome: ActionConsentOutcomeDTO | null;
+  runtimeIntegrity: RuntimeIntegrityDTO;
   hasPendingInventoryTransfer: boolean;
   hasUnresolvedPartyQuestion: boolean;
   unreadPrivateResultCount: number;
@@ -1453,6 +1613,9 @@ interface ActionPanelProps {
   onDiscardAction: () => void;
   onCancelAction: () => void;
   onResolveCompositeChoice: (proceed: boolean) => void;
+  onApplyClarification: (candidate: NonNullable<ActionDraftDTO['candidate_interpretations']>[number]) => void;
+  onRespondConsent: (consentId: string, accepted: boolean) => void;
+  onSubmitFollowUp: (decision: 'spend_luck' | 'push' | 'decline') => void;
   onSubmitRetroClaim: () => void;
   onTacticalSelect: (action: TacticalAction) => void;
   onResolveCombatReaction: (choice: 'dodge' | 'counterattack') => void;
@@ -1482,6 +1645,10 @@ function formatPlayerApiError(error: unknown): string {
       sync_required: '世界状态已变化，请同步后重新确认行动。',
       v2_action_draft_required: '此房间必须通过行动预览提交。',
       safety_paused: '匿名安全暂停正在生效，新的剧情行动暂不结算。',
+      room_provider_paused: '固定 AI 服务连续失败；机械行动已暂停，请等待 Host 恢复或切换服务。',
+      room_read_only_recovery: '房间处于只读恢复；当前不会写入新的世界状态。',
+      coc_followup_timed_out: '失败判定的后续选择已超时，原行动不会被重新掷骰。',
+      action_consent_expired: '这项受影响玩家确认已过期，不会产生机械效果。',
     };
     return messages[code] || `行动处理失败：${code}`;
   }
@@ -1524,6 +1691,9 @@ function ActionPanel({
   recoveryText,
   pendingActions,
   pendingCombatReaction,
+  pendingConsent,
+  consentOutcome,
+  runtimeIntegrity,
   hasPendingInventoryTransfer,
   hasUnresolvedPartyQuestion,
   unreadPrivateResultCount,
@@ -1550,6 +1720,9 @@ function ActionPanel({
   onDiscardAction,
   onCancelAction,
   onResolveCompositeChoice,
+  onApplyClarification,
+  onRespondConsent,
+  onSubmitFollowUp,
   onSubmitRetroClaim,
   onTacticalSelect,
   onResolveCombatReaction,
@@ -1574,8 +1747,12 @@ function ActionPanel({
     && deviceControl !== false,
   );
   const priorityInput = {
+    runtimeIntegrityStatus: runtimeIntegrity.status,
+    runtimeIntegrityReason: runtimeIntegrity.reasonCode,
     hasPendingCombatReaction: Boolean(pendingCombatReaction),
     hasConfirmationDraft: Boolean(draft),
+    hasPendingConsent: Boolean(pendingConsent),
+    hasCocFollowUp: hasPendingCocFollowUp(receipt),
     hasPendingInventoryTransfer,
     hasUnresolvedPartyQuestion,
     unreadPrivateResultCount,
@@ -1815,6 +1992,9 @@ function ActionPanel({
         receipt={receipt}
         error={actionError}
         safetyPaused={safetyState.status === 'safety_paused'}
+        runtimeIntegrity={runtimeIntegrity}
+        pendingConsent={pendingConsent}
+        consentOutcome={consentOutcome}
         speechRoutesToDialogue={speechRoutesToDialogue}
         collaborationParticipants={collaborationParticipants}
         currentCharacterId={character?.character_id}
@@ -1824,8 +2004,11 @@ function ActionPanel({
         onConfirm={onConfirmAction}
         onUpdateCollaborationDependencies={onUpdateCollaborationDependencies}
         onDiscard={onDiscardAction}
+        onApplyClarification={onApplyClarification}
         onCancelAction={onCancelAction}
         onResolveCompositeChoice={onResolveCompositeChoice}
+        onRespondConsent={onRespondConsent}
+        onSubmitFollowUp={onSubmitFollowUp}
       />
 
       {ruleQuestions.length > 0 && (

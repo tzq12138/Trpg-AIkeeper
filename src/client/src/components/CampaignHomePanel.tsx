@@ -23,12 +23,17 @@ import {
   sharePlayerNote,
   uploadPlayerNoteAttachment,
 } from '../shared/player-api';
-import type { CampaignHomeDTO, EvidenceCardDTO, EvidenceDetailDTO, PlayerNoteDTO } from '../shared/types';
+import type {
+  CampaignHomeDTO,
+  EvidenceCardDTO,
+  EvidenceDetailDTO,
+  PlayerNoteDTO,
+  SessionZeroDTO,
+} from '../shared/types';
 import type {
   EvidenceCommentDTO,
   HypothesisDisproofSuggestion,
   PartyQuestionClosePreview,
-  SessionZeroDTO,
 } from '../shared/player-api';
 import { getSlotValue } from '../shared/identity';
 import RedactedCitationDisclosure from './RedactedCitationDisclosure';
@@ -388,6 +393,64 @@ export function InvestigationDetailCard({
   );
 }
 
+const RISK_LEVEL_LABELS = { low: '低', medium: '中', high: '高' } as const;
+
+export function SessionZeroPanel({
+  sessionZero,
+  error = '',
+  onConfirm,
+}: {
+  sessionZero: SessionZeroDTO | null;
+  error?: string;
+  onConfirm: (step: string, contractHash?: string) => void;
+}) {
+  const steps = sessionZero?.steps || [
+    { step: 'character_rules', confirmed: false, confirmed_at: null },
+    { step: 'safety', confirmed: false, confirmed_at: null },
+    { step: 'ai_host', confirmed: false, confirmed_at: null },
+    { step: 'private_data', confirmed: false, confirmed_at: null },
+    { step: 'connection', confirmed: false, confirmed_at: null },
+  ];
+  const contract = sessionZero?.risk_contract;
+
+  return (
+    <div className="bh-campaign-home__section" aria-label="Session Zero">
+      <h3>Session Zero</h3>
+      <p>按顺序确认角色与规则、安全边界、AI/Host 裁决、私人数据和连接设备。</p>
+      {contract && (
+        <section className="bh-muted-box" aria-label="当前风险合同">
+          <strong>当前安全边界 · {contract.schema_version}</strong>
+          {contract.categories.length > 0 && (
+            <p>{contract.categories.map((item) => `${item.category}：${RISK_LEVEL_LABELS[item.max_level]}`).join('；')}</p>
+          )}
+          <p>排除标签：{contract.excluded_tags.join('、') || '无'}</p>
+          <p>隐藏检定：{contract.hidden_checks_allowed ? '允许（仍由规则声明）' : '不允许'} · 安全中止：{contract.safe_abort_available ? '可用' : '未配置'}</p>
+        </section>
+      )}
+      {error && <p className="bh-error">{error}</p>}
+      {sessionZero?.complete && <p className="bh-muted-box" role="status">Session Zero 已完成</p>}
+      <div className="bh-campaign-home__list">
+        {steps.map((item) => (
+          <div key={item.step} className="bh-muted-box">
+            <span>{sessionZeroLabel(item.step)}</span>
+            <button
+              className="bh-button"
+              type="button"
+              disabled={item.confirmed}
+              onClick={() => onConfirm(
+                item.step,
+                item.step === 'safety' ? contract?.contract_hash : undefined,
+              )}
+            >
+              {item.confirmed ? '已确认' : '确认当前版本'}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function CampaignHomePanel({
   roomId,
   onContinueScene = () => {},
@@ -399,6 +462,7 @@ export default function CampaignHomePanel({
   const [notes, setNotes] = useState<PlayerNoteDTO[]>([]);
   const [evidence, setEvidence] = useState<EvidenceState>(emptyEvidence);
   const [sessionZero, setSessionZero] = useState<SessionZeroDTO | null>(null);
+  const [sessionZeroError, setSessionZeroError] = useState('');
   const [error, setError] = useState('');
   const [noteTitle, setNoteTitle] = useState('');
   const [noteBody, setNoteBody] = useState('');
@@ -473,12 +537,13 @@ export default function CampaignHomePanel({
     }
   };
 
-  const confirmSessionZeroStep = async (step: string) => {
+  const confirmSessionZeroStep = async (step: string, contractHash?: string) => {
     try {
-      await confirmSessionZero(step);
+      setSessionZeroError('');
+      await confirmSessionZero(step, contractHash);
       await refresh();
     } catch {
-      setError('请按顺序完成 Session Zero 确认。');
+      setSessionZeroError('安全边界版本已更新，或前置步骤尚未完成；请按当前版本重新确认。');
     }
   };
 
@@ -738,24 +803,11 @@ export default function CampaignHomePanel({
         <CampaignUnresolvedQuestions questions={home?.unresolved_questions || []} />
       </div>
 
-      <div className="bh-campaign-home__section">
-        <h3>Session Zero</h3>
-        <p>按顺序确认角色与规则、安全边界、AI/Host 裁决、私人数据和连接设备。</p>
-        <div className="bh-campaign-home__list">
-          {(sessionZero?.steps || [
-            { step: 'character_rules', confirmed: false }, { step: 'safety', confirmed: false },
-            { step: 'ai_host', confirmed: false }, { step: 'private_data', confirmed: false },
-            { step: 'connection', confirmed: false },
-          ]).map((item) => (
-            <div key={item.step} className="bh-muted-box">
-              <span>{sessionZeroLabel(item.step)}</span>
-              <button className="bh-button" type="button" disabled={item.confirmed} onClick={() => void confirmSessionZeroStep(item.step)}>
-                {item.confirmed ? '已确认' : '确认'}
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
+      <SessionZeroPanel
+        sessionZero={sessionZero}
+        error={sessionZeroError}
+        onConfirm={(step, contractHash) => void confirmSessionZeroStep(step, contractHash)}
+      />
 
       <div className="bh-campaign-home__section">
         <h3>私人笔记</h3>

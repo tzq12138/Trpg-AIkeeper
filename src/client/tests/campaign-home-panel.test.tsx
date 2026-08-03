@@ -35,6 +35,59 @@ describe('CampaignHomePanel', () => {
     expect(html).toContain('队伍证据板');
   });
 
+  test('shows the current Session Zero risk contract version and does not accept a stale confirmation', async () => {
+    const { SessionZeroPanel } = await import('../src/components/CampaignHomePanel');
+    const html = renderToStaticMarkup(
+      <SessionZeroPanel
+        sessionZero={{
+          steps: [
+            { step: 'character_rules', confirmed: true, confirmed_at: '2026-08-02T10:00:00Z' },
+            { step: 'safety', confirmed: false, confirmed_at: null },
+            { step: 'ai_host', confirmed: false, confirmed_at: null },
+          ],
+          complete: false,
+          risk_contract: {
+            schema_version: 'risk_contract.v1',
+            contract_hash: 'hash-current',
+            categories: [{ category: 'body_horror', max_level: 'medium' }],
+            excluded_tags: ['sexual_violence'],
+            default_harm: { npc: 'medium', scene: 'low' },
+            irreversible_controls: ['character_death'],
+            hidden_checks_allowed: false,
+            safe_alternative_tags: ['sexual_violence'],
+            safe_abort_available: true,
+          },
+        }}
+        error="安全边界版本已更新，请重新确认。"
+        onConfirm={() => {}}
+      />,
+    );
+
+    expect(html).toContain('risk_contract.v1');
+    expect(html).toContain('body_horror：中');
+    expect(html).toContain('sexual_violence');
+    expect(html).toContain('安全边界版本已更新，请重新确认');
+    expect(html).toContain('安全边界');
+    expect(html).not.toContain('Session Zero 已完成');
+  });
+
+  test('renders the persisted campaign archive ending card after completion', async () => {
+    const { CampaignEndingCard } = await import('../src/pages/PlayerLobby');
+    const html = renderToStaticMarkup(
+      <CampaignEndingCard
+        ending={{
+          ending_type: 'mixed',
+          summary: '调查员阻止了仪式，但真相仍留下代价。',
+          highlights: ['找到了失踪档案', '四名调查员全部存活'],
+        }}
+      />,
+    );
+
+    expect(html).toContain('混合结局');
+    expect(html).toContain('调查员阻止了仪式');
+    expect(html).toContain('四名调查员全部存活');
+  });
+
   test('renders the current solo entry with a continue action', async () => {
     const { CampaignCurrentSceneCard } = await import('../src/components/CampaignHomePanel');
     const html = renderToStaticMarkup(

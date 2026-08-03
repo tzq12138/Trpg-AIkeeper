@@ -4,7 +4,9 @@ import {
   AUTO_CONFIRM_GRACE_MS,
   createConfirmIdempotencyKey,
   isActionInFlight,
+  hasPendingCocFollowUp,
   mergeAuthoritativeReceipt,
+  shouldUsePlayerRuntime,
   shouldAutoConfirmDraft,
 } from '../src/shared/player-action-controller';
 import { actionStatusLabel } from '../src/components/PlayerActionComposer';
@@ -81,5 +83,28 @@ describe('player action controller', () => {
 
     expect(updated.status).toBe('resolving');
     expect(updated.timeline.map((event) => event.status)).toEqual(['queued', 'resolving']);
+  });
+
+  test('derives a CoC follow-up only from an authoritative pending receipt', () => {
+    expect(hasPendingCocFollowUp({
+      ...queuedReceipt,
+      status: 'awaiting_player_choice',
+      result: {
+        metadata: {
+          follow_up: {
+            status: 'pending',
+            allowed_decisions: ['spend_luck', 'push', 'decline'],
+          },
+        },
+      },
+    })).toBe(true);
+    expect(hasPendingCocFollowUp({ ...queuedReceipt, status: 'completed' })).toBe(false);
+  });
+
+  test('keeps a paused integrity room on the read-only player runtime', () => {
+    expect(shouldUsePlayerRuntime('active', { status: 'healthy' })).toBe(true);
+    expect(shouldUsePlayerRuntime('paused', { status: 'read_only_recovery' })).toBe(true);
+    expect(shouldUsePlayerRuntime('lobby', { status: 'healthy' })).toBe(false);
+    expect(shouldUsePlayerRuntime('completed', { status: 'healthy' })).toBe(false);
   });
 });

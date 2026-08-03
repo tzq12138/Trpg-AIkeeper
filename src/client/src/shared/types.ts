@@ -19,7 +19,7 @@ export type EngineEventType =
   | 's2c_clue_discovered' | 's2c_clue_shared'
   // ── System ──
   | 's2c_atmosphere' | 's2c_checkpoint_created' | 's2c_checkpoint_restored'
-  | 's2c_ai_stage_changed' | 's2c_ai_recovery_required'
+  | 's2c_ai_stage_changed' | 's2c_ai_recovery_required' | 's2c_runtime_integrity_changed'
   | 's2c_director_plan_validated' | 's2c_narration_completed'
   // ── Map ──
   | 's2c_map_updated' | 's2c_player_moved' | 's2c_map_revealed'
@@ -95,7 +95,7 @@ export interface HostDirectorSnapshotDTO {
 export type ActionStatus =
   | 'idle' | 'typing' | 'analyzing' | 'awaiting_confirmation'
   | 'armed' | 'queued' | 'batched' | 'resolving'
-  | 'awaiting_player_choice' | 'awaiting_host_exception'
+  | 'awaiting_player_choice' | 'awaiting_player_consent' | 'awaiting_host_exception'
   | 'completed' | 'resolved' | 'rejected' | 'canceled' | 'timeout' | 'sync_required';
 
 export interface ActionDraftDTO {
@@ -144,7 +144,51 @@ export interface ActionDraftDTO {
     label?: string;
     replacement_intent?: string;
     interpreted_intent?: string;
+    visibility?: 'public' | 'party' | 'private';
   }>;
+}
+
+export interface ActionConsentDTO {
+  consentId: string;
+  actionId: string;
+  requesterCharacterId: string;
+  consentKind: string;
+  decision: 'pending' | 'accepted' | 'rejected' | 'expired';
+  declaredIntent: string;
+  expiresAt: string;
+}
+
+export interface ActionConsentOutcomeDTO {
+  consentId?: string;
+  actionId?: string;
+  actionStatus: ActionStatus | 'rejected';
+  accepted: boolean;
+  decision?: 'accepted' | 'rejected';
+}
+
+export type RuntimeIntegrityStatus = 'healthy' | 'read_only_recovery' | 'paused_provider';
+
+export interface RuntimeIntegrityDTO {
+  status: RuntimeIntegrityStatus;
+  reasonCode?: string | null;
+  allowedActions?: string[];
+}
+
+export interface CocFollowUpDTO {
+  status: 'pending' | 'submitted' | 'resolved' | 'timed_out';
+  allowed_decisions: Array<'spend_luck' | 'push' | 'decline'>;
+  luck?: {
+    available?: boolean;
+    required?: number;
+    current?: number;
+  };
+  push?: {
+    available?: boolean;
+    risk_level?: 'low' | 'medium' | 'high';
+    affected_scope?: string[];
+    warning?: string;
+  };
+  expires_at?: string;
 }
 
 export interface ActionTimelineEventDTO {
@@ -243,6 +287,32 @@ export interface PlayerReconnectDTO {
     visitedScenes: string[];
     version: number;
   };
+  runtimeIntegrity?: RuntimeIntegrityDTO;
+  riskContract?: RiskContractDTO | null;
+}
+
+export interface RiskContractDTO {
+  schema_version: string;
+  contract_hash: string;
+  categories: Array<{ category: string; max_level: 'low' | 'medium' | 'high' }>;
+  excluded_tags: string[];
+  default_harm: Partial<Record<'npc' | 'scene', 'low' | 'medium' | 'high'>>;
+  irreversible_controls: string[];
+  hidden_checks_allowed: boolean;
+  safe_alternative_tags: string[];
+  safe_abort_available: boolean;
+}
+
+export interface SessionZeroDTO {
+  steps: Array<{ step: string; confirmed: boolean; confirmed_at: string | null }>;
+  complete: boolean;
+  risk_contract: RiskContractDTO | null;
+}
+
+export interface CampaignEndingDTO {
+  ending_type: 'victory' | 'defeat' | 'mixed' | 'abandoned';
+  summary: string;
+  highlights: string[];
 }
 
 export interface PlayerCombatRoundDTO {

@@ -1883,8 +1883,10 @@ async def get_character(request: Request):
     # Room status — needed so the client can redirect to lobby if game hasn't started
     conn = request.app.state.db
     room = conn.execute(
-        "SELECT status FROM rooms WHERE room_id = %s", (char["room_id"],)
+        "SELECT status, integrity_status, integrity_reason "
+        "FROM rooms WHERE room_id = %s", (char["room_id"],)
     ).fetchone()
+    from ..engine.runtime_integrity import public_runtime_integrity
 
     # Merge character_runtime_state for live HP/SAN/MP/Luck values
     crs = conn.execute(
@@ -1913,6 +1915,7 @@ async def get_character(request: Request):
         "is_ready": bool(char.get("is_ready", False)),
         "status": char.get("status", "joined"),
         "room_status": room["status"] if room else "unknown",
+        "runtime_integrity": public_runtime_integrity(dict(room) if room else None),
     }
 
 

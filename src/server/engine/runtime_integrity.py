@@ -14,6 +14,40 @@ from typing import Any
 
 CHECKPOINT_SCHEMA_VERSION = 2
 
+_PUBLIC_INTEGRITY_REASONS = {
+    "provider_unavailable",
+    "checkpoint_hash_mismatch",
+    "checkpoint_signature_mismatch",
+    "checkpoint_payload_hash_mismatch",
+    "checkpoint_schema_unsupported",
+    "checkpoint_apply_failed",
+    "risk_contract_changed",
+    "room_run_binding_changed",
+    "state_service_unavailable",
+    "state_persistence_failed",
+}
+
+
+def public_runtime_integrity(room: dict[str, Any] | None) -> dict[str, Any]:
+    """Project only stable, player-safe runtime pause state."""
+    status = str((room or {}).get("integrity_status") or "healthy")
+    if status not in {"healthy", "read_only_recovery", "paused_provider"}:
+        status = "read_only_recovery"
+    raw_reason = str((room or {}).get("integrity_reason") or "")
+    reason = raw_reason if raw_reason in _PUBLIC_INTEGRITY_REASONS else (
+        "runtime_integrity_failed" if status != "healthy" else ""
+    )
+    allowed_actions = (
+        ["read", "mechanical_action"]
+        if status == "healthy"
+        else ["read", "export", "wait_for_recovery"]
+    )
+    return {
+        "status": status,
+        "reasonCode": reason or None,
+        "allowedActions": allowed_actions,
+    }
+
 
 class CheckpointIntegrityError(ValueError):
     """Raised when a checkpoint cannot be proven safe to inspect or restore."""
