@@ -111,6 +111,36 @@ def test_retention_dry_run_apply_and_retry_are_safe_and_idempotent(test_db):
     ).fetchone()["c"] == 0
 
 
+def test_retention_completed_retry_does_not_require_a_still_valid_preview_token(test_db):
+    from src.server.governance.retention import RetentionService, _token
+
+    _seed_retention_rows(test_db)
+    service = RetentionService(test_db)
+    cutoff = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    key = "retention-expired-retry"
+    dry_run = service.dry_run(cutoff=cutoff, idempotency_key=key)
+    applied = service.apply(
+        cutoff=cutoff,
+        idempotency_key=key,
+        dry_run_token=dry_run["dry_run_token"],
+        actor_id="acc-admin",
+    )
+    expired_token = _token({
+        "cutoff": cutoff,
+        "idempotency_key": key,
+        "exp": int(datetime.now(timezone.utc).timestamp()) - 1,
+    })
+
+    retried = service.apply(
+        cutoff=cutoff,
+        idempotency_key=key,
+        dry_run_token=expired_token,
+        actor_id="acc-admin",
+    )
+
+    assert retried == {**applied, "idempotent": True}
+
+
 def test_retention_apply_rejects_changed_cutoff_or_key(test_db):
     from src.server.governance.retention import RetentionError, RetentionService
 

@@ -1812,6 +1812,92 @@ async def test_verified_solo_purchase_adds_source_backed_item_once(test_db):
 
 
 @pytest.mark.asyncio
+async def test_solo_state_and_scene_roll_back_when_resolution_bundle_fails(
+    test_db,
+    monkeypatch,
+):
+    room_id, scenario_version_id = _setup_solo_room(test_db)
+    test_db.execute(
+        "UPDATE content_items SET payload = %s "
+        "WHERE scenario_version_id = %s AND logical_key = '1'",
+        (
+            json.dumps(
+                {
+                    "node_id": "1",
+                    "title": "条目 1",
+                    "text": (
+                        "商店里没有武器，只有一把积满尘土的狩猎小刀，"
+                        "如果想要，你可以买下它。然后转到2。"
+                    ),
+                },
+                ensure_ascii=False,
+            ),
+            scenario_version_id,
+        ),
+    )
+    test_db.execute(
+        "INSERT INTO characters "
+        "(character_id, room_id, player_name, player_token, xlsx_data) "
+        "VALUES ('solo-atomic-character', %s, '玩家', 'solo-atomic-token', %s)",
+        (room_id, json.dumps({"skills": {}})),
+    )
+    test_db.execute(
+        "INSERT INTO actions "
+        "(action_id, room_id, character_id, draft_id, intent_type, declared_intent, "
+        "params, status, idempotency_key) VALUES "
+        "('solo-atomic-action', %s, 'solo-atomic-character', "
+        "'solo-atomic-draft', 'move', '我买下狩猎小刀并继续前进', %s, "
+        "'queued', 'solo-atomic-key')",
+        (
+            room_id,
+            json.dumps(
+                {
+                    "fromNodeId": "1",
+                    "targetNodeId": "2",
+                    "solo_adventure": True,
+                    "director_plan": {
+                        "context_version": 0,
+                        "preconditions": [],
+                        "permissions": [],
+                        "state_patch": [],
+                        "state_patch_authority": "advisory_only",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    state_service = StateService(test_db)
+    state_service.initialize_character_state("solo-atomic-character", room_id)
+    pipeline = ResolutionPipeline(
+        test_db,
+        compiler=_RejectingCompiler(),
+        dispatcher=_RecordingDispatcher(),
+        state_service=state_service,
+    )
+
+    def fail_bundle(*_args, **_kwargs):
+        raise RuntimeError("forced-solo-bundle-crash")
+
+    monkeypatch.setattr(pipeline, "_persist_resolution_bundle", fail_bundle)
+
+    outcome = await pipeline.resolve_action("solo-atomic-action")
+
+    assert SoloAdventureRuntime(test_db).current(room_id)["node_id"] == "1"
+    assert test_db.execute(
+        "SELECT 1 FROM inventory WHERE character_id = 'solo-atomic-character'"
+    ).fetchone() is None
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'solo-atomic-action'"
+    ).fetchone()["status"] == "awaiting_host_exception"
+    assert outcome == {
+        "status": "awaiting_host_exception",
+        "action_id": "solo-atomic-action",
+        "reason": "state_persistence_failed",
+    }
+
+
+@pytest.mark.asyncio
 async def test_verified_solo_damage_transition_rolls_damage_and_selects_branch(test_db, monkeypatch):
     room_id, scenario_version_id = _setup_solo_room(test_db)
     graph = test_db.execute(

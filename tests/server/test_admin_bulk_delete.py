@@ -42,6 +42,44 @@ def _count(test_db, table: str, where_sql: str, params: tuple[str, ...]) -> int:
     ).fetchone()["count"]
 
 
+def test_batch_delete_system_error_is_precise_but_does_not_expose_raw_exception(
+    client,
+    test_db,
+    monkeypatch,
+):
+    setup_auth_test_data(test_db)
+    _insert_room(test_db, "bulk-system-error-room")
+    test_db.commit()
+    secret = "owner_token=must-not-leak"
+
+    async def fail_delete(*_args, **_kwargs):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        "src.server.router_admin._delete_room_with_lifecycle",
+        fail_delete,
+    )
+
+    response = client.post(
+        "/api/admin/rooms/batch-delete",
+        headers=_admin_headers(client),
+        json={"ids": ["bulk-system-error-room"], "confirm": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["deleted_ids"] == []
+    assert payload["errors"] == [
+        {
+            "id": "bulk-system-error-room",
+            "error": "系统删除失败，请查看服务器日志",
+            "status": "500",
+            "code": "system_delete_failed",
+        }
+    ]
+    assert secret not in response.text
+
+
 def test_batch_delete_rooms_removes_real_collaboration_and_session_dependencies(client, test_db):
     setup_auth_test_data(test_db)
     room = create_room(client, login(client))
@@ -1325,6 +1363,209 @@ def test_account_delete_holds_requesting_admin_until_purge_audit_is_written(
         "WHERE actor_id = %s",
         (actor_id,),
     ).fetchone()["count"] == 0
+
+
+def test_room_delete_serializes_a_new_join_against_the_room_lifecycle(
+    client,
+    test_db,
+    monkeypatch,
+):
+    from fastapi.testclient import TestClient
+
+    from src.server.main import app
+    import src.server.router_admin as router_admin
+
+    setup_auth_test_data(test_db)
+    room_id = "room-delete-join-race"
+    _insert_room(test_db, room_id, owner_account_id="acc-host")
+    test_db.commit()
+
+    delete_entered = threading.Event()
+    release_delete = threading.Event()
+    original_delete_rows = router_admin._delete_room_rows
+
+    def delayed_delete_rows(*args, **kwargs):
+        delete_entered.set()
+        release_delete.wait(timeout=5)
+        return original_delete_rows(*args, **kwargs)
+
+    monkeypatch.setattr(router_admin, "_delete_room_rows", delayed_delete_rows)
+    admin_client = TestClient(app)
+    join_client = TestClient(app)
+    admin_token = login(admin_client, "admin")
+
+    join_blocked = False
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        delete_future = executor.submit(
+            admin_client.delete,
+            f"/api/admin/rooms/{room_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert delete_entered.wait(timeout=2)
+        join_future = executor.submit(
+            join_client.post,
+            f"/api/player/rooms/{room_id}/join",
+        )
+        try:
+            join_future.result(timeout=0.25)
+        except TimeoutError:
+            join_blocked = True
+        finally:
+            release_delete.set()
+        delete_response = delete_future.result(timeout=3)
+        join_response = join_future.result(timeout=3)
+
+    assert join_blocked is True
+    assert delete_response.status_code == 200, delete_response.text
+    assert join_response.status_code == 404
+
+
+def test_admin_role_change_waits_for_an_authorized_room_delete(
+    client,
+    test_db,
+    monkeypatch,
+):
+    from fastapi.testclient import TestClient
+
+    from src.server.main import app
+    import src.server.router_admin as router_admin
+
+    setup_auth_test_data(test_db)
+    actor_id = "room-delete-admin-race"
+    room_id = "room-delete-admin-race-room"
+    create_account(test_db, actor_id, "room-delete-admin-race", "admin")
+    _insert_room(test_db, room_id, owner_account_id="acc-host")
+    test_db.commit()
+
+    delete_entered = threading.Event()
+    release_delete = threading.Event()
+    original_delete_rows = router_admin._delete_room_rows
+
+    def delayed_delete_rows(*args, **kwargs):
+        delete_entered.set()
+        release_delete.wait(timeout=5)
+        return original_delete_rows(*args, **kwargs)
+
+    monkeypatch.setattr(router_admin, "_delete_room_rows", delayed_delete_rows)
+    actor_client = TestClient(app)
+    admin_client = TestClient(app)
+    actor_token = login(actor_client, "room-delete-admin-race")
+    admin_token = login(admin_client, "admin")
+
+    role_change_blocked = False
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        delete_future = executor.submit(
+            actor_client.delete,
+            f"/api/admin/rooms/{room_id}",
+            headers={"Authorization": f"Bearer {actor_token}"},
+        )
+        assert delete_entered.wait(timeout=2)
+        role_future = executor.submit(
+            admin_client.patch,
+            f"/api/admin/accounts/{actor_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"role": "player"},
+        )
+        try:
+            role_future.result(timeout=0.25)
+        except TimeoutError:
+            role_change_blocked = True
+        finally:
+            release_delete.set()
+        delete_response = delete_future.result(timeout=3)
+        role_response = role_future.result(timeout=3)
+
+    assert role_change_blocked is True
+    assert delete_response.status_code == 200, delete_response.text
+    assert role_response.status_code == 200, role_response.text
+    assert test_db.execute(
+        "SELECT role FROM accounts WHERE account_id = %s",
+        (actor_id,),
+    ).fetchone()["role"] == "player"
+
+
+def test_host_force_move_holds_character_lifecycle_until_map_write_finishes(
+    client,
+    test_db,
+    monkeypatch,
+):
+    from fastapi.testclient import TestClient
+
+    from src.server.main import app
+    import src.server.map_persistence as map_persistence
+
+    setup_auth_test_data(test_db)
+    room_id = "force-move-delete-race-room"
+    character_id = "force-move-delete-race-character"
+    create_scenario(test_db, "force-move-delete-scenario", "Force Move")
+    _insert_room(
+        test_db,
+        room_id,
+        scenario_id="force-move-delete-scenario",
+        owner_account_id="acc-host",
+    )
+    _insert_character(test_db, character_id, room_id)
+    test_db.execute(
+        "INSERT INTO scenario_maps "
+        "(map_id, scenario_id, status, nodes, edges) VALUES "
+        "('force-move-delete-map', 'force-move-delete-scenario', 'confirmed', %s, '[]')",
+        (json.dumps([{"node_id": "hall", "name": "Hall"}]),),
+    )
+    test_db.execute(
+        "INSERT INTO room_map_state (room_id, map_id) "
+        "VALUES (%s, 'force-move-delete-map')",
+        (room_id,),
+    )
+    test_db.commit()
+
+    move_entered = threading.Event()
+    release_move = threading.Event()
+    original_set_position = map_persistence.set_character_position
+
+    def delayed_set_position(*args, **kwargs):
+        move_entered.set()
+        release_move.wait(timeout=5)
+        return original_set_position(*args, **kwargs)
+
+    monkeypatch.setattr(
+        map_persistence,
+        "set_character_position",
+        delayed_set_position,
+    )
+    host_client = TestClient(app, raise_server_exceptions=False)
+    admin_client = TestClient(app)
+    admin_token = login(admin_client, "admin")
+
+    delete_blocked = False
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        move_future = executor.submit(
+            host_client.post,
+            f"/api/host/{room_id}/map/move-character",
+            headers={"X-Owner-Token": f"owner-{room_id}"},
+            json={
+                "character_id": character_id,
+                "node_id": "hall",
+                "reason": "race regression",
+            },
+        )
+        assert move_entered.wait(timeout=2)
+        delete_future = executor.submit(
+            admin_client.delete,
+            f"/api/admin/characters/{character_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        try:
+            delete_future.result(timeout=0.25)
+        except TimeoutError:
+            delete_blocked = True
+        finally:
+            release_move.set()
+        move_response = move_future.result(timeout=3)
+        delete_response = delete_future.result(timeout=3)
+
+    assert delete_blocked is True
+    assert move_response.status_code == 200, move_response.text
+    assert delete_response.status_code == 200, delete_response.text
 
 
 def test_account_owned_rows_reject_new_orphan_account_references(test_db):

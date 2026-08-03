@@ -185,7 +185,6 @@ class RetentionService:
               actor_id: str) -> dict:
         _validate_cutoff(cutoff)
         claims = {"cutoff": cutoff, "idempotency_key": idempotency_key}
-        token_payload = _verify(dry_run_token, claims)
         with self.conn.transaction() as tx:
             tx.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
@@ -205,6 +204,7 @@ class RetentionService:
                     raise RetentionError("retention_idempotency_conflict")
                 return {"counts": existing["counts"], "cutoff": cutoff,
                         "idempotency_key": idempotency_key, "idempotent": True}
+            token_payload = _verify(dry_run_token, claims)
             snapshot = self._snapshot(cutoff, conn=tx)
             if (
                 token_payload.get("candidate_digest")

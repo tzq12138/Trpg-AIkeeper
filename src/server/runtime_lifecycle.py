@@ -172,6 +172,13 @@ def character_lifecycle_guard(character_ids: Iterable[str], *, conn=None):
     )
 
 
+def room_lifecycle_guard(room_ids: Iterable[str], *, conn=None):
+    return lifecycle_guard(
+        (f"room:{room_id}" for room_id in room_ids),
+        conn=conn,
+    )
+
+
 def account_lifecycle_guard(account_ids: Iterable[str], *, conn=None):
     return lifecycle_guard(
         (f"account:{account_id}" for account_id in account_ids),

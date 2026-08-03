@@ -29,6 +29,7 @@ from ..scenario.character_presets import character_preview, find_preset, list_pr
 from ..scenario.xlsx_parser import parse_xlsx_character
 from ..router_auth import get_account_from_token
 from ..campaign_archive import CampaignReadOnlyError, ensure_campaign_writable
+from ..runtime_lifecycle import room_lifecycle_guard
 from .action_service import (
     ActionDraftError,
     submit_coc_background_decision,
@@ -95,26 +96,32 @@ async def join_room(request: Request, room_id: str):
     player_token = str(uuid.uuid4())
     character_id = str(uuid.uuid4())[:8]
     try:
-        with conn.transaction() as tx:
-            locked_room = ensure_campaign_writable(tx, room_id)
-            char_status = (
-                "pending_approval"
-                if locked_room["status"] == "active"
-                else "joined"
-            )
-            tx.execute(
-                "INSERT INTO characters "
-                "(character_id, room_id, player_name, player_token, status, account_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (
-                    character_id,
-                    room_id,
-                    "未命名玩家",
-                    player_token,
-                    char_status,
-                    account["account_id"] if account else None,
-                ),
-            )
+        async with room_lifecycle_guard([room_id], conn=conn):
+            if not conn.execute(
+                "SELECT 1 FROM rooms WHERE room_id = %s",
+                (room_id,),
+            ).fetchone():
+                raise HTTPException(404, "Room not found")
+            with conn.transaction() as tx:
+                locked_room = ensure_campaign_writable(tx, room_id)
+                char_status = (
+                    "pending_approval"
+                    if locked_room["status"] == "active"
+                    else "joined"
+                )
+                tx.execute(
+                    "INSERT INTO characters "
+                    "(character_id, room_id, player_name, player_token, status, account_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (
+                        character_id,
+                        room_id,
+                        "未命名玩家",
+                        player_token,
+                        char_status,
+                        account["account_id"] if account else None,
+                    ),
+                )
     except CampaignReadOnlyError as exc:
         raise _completed_campaign_http_error(exc) from exc
     return {"character_id": character_id, "player_token": player_token, "status": char_status}
@@ -345,8 +352,11 @@ async def join_room_with_character(
     if character_data:
         try:
             parsed = _parse_builder_character_data(character_data)
-        except Exception:
-            logger.exception("Builder character data parse failed")
+        except Exception as exc:
+            logger.error(
+                "Builder character data parse failed error_type=%s",
+                type(exc).__name__,
+            )
             raise HTTPException(400, "Invalid character data from builder")
         source = {"type": "builder"}
     elif preset_id:
@@ -357,8 +367,12 @@ async def join_room_with_character(
             raise HTTPException(404, "Character preset not found")
         try:
             parsed = parse_xlsx_character(str(preset_path))
-        except Exception:
-            logger.exception("Character preset parse failed: %s", preset_id)
+        except Exception as exc:
+            logger.error(
+                "Character preset parse failed preset=%s error_type=%s",
+                preset_id,
+                type(exc).__name__,
+            )
             raise HTTPException(400, "Invalid character preset")
         source = {"type": "preset", "preset_id": preset_id, "file_name": preset_path.name}
     elif template_id:
@@ -401,49 +415,55 @@ async def join_room_with_character(
     player_token = str(uuid.uuid4())
     character_id = str(uuid.uuid4())[:8]
     try:
-        with conn.transaction() as tx:
-            locked_room = ensure_campaign_writable(tx, room_id)
-            char_status = (
-                "pending_approval"
-                if locked_room["status"] == "active"
-                else "joined"
-            )
-            tx.execute(
-                "INSERT INTO characters "
-                "(character_id, room_id, player_name, player_token, xlsx_data, account_id, status) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (
-                    character_id,
-                    room_id,
-                    nickname,
-                    player_token,
-                    json.dumps(parsed, ensure_ascii=False),
-                    account_id,
-                    char_status,
-                ),
-            )
-            for item in initial_inventory:
+        async with room_lifecycle_guard([room_id], conn=conn):
+            if not conn.execute(
+                "SELECT 1 FROM rooms WHERE room_id = %s",
+                (room_id,),
+            ).fetchone():
+                raise HTTPException(404, "Room not found")
+            with conn.transaction() as tx:
+                locked_room = ensure_campaign_writable(tx, room_id)
+                char_status = (
+                    "pending_approval"
+                    if locked_room["status"] == "active"
+                    else "joined"
+                )
                 tx.execute(
-                    "INSERT INTO inventory "
-                    "(id, character_id, room_id, name, description, quantity, is_secret, source) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, 'scenario_template')",
+                    "INSERT INTO characters "
+                    "(character_id, room_id, player_name, player_token, xlsx_data, account_id, status) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                     (
-                        str(uuid.uuid4()),
                         character_id,
                         room_id,
-                        item["name"],
-                        item["description"],
-                        item["quantity"],
-                        item["is_secret"],
+                        nickname,
+                        player_token,
+                        json.dumps(parsed, ensure_ascii=False),
+                        account_id,
+                        char_status,
                     ),
                 )
-            from ..engine.state_service import StateService
+                for item in initial_inventory:
+                    tx.execute(
+                        "INSERT INTO inventory "
+                        "(id, character_id, room_id, name, description, quantity, is_secret, source) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, 'scenario_template')",
+                        (
+                            str(uuid.uuid4()),
+                            character_id,
+                            room_id,
+                            item["name"],
+                            item["description"],
+                            item["quantity"],
+                            item["is_secret"],
+                        ),
+                    )
+                from ..engine.state_service import StateService
 
-            StateService(tx).initialize_character_state(
-                character_id,
-                room_id,
-                commit=False,
-            )
+                StateService(tx).initialize_character_state(
+                    character_id,
+                    room_id,
+                    commit=False,
+                )
     except CampaignReadOnlyError as exc:
         raise _completed_campaign_http_error(exc) from exc
     _index_character_if_available(request, room_id, character_id, parsed)
@@ -456,8 +476,11 @@ async def join_room_with_character(
         asyncio.create_task(
             dispatcher.emit(room_id, "s2c_room_lobby_snapshot", "party", snapshot)
         )
-    except Exception:
-        logger.warning("Failed to broadcast lobby snapshot after join", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "Failed to broadcast lobby snapshot after join error_type=%s",
+            type(exc).__name__,
+        )
 
     return {
         "character_id": character_id, "player_token": player_token,
@@ -883,8 +906,11 @@ async def submit_intent(request: Request, intent: PlayerIntent):
             asyncio.create_task(
                 dispatcher.emit(char["room_id"], "s2c_room_lobby_snapshot", "party", snapshot)
             )
-        except Exception:
-            logger.warning("Failed to broadcast lobby snapshot after ready_toggle", exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "Failed to broadcast lobby snapshot after ready_toggle error_type=%s",
+                type(exc).__name__,
+            )
 
     if getattr(request.app.state, "pipeline", None) or getattr(request.app.state, "pg_db", None):
         asyncio.create_task(_resolve_action_background(request.app, intent.action_id))
@@ -1121,6 +1147,20 @@ def _dependent_combat_action_ids(plan: dict, completed_action_id: str) -> set[st
     return dependent_action_ids
 
 
+def _room_session_mode(conn, room_id: str) -> str:
+    row = conn.execute(
+        "SELECT packages.runtime_package "
+        "FROM rooms "
+        "LEFT JOIN runtime_package_versions AS packages "
+        "ON packages.runtime_package_version_id = rooms.runtime_package_version_id "
+        "WHERE rooms.room_id = %s",
+        (room_id,),
+    ).fetchone()
+    package = _json_val(row.get("runtime_package")) if row else {}
+    policy = package.get("runtime_policy") if isinstance(package, dict) else None
+    return str(policy.get("session_mode") or "") if isinstance(policy, dict) else ""
+
+
 async def _settle_turn_background(app, room_id: str, turn_id: str):
     """Auto-settle a turn when all players have submitted."""
     logger.info("Auto-settling turn %s for room %s", turn_id, room_id)
@@ -1240,44 +1280,63 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
                                     dependent_action_ids,
                                     "collaboration_dependency_not_met",
                                 )
-            except Exception as e:
-                logger.warning("Action %s failed in turn %s: %s", action["action_id"], turn_id, e)
-                transitioned = transition_action(
-                    conn,
+            except Exception as exc:
+                error_type = type(exc).__name__
+                logger.warning(
+                    "Action %s failed in turn %s error_type=%s",
                     action["action_id"],
-                    from_statuses=("resolving",),
-                    to_status="awaiting_host_exception",
-                    metadata={"reason_code": "resolution_pipeline_error", "ai_stage": "recovering"},
-                    result={"reason_code": "resolution_pipeline_error"},
+                    turn_id,
+                    error_type,
                 )
                 dispatcher = getattr(app.state, "dispatcher", None)
-                if transitioned and dispatcher:
-                    await dispatcher.emit(
-                        room_id,
-                        "s2c_action_exception_requested",
-                        "host",
-                        {
-                            "actionId": action["action_id"],
-                            "characterId": action["character_id"],
-                            "reasonCode": "resolution_pipeline_error",
-                        },
+                if _room_session_mode(conn, room_id) == "ai_only":
+                    recovery_pipeline = ResolutionPipeline(
+                        conn,
+                        dispatcher=dispatcher or ProjectionDispatcher(conn),
                     )
-                    await dispatcher.emit(
-                        room_id,
-                        "s2c_ai_recovery_required",
-                        "player",
-                        {
-                            "actionId": action["action_id"],
-                            "characterId": action["character_id"],
-                            "reasonCode": "resolution_pipeline_error",
-                        },
-                        character_id=action["character_id"],
+                    await recovery_pipeline._pause_room_for_integrity(
+                        action,
+                        "resolution_pipeline_error",
                     )
+                else:
+                    transitioned = transition_action(
+                        conn,
+                        action["action_id"],
+                        from_statuses=("resolving",),
+                        to_status="awaiting_host_exception",
+                        metadata={
+                            "reason_code": "resolution_pipeline_error",
+                            "ai_stage": "recovering",
+                        },
+                        result={"reason_code": "resolution_pipeline_error"},
+                    )
+                    if transitioned and dispatcher:
+                        await dispatcher.emit(
+                            room_id,
+                            "s2c_action_exception_requested",
+                            "host",
+                            {
+                                "actionId": action["action_id"],
+                                "characterId": action["character_id"],
+                                "reasonCode": "resolution_pipeline_error",
+                            },
+                        )
+                        await dispatcher.emit(
+                            room_id,
+                            "s2c_ai_recovery_required",
+                            "player",
+                            {
+                                "actionId": action["action_id"],
+                                "characterId": action["character_id"],
+                                "reasonCode": "resolution_pipeline_error",
+                            },
+                            character_id=action["character_id"],
+                        )
                 results.append({
                     "action_id": action["action_id"],
                     "character_name": char_name,
                     "declared_intent": action.get("declared_intent", ""),
-                    "error": str(e),
+                    "error": error_type,
                 })
 
         narrative_parts = []
@@ -1297,6 +1356,17 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
         if combat_summary:
             tm.save_combat_summary(turn_id, combat_summary)
         may_open_next_turn = tm.advance_combat_round_if_ready(turn_id) if combat_plan else True
+        room_status = conn.execute(
+            "SELECT status FROM rooms WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()
+        if room_status and str(room_status.get("status") or "") in {
+            "paused",
+            "paused_provider",
+            "completed",
+            "archived",
+        }:
+            may_open_next_turn = False
 
         # Create next turn — only if no newer collecting turn already exists
         existing_next = conn.execute(
@@ -1321,8 +1391,13 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
                 await dispatcher.emit(room_id, "s2c_turn_resolved", "party",
                                       {"turn_id": turn_id, "narrative": narrative, "actions": results})
 
-    except Exception as e:
-        logger.exception("Turn settlement failed for room %s turn %s: %s", room_id, turn_id, e)
+    except Exception as exc:
+        logger.error(
+            "Turn settlement failed for room %s turn %s error_type=%s",
+            room_id,
+            turn_id,
+            type(exc).__name__,
+        )
     finally:
         if pg_db:
             conn.close()
@@ -1414,8 +1489,12 @@ async def _resolve_action_background(app, action_id: str):
                 host_connection_checker=lambda room_id: ws_manager.is_connected(room_id, "host"),
             )
             await pipeline.resolve_action(action_id)
-        except Exception:
-            logger.exception("Background resolution failed for action %s", action_id)
+        except Exception as exc:
+            logger.error(
+                "Background resolution failed for action %s error_type=%s",
+                action_id,
+                type(exc).__name__,
+            )
         finally:
             conn.close()
         return
@@ -1425,8 +1504,12 @@ async def _resolve_action_background(app, action_id: str):
         return
     try:
         await pipeline.resolve_action(action_id)
-    except Exception:
-        logger.exception("Background resolution failed for action %s", action_id)
+    except Exception as exc:
+        logger.error(
+            "Background resolution failed for action %s error_type=%s",
+            action_id,
+            type(exc).__name__,
+        )
 
 
 @router.post(
@@ -1524,8 +1607,12 @@ async def _resolve_collaboration_batch_background(app, contract_id: str):
                 )
                 return
         _complete_collaboration_batch_if_terminal(conn, contract_id)
-    except Exception:
-        logger.exception("Collaboration batch resolution failed for contract %s", contract_id)
+    except Exception as exc:
+        logger.error(
+            "Collaboration batch resolution failed for contract %s error_type=%s",
+            contract_id,
+            type(exc).__name__,
+        )
         _block_collaboration_batch(conn, contract_id, [], "collaboration_batch_resolution_failed")
     finally:
         if pg_db:
@@ -1533,22 +1620,66 @@ async def _resolve_collaboration_batch_background(app, contract_id: str):
 
 
 def _block_collaboration_batch(conn, contract_id: str, action_ids: list[str], reason_code: str) -> None:
-    conn.execute(
-        "UPDATE collaboration_contract_batches SET status = 'blocked', updated_at = NOW() "
-        "WHERE contract_id = %s AND status = 'resolving'",
+    contract = conn.execute(
+        "SELECT room_id FROM collaboration_contracts WHERE contract_id = %s",
         (contract_id,),
+    ).fetchone()
+    ai_only = bool(
+        contract
+        and _room_session_mode(conn, str(contract["room_id"])) == "ai_only"
     )
-    for action_id in action_ids:
-        cursor = conn.execute(
-            "UPDATE actions SET status = 'awaiting_host_exception' "
-            "WHERE action_id = %s AND status = 'batched'",
-            (action_id,),
+    infrastructure_failure = reason_code in {
+        "resolution_pipeline_unavailable",
+        "collaboration_batch_requires_review",
+        "collaboration_batch_resolution_failed",
+    }
+    with conn.transaction() as tx:
+        tx.execute(
+            "UPDATE collaboration_contract_batches "
+            "SET status = 'blocked', updated_at = NOW() "
+            "WHERE contract_id = %s AND status = 'resolving'",
+            (contract_id,),
         )
-        if cursor.rowcount:
-            conn.execute(
-                "INSERT INTO action_status_events (action_id, status, metadata) VALUES (%s, 'awaiting_host_exception', %s)",
-                (action_id, json.dumps({"reason_code": reason_code}, ensure_ascii=False)),
+        if ai_only and infrastructure_failure and contract:
+            room_id = str(contract["room_id"])
+            tx.execute(
+                "UPDATE rooms SET status = 'paused', "
+                "integrity_status = 'read_only_recovery', integrity_reason = %s, "
+                "integrity_source = 'collaboration_batch', "
+                "integrity_state_version = state_version, integrity_updated_at = NOW() "
+                "WHERE room_id = %s",
+                (reason_code, room_id),
             )
+            from ..events.event_log import EventLog
+
+            EventLog(tx).log_event(
+                room_id,
+                "s2c_room_paused",
+                "party",
+                {"reasonCode": reason_code, "mode": "read_only_recovery"},
+                commit=False,
+            )
+    for action_id in action_ids:
+        target_status = "rejected" if ai_only else "awaiting_host_exception"
+        with conn.transaction() as tx:
+            transitioned = transition_action(
+                conn,
+                action_id,
+                from_statuses=("batched",),
+                to_status=target_status,
+                metadata={"reason_code": reason_code},
+                result={"reason": reason_code} if ai_only else None,
+                transaction=tx,
+            )
+            if transitioned and ai_only:
+                from ..ai.decision_audit import finalize_terminal_decision_audit
+
+                finalize_terminal_decision_audit(
+                    tx,
+                    action_id,
+                    action_status="rejected",
+                    reason_code=reason_code,
+                )
 
 
 def _dependent_collaboration_action_ids(
@@ -2236,8 +2367,11 @@ async def _parse_uploaded_xlsx(file: UploadFile | None) -> dict:
         return result
     except HTTPException:
         raise
-    except Exception:
-        logger.exception("Character xlsx parse failed: %s", getattr(file, "filename", ""))
+    except Exception as exc:
+        logger.error(
+            "Character xlsx parse failed error_type=%s",
+            type(exc).__name__,
+        )
         raise HTTPException(400, "Invalid character xlsx")
 
 
@@ -2261,8 +2395,11 @@ def _index_character_if_available(request: Request, room_id: str, character_id: 
     if hasattr(request.app.state, "rag") and request.app.state.rag:
         try:
             request.app.state.rag.index_character(room_id, character_id, parsed)
-        except Exception as e:
-            logger.warning("Character RAG indexing failed: %s", e)
+        except Exception as exc:
+            logger.warning(
+                "Character RAG indexing failed error_type=%s",
+                type(exc).__name__,
+            )
 
 
 def _parse_builder_character_data(raw: str) -> dict:

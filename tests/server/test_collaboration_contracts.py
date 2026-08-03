@@ -5,6 +5,7 @@ import pytest
 
 from src.server.player import router_actions_v2
 from src.server.player.router_player import (
+    _block_collaboration_batch,
     _resolve_collaboration_batch_background,
     _settle_turn_background,
 )
@@ -19,6 +20,89 @@ def _setup_contract_room(client, test_db, player_count=3):
         for _ in range(player_count)
     ]
     return room, players
+
+
+def _bind_ai_only_runtime(test_db, room_id: str) -> None:
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    package_id = f"collaboration-ai-only-{room_id}"
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, "
+        "gate_status, input_checksum, runtime_package, created_by) VALUES "
+        "(%s, %s, 99, 'ready', %s, %s, 'test')",
+        (
+            package_id,
+            scenario_version_id,
+            package_id,
+            json.dumps({"runtime_policy": {"session_mode": "ai_only"}}),
+        ),
+    )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = %s WHERE room_id = %s",
+        (package_id, room_id),
+    )
+
+
+def test_ai_only_collaboration_infrastructure_failure_pauses_without_host_queue(
+    client,
+    test_db,
+):
+    room, players = _setup_contract_room(client, test_db, player_count=1)
+    room_id = room["room_id"]
+    character_id = players[0]["character_id"]
+    _bind_ai_only_runtime(test_db, room_id)
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.execute(
+        "INSERT INTO collaboration_contracts "
+        "(contract_id, room_id, initiator_character_id, shared_intent, status, expires_at) "
+        "VALUES ('ai-only-block-contract', %s, %s, '一起调查', 'accepted', "
+        "NOW() + INTERVAL '10 minutes')",
+        (room_id, character_id),
+    )
+    test_db.execute(
+        "INSERT INTO collaboration_contract_batches "
+        "(contract_id, room_id, action_ids, status) VALUES "
+        "('ai-only-block-contract', %s, '[\"ai-only-block-action\"]', 'resolving')",
+        (room_id,),
+    )
+    test_db.execute(
+        "INSERT INTO actions "
+        "(action_id, room_id, character_id, intent_type, declared_intent, status) "
+        "VALUES ('ai-only-block-action', %s, %s, 'dialogue', '一起调查', 'batched')",
+        (room_id, character_id),
+    )
+    test_db.commit()
+
+    _block_collaboration_batch(
+        test_db,
+        "ai-only-block-contract",
+        ["ai-only-block-action"],
+        "resolution_pipeline_unavailable",
+    )
+
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'ai-only-block-action'"
+    ).fetchone()["status"] == "rejected"
+    assert test_db.execute(
+        "SELECT status, integrity_reason FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone() == {
+        "status": "paused",
+        "integrity_reason": "resolution_pipeline_unavailable",
+    }
+    assert test_db.execute(
+        "SELECT 1 FROM action_status_events "
+        "WHERE action_id = 'ai-only-block-action' "
+        "AND status = 'awaiting_host_exception'"
+    ).fetchone() is None
+    assert test_db.execute(
+        "SELECT event_type FROM events WHERE room_id = %s "
+        "AND event_type = 's2c_room_paused'",
+        (room_id,),
+    ).fetchone() is not None
 
 
 def test_collaboration_contract_creates_linked_confirmation_drafts_only_after_all_accept(
@@ -514,13 +598,21 @@ async def test_collaboration_dependency_failure_blocks_the_dependent_action(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ai_only", "dependent_status"),
+    ((False, "awaiting_host_exception"), (True, "rejected")),
+)
 async def test_combat_dependency_failure_blocks_only_the_dependent_declaration(
     client,
     test_db,
+    ai_only,
+    dependent_status,
 ):
     room, players = _setup_contract_room(client, test_db, player_count=2)
     prerequisite_player, dependent_player = players
     room_id = room["room_id"]
+    if ai_only:
+        _bind_ai_only_runtime(test_db, room_id)
     contract_id = "combat-dependency-contract"
     turn_id = "combat-dependency-turn"
     test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
@@ -602,7 +694,7 @@ async def test_combat_dependency_failure_blocks_only_the_dependent_declaration(
     assert pipeline.action_ids == ["combat-prerequisite"]
     assert test_db.execute(
         "SELECT status FROM actions WHERE action_id = 'combat-dependent'"
-    ).fetchone()["status"] == "awaiting_host_exception"
+    ).fetchone()["status"] == dependent_status
     assert test_db.execute(
         "SELECT status FROM collaboration_contract_batches WHERE contract_id = %s", (contract_id,)
     ).fetchone()["status"] == "blocked"

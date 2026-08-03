@@ -135,9 +135,11 @@ def init_room_map_state(conn, room_id: str, map_id: str) -> dict:
     }
 
 
-def get_room_map_state(conn, room_id: str) -> dict | None:
+def get_room_map_state(conn, room_id: str, *, for_update: bool = False) -> dict | None:
     row = conn.execute(
-        "SELECT * FROM room_map_state WHERE room_id = %s", (room_id,)
+        "SELECT * FROM room_map_state WHERE room_id = %s"
+        + (" FOR UPDATE" if for_update else ""),
+        (room_id,),
     ).fetchone()
     if not row:
         return None
@@ -153,21 +155,31 @@ def get_room_map_state(conn, room_id: str) -> dict | None:
     }
 
 
+def _run_map_mutation(conn, operation, *, transaction=None):
+    """Run a map mutation in a new or caller-owned transaction."""
+    if transaction is not None:
+        return operation(transaction)
+    if hasattr(conn, "transaction"):
+        with conn.transaction() as tx:
+            return operation(tx)
+    return operation(conn)
+
+
 def mark_node_explored(conn, room_id: str, node_id: str, *, transaction=None):
     """Add a node to the team-shared explored list. Idempotent."""
-    executor = transaction or conn
-    state = get_room_map_state(executor, room_id)
-    if not state:
-        return
-    explored: list = state.get("explored_nodes", [])
-    if node_id not in explored:
-        explored.append(node_id)
-        executor.execute(
-            "UPDATE room_map_state SET explored_nodes = %s, state_version = state_version + 1, updated_at = NOW() WHERE room_id = %s",
-            (_ensure_json(explored), room_id),
-        )
-        if transaction is None:
-            conn.commit()
+    def execute(executor):
+        state = get_room_map_state(executor, room_id, for_update=True)
+        if not state:
+            return
+        explored: list = state.get("explored_nodes", [])
+        if node_id not in explored:
+            explored.append(node_id)
+            executor.execute(
+                "UPDATE room_map_state SET explored_nodes = %s, state_version = state_version + 1, updated_at = NOW() WHERE room_id = %s",
+                (_ensure_json(explored), room_id),
+            )
+
+    return _run_map_mutation(conn, execute, transaction=transaction)
 
 
 def is_node_explored(conn, room_id: str, node_id: str) -> bool:
@@ -186,8 +198,8 @@ def is_node_hidden(conn, room_id: str, node_id: str) -> bool:
 
 def host_set_node_visible(conn, room_id: str, node_id: str, visible: bool) -> tuple[bool, int] | None:
     """Reveal or hide a node and return whether the persisted state changed."""
-    with conn.transaction() as transaction:
-        state = get_room_map_state(transaction, room_id)
+    def execute(executor):
+        state = get_room_map_state(executor, room_id, for_update=True)
         if not state:
             return None
         hidden = list(state.get("hidden_nodes", []) or [])
@@ -198,18 +210,20 @@ def host_set_node_visible(conn, room_id: str, node_id: str, visible: bool) -> tu
             hidden.remove(node_id)
         else:
             hidden.append(node_id)
-        transaction.execute(
+        executor.execute(
             "UPDATE room_map_state SET hidden_nodes = %s, state_version = state_version + 1, "
             "updated_at = NOW() WHERE room_id = %s",
             (_ensure_json(hidden), room_id),
         )
         return True, state.get("state_version", 0) + 1
 
+    return _run_map_mutation(conn, execute)
+
 
 def host_set_region_visible(conn, room_id: str, region_id: str, visible: bool) -> tuple[bool, int] | None:
     """Reveal or fog a map region and return whether its persisted state changed."""
-    with conn.transaction() as transaction:
-        state = get_room_map_state(transaction, room_id)
+    def execute(executor):
+        state = get_room_map_state(executor, room_id, for_update=True)
         if not state:
             return None
         fog_regions = list(state.get("fog_regions", []) or [])
@@ -220,12 +234,14 @@ def host_set_region_visible(conn, room_id: str, region_id: str, visible: bool) -
             fog_regions.remove(region_id)
         else:
             fog_regions.append(region_id)
-        transaction.execute(
+        executor.execute(
             "UPDATE room_map_state SET fog_regions = %s, state_version = state_version + 1, "
             "updated_at = NOW() WHERE room_id = %s",
             (_ensure_json(fog_regions), room_id),
         )
         return True, state.get("state_version", 0) + 1
+
+    return _run_map_mutation(conn, execute)
 
 
 def reveal_regions_for_node(
@@ -237,7 +253,7 @@ def reveal_regions_for_node(
 ) -> list[str]:
     """Reveal fogged regions anchored to a confirmed movement destination."""
     def execute(executor) -> list[str]:
-        state = get_room_map_state(executor, room_id)
+        state = get_room_map_state(executor, room_id, for_update=True)
         if not state:
             return []
         scenario_map = get_scenario_map(executor, state["map_id"])
@@ -259,10 +275,7 @@ def reveal_regions_for_node(
             (_ensure_json([region_id for region_id in fog_regions if region_id not in revealed]), room_id),
         )
         return revealed
-    if transaction is not None:
-        return execute(transaction)
-    with conn.transaction() as tx:
-        return execute(tx)
+    return _run_map_mutation(conn, execute, transaction=transaction)
 
 
 def set_token_visibility(
@@ -276,19 +289,19 @@ def set_token_visibility(
     """Set a character Token's room projection policy."""
     if visibility not in {"party", "hidden"}:
         raise ValueError("unsupported token visibility")
-    executor = transaction or conn
-    state = get_room_map_state(executor, room_id)
-    if not state:
-        return
-    token_visibility = dict(state.get("token_visibility", {}) or {})
-    token_visibility[character_id] = visibility
-    executor.execute(
-        "UPDATE room_map_state SET token_visibility = %s, state_version = state_version + 1, updated_at = NOW() "
-        "WHERE room_id = %s",
-        (_ensure_json(token_visibility), room_id),
-    )
-    if transaction is None:
-        conn.commit()
+    def execute(executor):
+        state = get_room_map_state(executor, room_id, for_update=True)
+        if not state:
+            return
+        token_visibility = dict(state.get("token_visibility", {}) or {})
+        token_visibility[character_id] = visibility
+        executor.execute(
+            "UPDATE room_map_state SET token_visibility = %s, state_version = state_version + 1, updated_at = NOW() "
+            "WHERE room_id = %s",
+            (_ensure_json(token_visibility), room_id),
+        )
+
+    return _run_map_mutation(conn, execute, transaction=transaction)
 
 
 # ── Character position CRUD ──
@@ -316,7 +329,7 @@ def set_character_position(
         "ON CONFLICT (character_id, room_id) DO UPDATE SET node_id = %s, updated_at = NOW()",
         (character_id, room_id, node_id, node_id),
     )
-    if transaction is None:
+    if transaction is None and hasattr(conn, "commit"):
         conn.commit()
 
 

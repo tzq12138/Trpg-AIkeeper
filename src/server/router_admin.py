@@ -16,6 +16,7 @@ from .router_auth import verify_token, get_account_from_token, _hash_password
 from .runtime_lifecycle import (
     account_lifecycle_guard,
     character_lifecycle_guard,
+    room_lifecycle_guard,
 )
 
 router = APIRouter(prefix="/api/admin")
@@ -1755,44 +1756,20 @@ def _batch_delete_response(
 
 # 鈹€鈹€ Admin Entity Delete 鈹€鈹€
 
-@router.delete("/rooms/{room_id}")
-async def delete_room(request: Request, room_id: str):
-    _require_admin(request)
-    conn = request.app.state.db
-    room = conn.execute("SELECT 1 FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
-    if not room:
-        raise HTTPException(404, "銆婏oom涓嶅瓨鍦ㄦ瘡")
-    character_ids = [
-        str(row["character_id"])
-        for row in conn.execute(
-            "SELECT character_id FROM characters WHERE room_id = %s",
-            (room_id,),
-        ).fetchall()
-    ]
-    affected_players: set[tuple[str, str]] = set()
-    async with character_lifecycle_guard(character_ids, conn=conn):
-        with conn.transaction() as tx:
-            counts = _delete_room_rows(
-                tx,
-                [room_id],
-                affected_players=affected_players,
-            )
-    await _invalidate_deleted_players(affected_players)
-    return {"status": "deleted", "deleted_ids": [room_id], "counts": counts}
-
-
-@router.post("/rooms/batch-delete")
-async def delete_rooms(request: Request):
-    _require_admin(request)
-    ids = await _get_confirmed_id_list(request, "ids")
-    conn = request.app.state.db
-    found_ids, not_found_ids = _split_found_and_missing(conn, "rooms", "room_id", ids)
-
-    deleted_ids: list[str] = []
-    deleted_counts: dict[str, int] = {}
-    errors: list[dict[str, str]] = []
-    for room_id in found_ids:
-        try:
+async def _delete_room_with_lifecycle(
+    request: Request,
+    room_id: str,
+    *,
+    admin_id: str,
+) -> tuple[dict[str, int], set[tuple[str, str]]]:
+    async with _governance_actor_guard(request, admin_id) as conn:
+        async with room_lifecycle_guard([room_id], conn=conn):
+            room = conn.execute(
+                "SELECT 1 FROM rooms WHERE room_id = %s",
+                (room_id,),
+            ).fetchone()
+            if not room:
+                raise HTTPException(404, "房间不存在")
             character_ids = [
                 str(row["character_id"])
                 for row in conn.execute(
@@ -1808,33 +1785,107 @@ async def delete_rooms(request: Request):
                         [room_id],
                         affected_players=affected_players,
                     )
+    return counts, affected_players
+
+
+async def _delete_scenario_with_actor_guard(
+    request: Request,
+    scenario_id: str,
+    *,
+    admin_id: str,
+) -> dict[str, int]:
+    async with _governance_actor_guard(request, admin_id) as conn:
+        if not conn.execute(
+            "SELECT 1 FROM scenarios WHERE scenario_id = %s",
+            (scenario_id,),
+        ).fetchone():
+            raise HTTPException(404, "剧本不存在")
+        with conn.transaction() as tx:
+            return _delete_scenario_rows(tx, [scenario_id])
+
+
+async def _delete_character_with_lifecycle(
+    request: Request,
+    character_id: str,
+    *,
+    admin_id: str,
+) -> tuple[dict[str, int], set[tuple[str, str]]]:
+    async with _governance_actor_guard(request, admin_id) as conn:
+        async with character_lifecycle_guard([character_id], conn=conn):
+            if not conn.execute(
+                "SELECT 1 FROM characters WHERE character_id = %s",
+                (character_id,),
+            ).fetchone():
+                raise HTTPException(404, "角色不存在")
+            affected_players: set[tuple[str, str]] = set()
+            with conn.transaction() as tx:
+                counts = _delete_character_rows(
+                    tx,
+                    [character_id],
+                    affected_players=affected_players,
+                )
+    return counts, affected_players
+
+@router.delete("/rooms/{room_id}")
+async def delete_room(request: Request, room_id: str):
+    admin = _require_admin(request)
+    counts, affected_players = await _delete_room_with_lifecycle(
+        request,
+        room_id,
+        admin_id=str(admin["account_id"]),
+    )
+    await _invalidate_deleted_players(affected_players)
+    return {"status": "deleted", "deleted_ids": [room_id], "counts": counts}
+
+
+@router.post("/rooms/batch-delete")
+async def delete_rooms(request: Request):
+    admin = _require_admin(request)
+    ids = await _get_confirmed_id_list(request, "ids")
+    conn = request.app.state.db
+    found_ids, not_found_ids = _split_found_and_missing(conn, "rooms", "room_id", ids)
+
+    deleted_ids: list[str] = []
+    deleted_counts: dict[str, int] = {}
+    errors: list[dict[str, str]] = []
+    for room_id in found_ids:
+        try:
+            counts, affected_players = await _delete_room_with_lifecycle(
+                request,
+                room_id,
+                admin_id=str(admin["account_id"]),
+            )
             await _invalidate_deleted_players(affected_players)
             _merge_delete_counts(deleted_counts, counts)
             deleted_ids.append(room_id)
         except HTTPException as exc:
             errors.append({"id": room_id, "error": str(exc.detail), "status": str(exc.status_code)})
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to delete room %s", room_id)
-            errors.append({"id": room_id, "error": str(exc), "status": "500"})
+            errors.append({
+                "id": room_id,
+                "error": "系统删除失败，请查看服务器日志",
+                "status": "500",
+                "code": "system_delete_failed",
+            })
 
     return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
 
 
 @router.delete("/scenarios/{scenario_id}")
 async def delete_scenario(request: Request, scenario_id: str):
-    _require_admin(request)
-    conn = request.app.state.db
-    scenario = conn.execute("SELECT 1 FROM scenarios WHERE scenario_id = %s", (scenario_id,)).fetchone()
-    if not scenario:
-        raise HTTPException(404, "鍓ф湰涓嶅瓨鍦?")
-    with conn.transaction() as tx:
-        counts = _delete_scenario_rows(tx, [scenario_id])
+    admin = _require_admin(request)
+    counts = await _delete_scenario_with_actor_guard(
+        request,
+        scenario_id,
+        admin_id=str(admin["account_id"]),
+    )
     return {"status": "deleted", "deleted_ids": [scenario_id], "counts": counts}
 
 
 @router.post("/scenarios/batch-delete")
 async def delete_scenarios(request: Request):
-    _require_admin(request)
+    admin = _require_admin(request)
     ids = await _get_confirmed_id_list(request, "ids")
     conn = request.app.state.db
     found_ids, not_found_ids = _split_found_and_missing(conn, "scenarios", "scenario_id", ids)
@@ -1844,41 +1895,42 @@ async def delete_scenarios(request: Request):
     errors: list[dict[str, str]] = []
     for scenario_id in found_ids:
         try:
-            with conn.transaction() as tx:
-                counts = _delete_scenario_rows(tx, [scenario_id])
+            counts = await _delete_scenario_with_actor_guard(
+                request,
+                scenario_id,
+                admin_id=str(admin["account_id"]),
+            )
             _merge_delete_counts(deleted_counts, counts)
             deleted_ids.append(scenario_id)
         except HTTPException as exc:
             errors.append({"id": scenario_id, "error": str(exc.detail), "status": str(exc.status_code)})
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to delete scenario %s", scenario_id)
-            errors.append({"id": scenario_id, "error": str(exc), "status": "500"})
+            errors.append({
+                "id": scenario_id,
+                "error": "系统删除失败，请查看服务器日志",
+                "status": "500",
+                "code": "system_delete_failed",
+            })
 
     return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
 
 
 @router.delete("/characters/{character_id}")
 async def delete_character(request: Request, character_id: str):
-    _require_admin(request)
-    conn = request.app.state.db
-    row = conn.execute("SELECT 1 FROM characters WHERE character_id = %s", (character_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "瑙掕壊涓嶅瓨鍦?")
-    affected_players: set[tuple[str, str]] = set()
-    async with character_lifecycle_guard([character_id], conn=conn):
-        with conn.transaction() as tx:
-            counts = _delete_character_rows(
-                tx,
-                [character_id],
-                affected_players=affected_players,
-            )
+    admin = _require_admin(request)
+    counts, affected_players = await _delete_character_with_lifecycle(
+        request,
+        character_id,
+        admin_id=str(admin["account_id"]),
+    )
     await _invalidate_deleted_players(affected_players)
     return {"status": "deleted", "deleted_ids": [character_id], "counts": counts}
 
 
 @router.post("/characters/batch-delete")
 async def delete_characters(request: Request):
-    _require_admin(request)
+    admin = _require_admin(request)
     ids = await _get_confirmed_id_list(request, "ids")
     conn = request.app.state.db
     found_ids, not_found_ids = _split_found_and_missing(conn, "characters", "character_id", ids)
@@ -1888,22 +1940,24 @@ async def delete_characters(request: Request):
     errors: list[dict[str, str]] = []
     for character_id in found_ids:
         try:
-            affected_players: set[tuple[str, str]] = set()
-            async with character_lifecycle_guard([character_id], conn=conn):
-                with conn.transaction() as tx:
-                    counts = _delete_character_rows(
-                        tx,
-                        [character_id],
-                        affected_players=affected_players,
-                    )
+            counts, affected_players = await _delete_character_with_lifecycle(
+                request,
+                character_id,
+                admin_id=str(admin["account_id"]),
+            )
             await _invalidate_deleted_players(affected_players)
             _merge_delete_counts(deleted_counts, counts)
             deleted_ids.append(character_id)
         except HTTPException as exc:
             errors.append({"id": character_id, "error": str(exc.detail), "status": str(exc.status_code)})
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to delete character %s", character_id)
-            errors.append({"id": character_id, "error": str(exc), "status": "500"})
+            errors.append({
+                "id": character_id,
+                "error": "系统删除失败，请查看服务器日志",
+                "status": "500",
+                "code": "system_delete_failed",
+            })
 
     return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
 
@@ -2018,9 +2072,14 @@ async def delete_accounts(request: Request):
                     "error": str(exc.detail),
                     "status": str(exc.status_code),
                 })
-            except Exception as exc:
+            except Exception:
                 logger.exception("Failed to delete account %s", account_id)
-                errors.append({"id": account_id, "error": str(exc), "status": "500"})
+                errors.append({
+                    "id": account_id,
+                    "error": "系统删除失败，请查看服务器日志",
+                    "status": "500",
+                    "code": "system_delete_failed",
+                })
 
     await _invalidate_deleted_players(invalidated_players)
     return _batch_delete_response(ids, deleted_ids, not_found_ids, deleted_counts, errors)
@@ -2269,14 +2328,9 @@ async def list_accounts(request: Request):
 
 @router.patch("/accounts/{account_id}")
 async def update_account(request: Request, account_id: str):
-    _require_admin(request)
+    admin = _require_admin(request)
     conn = request.app.state.db
-    acc = conn.execute("SELECT * FROM accounts WHERE account_id = %s", (account_id,)).fetchone()
-    if not acc:
-        raise HTTPException(404, "账户不存在")
     body = await request.json()
-    if acc["username"] == "admin" and "role" in body and body["role"] != "admin":
-        raise HTTPException(409, "保留管理员账号不能降权")
     allowed = ["role", "display_name"]
     sets, vals = [], []
     for k in allowed:
@@ -2287,9 +2341,22 @@ async def update_account(request: Request, account_id: str):
             vals.append(body[k])
     if not sets:
         raise HTTPException(400, "没有有效字段")
-    vals.append(account_id)
-    conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE account_id = %s", tuple(vals))
-    conn.commit()
+    admin_id = str(admin["account_id"])
+    async with account_lifecycle_guard([admin_id, account_id], conn=conn):
+        _assert_live_admin_actor(conn, admin_id)
+        with conn.transaction() as tx:
+            acc = tx.execute(
+                "SELECT * FROM accounts WHERE account_id = %s FOR UPDATE",
+                (account_id,),
+            ).fetchone()
+            if not acc:
+                raise HTTPException(404, "账户不存在")
+            if acc["username"] == "admin" and "role" in body and body["role"] != "admin":
+                raise HTTPException(409, "保留管理员账号不能降权")
+            tx.execute(
+                f"UPDATE accounts SET {', '.join(sets)} WHERE account_id = %s",
+                (*vals, account_id),
+            )
     return {"status": "updated", "account_id": account_id}
 
 
@@ -3585,7 +3652,7 @@ async def retention_apply(request: Request):
 
 
 @router.post("/sensitive-access/grants", status_code=201)
-async def create_sensitive_access_grant(request: Request):
+async def create_sensitive_access_grant(request: Request, response: Response):
     account = _require_admin(request)
     body = await _safe_json(request)
     incident_id = str(body.get("incident_id") or "").strip()
@@ -3605,6 +3672,7 @@ async def create_sensitive_access_grant(request: Request):
         raise HTTPException(400, "incident_id, reason, scope and short ttl are required")
     from .governance.retention import issue_sensitive_access_grant
     async with _governance_actor_guard(request, str(account["account_id"])):
+        response.headers["Cache-Control"] = "no-store"
         return {"grant": issue_sensitive_access_grant(actor_id=account["account_id"],
                  incident_id=incident_id, reason=reason, scope=scope, ttl_seconds=ttl)}
 

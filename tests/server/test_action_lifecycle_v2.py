@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.server.engine.action_lifecycle import transition_action
+from src.server.engine.ending_conditions import EndingDecision
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.engine.roll_receipt import verify_roll_receipt
 from src.server.engine.state_service import StateService
@@ -724,6 +725,112 @@ async def test_ai_only_state_persistence_failure_pauses_room_without_human_revie
     assert test_db.execute(
         "SELECT status FROM rooms WHERE room_id = 'room-v2'"
     ).fetchone()["status"] == "paused"
+    event_types = [event[1] for event in dispatcher.events]
+    assert "s2c_room_paused" in event_types
+    assert "s2c_action_exception_requested" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_ai_only_ending_persistence_failure_pauses_without_human_review(
+    test_db,
+    monkeypatch,
+):
+    _insert_action(test_db)
+    _bind_ai_only_runtime(test_db)
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = 'room-v2'")
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+    ending = EndingDecision(
+        ending_id="ai-only-ending",
+        ending_type="victory",
+        citation={"source_ref": "module#ending"},
+        room_status="active",
+        priority=1,
+        exclusive_group="campaign_ending",
+    )
+    monkeypatch.setattr(
+        ResolutionPipeline,
+        "_evaluate_verified_runtime_ending",
+        lambda _self, _room_id, *, executor=None: ending,
+    )
+
+    def fail_ending(*_args, **_kwargs):
+        raise RuntimeError("forced-ai-only-ending-failure")
+
+    monkeypatch.setattr(
+        "src.server.engine.resolution_pipeline.finalize_campaign",
+        fail_ending,
+    )
+    dispatcher = _Dispatcher()
+
+    result = await ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=dispatcher,
+        host_connection_checker=lambda _room_id: False,
+    ).resolve_action("action-v2")
+
+    assert result == {
+        "status": "rejected",
+        "action_id": "action-v2",
+        "reason": "campaign_ending_persistence_failed",
+    }
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = 'room-v2'"
+    ).fetchone()["status"] == "paused"
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'action-v2'"
+    ).fetchone()["status"] == "rejected"
+    event_types = [event[1] for event in dispatcher.events]
+    assert "s2c_room_paused" in event_types
+    assert "s2c_action_exception_requested" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_ai_only_unrecoverable_narrator_failure_pauses_without_human_review(
+    test_db,
+    monkeypatch,
+):
+    _insert_action(test_db)
+    _bind_ai_only_runtime(test_db)
+    test_db.execute(
+        "INSERT INTO action_status_events (action_id, status, metadata) "
+        "VALUES ('action-v2', 'queued', '{}')"
+    )
+
+    class NarratorGateway:
+        async def narrate_action(self, *_args, **_kwargs):
+            raise AssertionError("caller test replaces _apply_narrator")
+
+    dispatcher = _Dispatcher()
+    pipeline = ResolutionPipeline(
+        conn=test_db,
+        compiler=_DialogueCompiler(),
+        dispatcher=dispatcher,
+        gateway=NarratorGateway(),
+        host_connection_checker=lambda _room_id: False,
+    )
+
+    async def fail_narrator(*_args, **_kwargs):
+        return "narrator_context_unavailable"
+
+    monkeypatch.setattr(pipeline, "_apply_narrator", fail_narrator)
+
+    result = await pipeline.resolve_action("action-v2")
+
+    assert result == {
+        "status": "rejected",
+        "action_id": "action-v2",
+        "reason": "narrator_context_unavailable",
+    }
+    assert test_db.execute(
+        "SELECT status FROM rooms WHERE room_id = 'room-v2'"
+    ).fetchone()["status"] == "paused"
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'action-v2'"
+    ).fetchone()["status"] == "rejected"
     event_types = [event[1] for event in dispatcher.events]
     assert "s2c_room_paused" in event_types
     assert "s2c_action_exception_requested" not in event_types

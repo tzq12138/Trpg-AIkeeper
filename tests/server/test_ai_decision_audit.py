@@ -8,6 +8,7 @@ import pytest
 from src.server.ai.gateway import AiGateway
 from src.server.engine.ending_conditions import EndingDecision
 from src.server.engine.resolution_pipeline import ResolutionPipeline
+from src.server.engine.state_service import StateService, build_action_conflict_guard
 from src.server.models import MechanicCompileResult, ResolutionResult
 from tests.server.conftest import create_room, setup_auth_test_data
 
@@ -101,6 +102,21 @@ class _NoMutationRuleExecutor:
             isSuccess=True,
             narrative="ok",
             mutations=[],
+            metadata={},
+        )
+
+
+class _LuckMutationRuleExecutor:
+    async def execute(self, intent, _compiled, character, *_args, **_kwargs):
+        return ResolutionResult(
+            actionId=intent.action_id,
+            roomId=character["room_id"],
+            characterId=character["character_id"],
+            isSuccess=True,
+            narrative="luck changed",
+            mutations=[
+                {"op": "replace", "path": "/character/luck", "value": 20},
+            ],
             metadata={},
         )
 
@@ -515,6 +531,65 @@ async def test_resolution_bundle_failure_rolls_back_terminal_action_and_audit(
 
 
 @pytest.mark.asyncio
+async def test_resolution_bundle_failure_rolls_back_non_sanity_state_change(
+    client,
+    test_db,
+    monkeypatch,
+):
+    room_id, action_id = _confirmed_decision_action(client, test_db)
+    action = test_db.execute(
+        "SELECT character_id, intent_type, params FROM actions WHERE action_id = %s",
+        (action_id,),
+    ).fetchone()
+    character_id = action["character_id"]
+    state_service = StateService(test_db)
+    state_service.initialize_character_state(character_id, room_id)
+    params = dict(action["params"])
+    params["_conflictGuard"] = build_action_conflict_guard(
+        test_db,
+        room_id=room_id,
+        actor_character_id=character_id,
+        intent_type=action["intent_type"],
+        params=params,
+        base_state_version=test_db.execute(
+            "SELECT state_version FROM rooms WHERE room_id = %s",
+            (room_id,),
+        ).fetchone()["state_version"],
+    )
+    test_db.execute(
+        "UPDATE actions SET params = %s WHERE action_id = %s",
+        (json.dumps(params), action_id),
+    )
+    test_db.commit()
+    before = state_service.get_runtime_state(character_id, room_id)
+    pipeline = ResolutionPipeline(
+        test_db,
+        compiler=_AutoSuccessCompiler(),
+        rule_executor=_LuckMutationRuleExecutor(),
+        state_service=state_service,
+    )
+
+    def fail_bundle(*_args, **_kwargs):
+        raise RuntimeError("forced-state-bundle-crash")
+
+    monkeypatch.setattr(pipeline, "_persist_resolution_bundle", fail_bundle)
+
+    outcome = await pipeline.resolve_action(action_id)
+
+    after = state_service.get_runtime_state(character_id, room_id)
+    assert after["luck"] == before["luck"]
+    assert outcome == {
+        "status": "awaiting_host_exception",
+        "action_id": action_id,
+        "reason": "state_persistence_failed",
+    }
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = %s",
+        (action_id,),
+    ).fetchone()["status"] == "awaiting_host_exception"
+
+
+@pytest.mark.asyncio
 async def test_effect_event_is_durable_before_post_commit_publish(
     client,
     test_db,
@@ -869,8 +944,17 @@ def test_concurrent_moves_preserve_both_map_updates(client, test_db, monkeypatch
     thread_state = local()
     original_get_state = map_persistence.get_room_map_state
 
-    def synchronize_first_state_read(conn, target_room_id):
-        state = original_get_state(conn, target_room_id)
+    def synchronize_first_state_read(
+        conn,
+        target_room_id,
+        *,
+        for_update=False,
+    ):
+        state = original_get_state(
+            conn,
+            target_room_id,
+            for_update=for_update,
+        )
         if not getattr(thread_state, "read_once", False):
             thread_state.read_once = True
             try:

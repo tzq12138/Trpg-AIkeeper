@@ -611,7 +611,7 @@ class GoldenModuleSuiteRunner:
         headers = {"X-Room-Token": player_token}
         response = self.client.post(
             "/api/player/action-drafts/analyze",
-            json={"declared_intent": "我调查当前场景，并核验已经发现的线索。"},
+            json={"declared_intent": "我检查当前场景中看得见的物品。"},
             headers=headers,
         )
         self._require(response, 200, "analyze player action")
@@ -640,6 +640,29 @@ class GoldenModuleSuiteRunner:
             status = self.conn.execute(
                 "SELECT status FROM actions WHERE action_id = %s", (action_id,)
             ).fetchone()["status"]
+        if status == "awaiting_player_choice":
+            response = self.client.post(
+                f"/api/player/actions/{action_id}/follow-up",
+                json={"decision": "decline"},
+                headers={
+                    **headers,
+                    "Idempotency-Key": f"golden-follow-up-{uuid.uuid4()}",
+                },
+            )
+            self._require(response, 200, "decline failed roll follow-up")
+            status = self.conn.execute(
+                "SELECT status FROM actions WHERE action_id = %s", (action_id,)
+            ).fetchone()["status"]
+            if status == "awaiting_player_choice":
+                asyncio.run(ResolutionPipeline(
+                    self.conn,
+                    compiler=_GoldenSkillCheckCompiler(),
+                    dispatcher=_NoopDispatcher(),
+                    state_service=StateService(self.conn),
+                ).resolve_action(action_id))
+                status = self.conn.execute(
+                    "SELECT status FROM actions WHERE action_id = %s", (action_id,)
+                ).fetchone()["status"]
         if status != "completed":
             action = self.conn.execute(
                 "SELECT result FROM actions WHERE action_id = %s", (action_id,)

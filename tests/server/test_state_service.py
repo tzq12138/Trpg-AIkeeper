@@ -14,6 +14,10 @@ class TestStateService:
 
     def _setup_room_and_char(self, test_db):
         test_db.execute(
+            "INSERT INTO accounts (account_id, username, password_hash) "
+            "VALUES ('acc1', 'state-service-player', 'hash')"
+        )
+        test_db.execute(
             "INSERT INTO rooms (room_id, owner_token, status) VALUES ('r1', 'tok', 'active')"
         )
         test_db.execute(

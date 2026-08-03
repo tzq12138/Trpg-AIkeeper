@@ -837,7 +837,7 @@ class StateService:
             mark_node_explored, host_set_node_visible,
             set_character_position,
         )
-        mc = changes if isinstance(changes, dict) else changes.model_dump()
+        mc = changes if isinstance(changes, dict) else changes.model_dump(by_alias=True)
         if mc.get("nodeExplored"):
             mark_node_explored(self.conn, room_id, mc["nodeExplored"])
         if mc.get("nodeHidden") is not None:

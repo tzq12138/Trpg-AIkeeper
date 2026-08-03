@@ -184,6 +184,7 @@ def test_sensitive_read_requires_bound_grant_and_writes_access_audit(client, tes
         },
     )
     assert grant_response.status_code == 201
+    assert grant_response.headers["cache-control"] == "no-store"
     grant = grant_response.json()["grant"]
 
     denied = client.post(

@@ -6,6 +6,7 @@ from ..models import EngineEvent, HostPublicSceneTimeUpdate, RevealTransaction
 from .host_store import HostStore, HOST_VISIBLE_EVENTS, PRIVATE_EVENTS
 from .public_stage import build_public_presentation_projection, build_public_stage_projection
 from .ws_manager import manager as ws_manager
+from ..runtime_lifecycle import lifecycle_guard
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,11 @@ def _verify_owner(request: Request, room_id: str) -> dict:
                 logger.info("_verify_owner: owner account=%s room=%s", account.get("username"), room_id)
                 return room
     except Exception as exc:
-        logger.warning("_verify_owner: account auth lookup failed room=%s: %s", room_id, exc)
+        logger.warning(
+            "_verify_owner: account auth lookup failed room=%s error_type=%s",
+            room_id,
+            type(exc).__name__,
+        )
 
     logger.warning("_verify_owner: denied room=%s (token=%s, account failed)", room_id, bool(token))
     raise HTTPException(403, "不是房间所有者")
@@ -674,8 +679,12 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
             data = await websocket.receive_text()
             try:
                 event_data = json.loads(data)
-            except Exception as e:
-                logger.error("Host %s bad JSON: %s", room_id, e)
+            except Exception as exc:
+                logger.error(
+                    "Host %s bad JSON error_type=%s",
+                    room_id,
+                    type(exc).__name__,
+                )
                 continue
 
             msg_type = event_data.get("type", "")
@@ -706,8 +715,12 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
 
             try:
                 event = EngineEvent(**event_data)
-            except Exception as e:
-                logger.error("Host %s bad event: %s", room_id, e)
+            except Exception as exc:
+                logger.error(
+                    "Host %s bad event error_type=%s",
+                    room_id,
+                    type(exc).__name__,
+                )
                 continue
 
             if not store.route_event(event):
@@ -844,8 +857,12 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
 
     except WebSocketDisconnect:
         logger.info("Host disconnected from room %s", room_id)
-    except Exception as e:
-        logger.error("Host %s error: %s", room_id, e)
+    except Exception as exc:
+        logger.error(
+            "Host %s error_type=%s",
+            room_id,
+            type(exc).__name__,
+        )
     finally:
         ws_manager.disconnect(room_id, "host", websocket=websocket)
 
@@ -1097,6 +1114,19 @@ async def host_set_region_visibility(request: Request, room_id: str, region_id: 
 
 @router.post("/{room_id}/map/move-character")
 async def host_force_move(request: Request, room_id: str):
+    body = await request.json()
+    character_id = body.get("character_id", body.get("characterId", ""))
+    target_node_id = body.get("node_id", body.get("nodeId", ""))
+    if not character_id or not target_node_id:
+        raise HTTPException(400, "character_id and node_id are required")
+    async with lifecycle_guard(
+        [f"room:{room_id}", f"character:{character_id}"],
+        conn=request.app.state.db,
+    ):
+        return await _host_force_move_locked(request, room_id)
+
+
+async def _host_force_move_locked(request: Request, room_id: str):
     """Host force-moves a character to a node. Requires reason. Validates ownership."""
     owner_info = _verify_owner(request, room_id)
     body = await request.json()

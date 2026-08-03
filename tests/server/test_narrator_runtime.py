@@ -1554,3 +1554,73 @@ async def test_turn_settlement_routes_resolution_exception_to_host_queue(client,
     event_types = [event[1] for event in app.state.dispatcher.events]
     assert "s2c_action_exception_requested" in event_types
     assert "s2c_ai_recovery_required" in event_types
+
+
+@pytest.mark.asyncio
+async def test_ai_only_turn_settlement_pauses_on_resolution_exception_without_host_queue(
+    client,
+    test_db,
+):
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    package_id = f"narrator-runtime-{room_id}"
+    package = test_db.execute(
+        "SELECT runtime_package FROM runtime_package_versions "
+        "WHERE runtime_package_version_id = %s",
+        (package_id,),
+    ).fetchone()["runtime_package"]
+    package = dict(package)
+    package["runtime_policy"] = {"session_mode": "ai_only"}
+    test_db.execute(
+        "UPDATE runtime_package_versions SET runtime_package = %s "
+        "WHERE runtime_package_version_id = %s",
+        (json.dumps(package, ensure_ascii=False), package_id),
+    )
+    test_db.execute(
+        "UPDATE rooms SET status = 'active', runtime_package_version_id = %s "
+        "WHERE room_id = %s",
+        (package_id, room_id),
+    )
+    test_db.execute(
+        "INSERT INTO room_turns (turn_id, room_id, turn_index, status) "
+        "VALUES ('turn-ai-only-failure', %s, 1, 'collecting')",
+        (room_id,),
+    )
+    test_db.execute(
+        "INSERT INTO actions "
+        "(action_id, room_id, character_id, draft_id, idempotency_key, "
+        "turn_id, intent_type, declared_intent, params, status) VALUES "
+        "('ai-only-failed-action', %s, %s, 'ai-only-failed-draft', "
+        "'ai-only-failed-key', 'turn-ai-only-failure', 'dialogue', "
+        "'I look around', '{}', 'queued')",
+        (room_id, character_id),
+    )
+    test_db.commit()
+    dispatcher = _RecordingDispatcher()
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            db=test_db,
+            pg_db=None,
+            pipeline=_FailingTurnPipeline(test_db),
+            dispatcher=dispatcher,
+        )
+    )
+
+    await _settle_turn_background(app, room_id, "turn-ai-only-failure")
+
+    action = test_db.execute(
+        "SELECT status, result FROM actions "
+        "WHERE action_id = 'ai-only-failed-action'"
+    ).fetchone()
+    room = test_db.execute(
+        "SELECT status, integrity_reason FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    assert action["status"] == "rejected"
+    assert action["result"] == {"reason": "resolution_pipeline_error"}
+    assert room == {
+        "status": "paused",
+        "integrity_reason": "resolution_pipeline_error",
+    }
+    event_types = [event[1] for event in dispatcher.events]
+    assert "s2c_room_paused" in event_types
+    assert "s2c_action_exception_requested" not in event_types

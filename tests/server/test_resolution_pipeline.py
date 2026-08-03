@@ -1,5 +1,6 @@
 import json
 import random
+from contextlib import contextmanager
 
 import pytest
 
@@ -10,8 +11,9 @@ from src.server.models import MechanicCompileResult, PlayerIntent, ResolutionRes
 
 
 class Rows:
-    def __init__(self, rows=None):
+    def __init__(self, rows=None, *, rowcount=None):
         self.rows = rows or []
+        self.rowcount = len(self.rows) if rowcount is None else rowcount
 
     def fetchone(self):
         return self.rows[0] if self.rows else None
@@ -89,7 +91,7 @@ class FakeConn:
             "SELECT scenario_version_id, runtime_package_version_id FROM rooms WHERE room_id"
         ):
             return Rows([self.rooms[params[0]]] if params[0] in self.rooms else [])
-        if normalized.startswith("SELECT state_version FROM rooms WHERE room_id"):
+        if normalized.startswith("SELECT state_version") and "FROM rooms WHERE room_id" in normalized:
             return Rows([self.rooms[params[0]]] if params[0] in self.rooms else [])
         if normalized.startswith("SELECT * FROM scenarios WHERE scenario_id"):
             return Rows([self.scenarios[params[0]]] if params[0] in self.scenarios else [])
@@ -168,6 +170,10 @@ class FakeConn:
             return Rows([])
         if normalized.startswith("SELECT COUNT(*) AS count FROM action_consents"):
             return Rows([{"count": 0}])
+        if normalized.startswith("SELECT d.decision_audit_required FROM actions"):
+            return Rows([{"decision_audit_required": False}])
+        if normalized.startswith("UPDATE ai_call_logs SET"):
+            return Rows(rowcount=0)
         if normalized.startswith("SELECT * FROM character_runtime_state WHERE character_id"):
             return Rows([])  # No existing runtime state
         if normalized.startswith("INSERT INTO character_runtime_state"):
@@ -179,6 +185,10 @@ class FakeConn:
 
     def commit(self):
         pass
+
+    @contextmanager
+    def transaction(self):
+        yield self
 
 
 class FakeDispatcher:
@@ -225,7 +235,7 @@ class GatewayReturningKpResponse:
 
 class FailingRuleExecutor:
     async def execute(self, *args, **kwargs):
-        raise RuntimeError("handler failed")
+        raise RuntimeError("handler failed with SECRET_RULE_INPUT")
 
 
 class CompositeRuleExecutor:
@@ -393,7 +403,7 @@ async def test_pipeline_includes_skill_check_result_in_action_completed_projecti
 
 
 @pytest.mark.asyncio
-async def test_pipeline_rejects_when_rule_handler_fails_without_partial_projection():
+async def test_pipeline_rejects_when_rule_handler_fails_without_partial_projection(caplog):
     conn = FakeConn()
     dispatcher = FakeDispatcher()
     pipeline = ResolutionPipeline(
@@ -407,7 +417,12 @@ async def test_pipeline_rejects_when_rule_handler_fails_without_partial_projecti
 
     assert result["status"] == "rejected"
     assert conn.actions["act-1"]["status"] == "rejected"
-    assert conn.actions["act-1"]["result"]["reason"] == "resolution failed: handler failed"
+    assert result["reason"] == "resolution_failed"
+    assert conn.actions["act-1"]["result"]["reason"] == "resolution_failed"
+    assert "SECRET_RULE_INPUT" not in json.dumps(
+        {"result": result, "action": conn.actions["act-1"], "events": dispatcher.events}
+    )
+    assert "SECRET_RULE_INPUT" not in caplog.text
     event_types = [event[1] for event in dispatcher.events]
     assert event_types == ["s2c_action_completed"]
 
