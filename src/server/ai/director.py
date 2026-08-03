@@ -361,6 +361,16 @@ def _compact_runtime_package(
         str(edge.get("to_scene_id") or "").strip()
         for edge in generic_edges
     )
+    visible_scene_keys.update(
+        str(node.get("target_scene_id") or node.get("targetSceneId") or "").strip()
+        for node in progression_rules.get("recovery_nodes") or []
+        if isinstance(node, dict)
+        and str(current_scene.get("current_scene") or "")
+        in {
+            str(value)
+            for value in (node.get("from_scene_ids") or node.get("fromSceneIds") or [])
+        }
+    )
     visible_scene_keys.discard("")
 
     def matching_items(

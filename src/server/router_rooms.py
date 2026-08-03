@@ -866,6 +866,38 @@ async def _publish_committed_room_event(
         )
 
 
+@router.get("/{room_id}/ai-provider/status")
+async def get_room_ai_provider_status(request: Request, room_id: str):
+    conn = request.app.state.db
+    _verify_owner_or_admin(request, room_id, conn)
+    room = conn.execute(
+        "SELECT integrity_status, integrity_reason FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    from .ai.provider_health import current_runtime_binding
+
+    binding = current_runtime_binding(conn, room_id)
+    health = conn.execute(
+        "SELECT consecutive_failures, last_error_category "
+        "FROM room_provider_health WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    return {
+        "room_id": room_id,
+        "status": str(room.get("integrity_status") or "healthy"),
+        "reason_code": str(room.get("integrity_reason") or ""),
+        "primary_provider": str(binding.get("primary_provider") or ""),
+        "primary_model": str(binding.get("primary_model") or ""),
+        "binding_revision": int(binding.get("binding_revision") or 1),
+        "consecutive_failures": int(
+            health.get("consecutive_failures") or 0 if health else 0
+        ),
+        "last_error_category": str(
+            health.get("last_error_category") or "" if health else ""
+        ),
+    }
+
+
 @router.post("/{room_id}/ai-provider/recover")
 async def recover_room_ai_provider(request: Request, room_id: str):
     conn = request.app.state.db

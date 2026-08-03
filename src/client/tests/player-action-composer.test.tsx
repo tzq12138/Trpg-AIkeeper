@@ -112,6 +112,52 @@ describe('PlayerActionComposer', () => {
     expect(html).toContain('记录发言');
   });
 
+  test('offers an affected-player consent target for combat actions', () => {
+    const html = renderToStaticMarkup(
+      <PlayerActionComposer
+        inputText="我限制苏眠继续行动"
+        inputMode="combat_action"
+        phase="typing"
+        collaborationParticipants={[
+          { characterId: 'character-he', playerName: 'P3-贺北' },
+          { characterId: 'character-su', playerName: 'P4-苏眠' },
+        ]}
+        currentCharacterId="character-he"
+        onInputChange={() => {}}
+        onAnalyze={() => {}}
+        onConfirm={() => {}}
+        onDiscard={() => {}}
+        onCancelAction={() => {}}
+      />,
+    );
+
+    expect(html).toContain('受影响玩家（可选）');
+    expect(html).toContain('P4-苏眠');
+    expect(html).not.toContain('value="character-he"');
+    expect(html).toContain('限制行动（需对方确认）');
+  });
+
+  test('offers character skills through the authoritative action preview flow', () => {
+    const html = renderToStaticMarkup(
+      <PlayerActionComposer
+        inputText="我尝试帮助受伤的保安"
+        inputMode="action"
+        phase="typing"
+        availableSkills={{ 急救: 35, 说服: 60 }}
+        onInputChange={() => {}}
+        onAnalyze={() => {}}
+        onConfirm={() => {}}
+        onDiscard={() => {}}
+        onCancelAction={() => {}}
+      />,
+    );
+
+    expect(html).toContain('技能检定（可选）');
+    expect(html).toContain('急救（35%）');
+    expect(html).toContain('说服（60%）');
+    expect(html).toContain('不指定技能');
+  });
+
   test('disables stateful input during an anonymous safety pause', () => {
     const html = renderToStaticMarkup(
       <PlayerActionComposer

@@ -318,6 +318,29 @@ class LocalFallbackProvider(BaseAiProvider):
             return {"scenes": [], "npcs": [], "clues": [], "truth": {}, "endings": []}
         elif task_type == "compile_mechanic":
             return context.get("fallback", {"triggeredMechanic": "dialogue"})
+        elif task_type == "analyze_director_action":
+            local_analysis = (
+                context.get("local_analysis")
+                if isinstance(context.get("local_analysis"), dict)
+                else {}
+            )
+            return {
+                "interpreted_intent": str(
+                    local_analysis.get("understanding_summary")
+                    or context.get("declared_intent")
+                    or local_analysis.get("declared_intent")
+                    or ""
+                ),
+                "intent_type": str(
+                    local_analysis.get("intent_type")
+                    or context.get("intent_type")
+                    or "dialogue"
+                ),
+                "confidence": float(local_analysis.get("confidence") or 0.6),
+                "requires_player_clarification": False,
+                "requires_host_exception": False,
+                "narration_mode": "local_verified",
+            }
         elif task_type == "query_knowledge":
             return {"answer": "暂无可用资料。请确认 Hermes 服务已启动后重试。", "citations": [], "confidence": "low"}
         elif task_type == "health_check":

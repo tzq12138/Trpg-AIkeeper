@@ -50,6 +50,13 @@ export function canSendWhileStatefulActionBusy(
   return !isStatefulPlayerInputMode(mode, speechRoutesToDialogue);
 }
 
+export function explicitIntentTypeForInputMode(mode: PlayerInputMode): string | undefined {
+  if (mode === 'map_move') return 'move';
+  if (mode === 'item_action') return 'use_item';
+  if (mode === 'combat_action') return 'combat_action';
+  return undefined;
+}
+
 export function inputModeSubmitLabel(
   mode: PlayerInputMode,
   speechRoutesToDialogue = false,

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   canSendWhileStatefulActionBusy,
   confirmationImpactSummary,
+  explicitIntentTypeForInputMode,
   inputModeSubmitLabel,
   recordedInputSummary,
 } from '../src/shared/player-input-modes';
@@ -54,5 +55,12 @@ describe('recorded input summaries', () => {
     expect(confirmationImpactSummary('speech', true)).toBe(
       '确认后作为角色对话处理，不会先作为队伍讨论发送。',
     );
+  });
+
+  test('maps explicit mechanical input modes to authoritative intent types', () => {
+    expect(explicitIntentTypeForInputMode('map_move')).toBe('move');
+    expect(explicitIntentTypeForInputMode('item_action')).toBe('use_item');
+    expect(explicitIntentTypeForInputMode('combat_action')).toBe('combat_action');
+    expect(explicitIntentTypeForInputMode('action')).toBeUndefined();
   });
 });

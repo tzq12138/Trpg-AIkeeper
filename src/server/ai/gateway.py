@@ -862,7 +862,17 @@ class AiGateway:
         if required_set:
             providers = [provider for provider in providers if provider.supports(required_set)]
         if disable_local_fallback:
-            providers = [provider for provider in providers if provider.name != "local"]
+            explicit_local_binding = False
+            if room_id and self.db:
+                from .provider_health import current_runtime_binding
+
+                binding = current_runtime_binding(self.db, room_id)
+                explicit_local_binding = bool(
+                    binding.get("locked") is True
+                    and str(binding.get("primary_provider") or "") == "local"
+                )
+            if not explicit_local_binding:
+                providers = [provider for provider in providers if provider.name != "local"]
         tracked_provider = None
         tracked_binding_id = ""
         tracked_failure = ""

@@ -277,12 +277,18 @@ export function HostDirectorConsole({
   );
 }
 
+export function readOnlyListItemKey(item: string, index: number) {
+  return `${index}:${item}`;
+}
+
 function ReadOnlyList({ title, items }: { title: string; items: string[] }) {
   return (
     <div className="bh-muted-box">
       <strong>{title}</strong>
       {items.length ? (
-        <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul>
+        <ul>{items.map((item, index) => (
+          <li key={readOnlyListItemKey(item, index)}>{item}</li>
+        ))}</ul>
       ) : <p>暂无</p>}
     </div>
   );
@@ -555,6 +561,85 @@ export function HostSafetyRequests({
   );
 }
 
+export interface HostProviderStatus {
+  status: 'healthy' | 'paused_provider' | 'read_only_recovery';
+  reasonCode: string;
+  primaryProvider: string;
+  primaryModel: string;
+  bindingRevision: number;
+  consecutiveFailures: number;
+  lastErrorCategory: string;
+}
+
+export function HostProviderRecovery({
+  status,
+  pendingAction,
+  onRecover,
+  onSwitchToLocal,
+}: {
+  status: HostProviderStatus | null;
+  pendingAction: 'recover' | 'switch' | null;
+  onRecover: (reason: string) => void;
+  onSwitchToLocal: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState('');
+  const [confirmed, setConfirmed] = useState(false);
+  const paused = status?.status === 'paused_provider';
+  const canSubmit = Boolean(reason.trim() && confirmed && !pendingAction);
+
+  return (
+    <section className="bh-panel" aria-label="AI 服务恢复">
+      <span className="bh-eyebrow">AI RECOVERY</span>
+      <h2 className="bh-panel-title">AI 服务恢复</h2>
+      <p className="bh-subtitle">
+        {paused
+          ? `机械行动已暂停；连续失败 ${status?.consecutiveFailures || 0} 次。`
+          : '当前运行绑定正常。'}
+      </p>
+      {status && (
+        <p className="bh-hint">
+          绑定版本 {status.bindingRevision} · {status.primaryModel || status.primaryProvider || '未命名服务'}
+        </p>
+      )}
+      <label className="bh-field-label" htmlFor="provider-recovery-reason">恢复原因</label>
+      <textarea
+        id="provider-recovery-reason"
+        value={reason}
+        maxLength={500}
+        onChange={(event) => setReason(event.target.value)}
+        placeholder="说明恢复或切换原因"
+      />
+      <label className="bh-checkbox-row">
+        <input
+          type="checkbox"
+          checked={confirmed}
+          onChange={(event) => setConfirmed(event.target.checked)}
+        />
+        我确认本次恢复操作
+      </label>
+      <div className="bh-action-row bh-action-row--responsive">
+        <button
+          className="bh-button"
+          type="button"
+          disabled={!paused || !canSubmit}
+          onClick={() => onRecover(reason.trim())}
+        >
+          {pendingAction === 'recover' ? '恢复中...' : '恢复当前服务'}
+        </button>
+        <button
+          className="bh-button bh-button--yellow"
+          type="button"
+          disabled={!canSubmit || status?.primaryProvider === 'local'}
+          onClick={() => onSwitchToLocal(reason.trim())}
+        >
+          {pendingAction === 'switch' ? '切换中...' : '切换到本地确定性'}
+        </button>
+      </div>
+      <p className="bh-hint">切换会创建新的不可变运行绑定版本并写入审计，不会改写已完成行动。</p>
+    </section>
+  );
+}
+
 export default function HostConsole({
   roomId,
   initialTab = 'narrative',
@@ -581,6 +666,9 @@ export default function HostConsole({
   const [safetyRefresh, setSafetyRefresh] = useState(0);
   const [presentation, setPresentation] = useState<HostPresentationState | null>(null);
   const [presentationCommand, setPresentationCommand] = useState<HostPresentationCommand | null>(null);
+  const [providerStatus, setProviderStatus] = useState<HostProviderStatus | null>(null);
+  const [providerAction, setProviderAction] = useState<'recover' | 'switch' | null>(null);
+  const [providerRefresh, setProviderRefresh] = useState(0);
 
   const handleEvent = useCallback((data: Record<string, unknown>) => {
     if (data.type === 'host_state_update' && data.hud) {
@@ -629,6 +717,8 @@ export default function HostConsole({
       setSafetyRefresh((previous) => previous + 1);
     } else if (data.type === 's2c_action_review_requested' || data.type === 'action_review_requested') {
       void loadActionReviews();
+    } else if (data.type === 's2c_runtime_integrity_changed') {
+      setProviderRefresh((previous) => previous + 1);
     } else if (data.type === 'map_updated' || data.type === 'player_moved' || data.type === 'map_revealed') {
       setMapRefresh((prev) => prev + 1);
     }
@@ -718,6 +808,36 @@ export default function HostConsole({
     const timer = window.setInterval(() => void loadProjectionRecoveries(), 5000);
     return () => window.clearInterval(timer);
   }, [loadProjectionRecoveries]);
+
+  const loadProviderStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/rooms/${roomId}/ai-provider/status`, {
+        headers: buildHostHeaders(
+          getSlotValue('owner_token') || '',
+          getSlotValue('account_token') || '',
+        ),
+      });
+      if (!response.ok) return;
+      const payload = await response.json() as Record<string, unknown>;
+      setProviderStatus({
+        status: String(payload.status || 'healthy') as HostProviderStatus['status'],
+        reasonCode: String(payload.reason_code || ''),
+        primaryProvider: String(payload.primary_provider || ''),
+        primaryModel: String(payload.primary_model || ''),
+        bindingRevision: Number(payload.binding_revision || 1),
+        consecutiveFailures: Number(payload.consecutive_failures || 0),
+        lastErrorCategory: String(payload.last_error_category || ''),
+      });
+    } catch {
+      return;
+    }
+  }, [roomId]);
+
+  useEffect(() => {
+    void loadProviderStatus();
+    const timer = window.setInterval(() => void loadProviderStatus(), 5000);
+    return () => window.clearInterval(timer);
+  }, [loadProviderStatus, providerRefresh]);
 
   const loadPresentation = useCallback(async () => {
     try {
@@ -832,6 +952,39 @@ export default function HostConsole({
       setReplayingProjectionActionId(null);
     }
   }, [loadProjectionRecoveries, roomId]);
+
+  const handleProviderAction = useCallback(async (
+    action: 'recover' | 'switch',
+    reason: string,
+  ) => {
+    setProviderAction(action);
+    try {
+      const response = await fetch(`/api/rooms/${roomId}/ai-provider/${action}`, {
+        method: 'POST',
+        headers: buildHostHeaders(
+          getSlotValue('owner_token') || '',
+          getSlotValue('account_token') || '',
+          true,
+        ),
+        body: JSON.stringify({
+          confirm: true,
+          reason,
+          ...(action === 'switch' ? { provider_config_id: 'builtin:local' } : {}),
+        }),
+      });
+      if (!response.ok) {
+        setHudError(action === 'switch'
+          ? '本地确定性服务切换失败——请检查房间运行状态。'
+          : '当前 AI 服务尚未恢复健康。');
+        return;
+      }
+      await loadProviderStatus();
+    } catch {
+      setHudError('网络错误——无法恢复 AI 服务。');
+    } finally {
+      setProviderAction(null);
+    }
+  }, [loadProviderStatus, roomId]);
 
   const handlePresentationCommand = useCallback(async (command: HostPresentationCommand) => {
     setPresentationCommand(command);
@@ -974,6 +1127,12 @@ export default function HostConsole({
             snapshot={directorSnapshot}
             onPause={() => void handlePause()}
             onTakeOverException={() => setActiveTab('logs')}
+          />
+          <HostProviderRecovery
+            status={providerStatus}
+            pendingAction={providerAction}
+            onRecover={(reason) => void handleProviderAction('recover', reason)}
+            onSwitchToLocal={(reason) => void handleProviderAction('switch', reason)}
           />
           <HostExceptionQueue
             items={actionExceptions}

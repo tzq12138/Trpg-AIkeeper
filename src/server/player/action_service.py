@@ -13,6 +13,7 @@ from ..models import (
     ActionStatusEventDTO,
     IntentContractDTO,
 )
+from ..engine.action_consent import PVP_EFFECTS
 from ..events.events_registry import event_type
 
 
@@ -194,6 +195,21 @@ def analyze_action_draft(body: ActionDraftAnalyzeRequest) -> ActionDraftDTO:
         ]
         confidence = 0.7
         summary_prefix = "你想根据角色背景主张一件物品"
+    elif (
+        body.intent_type == "combat_action"
+        and isinstance(body.params.get("targetId"), str)
+        and body.params["targetId"].strip()
+        and body.params.get("pvpEffect") in PVP_EFFECTS
+    ):
+        intent_type = "combat_action"
+        risk = "high"
+        pvp_effect = str(body.params["pvpEffect"])
+        requirements = {
+            "damage": ["attack", "state_change"],
+            "resource_take": ["resource_change", "state_change"],
+        }.get(pvp_effect, ["state_change"])
+        confidence = 0.95
+        summary_prefix = "你想对指定调查员施加需要对方同意的机械影响"
     elif any(word in text for word in _LUCK_SPEND_WORDS):
         intent_type = _semantic_intent_type(body.intent_type, "skill_check")
         risk = "high"
@@ -209,6 +225,22 @@ def analyze_action_draft(body: ActionDraftAnalyzeRequest) -> ActionDraftDTO:
         requirements = ["pushed_roll", "irreversible_consequence"]
         confidence = 0.92
         summary_prefix = "你想孤注一掷重新进行失败判定"
+    elif (
+        body.intent_type == "skill_check"
+        and isinstance(body.params.get("skillName"), str)
+        and body.params["skillName"].strip()
+    ):
+        intent_type = "skill_check"
+        risk = "medium"
+        requirements = ["dice_roll"]
+        suggested_skill = body.params["skillName"].strip()[:100]
+        difficulty = (
+            str(body.params.get("difficulty"))
+            if body.params.get("difficulty") in {"regular", "hard", "extreme"}
+            else "regular"
+        )
+        confidence = 0.95
+        summary_prefix = f"你想进行一次{suggested_skill}检定"
     elif any(word in text for word in _ATTACK_WORDS):
         intent_type = _semantic_intent_type(body.intent_type, "combat_action")
         risk = "high"
@@ -1024,6 +1056,7 @@ def revise_action_draft(conn, character: dict, draft_id: str, body: ActionDraftU
             )
         ).model_copy(update={"draft_id": draft_id, "revision": revision})
         analyzed = _preserve_collaboration_draft_guards(analyzed, revision_params)
+        analyzed = apply_room_runtime_policy(tx, character["room_id"], analyzed)
         payload = analyzed.model_dump(mode="json")
         tx.execute(
             "UPDATE action_drafts SET base_state_version = %s, intent_type = %s, declared_intent = %s, params = %s, status = %s, "
@@ -1301,7 +1334,7 @@ def confirm_action_draft(
             else:
                 submitted = tx.execute(
                     "SELECT action_id FROM actions WHERE room_id = %s AND character_id = %s "
-                    "AND status NOT IN ('completed', 'rejected', 'canceled', 'timeout')",
+                    "AND status NOT IN ('completed', 'resolved', 'rejected', 'canceled', 'timeout')",
                     (character["room_id"], character["character_id"]),
                 ).fetchone()
             if submitted:

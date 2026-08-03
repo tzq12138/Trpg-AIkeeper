@@ -369,16 +369,19 @@ def switch_room_ai_runtime(
     ).fetchone()
     if not room:
         raise ValueError("room_not_found")
-    configured = executor.execute(
-        "SELECT provider_config_id, api_base_url, protocol, model, "
-        "supports_image, api_key_ciphertext, test_status "
-        "FROM ai_provider_configs WHERE provider_config_id = %s",
-        (provider_config_id,),
-    ).fetchone()
-    if not configured:
-        raise ValueError("provider_not_found")
-    if configured.get("test_status") != "passed":
-        raise ValueError("provider_health_check_required")
+    use_builtin_local = provider_config_id == "builtin:local"
+    configured = None
+    if not use_builtin_local:
+        configured = executor.execute(
+            "SELECT provider_config_id, api_base_url, protocol, model, "
+            "supports_image, api_key_ciphertext, test_status "
+            "FROM ai_provider_configs WHERE provider_config_id = %s",
+            (provider_config_id,),
+        ).fetchone()
+        if not configured:
+            raise ValueError("provider_not_found")
+        if configured.get("test_status") != "passed":
+            raise ValueError("provider_health_check_required")
 
     row = executor.execute(
         "SELECT state FROM host_states WHERE room_id = %s FOR UPDATE",
@@ -396,11 +399,17 @@ def switch_room_ai_runtime(
         **previous,
         "binding_id": f"binding:{uuid.uuid4().hex}",
         "binding_revision": next_revision,
-        "primary_provider": f"configured:{provider_config_id}",
-        "primary_model": str(configured["model"]),
-        "configured_provider_id": provider_config_id,
-        "configured_provider_signature": configured_provider_signature(
-            dict(configured)
+        "primary_provider": (
+            "local" if use_builtin_local else f"configured:{provider_config_id}"
+        ),
+        "primary_model": (
+            "deterministic-local" if use_builtin_local else str(configured["model"])
+        ),
+        "configured_provider_id": "" if use_builtin_local else provider_config_id,
+        "configured_provider_signature": (
+            ""
+            if use_builtin_local
+            else configured_provider_signature(dict(configured))
         ),
         "pinned_at": datetime.now(timezone.utc).isoformat(),
     }

@@ -83,6 +83,7 @@ import {
   hasPendingCocFollowUp,
   mergeAuthoritativeReceipt,
   AUTO_CONFIRM_GRACE_MS,
+  shouldPollActionReceipt,
   shouldAutoConfirmDraft,
   shouldUsePlayerRuntime,
 } from '../shared/player-action-controller';
@@ -543,6 +544,27 @@ export default function PlayerActionPage({
       });
     return () => { cancelled = true; };
   }, [localDraftKey, roomId]);
+
+  useEffect(() => {
+    const actionId = receipt?.action_id;
+    if (!actionId || !shouldPollActionReceipt(receipt)) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const incoming = await getActionReceipt(actionId);
+        if (cancelled) return;
+        setReceipt((current) => mergeAuthoritativeReceipt(current, incoming));
+        setActionStatus(incoming.status);
+      } catch {
+        // WebSocket events may still deliver the same update; retry on the next tick.
+      }
+    };
+    const timer = window.setInterval(() => void load(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [receipt?.action_id, receipt?.status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1607,7 +1629,12 @@ interface ActionPanelProps {
   onInputTextChange: (value: string) => void;
   onToggleCombatTarget: (targetLabel: string) => void;
   onInputModeChange: (mode: PlayerInputMode) => void;
-  onSubmitAction: (text?: string) => void;
+  onSubmitAction: (
+    text?: string,
+    intentType?: string,
+    params?: Record<string, unknown>,
+    mode?: PlayerInputMode,
+  ) => void;
   onConfirmAction: (selectedSkill?: string, compositeStepOrder?: string[]) => void;
   onUpdateCollaborationDependencies: (characterIds: string[]) => void;
   onDiscardAction: () => void;
@@ -1998,9 +2025,15 @@ function ActionPanel({
         speechRoutesToDialogue={speechRoutesToDialogue}
         collaborationParticipants={collaborationParticipants}
         currentCharacterId={character?.character_id}
+        availableSkills={character?.skills}
         onInputChange={onInputTextChange}
         onInputModeChange={onInputModeChange}
-        onAnalyze={() => onSubmitAction()}
+        onAnalyze={(intentType, params) => onSubmitAction(
+          undefined,
+          intentType,
+          params,
+          inputMode,
+        )}
         onConfirm={onConfirmAction}
         onUpdateCollaborationDependencies={onUpdateCollaborationDependencies}
         onDiscard={onDiscardAction}

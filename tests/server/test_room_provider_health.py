@@ -207,6 +207,39 @@ def test_paused_binding_recovery_requires_health_check_and_writes_audit(
     }
 
 
+def test_owner_can_read_sanitized_room_provider_status(client, test_db):
+    room, binding = _setup_bound_room(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET integrity_status = 'paused_provider', "
+        "integrity_reason = 'provider_unavailable' WHERE room_id = %s",
+        (room["room_id"],),
+    )
+    test_db.execute(
+        "INSERT INTO room_provider_health "
+        "(room_id, binding_id, consecutive_failures, status, last_error_category) "
+        "VALUES (%s, %s, 3, 'paused', 'timeout')",
+        (room["room_id"], binding["binding_id"]),
+    )
+    test_db.commit()
+
+    response = client.get(
+        f"/api/rooms/{room['room_id']}/ai-provider/status",
+        headers={"X-Owner-Token": room["owner_token"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "room_id": room["room_id"],
+        "status": "paused_provider",
+        "reason_code": "provider_unavailable",
+        "primary_provider": "pinned",
+        "primary_model": "model-a",
+        "binding_revision": 1,
+        "consecutive_failures": 3,
+        "last_error_category": "timeout",
+    }
+
+
 def test_explicit_provider_switch_retains_old_binding_and_notifies_party(
     client,
     test_db,
@@ -269,3 +302,42 @@ def test_explicit_provider_switch_retains_old_binding_and_notifies_party(
         "reasonCode": "provider_binding_switched",
         "bindingRevision": 2,
     }
+
+
+def test_explicit_provider_switch_supports_builtin_local_fallback(
+    client,
+    test_db,
+):
+    room, old_binding = _setup_bound_room(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET integrity_status = 'paused_provider', "
+        "integrity_reason = 'provider_unavailable' WHERE room_id = %s",
+        (room["room_id"],),
+    )
+    test_db.commit()
+
+    response = client.post(
+        f"/api/rooms/{room['room_id']}/ai-provider/switch",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={
+            "provider_config_id": "builtin:local",
+            "confirm": True,
+            "reason": "Use deterministic local recovery",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    current = test_db.execute(
+        "SELECT state FROM host_states WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state"]["ai_config"]["runtime_binding"]
+    assert current["binding_revision"] == 2
+    assert current["binding_id"] != old_binding["binding_id"]
+    assert current["primary_provider"] == "local"
+    assert current["primary_model"] == "deterministic-local"
+    assert current["configured_provider_id"] == ""
+    assert current["configured_provider_signature"] == ""
+    assert test_db.execute(
+        "SELECT integrity_status FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["integrity_status"] == "healthy"

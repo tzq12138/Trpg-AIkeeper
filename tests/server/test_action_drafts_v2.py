@@ -1110,6 +1110,106 @@ def test_ai_only_ambiguous_fallback_requires_player_clarification_without_host_q
     ).fetchone()["count"] == 0
 
 
+def test_ai_only_explicit_pvp_effect_routes_directly_to_player_consent(
+    client,
+    test_db,
+):
+    room_id, _, player_token = _setup_player(client, test_db)
+    target = client.post(f"/api/player/rooms/{room_id}/join").json()
+    _bind_ai_only_runtime(test_db, room_id)
+    headers = {"X-Room-Token": player_token}
+
+    analyzed = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={
+            "declared_intent": "我限制另一名调查员继续行动",
+            "intent_type": "combat_action",
+            "params": {
+                "targetId": target["character_id"],
+                "pvpEffect": "restrict_action",
+            },
+        },
+    )
+
+    assert analyzed.status_code == 200, analyzed.text
+    draft = analyzed.json()
+    assert draft["status"] == "awaiting_confirmation"
+    assert draft["resolution_route"] == "local"
+    assert draft["params"] == {
+        "targetId": target["character_id"],
+        "pvpEffect": "restrict_action",
+    }
+
+    confirmed = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "ai-only-explicit-pvp"},
+        json={"confirmations": draft["confirmation_requirements"]},
+    )
+
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["status"] == "awaiting_player_consent"
+
+
+def test_ai_only_explicit_skill_selection_routes_to_local_confirmation(
+    client,
+    test_db,
+):
+    room_id, _, player_token = _setup_player(client, test_db)
+    _bind_ai_only_runtime(test_db, room_id)
+
+    response = client.post(
+        "/api/player/action-drafts/analyze",
+        headers={"X-Room-Token": player_token},
+        json={
+            "declared_intent": "我尝试帮助受伤的保安",
+            "intent_type": "skill_check",
+            "params": {"skillName": "急救"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    draft = response.json()
+    assert draft["status"] == "awaiting_confirmation"
+    assert draft["resolution_route"] == "local"
+    assert draft["suggested_skill"] == "急救"
+    assert draft["confirmation_requirements"] == ["dice_roll"]
+    assert draft["params"] == {"skillName": "急救"}
+
+
+def test_ai_only_clarification_revision_cannot_reopen_host_exception_route(
+    client,
+    test_db,
+):
+    room_id, _, player_token = _setup_player(client, test_db)
+    _bind_ai_only_runtime(test_db, room_id)
+    headers = {"X-Room-Token": player_token}
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我已经拿到那把维护钥匙"},
+    ).json()
+
+    response = client.patch(
+        f"/api/player/action-drafts/{draft['draft_id']}",
+        headers=headers,
+        json={"declared_intent": "ask_about_possession"},
+    )
+
+    assert response.status_code == 200
+    revised = response.json()
+    assert revised["revision"] == 2
+    assert revised["status"] == "analyzing"
+    assert revised["resolution_route"] == "local"
+    assert revised["requires_confirmation"] is False
+    assert revised["adjudication_stage"] == "player_clarification_required"
+    assert 2 <= len(revised["candidate_interpretations"]) <= 3
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM actions WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"] == 0
+
+
 def test_confirming_stale_draft_requires_sync_and_creates_no_action(client, test_db):
     room_id, _, player_token = _setup_player(client, test_db)
     headers = {"X-Room-Token": player_token}
@@ -1907,6 +2007,42 @@ def test_one_effective_action_per_player_per_turn(client, test_db):
     assert first.status_code == 200
     assert second.status_code == 409
     assert second.json()["detail"]["code"] == "action_already_submitted"
+
+
+def test_legacy_resolved_action_does_not_block_the_next_v2_action(client, test_db):
+    room_id, _, player_token = _setup_player(client, test_db)
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.commit()
+    headers = {"X-Room-Token": player_token}
+    first_draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我看看桌上的旧报纸"},
+    ).json()
+    first = client.post(
+        f"/api/player/action-drafts/{first_draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "legacy-resolved-first"},
+        json={"confirmations": []},
+    )
+    assert first.status_code == 200, first.text
+    test_db.execute(
+        "UPDATE actions SET status = 'resolved' WHERE action_id = %s",
+        (first.json()["action_id"],),
+    )
+    test_db.commit()
+    second_draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我询问门卫昨晚发生了什么"},
+    ).json()
+
+    second = client.post(
+        f"/api/player/action-drafts/{second_draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "after-legacy-resolved"},
+        json={"confirmations": []},
+    )
+
+    assert second.status_code == 200, second.text
 
 
 def test_cancel_action_is_atomic_before_resolving(client, test_db):

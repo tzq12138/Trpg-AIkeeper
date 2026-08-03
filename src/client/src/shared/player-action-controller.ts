@@ -45,6 +45,11 @@ export function isActionInFlight(status: ActionStatus): boolean {
 }
 
 
+export function shouldPollActionReceipt(receipt: ActionReceiptDTO | null): boolean {
+  return Boolean(receipt && isActionInFlight(receipt.status));
+}
+
+
 export function hasPendingCocFollowUp(receipt: ActionReceiptDTO | null): boolean {
   if (!receipt || receipt.status !== 'awaiting_player_choice') return false;
   if (!receipt.result || typeof receipt.result !== 'object') return false;

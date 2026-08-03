@@ -238,6 +238,15 @@ describe('HostDirectorConsole', () => {
     expect(html).not.toContain('恢复 checkpoint');
     expect(html).not.toContain('直接裁决');
   });
+
+  test('uses distinct list keys when the same fact appears more than once', async () => {
+    const { readOnlyListItemKey } = await import('../src/pages/HostConsole');
+    const facts = ['程雁开始执行', '程雁开始执行'];
+
+    const keys = facts.map(readOnlyListItemKey);
+
+    expect(new Set(keys).size).toBe(facts.length);
+  });
 });
 
 describe('HostExceptionQueue', () => {
@@ -369,6 +378,33 @@ describe('HostSafetyRequests', () => {
     expect(html).toContain('只有触发者可以恢复');
     expect(html).not.toContain('character-1');
     expect(html).not.toContain('请淡出针头描写。');
+  });
+});
+
+describe('HostProviderRecovery', () => {
+  test('offers an explicit confirmed switch to deterministic local recovery', async () => {
+    const { HostProviderRecovery } = await import('../src/pages/HostConsole');
+    const html = renderToStaticMarkup(React.createElement(HostProviderRecovery, {
+      status: {
+        status: 'paused_provider',
+        reasonCode: 'provider_unavailable',
+        primaryProvider: 'configured',
+        primaryModel: 'mimo-v2.5',
+        bindingRevision: 1,
+        consecutiveFailures: 3,
+        lastErrorCategory: 'timeout',
+      },
+      pendingAction: null,
+      onRecover: () => {},
+      onSwitchToLocal: () => {},
+    }));
+
+    expect(html).toContain('AI 服务恢复');
+    expect(html).toContain('机械行动已暂停');
+    expect(html).toContain('恢复当前服务');
+    expect(html).toContain('切换到本地确定性');
+    expect(html).toContain('我确认本次恢复操作');
+    expect(html).not.toContain('api_key');
   });
 });
 

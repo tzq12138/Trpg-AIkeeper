@@ -26,24 +26,6 @@ class _PersuadeCompiler:
         )
 
 
-class _RecoveryDirectorGateway:
-    authoritative_audit_required = False
-
-    async def analyze_director_action(self, context, room_id=None):
-        del room_id
-        return {
-            "context_version": context["context_version"],
-            "interpreted_intent": "使用已编译的维护无线电恢复路线返回控制室",
-            "intent_type": "move",
-            "confidence": 0.99,
-            "requires_player_clarification": False,
-            "requires_host_exception": False,
-            "semantic_progression": {"targetNodeId": "control-room"},
-            "narration_mode": "local_verified",
-            "analysis_source": "local_fallback",
-        }
-
-
 class _DeterministicDirectorGateway:
     authoritative_audit_required = False
 
@@ -359,7 +341,17 @@ async def test_glass_rain_four_players_complete_authoritative_runtime(
         )
         assert recovered.status_code == 200, recovered.text
         assert recovered.json()["status"] == "healthy"
-        client.app.state.gateway = _DeterministicDirectorGateway()
+        switched_local = client.post(
+            f"/api/rooms/{room['room_id']}/ai-provider/switch",
+            headers={"X-Owner-Token": room["owner_token"]},
+            json={
+                "provider_config_id": "builtin:local",
+                "confirm": True,
+                "reason": "黄金流程切换到内置确定性运行时",
+            },
+        )
+        assert switched_local.status_code == 200, switched_local.text
+        client.app.state.gateway = AiGateway(db_conn=test_db)
 
         pipeline = ResolutionPipeline(
             conn=test_db,
@@ -411,7 +403,6 @@ async def test_glass_rain_four_players_complete_authoritative_runtime(
         )
         assert recovery["status"] == "recovery"
         assert recovery["recoveryNodeId"] == "glass-radio-recovery"
-        client.app.state.gateway = _RecoveryDirectorGateway()
         _, recovery_result = await _analyze_confirm_resolve(
             client,
             pipeline,
@@ -430,7 +421,6 @@ async def test_glass_rain_four_players_complete_authoritative_runtime(
             "kind": "time",
             "amount": 10,
         }
-        client.app.state.gateway = _DeterministicDirectorGateway()
         _, returned = await _analyze_confirm_resolve(
             client,
             pipeline,

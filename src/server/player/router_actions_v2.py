@@ -21,6 +21,7 @@ from ..ai.director import (
     build_director_context,
     normalize_director_plan,
     resolve_conditional_solo_target,
+    select_progression_recovery,
 )
 from ..ai.narrator import build_manual_action_hints
 from ..ai.decision_audit import DecisionAuditPersistenceError
@@ -615,7 +616,11 @@ def _apply_local_director_plan(
     draft: ActionDraftDTO,
     director_context: dict,
 ) -> ActionDraftDTO:
-    semantic_progression = _local_generic_scene_progression(draft, director_context)
+    semantic_progression = _local_generic_scene_progression(
+        conn,
+        draft,
+        director_context,
+    )
     plan = normalize_director_plan(
         {
             "interpreted_intent": draft.understanding_summary,
@@ -637,6 +642,7 @@ def _apply_local_director_plan(
 
 
 def _local_generic_scene_progression(
+    conn,
     draft: ActionDraftDTO,
     director_context: dict,
 ) -> dict:
@@ -691,17 +697,57 @@ def _local_generic_scene_progression(
                 matching_targets.append((target_scene_id, edge))
             break
     unique_targets = {target_scene_id for target_scene_id, _ in matching_targets}
-    if len(unique_targets) != 1:
+    if len(unique_targets) == 1:
+        target_scene_id = unique_targets.pop()
+        edge = next(edge for target, edge in matching_targets if target == target_scene_id)
+        citation = _local_director_citation(edge.get("citation"))
+        if not citation:
+            return {}
+        return {
+            "targetNodeId": target_scene_id,
+            "citation": citation,
+        }
+
+    room = director_context.get("room")
+    room_id = str(room.get("room_id") or "") if isinstance(room, dict) else ""
+    recovery = select_progression_recovery(
+        conn,
+        room_id,
+        current_scene_id,
+        runtime_package,
+    )
+    if recovery.get("status") != "recovery":
         return {}
-    target_scene_id = unique_targets.pop()
-    edge = next(edge for target, edge in matching_targets if target == target_scene_id)
-    citation = _local_director_citation(edge.get("citation"))
-    if not citation:
+    recovery_target = str(recovery.get("targetNodeId") or "")
+    matching_recovery_target = False
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        payload = scene.get("payload") if isinstance(scene.get("payload"), dict) else {}
+        identifiers = {
+            str(scene.get("scene_id") or ""),
+            str(scene.get("logical_key") or ""),
+            str(payload.get("scene_id") or ""),
+            str(payload.get("id") or ""),
+        }
+        if recovery_target not in identifiers:
+            continue
+        matching_recovery_target = any(
+            normalized_name and normalized_name in declared
+            for normalized_name in (
+                _normalize_scene_name(name)
+                for name in (
+                    scene.get("name"),
+                    scene.get("title"),
+                    payload.get("name"),
+                    payload.get("title"),
+                )
+            )
+        )
+        break
+    if not matching_recovery_target:
         return {}
-    return {
-        "targetNodeId": target_scene_id,
-        "citation": citation,
-    }
+    return {"targetNodeId": recovery_target}
 
 
 def _normalize_scene_name(value) -> str:
@@ -719,13 +765,14 @@ def _local_director_citation(value) -> dict:
 
 
 def _can_apply_local_director_plan(
+    conn,
     draft: ActionDraftDTO,
     director_context: dict,
 ) -> bool:
     return bool(
         draft.params.get("targetNodeId")
         or draft.params.get("solo_adventure_check")
-        or _local_generic_scene_progression(draft, director_context)
+        or _local_generic_scene_progression(conn, draft, director_context)
     )
 
 
@@ -1053,6 +1100,7 @@ async def _analyze_draft_locked(
                 "resolution_route": "local",
             })
         elif _can_use_local_director_fallback(draft) and _can_apply_local_director_plan(
+            request.app.state.db,
             draft,
             director_context,
         ):

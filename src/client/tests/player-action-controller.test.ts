@@ -6,6 +6,7 @@ import {
   isActionInFlight,
   hasPendingCocFollowUp,
   mergeAuthoritativeReceipt,
+  shouldPollActionReceipt,
   shouldUsePlayerRuntime,
   shouldAutoConfirmDraft,
 } from '../src/shared/player-action-controller';
@@ -57,6 +58,12 @@ describe('player action controller', () => {
     expect(isActionInFlight('queued')).toBe(true);
     expect(isActionInFlight('awaiting_host_exception')).toBe(true);
     expect(isActionInFlight('completed')).toBe(false);
+  });
+
+  test('polls authoritative receipts while consent or follow-up decisions are pending', () => {
+    expect(shouldPollActionReceipt({ ...queuedReceipt, status: 'awaiting_player_consent' })).toBe(true);
+    expect(shouldPollActionReceipt({ ...queuedReceipt, status: 'awaiting_player_choice' })).toBe(true);
+    expect(shouldPollActionReceipt({ ...queuedReceipt, status: 'completed' })).toBe(false);
   });
 
   test('keeps an armed prepared action visible without blocking a new declaration', () => {
