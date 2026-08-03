@@ -242,6 +242,51 @@ def test_batch_delete_rooms_removes_real_collaboration_and_session_dependencies(
     }
 
 
+def test_batch_delete_completed_room_skips_read_only_projection_scrub(client, test_db):
+    setup_auth_test_data(test_db)
+    room_id = "bulk-completed-room"
+    character_id = "bulk-completed-character"
+    _insert_room(test_db, room_id)
+    _insert_character(test_db, character_id, room_id)
+    test_db.execute(
+        "INSERT INTO room_map_state (room_id, map_id, token_visibility) "
+        "VALUES (%s, 'bulk-completed-map', %s)",
+        (room_id, json.dumps({character_id: "party"})),
+    )
+    test_db.execute(
+        "INSERT INTO campaign_archives "
+        "(archive_id, room_id, ending_type, summary, highlights, character_arcs) "
+        "VALUES ('bulk-completed-archive', %s, 'victory', '已完成结局', '[]', %s)",
+        (
+            room_id,
+            json.dumps([{"character_id": character_id, "name": character_id}]),
+        ),
+    )
+    test_db.execute(
+        "UPDATE rooms SET status = 'completed' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/admin/rooms/batch-delete",
+        headers=_admin_headers(client),
+        json={"ids": [room_id], "confirm": True},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted_ids"] == [room_id]
+    assert response.json()["errors"] == []
+    assert _count(test_db, "rooms", "room_id = %s", (room_id,)) == 0
+    assert _count(test_db, "room_map_state", "room_id = %s", (room_id,)) == 0
+    archive = test_db.execute(
+        "SELECT room_id, character_arcs FROM campaign_archives "
+        "WHERE archive_id = 'bulk-completed-archive'"
+    ).fetchone()
+    assert archive["room_id"] == room_id
+    assert character_id not in json.dumps(archive["character_arcs"], ensure_ascii=False)
+
+
 def test_batch_delete_characters_keeps_room_sessions_and_cleans_both_sides_of_relations(client, test_db):
     setup_auth_test_data(test_db)
     room_id = "bulk-character-room"
@@ -1925,6 +1970,50 @@ def test_archive_purge_redacts_identifier_before_reason_truncation(client, test_
     ).fetchone()["reason"]
     assert archive_id[:3] not in reason
     assert len(reason) <= 500
+
+
+def test_batch_delete_scenario_removes_content_items_before_source_parts(client, test_db):
+    setup_auth_test_data(test_db)
+    scenario_id = "bulk-sourced-scenario"
+    scenario_version_id = f"sv-{scenario_id}"
+    create_scenario(test_db, scenario_id, "含结构化内容的剧本")
+    test_db.execute(
+        "INSERT INTO source_documents "
+        "(source_document_id, scenario_id, source_kind, title, source_filename, "
+        "mime_type, source_sha256, storage_path, license_type, status, created_by) "
+        "VALUES ('bulk-source-document', %s, 'scenario', '原始资料', 'source.pdf', "
+        "'application/pdf', 'sha-bulk-source-document', 'source.pdf', "
+        "'authorized', 'parsed', 'acc-admin')",
+        (scenario_id,),
+    )
+    test_db.execute(
+        "INSERT INTO source_parts "
+        "(source_part_id, source_document_id, ordinal, part_kind, text_content, checksum) "
+        "VALUES ('bulk-source-part', 'bulk-source-document', 1, 'page', '原文', "
+        "'sha-bulk-source-part')"
+    )
+    test_db.execute(
+        "INSERT INTO content_items "
+        "(content_item_id, scenario_version_id, source_part_id, item_type, "
+        "logical_key, title, checksum) "
+        "VALUES ('bulk-content-item', %s, 'bulk-source-part', 'scene', "
+        "'bulk-scene', '结构化场景', 'sha-bulk-content-item')",
+        (scenario_version_id,),
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/admin/scenarios/batch-delete",
+        headers=_admin_headers(client),
+        json={"ids": [scenario_id], "confirm": True},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted_ids"] == [scenario_id]
+    assert response.json()["errors"] == []
+    assert _count(test_db, "content_items", "content_item_id = %s", ("bulk-content-item",)) == 0
+    assert _count(test_db, "source_parts", "source_part_id = %s", ("bulk-source-part",)) == 0
+    assert _count(test_db, "scenarios", "scenario_id = %s", (scenario_id,)) == 0
 
 
 def test_batch_delete_scenarios_allows_partial_success_and_blocks_used_scenarios(client, test_db):

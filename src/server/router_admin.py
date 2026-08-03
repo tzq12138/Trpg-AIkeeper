@@ -763,6 +763,7 @@ def _delete_room_rows(
             conn,
             character_ids,
             affected_players=affected_players,
+            scrub_room_map_projection=False,
         ).items():
             counts[table] = counts.get(table, 0) + count
 
@@ -910,6 +911,15 @@ def _delete_scenario_rows(conn, scenario_ids: list[str]) -> dict[str, int]:
     ).fetchall()
     scenario_version_ids = [str(row["scenario_version_id"]) for row in version_rows]
 
+    if scenario_version_ids:
+        version_filter = "(" + ",".join(["%s"] * len(scenario_version_ids)) + ")"
+        counts["content_items"] = _delete_rows_with_filter(
+            conn,
+            "content_items",
+            f"scenario_version_id IN {version_filter}",
+            tuple(scenario_version_ids),
+        )
+
     if source_doc_ids:
         source_doc_filter = "(" + ",".join(["%s"] * len(source_doc_ids)) + ")"
         _delete_rows_with_filter(
@@ -926,7 +936,6 @@ def _delete_scenario_rows(conn, scenario_ids: list[str]) -> dict[str, int]:
         )
 
     if scenario_version_ids:
-        version_filter = "(" + ",".join(["%s"] * len(scenario_version_ids)) + ")"
         for table in (
             "scenario_version_sources",
             "scenario_review_drafts",
@@ -1241,6 +1250,7 @@ def _delete_character_rows(
     *,
     affected_players: set[tuple[str, str]] | None = None,
     public_identities: list[dict] | None = None,
+    scrub_room_map_projection: bool = True,
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     if not character_ids:
@@ -1285,7 +1295,7 @@ def _delete_character_rows(
         _cancel_actions_waiting_on_deleted_characters(conn, character_ids),
     )
 
-    if affected_room_ids:
+    if affected_room_ids and scrub_room_map_projection:
         room_filter, room_params = _in_clause(affected_room_ids)
         conn.execute(
             f"SELECT room_id FROM rooms WHERE room_id IN {room_filter} "
