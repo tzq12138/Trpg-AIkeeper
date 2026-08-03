@@ -844,3 +844,114 @@ async def update_room_ai_config(request: Request, room_id: str):
     except RoomAiConfigLockedError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"status": "updated", "room_id": room_id}
+
+
+async def _publish_committed_room_event(
+    request: Request,
+    room_id: str,
+    sequence: int,
+) -> None:
+    from .engine.projection import ProjectionDispatcher
+
+    dispatcher = getattr(request.app.state, "dispatcher", None) or ProjectionDispatcher(
+        request.app.state.db
+    )
+    try:
+        await dispatcher.publish_committed_event(room_id, sequence)
+    except Exception:
+        logger.warning(
+            "Failed to publish committed room event room=%s sequence=%s",
+            room_id,
+            sequence,
+        )
+
+
+@router.post("/{room_id}/ai-provider/recover")
+async def recover_room_ai_provider(request: Request, room_id: str):
+    conn = request.app.state.db
+    _verify_owner_or_admin(request, room_id, conn)
+    body = await request.json()
+    if body.get("confirm") is not True:
+        raise HTTPException(400, "请确认后再恢复 AI provider")
+    reason = str(body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "恢复 AI provider 必须填写原因")
+
+    from .ai.gateway import AiGateway
+    from .ai.provider_health import (
+        RoomProviderHealth,
+        binding_id,
+        current_runtime_binding,
+    )
+    from .router_auth import get_account_from_token
+
+    binding = current_runtime_binding(conn, room_id)
+    gateway = getattr(request.app.state, "gateway", None) or AiGateway(db_conn=conn)
+    providers = gateway._get_runtime_bound_providers(binding)
+    primary_name = str(binding.get("primary_provider") or "")
+    configured_id = str(binding.get("configured_provider_id") or "")
+    primary = next(
+        (
+            provider
+            for provider in providers
+            if (
+                configured_id
+                and getattr(provider, "provider_config_id", "") == configured_id
+            )
+            or provider.name == primary_name
+        ),
+        None,
+    )
+    if primary is None or not bool(await primary.health_check()):
+        raise HTTPException(409, detail={"code": "provider_health_check_failed"})
+    account = get_account_from_token(request)
+    actor_id = str(account.get("account_id") if account else "room-owner")
+    try:
+        sequence = RoomProviderHealth(conn).recover(
+            room_id,
+            binding_id(binding),
+            actor_id=actor_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": str(exc)}) from exc
+    await _publish_committed_room_event(request, room_id, sequence)
+    return {"room_id": room_id, "status": "healthy"}
+
+
+@router.post("/{room_id}/ai-provider/switch")
+async def switch_room_ai_provider(request: Request, room_id: str):
+    conn = request.app.state.db
+    _verify_owner_or_admin(request, room_id, conn)
+    body = await request.json()
+    if body.get("confirm") is not True:
+        raise HTTPException(400, "请确认后再切换 AI provider")
+    reason = str(body.get("reason") or "").strip()
+    provider_config_id = str(body.get("provider_config_id") or "").strip()
+    if not reason or not provider_config_id:
+        raise HTTPException(400, "provider_config_id 和切换原因不能为空")
+
+    from .ai.ai_config import switch_room_ai_runtime
+    from .router_auth import get_account_from_token
+
+    account = get_account_from_token(request)
+    actor_id = str(account.get("account_id") if account else "room-owner")
+    try:
+        with conn.transaction() as tx:
+            binding, sequence = switch_room_ai_runtime(
+                tx,
+                room_id,
+                provider_config_id=provider_config_id,
+                reason=reason,
+                actor_id=actor_id,
+            )
+    except ValueError as exc:
+        code = str(exc)
+        status = 404 if code in {"room_not_found", "provider_not_found"} else 409
+        raise HTTPException(status, detail={"code": code}) from exc
+    await _publish_committed_room_event(request, room_id, sequence)
+    return {
+        "room_id": room_id,
+        "status": "healthy",
+        "binding_id": binding["binding_id"],
+        "binding_revision": binding["binding_revision"],
+    }

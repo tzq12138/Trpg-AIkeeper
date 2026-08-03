@@ -591,6 +591,7 @@ CREATE TABLE IF NOT EXISTS action_drafts (
     status TEXT NOT NULL DEFAULT 'analyzing',
     risk_level TEXT NOT NULL DEFAULT 'low',
     analysis JSONB NOT NULL DEFAULT '{}',
+    decision_audit_required BOOLEAN NOT NULL DEFAULT FALSE,
     current_revision INTEGER NOT NULL DEFAULT 1,
     expires_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -940,6 +941,7 @@ CREATE TABLE IF NOT EXISTS evidence_references (
 
 CREATE INDEX IF NOT EXISTS idx_action_drafts_character_status
     ON action_drafts(character_id, status, updated_at DESC);
+ALTER TABLE action_drafts ADD COLUMN IF NOT EXISTS decision_audit_required BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_action_status_events_action
     ON action_status_events(action_id, status_event_id);
 CREATE INDEX IF NOT EXISTS idx_action_reviews_status
@@ -1475,6 +1477,42 @@ CREATE TABLE IF NOT EXISTS ai_provider_config_audits (
 
 CREATE INDEX IF NOT EXISTS idx_ai_provider_config_audits_created
     ON ai_provider_config_audits(created_at);
+
+CREATE TABLE IF NOT EXISTS room_ai_runtime_binding_versions (
+    runtime_binding_version_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    version_number INTEGER NOT NULL,
+    binding JSONB NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    confirmed_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (room_id, version_number)
+);
+
+CREATE TABLE IF NOT EXISTS room_provider_health (
+    room_id TEXT PRIMARY KEY REFERENCES rooms(room_id) ON DELETE CASCADE,
+    binding_id TEXT NOT NULL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'healthy'
+        CHECK (status IN ('healthy', 'paused')),
+    last_error_category TEXT NOT NULL DEFAULT '',
+    last_failure_at TIMESTAMPTZ,
+    last_success_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS room_provider_health_audits (
+    provider_health_audit_id TEXT PRIMARY KEY,
+    room_id TEXT REFERENCES rooms(room_id) ON DELETE SET NULL,
+    binding_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    error_category TEXT NOT NULL DEFAULT '',
+    actor_id TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_provider_health_audits_room_created
+    ON room_provider_health_audits(room_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS admin_data_purge_audits (
     audit_id TEXT PRIMARY KEY,

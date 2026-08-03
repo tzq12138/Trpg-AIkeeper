@@ -2341,16 +2341,13 @@ class ResolutionPipeline:
         if not is_director_validation and not is_terminal:
             return False
         row = executor.execute(
-            "SELECT params FROM actions WHERE action_id = %s",
+            "SELECT d.decision_audit_required "
+            "FROM actions a "
+            "LEFT JOIN action_drafts d ON d.draft_id = a.draft_id "
+            "WHERE a.action_id = %s",
             (action_id,),
         ).fetchone()
-        params = self._json_value(row.get("params") if row else None) or {}
-        analysis = params.get("analysis")
-        return bool(
-            isinstance(analysis, dict)
-            and analysis.get("analysis_source")
-            in {"configured_provider", "fallback_provider"}
-        )
+        return bool(row and row.get("decision_audit_required"))
 
     def _terminal_decision_delta(
         self,

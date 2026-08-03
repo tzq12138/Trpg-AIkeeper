@@ -863,6 +863,33 @@ class AiGateway:
             providers = [provider for provider in providers if provider.supports(required_set)]
         if disable_local_fallback:
             providers = [provider for provider in providers if provider.name != "local"]
+        tracked_provider = None
+        tracked_binding_id = ""
+        tracked_failure = ""
+        tracked_success = False
+        if room_id and self.db:
+            from .provider_health import binding_id, current_runtime_binding
+
+            binding = current_runtime_binding(self.db, room_id)
+            primary_name = str(binding.get("primary_provider") or "")
+            if binding.get("locked") is True and primary_name not in {"", "local"}:
+                tracked_binding_id = binding_id(binding)
+                configured_id = str(binding.get("configured_provider_id") or "")
+                tracked_provider = next(
+                    (
+                        provider
+                        for provider in providers
+                        if (
+                            configured_id
+                            and getattr(provider, "provider_config_id", "")
+                            == configured_id
+                        )
+                        or provider.name == primary_name
+                    ),
+                    None,
+                )
+                if tracked_provider is None:
+                    tracked_failure = "provider_unavailable"
         fallback_chain: list[str] = []
         t_start = time.monotonic()
         last_error = ""
@@ -875,6 +902,8 @@ class AiGateway:
             try:
                 raw = await provider.call(task_type, context)
                 if raw is None:
+                    if provider is tracked_provider:
+                        tracked_failure = "empty_response"
                     fallback_chain.append(f"{provider.name}:null_response")
                     continue
                 if task_type == "analyze_director_action":
@@ -882,14 +911,20 @@ class AiGateway:
                         not isinstance(raw, dict)
                         or not DIRECTOR_PROVIDER_CORE_KEYS.issubset(raw.keys())
                     ):
+                        if provider is tracked_provider:
+                            tracked_failure = "invalid_response"
                         fallback_chain.append(f"{provider.name}:incomplete_director_plan")
                         continue
                     raw = _normalize_director_provider_result(raw, context)
                     if not DIRECTOR_REQUIRED_KEYS.issubset(raw.keys()):
+                        if provider is tracked_provider:
+                            tracked_failure = "invalid_response"
                         fallback_chain.append(f"{provider.name}:incomplete_director_plan")
                         continue
                 if task_type == "narrate_action":
                     if not isinstance(raw, dict):
+                        if provider is tracked_provider:
+                            tracked_failure = "invalid_response"
                         fallback_chain.append(f"{provider.name}:invalid_narration")
                         continue
                     raw = _normalize_narrator_provider_result(raw, context)
@@ -902,6 +937,8 @@ class AiGateway:
                             }
                         )
                     except Exception:
+                        if provider is tracked_provider:
+                            tracked_failure = "invalid_response"
                         fallback_chain.append(f"{provider.name}:invalid_narration")
                         continue
                 if task_type == "structure_scenario" and not _is_worldbook_result(raw):
@@ -909,6 +946,8 @@ class AiGateway:
                         "structure_scenario returned an invalid worldbook from %s",
                         provider.name,
                     )
+                    if provider is tracked_provider:
+                        tracked_failure = "invalid_response"
                     fallback_chain.append(f"{provider.name}:invalid_worldbook")
                     continue
 
@@ -919,6 +958,8 @@ class AiGateway:
                         validated = schema(**raw)
                         final_result = validated
                     except Exception as ve:
+                        if provider is tracked_provider:
+                            tracked_failure = "invalid_response"
                         if task_type in _AUTHORITATIVE_AUDIT_TASKS:
                             logger.warning(
                                 "%s schema validation failed for %s error_type=%s",
@@ -941,6 +982,9 @@ class AiGateway:
                 provider_used = provider.name
                 model_used = _provider_model(provider)
                 status = "success"
+                if provider is tracked_provider:
+                    tracked_success = True
+                    tracked_failure = ""
                 if task_type == "analyze_director_action":
                     source = _analysis_source_for_provider(provider.name)
                     if hasattr(final_result, "model_copy"):
@@ -960,6 +1004,10 @@ class AiGateway:
                 fallback_chain.append(f"{provider.name}:ok")
                 break
             except Exception as e:
+                if provider is tracked_provider:
+                    from .provider_health import error_category
+
+                    tracked_failure = error_category(e)
                 last_error = "" if task_type in _AUTHORITATIVE_AUDIT_TASKS else str(e)
                 fallback_chain.append(f"{provider.name}:{type(e).__name__}")
                 if task_type in _AUTHORITATIVE_AUDIT_TASKS:
@@ -981,6 +1029,33 @@ class AiGateway:
                 disable_local_fallback=disable_local_fallback,
             )
             status = "fallback"
+
+        if room_id and tracked_binding_id:
+            from .provider_health import RoomProviderHealth
+
+            health = RoomProviderHealth(self.db)
+            event_sequence = None
+            if tracked_success:
+                health.record_success(room_id, tracked_binding_id)
+            else:
+                event_sequence = health.record_failure(
+                    room_id,
+                    tracked_binding_id,
+                    tracked_failure or "provider_error",
+                )
+            if event_sequence:
+                try:
+                    from ..engine.projection import ProjectionDispatcher
+
+                    await ProjectionDispatcher(self.db).publish_committed_event(
+                        room_id,
+                        event_sequence,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to publish provider pause room=%s",
+                        room_id,
+                    )
 
         duration_ms = int((time.monotonic() - t_start) * 1000)
         self._log_call(

@@ -967,6 +967,7 @@ async def _analyze_draft_locked(
     body: ActionDraftAnalyzeRequest,
     character: dict,
 ):
+    decision_audit_required = False
     integrity = request.app.state.db.execute(
         "SELECT integrity_status, integrity_reason FROM rooms WHERE room_id = %s",
         (character["room_id"],),
@@ -1122,6 +1123,7 @@ async def _analyze_draft_locked(
                         ),
                         required=audit_required,
                     )
+                    decision_audit_required = authoritative_audit_created
                 elif _can_use_local_director_fallback(draft):
                     draft = _apply_local_director_plan(
                         request.app.state.db,
@@ -1185,7 +1187,12 @@ async def _analyze_draft_locked(
     draft = apply_engine_action_policy(draft)
     if body.ephemeral:
         return draft
-    persisted = persist_action_draft(request.app.state.db, character, draft)
+    persisted = persist_action_draft(
+        request.app.state.db,
+        character,
+        draft,
+        decision_audit_required=decision_audit_required,
+    )
     if body.submission_action_id:
         request.app.state.db.execute(
             "UPDATE player_action_submissions SET status = 'awaiting_confirmation', updated_at = NOW() WHERE action_id = %s",

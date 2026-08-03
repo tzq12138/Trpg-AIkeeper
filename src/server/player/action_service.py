@@ -912,6 +912,7 @@ def insert_action_draft(
     *,
     draft_id: str | None = None,
     expires_at: datetime | None = None,
+    decision_audit_required: bool = False,
 ) -> str:
     draft_id = draft_id or str(uuid.uuid4())
     revision_id = str(uuid.uuid4())
@@ -919,8 +920,9 @@ def insert_action_draft(
     payload = draft.model_dump(mode="json")
     tx.execute(
         "INSERT INTO action_drafts (draft_id, room_id, character_id, base_state_version, intent_type, declared_intent, params, "
-        "status, risk_level, analysis, current_revision, expires_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s)",
+        "status, risk_level, analysis, decision_audit_required, "
+        "current_revision, expires_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s)",
         (
             draft_id,
             character["room_id"],
@@ -932,6 +934,7 @@ def insert_action_draft(
             draft.status,
             draft.risk,
             json.dumps(payload, ensure_ascii=False),
+            decision_audit_required,
             expires_at,
         ),
     )
@@ -943,9 +946,21 @@ def insert_action_draft(
     return draft_id
 
 
-def persist_action_draft(conn, character: dict, draft: ActionDraftDTO) -> ActionDraftDTO:
+def persist_action_draft(
+    conn,
+    character: dict,
+    draft: ActionDraftDTO,
+    *,
+    decision_audit_required: bool = False,
+) -> ActionDraftDTO:
     with conn.transaction() as tx:
-        draft_id = insert_action_draft(tx, character, draft, draft_id=draft.draft_id)
+        draft_id = insert_action_draft(
+            tx,
+            character,
+            draft,
+            draft_id=draft.draft_id,
+            decision_audit_required=decision_audit_required,
+        )
     return draft.model_copy(update={"draft_id": draft_id})
 
 
@@ -1012,7 +1027,8 @@ def revise_action_draft(conn, character: dict, draft_id: str, body: ActionDraftU
         payload = analyzed.model_dump(mode="json")
         tx.execute(
             "UPDATE action_drafts SET base_state_version = %s, intent_type = %s, declared_intent = %s, params = %s, status = %s, "
-            "risk_level = %s, analysis = %s, current_revision = %s, updated_at = NOW() "
+            "risk_level = %s, analysis = %s, decision_audit_required = FALSE, "
+            "current_revision = %s, updated_at = NOW() "
             "WHERE draft_id = %s",
             (
                 analyzed.base_state_version,
@@ -1374,11 +1390,7 @@ def confirm_action_draft(
             action_id,
             int(draft["current_revision"]),
         )
-        if (
-            analysis.get("analysis_source")
-            in {"configured_provider", "fallback_provider"}
-            and relinked_audits != 1
-        ):
+        if bool(draft.get("decision_audit_required")) and relinked_audits != 1:
             raise ActionDraftError(
                 409,
                 {"code": "decision_audit_missing"},

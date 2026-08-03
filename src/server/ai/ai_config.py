@@ -3,6 +3,7 @@
 import json
 import logging
 import hashlib
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -300,6 +301,8 @@ def pin_room_ai_runtime(
     from .gateway import runtime_prompt_template_signature
 
     binding = {
+        "binding_id": f"binding:{uuid.uuid4().hex}",
+        "binding_revision": 1,
         "binding_version": RUNTIME_BINDING_VERSION,
         "locked": True,
         "primary_provider": primary_provider,
@@ -335,4 +338,145 @@ def pin_room_ai_runtime(
         "ON CONFLICT (room_id) DO UPDATE SET state = %s, updated_at = NOW()",
         (room_id, state_json, state_json),
     )
+    conn.execute(
+        "INSERT INTO room_ai_runtime_binding_versions "
+        "(runtime_binding_version_id, room_id, version_number, binding, reason) "
+        "VALUES (%s, %s, 1, %s, 'initial_binding') "
+        "ON CONFLICT (room_id, version_number) DO NOTHING",
+        (
+            f"{room_id}:binding:1",
+            room_id,
+            json.dumps(binding, ensure_ascii=False),
+        ),
+    )
     return room_config
+
+
+def switch_room_ai_runtime(
+    executor,
+    room_id: str,
+    *,
+    provider_config_id: str,
+    reason: str,
+    actor_id: str,
+) -> tuple[dict[str, Any], int]:
+    """Create and activate one explicit immutable binding revision."""
+    from ..events.event_log import EventLog
+
+    room = executor.execute(
+        "SELECT room_id FROM rooms WHERE room_id = %s FOR UPDATE",
+        (room_id,),
+    ).fetchone()
+    if not room:
+        raise ValueError("room_not_found")
+    configured = executor.execute(
+        "SELECT provider_config_id, api_base_url, protocol, model, "
+        "supports_image, api_key_ciphertext, test_status "
+        "FROM ai_provider_configs WHERE provider_config_id = %s",
+        (provider_config_id,),
+    ).fetchone()
+    if not configured:
+        raise ValueError("provider_not_found")
+    if configured.get("test_status") != "passed":
+        raise ValueError("provider_health_check_required")
+
+    row = executor.execute(
+        "SELECT state FROM host_states WHERE room_id = %s FOR UPDATE",
+        (room_id,),
+    ).fetchone()
+    state = _json_val(row.get("state") if row else {})
+    ai_config = _json_val(state.get("ai_config"))
+    previous = _json_val(ai_config.get("runtime_binding"))
+    if previous.get("locked") is not True:
+        raise ValueError("runtime_binding_missing")
+    previous_revision = int(previous.get("binding_revision") or 1)
+    previous_id = str(previous.get("binding_id") or f"{room_id}:binding:{previous_revision}")
+    next_revision = previous_revision + 1
+    current = {
+        **previous,
+        "binding_id": f"binding:{uuid.uuid4().hex}",
+        "binding_revision": next_revision,
+        "primary_provider": f"configured:{provider_config_id}",
+        "primary_model": str(configured["model"]),
+        "configured_provider_id": provider_config_id,
+        "configured_provider_signature": configured_provider_signature(
+            dict(configured)
+        ),
+        "pinned_at": datetime.now(timezone.utc).isoformat(),
+    }
+    ai_config["runtime_binding"] = current
+    state["ai_config"] = ai_config
+    executor.execute(
+        "UPDATE host_states SET state = %s, updated_at = NOW() "
+        "WHERE room_id = %s",
+        (json.dumps(state, ensure_ascii=False), room_id),
+    )
+    executor.execute(
+        "INSERT INTO room_ai_runtime_binding_versions "
+        "(runtime_binding_version_id, room_id, version_number, binding, "
+        "reason, confirmed_by) VALUES (%s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (room_id, version_number) DO UPDATE SET "
+        "binding = EXCLUDED.binding, reason = EXCLUDED.reason, "
+        "confirmed_by = EXCLUDED.confirmed_by",
+        (
+            f"{room_id}:binding:{previous_revision}",
+            room_id,
+            previous_revision,
+            json.dumps({**previous, "binding_id": previous_id}, ensure_ascii=False),
+            "previous_binding",
+            actor_id,
+        ),
+    )
+    executor.execute(
+        "INSERT INTO room_ai_runtime_binding_versions "
+        "(runtime_binding_version_id, room_id, version_number, binding, "
+        "reason, confirmed_by) VALUES (%s, %s, %s, %s, %s, %s)",
+        (
+            f"{room_id}:binding:{next_revision}",
+            room_id,
+            next_revision,
+            json.dumps(current, ensure_ascii=False),
+            reason[:500],
+            actor_id,
+        ),
+    )
+    executor.execute(
+        "INSERT INTO room_provider_health "
+        "(room_id, binding_id, consecutive_failures, status, "
+        "last_error_category, updated_at) "
+        "VALUES (%s, %s, 0, 'healthy', '', NOW()) "
+        "ON CONFLICT (room_id) DO UPDATE SET binding_id = EXCLUDED.binding_id, "
+        "consecutive_failures = 0, status = 'healthy', "
+        "last_error_category = '', updated_at = NOW()",
+        (room_id, current["binding_id"]),
+    )
+    executor.execute(
+        "UPDATE rooms SET integrity_status = 'healthy', integrity_reason = NULL, "
+        "integrity_source = NULL, integrity_state_version = state_version, "
+        "integrity_updated_at = NOW() "
+        "WHERE room_id = %s AND integrity_status = 'paused_provider'",
+        (room_id,),
+    )
+    executor.execute(
+        "INSERT INTO room_provider_health_audits "
+        "(provider_health_audit_id, room_id, binding_id, action, actor_id) "
+        "VALUES (%s, %s, %s, 'switched', %s)",
+        (
+            f"provider-health-{uuid.uuid4().hex}",
+            room_id,
+            current["binding_id"],
+            actor_id,
+        ),
+    )
+    sequence = EventLog(executor).log_event(
+        room_id,
+        "s2c_runtime_integrity_changed",
+        "party",
+        {
+            "status": "healthy",
+            "reasonCode": "provider_binding_switched",
+            "bindingRevision": next_revision,
+        },
+        commit=False,
+    )
+    return current, sequence
