@@ -483,6 +483,73 @@ class RAGStore:
         logger.info('Indexed %d chunks for rule %s (%s)', len(chunks), doc_id, category)
         return len(chunks)
 
+    def index_rule_pages(
+        self,
+        source_document_id: str,
+        rule_set_version_id: str,
+        pages: list[dict],
+    ) -> int:
+        """Index only complete chunks whose offsets remain on one physical page."""
+        rows = []
+        for page in pages:
+            if page.get("extraction_status") != "indexable":
+                continue
+            source_part_id = str(page.get("source_part_id") or "")
+            page_number = int(page.get("page_number") or 0)
+            text = str(page.get("text") or "")
+            if not source_part_id or page_number < 1:
+                raise ValueError("indexable rule page requires source part and page number")
+            for chunk, start_offset, end_offset in chunk_text_with_offsets(text, max_chars=500, overlap=50):
+                rows.append((source_part_id, page_number, chunk, start_offset, end_offset))
+        if not rows:
+            return 0
+        vectors = self.embedding.embed([row[2] for row in rows])
+        _validate_embedding_batch(rows, vectors)
+        model_name = _embedding_model_name(self.embedding)
+        with self.pg_db.get_conn() as conn:
+            with conn.cursor() as cur:
+                for source_part_id in {row[0] for row in rows}:
+                    cur.execute(
+                        "DELETE FROM document_chunks WHERE source_type = %s "
+                        "AND rule_set_version_id = %s AND source_part_id = %s",
+                        ("rule", rule_set_version_id, source_part_id),
+                    )
+                for index, ((source_part_id, page_number, chunk, start_offset, end_offset), vector) in enumerate(zip(rows, vectors)):
+                    chunk_id = str(uuid.uuid4())
+                    citation = {
+                        "chunk_id": chunk_id,
+                        "source_type": "rule",
+                        "source_id": source_document_id,
+                        "source_document_id": source_document_id,
+                        "source_part_id": source_part_id,
+                        "rule_set_version_id": rule_set_version_id,
+                        "page_number": page_number,
+                        "start_offset": start_offset,
+                        "end_offset": end_offset,
+                        "excerpt": _sanitize_excerpt(chunk[:240]),
+                    }
+                    metadata = {
+                        "title": "Call of Cthulhu 7th Edition Core Rules",
+                        "category": "coc7-core-rules",
+                        "index": index,
+                        "license_type": "authorized",
+                        "rule_set_version_id": rule_set_version_id,
+                    }
+                    cur.execute(
+                        "INSERT INTO document_chunks "
+                        "(chunk_id, source_type, source_id, room_id, content, metadata, embedding, "
+                        "source_part_id, rule_set_version_id, visibility, citation, embedding_model, "
+                        "embedding_dimensions) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (
+                            chunk_id, "rule", source_document_id, None, chunk,
+                            json.dumps(metadata, ensure_ascii=False), vector,
+                            source_part_id, rule_set_version_id, "internal",
+                            json.dumps(citation, ensure_ascii=False), model_name, len(vector),
+                        ),
+                    )
+        return len(rows)
+
     def search(
         self,
         query: str,

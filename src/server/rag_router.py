@@ -274,24 +274,48 @@ async def create_rule_set_version(request: Request, rule_set_id: str, body: dict
 async def publish_rule_set_version(request: Request, rule_set_version_id: str):
     _require_admin(request)
     conn = request.app.state.db
+    from .rules.authoritative_coc7 import (
+        OFFICIAL_RULEBOOK_FILENAME,
+        OFFICIAL_RULEBOOK_SHA256,
+    )
     version = conn.execute(
-        "SELECT rsv.rule_set_id, rs.system, rs.is_base "
+        "SELECT rsv.rule_set_id, rs.system, rs.is_base, rsv.source_sha256, "
+        "sd.source_document_id AS official_source_document_id, sd.source_filename, "
+        "sd.source_sha256 AS official_source_sha256, gate.status AS gate_status "
         "FROM rule_set_versions rsv "
         "JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id "
+        "LEFT JOIN source_documents sd "
+        "ON sd.source_document_id = rsv.metadata ->> 'official_source_document_id' "
+        "LEFT JOIN rule_version_publication_gates gate "
+        "ON gate.rule_set_version_id = rsv.rule_set_version_id "
         "WHERE rsv.rule_set_version_id = %s",
         (rule_set_version_id,),
     ).fetchone()
     if not version:
         raise HTTPException(404, "规则版本不存在")
+    claimed_official = str(version.get("source_sha256") or "").upper() == OFFICIAL_RULEBOOK_SHA256
+    if claimed_official:
+        linked_source_is_official = (
+            bool(version.get("official_source_document_id"))
+            and version.get("source_filename") == OFFICIAL_RULEBOOK_FILENAME
+            and str(version.get("official_source_sha256") or "").upper() == OFFICIAL_RULEBOOK_SHA256
+        )
+        if not linked_source_is_official or version.get("gate_status") != "ready":
+            raise HTTPException(409, detail={"code": "rule_version_gate_not_ready"})
+        from .rules.authoritative_coc7 import _official_page_coverage
+
+        coverage = _official_page_coverage(conn, version["official_source_document_id"])
+        if not coverage["complete"] or not coverage["valid_statuses"] or coverage["needs_review"]:
+            raise HTTPException(409, detail={"code": "rule_version_gate_not_ready"})
     with conn.transaction() as tx:
         tx.execute(
-            "UPDATE rule_set_versions SET status = 'superseded' "
+            "UPDATE rule_set_versions SET status = 'superseded', runtime_eligible = FALSE "
             "WHERE rule_set_id = %s AND status = 'published' "
             "AND rule_set_version_id <> %s",
             (version["rule_set_id"], rule_set_version_id),
         )
         tx.execute(
-            "UPDATE rule_set_versions SET status = 'published', published_at = NOW() "
+            "UPDATE rule_set_versions SET status = 'published', runtime_eligible = TRUE, published_at = NOW() "
             "WHERE rule_set_version_id = %s",
             (rule_set_version_id,),
         )
@@ -317,6 +341,59 @@ async def publish_rule_set_version(request: Request, rule_set_version_id: str):
                 (rule_set_version_id,),
             )
     return {"rule_set_version_id": rule_set_version_id, "status": "published"}
+
+
+@router.post('/coc7/import-authoritative')
+async def import_authoritative_coc7_rules(request: Request):
+    account = _require_admin(request)
+    rag = request.app.state.rag
+    if not rag:
+        raise HTTPException(503, "RAG not available")
+    from .rules.authoritative_coc7 import import_authoritative_coc7
+
+    try:
+        return import_authoritative_coc7(
+            request.app.state.db,
+            rag,
+            str(account.get("account_id") or "unknown"),
+        )
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": "authoritative_import_failed", "reason": str(exc)}) from exc
+
+
+@router.get('/rule-set-versions/{rule_set_version_id}/audit')
+async def get_authoritative_rule_audit(request: Request, rule_set_version_id: str):
+    _require_admin(request)
+    from .rules.authoritative_coc7 import (
+        AuthoritativeRulebookError,
+        get_rule_version_audit,
+    )
+
+    try:
+        return get_rule_version_audit(request.app.state.db, rule_set_version_id)
+    except AuthoritativeRulebookError as exc:
+        raise HTTPException(404, detail={"code": "authoritative_rule_version_not_found"}) from exc
+
+
+@router.post('/rule-set-versions/{rule_set_version_id}/audit/approve')
+async def approve_authoritative_rule_audit(request: Request, rule_set_version_id: str):
+    account = _require_admin(request)
+    from .rules.authoritative_coc7 import (
+        AuthoritativeRulebookError,
+        approve_rule_source_review,
+    )
+
+    try:
+        return approve_rule_source_review(
+            request.app.state.db,
+            rule_set_version_id,
+            str(account.get("account_id") or "unknown"),
+        )
+    except AuthoritativeRulebookError as exc:
+        raise HTTPException(
+            409,
+            detail={"code": "rule_version_gate_not_ready", "reason": str(exc)},
+        ) from exc
 
 
 @router.post('/rule-bindings/rooms/{room_id}')

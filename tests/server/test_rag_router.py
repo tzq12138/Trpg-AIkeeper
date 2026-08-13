@@ -2,6 +2,48 @@ import json
 from tests.server.conftest import setup_auth_test_data, login
 
 
+def _insert_unreviewed_official_version(test_db):
+    test_db.execute(
+        """
+        INSERT INTO source_documents (
+            source_document_id, source_kind, title, source_filename, mime_type,
+            source_sha256, storage_path, license_type, created_by
+        ) VALUES (
+            'official-source', 'rulebook', 'CoC7 Core',
+            'COC7th核心规则书v1.2.1.pdf', 'application/pdf',
+            '22F5F56B7A0989CBDED695D39C7D5EDDDDD809CFC9D2C47E4CF4C5D7EDEA6815',
+            'registered/COC7th核心规则书v1.2.1.pdf', 'authorized', 'test'
+        )
+        """
+    )
+    test_db.execute(
+        """
+        INSERT INTO rule_sets (
+            rule_set_id, name, slug, system, is_base, license_type, status, created_by
+        ) VALUES ('official-set', 'CoC7 Core', 'official-coc7-gated', 'coc7', TRUE, 'authorized', 'draft', 'test')
+        """
+    )
+    test_db.execute(
+        """
+        INSERT INTO rule_set_versions (
+            rule_set_version_id, rule_set_id, version_number, status, source_sha256,
+            metadata, created_by
+        ) VALUES (
+            'official-v1', 'official-set', 1, 'draft',
+            '22F5F56B7A0989CBDED695D39C7D5EDDDDD809CFC9D2C47E4CF4C5D7EDEA6815',
+            '{"official_source_document_id":"official-source"}', 'test'
+        )
+        """
+    )
+    test_db.execute(
+        """
+        INSERT INTO rule_version_publication_gates (rule_set_version_id, status)
+        VALUES ('official-v1', 'pending_review')
+        """
+    )
+    return "official-v1"
+
+
 def test_rule_docs_lists_indexed_rule_documents(client, test_db):
     setup_auth_test_data(test_db)
     token = login(client)
@@ -77,3 +119,29 @@ def test_publishing_base_coc7_rules_binds_existing_published_scenarios(client, t
         "rule_set_version_id": rule_set_version_id,
         "priority": 100,
     }
+
+
+def test_publishing_official_rules_rejects_an_unreviewed_gate(client, test_db):
+    setup_auth_test_data(test_db)
+    token = login(client, "admin")
+    rule_set_version_id = _insert_unreviewed_official_version(test_db)
+
+    response = client.post(
+        f"/api/rag/rule-set-versions/{rule_set_version_id}/publish",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "rule_version_gate_not_ready"
+
+
+def test_authoritative_audit_is_not_available_to_a_host(client, test_db):
+    setup_auth_test_data(test_db)
+    token = login(client, "testhost")
+
+    response = client.get(
+        "/api/rag/rule-set-versions/official-v1/audit",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
