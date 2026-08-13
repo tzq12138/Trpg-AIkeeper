@@ -111,6 +111,18 @@ def test_publishing_base_coc7_rules_binds_existing_published_scenarios(client, t
     )
 
     assert published.status_code == 200
+    published_version = test_db.execute(
+        "SELECT runtime_eligible FROM rule_set_versions "
+        "WHERE rule_set_version_id = %s",
+        (rule_set_version_id,),
+    ).fetchone()
+    publication_gate = test_db.execute(
+        "SELECT status FROM rule_version_publication_gates "
+        "WHERE rule_set_version_id = %s",
+        (rule_set_version_id,),
+    ).fetchone()
+    assert published_version == {"runtime_eligible": True}
+    assert publication_gate == {"status": "ready"}
     binding = test_db.execute(
         "SELECT rule_set_version_id, priority FROM scenario_rule_bindings "
         "WHERE scenario_version_id = 'sv-sc-test'"
@@ -135,6 +147,40 @@ def test_publishing_official_rules_rejects_an_unreviewed_gate(client, test_db):
     assert response.json()["detail"]["code"] == "rule_version_gate_not_ready"
 
 
+def test_publishing_local_test_rules_is_rejected_without_reactivation(client, test_db):
+    """A retired local fixture must never be made runnable through publish."""
+    setup_auth_test_data(test_db)
+    test_db.execute(
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, license_type, status, created_by) "
+        "VALUES ('retired-local-set', 'Retired local', 'retired-local', 'coc7', 'authorized', 'published', 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, "
+        "runtime_eligible, metadata, created_by) "
+        "VALUES ('retired-local-v1', 'retired-local-set', 1, 'published', FALSE, "
+        "'{\"local_test_only\": true}', 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_version_publication_gates (rule_set_version_id, status) "
+        "VALUES ('retired-local-v1', 'pending')"
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/rag/rule-set-versions/retired-local-v1/publish",
+        headers={"Authorization": f"Bearer {login(client, 'admin')}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "rule_version_retired"
+    assert test_db.execute(
+        "SELECT runtime_eligible FROM rule_set_versions WHERE rule_set_version_id = 'retired-local-v1'"
+    ).fetchone() == {"runtime_eligible": False}
+    assert test_db.execute(
+        "SELECT status FROM rule_version_publication_gates WHERE rule_set_version_id = 'retired-local-v1'"
+    ).fetchone() == {"status": "pending"}
+
+
 def test_authoritative_audit_is_not_available_to_a_host(client, test_db):
     setup_auth_test_data(test_db)
     token = login(client, "testhost")
@@ -145,3 +191,39 @@ def test_authoritative_audit_is_not_available_to_a_host(client, test_db):
     )
 
     assert response.status_code == 403
+
+
+def test_rule_bindings_reject_a_published_but_runtime_ineligible_version(client, test_db):
+    """Publishing status alone cannot attach an ineligible legacy ruleset."""
+    setup_auth_test_data(test_db)
+    admin_token = login(client, "admin")
+    host_token = login(client, "testhost")
+    test_db.execute(
+        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, owner_token, owner_account_id) "
+        "VALUES ('binding-room', 'sc-test', 'sv-sc-test', 'owner', 'acc-host')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, license_type, status, created_by) "
+        "VALUES ('legacy-set', 'Legacy', 'legacy-binding', 'coc7', 'authorized', 'published', 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, "
+        "runtime_eligible, metadata, created_by) "
+        "VALUES ('legacy-v1', 'legacy-set', 1, 'published', FALSE, "
+        "'{\"local_test_only\": true}', 'test')"
+    )
+    test_db.commit()
+
+    room_response = client.post(
+        "/api/rag/rule-bindings/rooms/binding-room",
+        headers={"Authorization": f"Bearer {host_token}"},
+        json={"rule_set_version_id": "legacy-v1"},
+    )
+    scenario_response = client.post(
+        "/api/rag/rule-bindings/scenarios/sv-sc-test",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"rule_set_version_id": "legacy-v1"},
+    )
+
+    assert room_response.status_code == 409
+    assert scenario_response.status_code == 409

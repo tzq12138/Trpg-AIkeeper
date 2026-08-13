@@ -21,6 +21,8 @@ from src.server.rule_source_lifecycle import (
     ensure_room_rule_source_available,
     retire_local_test_rule_versions,
 )
+from src.server import rule_source_lifecycle
+from src.server.ai.ai_config import frozen_rule_policy_sources
 
 
 def test_authoritative_rulebook_rejects_wrong_hash_and_page_count():
@@ -127,6 +129,138 @@ def test_lifecycle_helpers_do_not_activate_or_retire_anything_in_task_one(test_d
     assert retire_local_test_rule_versions(test_db) == {
         'retired_rule_versions': 0,
         'retired_rooms': 0,
+    }
+
+
+def test_backfill_adds_ready_gate_only_for_eligible_nonofficial_versions(test_db):
+    test_db.execute(
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, license_type, status, created_by) VALUES "
+        "('backfill-live-set', 'Live', 'backfill-live', 'coc7', 'authorized', 'published', 'test'), "
+        "('backfill-retired-set', 'Retired', 'backfill-retired', 'coc7', 'authorized', 'published', 'test'), "
+        "('backfill-draft-set', 'Draft', 'backfill-draft', 'coc7', 'authorized', 'published', 'test'), "
+        "('backfill-official-set', 'Official', 'backfill-official', 'coc7', 'authorized', 'published', 'test'), "
+        "('backfill-pending-set', 'Pending', 'backfill-pending', 'coc7', 'authorized', 'published', 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, "
+        "runtime_eligible, source_sha256, metadata, created_by) VALUES "
+        "('backfill-live-v1', 'backfill-live-set', 1, 'published', TRUE, NULL, '{}', 'test'), "
+        "('backfill-retired-v1', 'backfill-retired-set', 1, 'published', TRUE, NULL, "
+        "'{\"local_test_only\": true}', 'test'), "
+        "('backfill-draft-v1', 'backfill-draft-set', 1, 'draft', TRUE, NULL, '{}', 'test'), "
+        "('backfill-official-v1', 'backfill-official-set', 1, 'published', TRUE, "
+        "'22F5F56B7A0989CBDED695D39C7D5EDDDDD809CFC9D2C47E4CF4C5D7EDEA6815', '{}', 'test'), "
+        "('backfill-pending-v1', 'backfill-pending-set', 1, 'published', TRUE, NULL, '{}', 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_version_publication_gates (rule_set_version_id, status) "
+        "VALUES ('backfill-pending-v1', 'pending')"
+    )
+
+    assert rule_source_lifecycle.backfill_legacy_runtime_rule_publication_gates(test_db) == 1
+    assert rule_source_lifecycle.backfill_legacy_runtime_rule_publication_gates(test_db) == 0
+    gates = test_db.execute(
+        "SELECT rule_set_version_id, status FROM rule_version_publication_gates "
+        "ORDER BY rule_set_version_id"
+    ).fetchall()
+    assert gates == [
+        {"rule_set_version_id": "backfill-live-v1", "status": "ready"},
+        {"rule_set_version_id": "backfill-pending-v1", "status": "pending"},
+    ]
+
+
+def test_retiring_local_test_rules_marks_only_dependent_rooms_and_excludes_them_from_frozen_sources(test_db):
+    """The old test corpus is quarantined in place without touching unrelated rooms."""
+    test_db.execute(
+        "INSERT INTO scenarios (scenario_id, title, import_status, published_version_id) VALUES "
+        "('legacy-scenario', 'Legacy', 'structured', 'legacy-sv'), "
+        "('live-scenario', 'Live', 'structured', NULL)"
+    )
+    test_db.execute(
+        "INSERT INTO scenario_versions (scenario_version_id, scenario_id, version_number, status, created_by) VALUES "
+        "('legacy-sv', 'legacy-scenario', 1, 'published', 'test'), "
+        "('live-sv', 'live-scenario', 1, 'published', 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, owner_token) VALUES "
+        "('legacy-scenario-room', 'legacy-scenario', 'legacy-sv', 'owner'), "
+        "('legacy-direct-room', 'live-scenario', 'live-sv', 'owner'), "
+        "('legacy-fallback-room', 'legacy-scenario', NULL, 'owner'), "
+        "('legacy-overridden-room', 'legacy-scenario', 'legacy-sv', 'owner'), "
+        "('legacy-base-fallback-room', NULL, NULL, 'owner'), "
+        "('unrelated-room', 'live-scenario', 'live-sv', 'owner')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_sets "
+        "(rule_set_id, name, slug, system, is_base, license_type, status, created_by) VALUES "
+        "('legacy-rules', 'Legacy', 'legacy-rules', 'coc7', FALSE, 'authorized', 'published', 'test'), "
+        "('legacy-base-rules', 'Legacy base', 'legacy-base-rules', 'coc7', TRUE, 'authorized', 'published', 'test'), "
+        "('qualified-rules', 'Qualified', 'qualified-rules', 'coc7', FALSE, 'authorized', 'published', 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, "
+        "runtime_eligible, metadata, created_by) VALUES "
+        "('legacy-rules-v1', 'legacy-rules', 1, 'published', TRUE, "
+        "'{\"local_test_only\": true}', 'test'), "
+        "('legacy-base-rules-v1', 'legacy-base-rules', 1, 'published', TRUE, "
+        "'{\"local_test_only\": true}', 'test'), "
+        "('qualified-rules-v1', 'qualified-rules', 1, 'published', TRUE, '{}', 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_version_publication_gates (rule_set_version_id, status) VALUES "
+        "('legacy-rules-v1', 'ready'), ('legacy-base-rules-v1', 'ready'), "
+        "('qualified-rules-v1', 'ready')"
+    )
+    test_db.execute(
+        "INSERT INTO scenario_rule_bindings (scenario_version_id, rule_set_version_id) VALUES "
+        "('legacy-sv', 'legacy-rules-v1'), ('live-sv', 'qualified-rules-v1')"
+    )
+    test_db.execute(
+        "INSERT INTO room_rule_bindings (room_id, rule_set_version_id) VALUES "
+        "('legacy-direct-room', 'legacy-rules-v1'), "
+        "('legacy-overridden-room', 'qualified-rules-v1')"
+    )
+
+    result = retire_local_test_rule_versions(test_db)
+
+    assert result == {"retired_rule_versions": 2, "retired_rooms": 5}
+    assert test_db.execute(
+        "SELECT runtime_eligible FROM rule_set_versions WHERE rule_set_version_id = 'legacy-rules-v1'"
+    ).fetchone()["runtime_eligible"] is False
+    assert test_db.execute(
+        "SELECT runtime_eligible FROM rule_set_versions WHERE rule_set_version_id = 'legacy-base-rules-v1'"
+    ).fetchone()["runtime_eligible"] is False
+    statuses = {
+        row["room_id"]: (row["rule_source_status"], row["rule_source_reason"])
+        for row in test_db.execute(
+            "SELECT room_id, rule_source_status, rule_source_reason FROM rooms ORDER BY room_id"
+        ).fetchall()
+    }
+    assert statuses["legacy-scenario-room"] == (
+        "rule_source_retired", "local_test_rule_version"
+    )
+    assert statuses["legacy-direct-room"] == (
+        "rule_source_retired", "local_test_rule_version"
+    )
+    assert statuses["legacy-fallback-room"] == (
+        "rule_source_retired", "local_test_rule_version"
+    )
+    assert statuses["legacy-overridden-room"] == (
+        "rule_source_retired", "local_test_rule_version"
+    )
+    assert statuses["legacy-base-fallback-room"] == (
+        "rule_source_retired", "local_test_rule_version"
+    )
+    assert statuses["unrelated-room"] == ("ready", None)
+    assert frozen_rule_policy_sources(test_db, "unrelated-room", "live-sv") == [{
+        "scope": "scenario",
+        "rule_set_version_id": "qualified-rules-v1",
+        "metadata": {},
+    }]
+    assert test_db.execute("SELECT COUNT(*) AS count FROM rule_set_versions").fetchone()["count"] == 3
+    assert retire_local_test_rule_versions(test_db) == {
+        "retired_rule_versions": 0,
+        "retired_rooms": 0,
     }
 
 

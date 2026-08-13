@@ -3291,6 +3291,9 @@ class ResolutionPipeline:
                 from ..ai.rule_policy_compiler import (
                     validate_compiled_rule_artifact,
                 )
+                from ..rule_source_lifecycle import (
+                    are_runtime_qualified_rule_sources,
+                )
 
                 room_ai_config = get_room_ai_config(self.conn, room_id) or {}
                 runtime_binding = room_ai_config.get("runtime_binding")
@@ -3313,6 +3316,9 @@ class ResolutionPipeline:
                     if not (
                         isinstance(frozen_sources, list)
                         and isinstance(compiled, dict)
+                        and are_runtime_qualified_rule_sources(
+                            self.conn, frozen_sources
+                        )
                         and validate_compiled_rule_artifact(
                             runtime_package_artifact_id=(
                                 runtime_package_artifact_id
@@ -3365,6 +3371,11 @@ class ResolutionPipeline:
         elif player_experience_version != "v1":
             return {}
         try:
+            from ..rule_source_lifecycle import qualified_rule_version_predicate
+
+            qualified_rule_version_sql = qualified_rule_version_predicate(
+                "rsv.rule_set_version_id"
+            )
             if scenario_version_id:
                 rows = self.conn.execute(
                     """
@@ -3375,8 +3386,9 @@ class ResolutionPipeline:
                       ON rsv.rule_set_version_id = srb.rule_set_version_id
                     JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id
                     WHERE srb.scenario_version_id = %s
+                      AND """ + qualified_rule_version_sql + """
                     ORDER BY CASE WHEN rs.is_base THEN 0 ELSE 1 END,
-                             srb.priority, rsv.rule_set_version_id
+                     srb.priority, rsv.rule_set_version_id
                     """,
                     (scenario_version_id,),
                 ).fetchall()
@@ -3396,7 +3408,7 @@ class ResolutionPipeline:
                     FROM rule_set_versions rsv
                     JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id
                     WHERE rs.system = 'coc7' AND rs.is_base = TRUE
-                      AND rs.status = 'published' AND rsv.status = 'published'
+                      AND """ + qualified_rule_version_sql + """
                     ORDER BY rsv.version_number, rsv.rule_set_version_id
                     """
                 ).fetchall()
@@ -3417,6 +3429,7 @@ class ResolutionPipeline:
                     JOIN rule_set_versions rsv
                       ON rsv.rule_set_version_id = rrb.rule_set_version_id
                     WHERE rrb.room_id = %s
+                      AND """ + qualified_rule_version_sql + """
                     ORDER BY rrb.priority, rsv.rule_set_version_id
                     """,
                     (room_id,),

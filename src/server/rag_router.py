@@ -280,6 +280,7 @@ async def publish_rule_set_version(request: Request, rule_set_version_id: str):
     )
     version = conn.execute(
         "SELECT rsv.rule_set_id, rs.system, rs.is_base, rsv.source_sha256, "
+        "rsv.metadata @> '{\"local_test_only\": true}'::jsonb AS is_local_test_only, "
         "sd.source_document_id AS official_source_document_id, sd.source_filename, "
         "sd.source_sha256 AS official_source_sha256, gate.status AS gate_status "
         "FROM rule_set_versions rsv "
@@ -293,6 +294,8 @@ async def publish_rule_set_version(request: Request, rule_set_version_id: str):
     ).fetchone()
     if not version:
         raise HTTPException(404, "规则版本不存在")
+    if version.get("is_local_test_only") is True:
+        raise HTTPException(409, detail={"code": "rule_version_retired"})
     claimed_official = str(version.get("source_sha256") or "").upper() == OFFICIAL_RULEBOOK_SHA256
     if claimed_official:
         linked_source_is_official = (
@@ -308,6 +311,17 @@ async def publish_rule_set_version(request: Request, rule_set_version_id: str):
         if not coverage["complete"] or not coverage["valid_statuses"] or coverage["needs_review"]:
             raise HTTPException(409, detail={"code": "rule_version_gate_not_ready"})
     with conn.transaction() as tx:
+        if not claimed_official:
+            tx.execute(
+                """
+                INSERT INTO rule_version_publication_gates (
+                    rule_set_version_id, status, diagnostics
+                ) VALUES (%s, 'ready', '{}'::jsonb)
+                ON CONFLICT (rule_set_version_id)
+                DO UPDATE SET status = 'ready', updated_at = NOW()
+                """,
+                (rule_set_version_id,),
+            )
         tx.execute(
             "UPDATE rule_set_versions SET status = 'superseded', runtime_eligible = FALSE "
             "WHERE rule_set_id = %s AND status = 'published' "
@@ -406,14 +420,18 @@ async def bind_room_rule_version(request: Request, room_id: str, body: dict):
     if isinstance(runtime_binding, dict) and runtime_binding.get("locked") is True:
         raise HTTPException(409, "房间规则运行版本已固定，不能静默切换")
     rule_set_version_id = str(body.get("rule_set_version_id") or "").strip()
+    from .rule_source_lifecycle import is_runtime_qualified_rule_version
+
     version = request.app.state.db.execute(
-        "SELECT status FROM rule_set_versions WHERE rule_set_version_id = %s",
+        "SELECT rule_set_version_id FROM rule_set_versions WHERE rule_set_version_id = %s",
         (rule_set_version_id,),
     ).fetchone()
     if not version:
         raise HTTPException(404, "规则版本不存在")
-    if version.get("status") != "published":
-        raise HTTPException(409, "只能绑定已发布规则版本")
+    if not is_runtime_qualified_rule_version(
+        request.app.state.db, rule_set_version_id
+    ):
+        raise HTTPException(409, "只能绑定合格且已发布的规则版本")
     priority = max(0, min(int(body.get("priority", 200)), 1000))
     request.app.state.db.execute(
         """
@@ -444,14 +462,16 @@ async def bind_scenario_rule_version(
     if not scenario_version:
         raise HTTPException(404, "剧本版本不存在")
     rule_set_version_id = str(body.get("rule_set_version_id") or "").strip()
+    from .rule_source_lifecycle import is_runtime_qualified_rule_version
+
     rule_version = conn.execute(
-        "SELECT status FROM rule_set_versions WHERE rule_set_version_id = %s",
+        "SELECT rule_set_version_id FROM rule_set_versions WHERE rule_set_version_id = %s",
         (rule_set_version_id,),
     ).fetchone()
     if not rule_version:
         raise HTTPException(404, "规则版本不存在")
-    if rule_version.get("status") != "published":
-        raise HTTPException(409, "只能绑定已发布规则版本")
+    if not is_runtime_qualified_rule_version(conn, rule_set_version_id):
+        raise HTTPException(409, "只能绑定合格且已发布的规则版本")
     priority = max(0, min(int(body.get("priority", 100)), 1000))
     conn.execute(
         """

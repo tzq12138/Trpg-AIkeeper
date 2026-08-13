@@ -578,6 +578,11 @@ class RAGStore:
                 filter_params: list = []
                 rule_priority_sql = "0 AS rule_priority"
                 rule_priority_params: list = []
+                from ..rule_source_lifecycle import qualified_rule_version_predicate
+
+                qualified_rule_version_sql = qualified_rule_version_predicate(
+                    "document_chunks.rule_set_version_id"
+                )
                 if room_id:
                     cur.execute(
                         "SELECT scenario_id, scenario_version_id FROM rooms WHERE room_id = %s",
@@ -590,7 +595,10 @@ class RAGStore:
                         "COALESCE((SELECT 3000000 + LEAST(GREATEST(rrb.priority, 0), 999999) "
                         "FROM room_rule_bindings rrb "
                         "WHERE rrb.room_id = %s "
-                        "AND rrb.rule_set_version_id = document_chunks.rule_set_version_id), 0)"
+                        "AND rrb.rule_set_version_id = document_chunks.rule_set_version_id "
+                        "AND "
+                        + qualified_rule_version_predicate("rrb.rule_set_version_id")
+                        + "), 0)"
                     ]
                     rule_priority_params.append(room_id)
                     if bound_version:
@@ -601,7 +609,10 @@ class RAGStore:
                             "JOIN rule_set_versions bound_rsv ON bound_rsv.rule_set_version_id = srb.rule_set_version_id "
                             "JOIN rule_sets bound_rs ON bound_rs.rule_set_id = bound_rsv.rule_set_id "
                             "WHERE srb.scenario_version_id = %s "
-                            "AND srb.rule_set_version_id = document_chunks.rule_set_version_id), 0)"
+                            "AND srb.rule_set_version_id = document_chunks.rule_set_version_id "
+                            "AND "
+                            + qualified_rule_version_predicate("srb.rule_set_version_id")
+                            + "), 0)"
                         )
                         rule_priority_params.append(bound_version)
                     if not bound_version:
@@ -610,8 +621,9 @@ class RAGStore:
                             "JOIN rule_sets priority_rs ON priority_rs.rule_set_id = priority_rsv.rule_set_id "
                             "WHERE priority_rsv.rule_set_version_id = document_chunks.rule_set_version_id "
                             "AND priority_rs.system = 'coc7' AND priority_rs.is_base = TRUE "
-                            "AND priority_rs.status = 'published' "
-                            "AND priority_rsv.status = 'published'), 0)"
+                            "AND "
+                            + qualified_rule_version_predicate("priority_rsv.rule_set_version_id")
+                            + "), 0)"
                         )
                     rule_priority_sql = (
                         "CASE WHEN source_type <> 'rule' THEN 0 "
@@ -623,14 +635,19 @@ class RAGStore:
                     filter_params.extend([room_id, "scenario", "npc", "content"])
                     rule_scope = (
                         "(source_type = %s AND room_id IS NULL AND "
-                        + ("rule_set_version_id IN (" if bound_version else "(rule_set_version_id IS NULL OR rule_set_version_id IN (")
-                        + "SELECT rule_set_version_id FROM room_rule_bindings WHERE room_id = %s"
+                        + "rule_set_version_id IN ("
+                        + "SELECT rrb.rule_set_version_id FROM room_rule_bindings AS rrb "
+                        + "WHERE rrb.room_id = %s AND "
+                        + qualified_rule_version_predicate("rrb.rule_set_version_id")
                     )
                     filter_params.extend(["rule", room_id])
                     if bound_version:
                         rule_scope += (
-                            " UNION SELECT rule_set_version_id FROM scenario_rule_bindings "
-                            "WHERE scenario_version_id = %s"
+                            " UNION SELECT srb.rule_set_version_id FROM scenario_rule_bindings AS srb "
+                            "WHERE srb.scenario_version_id = %s AND "
+                            + qualified_rule_version_predicate(
+                                "srb.rule_set_version_id"
+                            )
                         )
                         filter_params.append(bound_version)
                     if not bound_version:
@@ -639,9 +656,10 @@ class RAGStore:
                             "FROM rule_set_versions rsv JOIN rule_sets rs "
                             "ON rs.rule_set_id = rsv.rule_set_id "
                             "WHERE rs.system = 'coc7' AND rs.is_base = TRUE "
-                            "AND rs.status = 'published' AND rsv.status = 'published'"
+                            "AND "
+                            + qualified_rule_version_predicate("rsv.rule_set_version_id")
                         )
-                    rule_scope += "))" if bound_version else ")))"
+                    rule_scope += "))"
                     scope.append(rule_scope)
                     if scenario_id:
                         scenario_scope = (
@@ -660,8 +678,10 @@ class RAGStore:
                     conditions.append(
                         "(scenario_version_id = %s OR (source_type = %s "
                         "AND room_id IS NULL AND rule_set_version_id IN ("
-                        "SELECT rule_set_version_id FROM scenario_rule_bindings "
-                        "WHERE scenario_version_id = %s)))"
+                        "SELECT srb.rule_set_version_id FROM scenario_rule_bindings AS srb "
+                        "WHERE srb.scenario_version_id = %s AND "
+                        + qualified_rule_version_predicate("srb.rule_set_version_id")
+                        + ")))"
                     )
                     filter_params.extend([
                         scenario_version_id,
@@ -672,6 +692,10 @@ class RAGStore:
                 if rule_set_version_id:
                     conditions.append("rule_set_version_id = %s")
                     filter_params.append(rule_set_version_id)
+
+                conditions.append(
+                    "(source_type <> 'rule' OR " + qualified_rule_version_sql + ")"
+                )
 
                 allowed_visibility = _allowed_visibilities(audience)
                 if allowed_visibility is not None:
@@ -686,6 +710,21 @@ class RAGStore:
 
                 where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
                 lexical_pattern = f"%{query}%"
+                cjk_patterns = _cjk_lexical_patterns(query)
+                has_cjk_query = bool(re.search(r"[\u4e00-\u9fff]", query))
+                lexical_evidence_sql = "0"
+                lexical_params: list[str] = [lexical_pattern, query]
+                if cjk_patterns:
+                    cjk_clauses = ["content ILIKE %s"] * len(cjk_patterns)
+                    lexical_evidence_sql = " + ".join(
+                        f"CASE WHEN {clause} THEN 1 ELSE 0 END"
+                        for clause in cjk_clauses
+                    )
+                    lexical_params.extend(f"%{pattern}%" for pattern in cjk_patterns)
+                elif not has_cjk_query:
+                    lexical_evidence_sql = "CASE WHEN content ILIKE %s THEN 1 ELSE 0 END"
+                    lexical_params.append(lexical_pattern)
+                min_rule_lexical_evidence = 1
                 lexical_sql = (
                     "CASE WHEN content ILIKE %s THEN 1.0 "
                     "ELSE ts_rank_cd(to_tsvector('simple', content), "
@@ -709,41 +748,55 @@ class RAGStore:
                                    THEN GREATEST(0.0, 1 - (embedding <=> %s::vector))
                                    ELSE 0.0 END AS similarity,
                                    {lexical_sql} AS lexical_score,
+                                   {lexical_evidence_sql} AS lexical_evidence,
                                    {rule_priority_sql}
                             FROM document_chunks
                             {where}
                         )
                         SELECT *, (similarity * 0.75 + lexical_score * 0.25) AS score
                         FROM ranked
+                        WHERE source_type <> 'rule'
+                           OR lexical_evidence >= %s
+                           OR similarity >= 0.45
                         ORDER BY {order_by}
                         LIMIT %s
                     """
                     query_params = [
                         query_embedding_model, query_embedding_dimensions,
-                        query_vec, lexical_pattern, query,
-                        *rule_priority_params, *filter_params, top_k,
+                        query_vec, *lexical_params,
+                        *rule_priority_params, *filter_params,
+                        min_rule_lexical_evidence, top_k,
                     ]
                 else:
                     sql = f"""
                         WITH ranked AS (
                             SELECT {selected_columns}, 0.0::float AS similarity,
                                    {lexical_sql} AS lexical_score,
+                                   {lexical_evidence_sql} AS lexical_evidence,
                                    {rule_priority_sql}
                             FROM document_chunks
                             {where}
                         )
                         SELECT *, lexical_score AS score
                         FROM ranked
+                        WHERE source_type <> 'rule'
+                           OR lexical_evidence >= %s
                         ORDER BY {order_by}
                         LIMIT %s
                     """
                     query_params = [
-                        lexical_pattern, query,
-                        *rule_priority_params, *filter_params, top_k,
+                        *lexical_params,
+                        *rule_priority_params, *filter_params,
+                        min_rule_lexical_evidence, top_k,
                     ]
 
                 cur.execute(sql, query_params)
-                return [_normalize_search_row(row) for row in cur.fetchall()]
+                results = [_normalize_search_row(row) for row in cur.fetchall()]
+                return [
+                    result
+                    for result in results
+                    if _is_rule_result_relevant(result, min_rule_lexical_evidence)
+                ]
 
     def index_asset(self, scenario_id: str, asset_data: dict) -> int:
         """Index asset metadata (filename, type, tags, description)."""
@@ -786,6 +839,37 @@ def _allowed_visibilities(audience: str) -> list[str] | None:
     if audience == "host":
         return ["public", "party", "host_only"]
     return ["public", "party"]
+
+
+_CJK_QUESTION_WORDS = (
+    "请问", "一下", "什么", "如何", "怎么", "怎样", "为什么", "是否",
+    "能否", "可以", "会", "发生", "的", "了", "吗", "呢", "啊", "呀",
+)
+
+
+def _cjk_lexical_patterns(query: str) -> list[str]:
+    """Create de-duplicated two-to-four-character candidates for Chinese rules text."""
+    normalized = re.sub(r"\s+", "", query)
+    for question_word in _CJK_QUESTION_WORDS:
+        normalized = normalized.replace(question_word, "")
+    patterns: list[str] = []
+    for run in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
+        upper_length = min(4, len(run))
+        for length in range(upper_length, 1, -1):
+            for start in range(0, len(run) - length + 1):
+                candidate = run[start:start + length]
+                if candidate not in patterns:
+                    patterns.append(candidate)
+    return patterns[:24]
+
+
+def _is_rule_result_relevant(result: dict, min_lexical_evidence: int) -> bool:
+    """Keep only supported rule results; non-rule sources retain their existing behavior."""
+    if result.get("source_type") != "rule":
+        return True
+    lexical_evidence = int(result.get("lexical_evidence") or 0)
+    similarity = float(result.get("similarity") or 0)
+    return lexical_evidence >= min_lexical_evidence or similarity >= 0.45
 
 
 def _content_projection_text(item: dict) -> str:
@@ -841,8 +925,10 @@ def _normalize_search_row(row) -> dict:
     result["citation"] = citation
     similarity = float(result.get("similarity") or 0)
     lexical_score = float(result.get("lexical_score") or 0)
+    lexical_evidence = int(result.get("lexical_evidence") or 0)
     result["similarity"] = similarity
     result["lexical_score"] = lexical_score
+    result["lexical_evidence"] = lexical_evidence
     result["score"] = float(result.get("score") or similarity * 0.75 + lexical_score * 0.25)
     return result
 

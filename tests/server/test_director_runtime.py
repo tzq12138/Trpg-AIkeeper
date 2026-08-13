@@ -221,8 +221,12 @@ def test_director_rule_version_only_uses_live_binding_for_explicit_v1(test_db):
     test_db.execute(
         "INSERT INTO rule_set_versions "
         "(rule_set_version_id, rule_set_id, version_number, label, status, "
-        "metadata, created_by) VALUES ('director-live-v1', "
-        "'director-live-rules', 1, 'v1', 'published', '{}', 'tester')"
+        "runtime_eligible, metadata, created_by) VALUES ('director-live-v1', "
+        "'director-live-rules', 1, 'v1', 'published', TRUE, '{}', 'tester')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_version_publication_gates (rule_set_version_id, status) "
+        "VALUES ('director-live-v1', 'ready')"
     )
     test_db.execute(
         "INSERT INTO room_rule_bindings "
@@ -244,6 +248,16 @@ def test_director_rule_version_only_uses_live_binding_for_explicit_v1(test_db):
         test_db,
         "director-missing-binding-room",
     ) == "director-live-v1"
+
+    test_db.execute(
+        "UPDATE rule_set_versions SET runtime_eligible = FALSE "
+        "WHERE rule_set_version_id = 'director-live-v1'"
+    )
+
+    assert _rule_version(
+        test_db,
+        "director-missing-binding-room",
+    ) == "unversioned"
 
 
 def test_director_plan_exposes_sanitized_composite_steps_to_confirmation(

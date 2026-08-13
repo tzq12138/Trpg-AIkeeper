@@ -101,6 +101,11 @@ async def lifespan(app: FastAPI):
     conn = pg_db.get_connection()
     app.state.db = conn
     app.state.pg_db = pg_db
+    from .rule_source_lifecycle import backfill_legacy_runtime_rule_publication_gates
+
+    backfilled_rule_gates = backfill_legacy_runtime_rule_publication_gates(conn)
+    if backfilled_rule_gates:
+        logger.info("Rules [OK] backfilled %s legacy publication gate(s)", backfilled_rule_gates)
     from .router_auth import ensure_reserved_admin
     ensure_reserved_admin(conn)
     logger.info("Authentication [OK] reserved admin account ensured")

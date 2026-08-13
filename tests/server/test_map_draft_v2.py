@@ -218,12 +218,16 @@ def test_admin_cannot_delete_asset_used_as_confirmed_map_base(client, test_db):
 def test_admin_can_install_a_golden_module_as_a_ready_to_play_scenario(client, test_db):
     setup_auth_test_data(test_db)
     test_db.execute(
-        "INSERT INTO rule_sets (rule_set_id, name, slug, system, license_type, created_by, status) "
-        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', 'open', 'test', 'published')"
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, is_base, license_type, created_by, status) "
+        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', TRUE, 'open', 'test', 'published')"
     )
     test_db.execute(
-        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, created_by) "
-        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', 'test')"
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, runtime_eligible, created_by) "
+        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', TRUE, 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_version_publication_gates (rule_set_version_id, status) "
+        "VALUES ('coc7-base-v1', 'ready')"
     )
     test_db.commit()
 
@@ -267,15 +271,52 @@ def test_admin_can_install_a_golden_module_as_a_ready_to_play_scenario(client, t
     assert payload["scenarioId"] in [item["scenario_id"] for item in library.json()["items"]]
 
 
+def test_golden_module_install_uses_a_qualified_official_base_over_retired_legacy_version(client, test_db):
+    setup_auth_test_data(test_db)
+    test_db.execute(
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, is_base, license_type, created_by, status) VALUES "
+        "('official-base', 'Official CoC7', 'official-coc7-core', 'coc7', TRUE, 'authorized', 'test', 'published'), "
+        "('retired-base', 'Retired CoC7', 'coc7', 'coc7', TRUE, 'authorized', 'test', 'published')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, "
+        "runtime_eligible, metadata, created_by) VALUES "
+        "('official-base-v1', 'official-base', 1, 'published', TRUE, '{}', 'test'), "
+        "('retired-base-v99', 'retired-base', 99, 'published', FALSE, "
+        "'{\"local_test_only\": true}', 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_version_publication_gates (rule_set_version_id, status) VALUES "
+        "('official-base-v1', 'ready'), ('retired-base-v99', 'ready')"
+    )
+    test_db.commit()
+
+    installed = client.post(
+        "/api/admin/golden-modules/golden-solo-tide-letter/install",
+        headers={"Authorization": f"Bearer {login(client, 'admin')}"},
+    )
+
+    assert installed.status_code == 201
+    binding = test_db.execute(
+        "SELECT rule_set_version_id FROM scenario_rule_bindings WHERE scenario_version_id = %s",
+        (installed.json()["scenarioVersionId"],),
+    ).fetchone()
+    assert binding == {"rule_set_version_id": "official-base-v1"}
+
+
 def test_golden_module_install_builds_a_ready_cited_runtime_package(client, test_db):
     setup_auth_test_data(test_db)
     test_db.execute(
-        "INSERT INTO rule_sets (rule_set_id, name, slug, system, license_type, created_by, status) "
-        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', 'open', 'test', 'published')"
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, is_base, license_type, created_by, status) "
+        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', TRUE, 'open', 'test', 'published')"
     )
     test_db.execute(
-        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, created_by) "
-        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', 'test')"
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, runtime_eligible, created_by) "
+        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', TRUE, 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_version_publication_gates (rule_set_version_id, status) "
+        "VALUES ('coc7-base-v1', 'ready')"
     )
     test_db.commit()
 
@@ -343,12 +384,16 @@ def test_golden_module_install_builds_a_ready_cited_runtime_package(client, test
 def test_second_golden_playthrough_module_installs_with_a_ready_runtime_package(client, test_db):
     setup_auth_test_data(test_db)
     test_db.execute(
-        "INSERT INTO rule_sets (rule_set_id, name, slug, system, license_type, created_by, status) "
-        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', 'open', 'test', 'published')"
+        "INSERT INTO rule_sets (rule_set_id, name, slug, system, is_base, license_type, created_by, status) "
+        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', TRUE, 'open', 'test', 'published')"
     )
     test_db.execute(
-        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, created_by) "
-        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', 'test')"
+        "INSERT INTO rule_set_versions (rule_set_version_id, rule_set_id, version_number, status, runtime_eligible, created_by) "
+        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', TRUE, 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_version_publication_gates (rule_set_version_id, status) "
+        "VALUES ('coc7-base-v1', 'ready')"
     )
     test_db.commit()
 

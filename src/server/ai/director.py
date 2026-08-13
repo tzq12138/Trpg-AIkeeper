@@ -655,6 +655,7 @@ def _rule_version(conn, room_id: str) -> str:
     try:
         from .ai_config import get_room_ai_config
         from .rule_policy_compiler import validate_compiled_rule_artifact
+        from ..rule_source_lifecycle import are_runtime_qualified_rule_sources
 
         room_ai_config = get_room_ai_config(conn, room_id) or {}
         binding = room_ai_config.get("runtime_binding")
@@ -667,6 +668,7 @@ def _rule_version(conn, room_id: str) -> str:
             if (
                 isinstance(sources, list)
                 and isinstance(compiled, dict)
+                and are_runtime_qualified_rule_sources(conn, sources)
                 and validate_compiled_rule_artifact(
                     runtime_package_artifact_id=str(
                         binding.get("runtime_package_artifact_id") or ""
@@ -692,12 +694,15 @@ def _rule_version(conn, room_id: str) -> str:
         or str(version_row.get("player_experience_version") or "") != "v1"
     ):
         return "unversioned"
+    from ..rule_source_lifecycle import qualified_rule_version_predicate
+
     row = conn.execute(
         """
-        SELECT rule_set_version_id
-        FROM room_rule_bindings
-        WHERE room_id = %s
-        ORDER BY priority, rule_set_version_id
+        SELECT rrb.rule_set_version_id
+        FROM room_rule_bindings AS rrb
+        WHERE rrb.room_id = %s
+          AND """ + qualified_rule_version_predicate("rrb.rule_set_version_id") + """
+        ORDER BY rrb.priority, rrb.rule_set_version_id
         LIMIT 1
         """,
         (room_id,),

@@ -14,6 +14,7 @@ from .rule_policy_compiler import (
     compiled_rule_artifact_id,
     rule_policy_sources_signature,
 )
+from ..rule_source_lifecycle import qualified_rule_version_predicate
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ def frozen_rule_policy_sources(
               ON rsv.rule_set_version_id = srb.rule_set_version_id
             JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id
             WHERE srb.scenario_version_id = %s
+              AND """ + qualified_rule_version_predicate("rsv.rule_set_version_id") + """
             ORDER BY CASE WHEN rs.is_base THEN 0 ELSE 1 END,
                      srb.priority, rsv.rule_set_version_id
             """,
@@ -107,7 +109,7 @@ def frozen_rule_policy_sources(
             FROM rule_set_versions rsv
             JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id
             WHERE rs.system = 'coc7' AND rs.is_base = TRUE
-              AND rs.status = 'published' AND rsv.status = 'published'
+              AND """ + qualified_rule_version_predicate("rsv.rule_set_version_id") + """
             ORDER BY rsv.version_number, rsv.rule_set_version_id
             """
         ).fetchall()
@@ -126,6 +128,7 @@ def frozen_rule_policy_sources(
         JOIN rule_set_versions rsv
           ON rsv.rule_set_version_id = rrb.rule_set_version_id
         WHERE rrb.room_id = %s
+          AND """ + qualified_rule_version_predicate("rsv.rule_set_version_id") + """
         ORDER BY rrb.priority, rsv.rule_set_version_id
         """,
         (room_id,),

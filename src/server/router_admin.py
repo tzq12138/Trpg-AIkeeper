@@ -18,6 +18,7 @@ from .runtime_lifecycle import (
     character_lifecycle_guard,
     room_lifecycle_guard,
 )
+from .rule_source_lifecycle import qualified_rule_version_predicate
 
 router = APIRouter(prefix="/api/admin")
 logger = logging.getLogger(__name__)
@@ -3223,8 +3224,9 @@ async def install_golden_module(request: Request, module_id: str):
     rule_version = conn.execute(
         "SELECT rsv.rule_set_version_id FROM rule_set_versions rsv "
         "JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id "
-        "WHERE rs.slug = 'coc7' AND rs.status = 'published' AND rsv.status = 'published' "
-        "ORDER BY rsv.version_number DESC LIMIT 1"
+        "WHERE rs.system = 'coc7' AND rs.is_base = TRUE AND "
+        + qualified_rule_version_predicate("rsv.rule_set_version_id")
+        + " ORDER BY rsv.version_number DESC, rsv.rule_set_version_id DESC LIMIT 1"
     ).fetchone()
     if not rule_version:
         raise HTTPException(409, "需要先发布授权的 CoC7 规则版本")

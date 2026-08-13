@@ -20,6 +20,7 @@ from .module_compiler import ModuleCompiler, ModuleCompilerError
 from .quality import QualityReportGenerator
 from .review_service import review_publish_blockers
 from .solo_adventure import extract_solo_adventure
+from ..rule_source_lifecycle import qualified_rule_version_predicate
 
 logger = logging.getLogger(__name__)
 
@@ -1255,6 +1256,7 @@ class ScenarioImportService:
             JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id
             WHERE rs.system = 'coc7' AND rs.is_base = TRUE
               AND rs.status = 'published' AND rsv.status = 'published'
+              AND """ + qualified_rule_version_predicate("rsv.rule_set_version_id") + """
             ON CONFLICT (scenario_version_id, rule_set_version_id) DO NOTHING
             """,
             (scenario_version_id,),

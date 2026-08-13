@@ -1,7 +1,9 @@
 import json
 from contextlib import contextmanager
 
-from src.server.ai.rag import RAGStore
+import pytest
+
+from src.server.ai.rag import RAGStore, _cjk_lexical_patterns
 
 
 class FakeEmbedding:
@@ -148,6 +150,21 @@ def test_search_admin_can_target_an_explicit_rule_set_version():
     assert "rules-v1" in cursor.main_params
 
 
+def test_explicit_rule_version_still_requires_a_runtime_qualified_version():
+    """An administrator-supplied ID must not revive a retired rule version."""
+    cursor = SearchCursor(rows=[_row()])
+    store = RAGStore(FakePgDb(cursor), FakeEmbedding())
+
+    store.search("幸运值如何回复", audience="admin", rule_set_version_id="legacy-v1")
+
+    assert "source_type <> 'rule' OR EXISTS" in cursor.main_sql
+    assert "qualified_rsv.status = 'published'" in cursor.main_sql
+    assert "qualified_rsv.runtime_eligible = TRUE" in cursor.main_sql
+    assert "qualified_rs.status = 'published'" in cursor.main_sql
+    assert "qualified_gate.status = 'ready'" in cursor.main_sql
+    assert "legacy-v1" in cursor.main_params
+
+
 def test_room_rule_scope_uses_room_then_scenario_then_published_base_bindings():
     cursor = SearchCursor(room={"scenario_id": "sc-1", "scenario_version_id": "sv-1"})
     store = RAGStore(FakePgDb(cursor), FakeEmbedding())
@@ -172,6 +189,58 @@ def test_search_uses_vector_and_lexical_scores_together():
     assert "ILIKE" in cursor.main_sql
     assert "lexical_score" in cursor.main_sql
     assert results[0]["score"] == 0.8125
+
+
+def test_cjk_rule_query_adds_character_lexical_candidates_after_question_words():
+    """Chinese wording needs compact lexical evidence in addition to embeddings."""
+    cursor = SearchCursor(rows=[_row()])
+    store = RAGStore(FakePgDb(cursor), FakeEmbedding())
+
+    store.search("孤注一掷失败会发生什么", source_types=["rule"])
+
+    patterns = _cjk_lexical_patterns("孤注一掷失败会发生什么")
+    assert "孤注" in patterns
+    assert "一掷" in patterns
+    assert "什么" not in patterns
+    assert "%孤注%" in cursor.main_params
+    assert "%一掷%" in cursor.main_params
+    assert "lexical_evidence" in cursor.main_sql
+
+
+def test_low_relevance_rule_rows_are_discarded_without_affecting_other_sources():
+    """Rule-only safety thresholds must reject unsupported rules, not scenario prose."""
+    low_score_rule = _row()
+    low_score_rule.update({
+        "source_type": "rule",
+        "similarity": 0.0,
+        "lexical_score": 0.0,
+        "score": 0.0,
+    })
+    rule_store = RAGStore(
+        FakePgDb(SearchCursor(rows=[low_score_rule])),
+        FakeEmbedding(),
+    )
+    scenario_store = RAGStore(
+        FakePgDb(SearchCursor(rows=[dict(low_score_rule, source_type="scenario")])),
+        FakeEmbedding(),
+    )
+
+    assert rule_store.search("量子护盾", source_types=["rule"]) == []
+    assert len(scenario_store.search("量子护盾", source_types=["scenario"])) == 1
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("幸运值如何回复", ["幸运", "运值", "值回", "回复"]),
+        ("孤注一掷失败会发生什么", ["孤注", "一掷", "掷失", "失败"]),
+    ],
+)
+def test_cjk_lexical_patterns_keep_relevant_two_character_candidates(query, expected):
+    """Question filler is removed before candidates are generated."""
+    patterns = _cjk_lexical_patterns(query)
+
+    assert all(candidate in patterns for candidate in expected)
 
 
 def test_search_only_scores_vectors_from_the_current_embedding_space():
