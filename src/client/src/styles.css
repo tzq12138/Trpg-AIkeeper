@@ -376,6 +376,20 @@ textarea {
   margin-top: 16px;
 }
 
+.bh-admin-room-pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.bh-admin-room-pagination .bh-input {
+  width: auto;
+  min-height: 34px;
+  padding: 4px 8px;
+}
+
 .bh-admin-room-layout > * {
   min-width: 0;
 }

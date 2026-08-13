@@ -675,6 +675,67 @@ function OverviewPanel() {
 
 // ── Rooms ──
 
+type RoomPage = {
+  items: any[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+};
+
+type RoomPageResponse = {
+  items?: any[];
+  page?: number;
+  page_size?: number;
+  total?: number;
+  total_pages?: number;
+};
+
+const ROOM_PAGE_SIZES = [10, 30, 50] as const;
+const DEFAULT_ROOM_PAGE_SIZE = ROOM_PAGE_SIZES[0];
+
+export function normalizeRoomPageResponse(response: RoomPageResponse): RoomPage {
+  const items = Array.isArray(response.items) ? response.items : [];
+  const page = Number.isInteger(response.page) && response.page! > 0 ? response.page! : 1;
+  const pageSize = ROOM_PAGE_SIZES.includes(response.page_size as typeof ROOM_PAGE_SIZES[number])
+    ? response.page_size!
+    : DEFAULT_ROOM_PAGE_SIZE;
+  const total = Number.isInteger(response.total) && response.total! >= 0 ? response.total! : items.length;
+  const totalPages = Number.isInteger(response.total_pages) && response.total_pages! > 0
+    ? response.total_pages!
+    : Math.max(1, Math.ceil(total / pageSize));
+
+  return { items, page, pageSize, total, totalPages };
+}
+
+export function toggleCurrentPageSelection(selectedIds: string[], pageRoomIds: string[]) {
+  const currentPageIds = Array.from(new Set(pageRoomIds));
+  const allSelected = currentPageIds.length > 0 && currentPageIds.every((id) => selectedIds.includes(id));
+
+  if (allSelected) return selectedIds.filter((id) => !currentPageIds.includes(id));
+  return Array.from(new Set([...selectedIds, ...currentPageIds]));
+}
+
+export function nextRoomPageAfterDeletion({
+  page,
+  pageSize,
+  total,
+  deleted,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  deleted: number;
+}) {
+  const remainingTotal = Math.max(0, total - Math.max(0, deleted));
+  const remainingPages = Math.max(1, Math.ceil(remainingTotal / pageSize));
+  return Math.min(Math.max(1, page), remainingPages);
+}
+
+function roomHasRetiredRuleSource(room: any) {
+  return room?.rule_source_status === 'rule_source_retired';
+}
+
 const ROOM_STATUS_COLORS: Record<string, string> = {
   draft: 'var(--bh-muted)',
   lobby: 'var(--bh-blue)',
@@ -727,6 +788,9 @@ export function RoomDetailPanel({
         <>
           <h3>{detail.room_id}</h3>
           <p>剧本：{detail.scenario_title || '未指定'}</p>
+          {roomHasRetiredRuleSource(detail) && (
+            <div className="bh-error">规则源已失效，无法打开</div>
+          )}
           <p>
             状态：
             <strong style={{ color: ROOM_STATUS_COLORS[detail.status] || 'var(--bh-muted)' }}>
@@ -773,11 +837,13 @@ export function RoomDetailPanel({
             })}
           </div>
 
-          <div className="bh-action-row" style={{ marginTop: 12 }}>
-            <a className="bh-button bh-button--yellow" href={`/host/${detail.room_id}`}>房主大厅</a>
-            <a className="bh-button bh-button--yellow" href={`/host/${detail.room_id}/stage`}>房主舞台</a>
-            <a className="bh-button" href={`/player/${detail.room_id}`}>玩家入口</a>
-          </div>
+          {!roomHasRetiredRuleSource(detail) && (
+            <div className="bh-action-row" style={{ marginTop: 12 }}>
+              <a className="bh-button bh-button--yellow" href={`/host/${detail.room_id}`}>房主大厅</a>
+              <a className="bh-button bh-button--yellow" href={`/host/${detail.room_id}/stage`}>房主舞台</a>
+              <a className="bh-button" href={`/player/${detail.room_id}`}>玩家入口</a>
+            </div>
+          )}
         </>
       )}
     </aside>
@@ -785,7 +851,13 @@ export function RoomDetailPanel({
 }
 
 function RoomsPanel() {
-  const [rooms, setRooms] = useState<any[]>([]);
+  const [roomPage, setRoomPage] = useState<RoomPage>({
+    items: [],
+    page: 1,
+    pageSize: DEFAULT_ROOM_PAGE_SIZE,
+    total: 0,
+    totalPages: 1,
+  });
   const [selected, setSelected] = useState<string>('');
   const [detail, setDetail] = useState<any>(null);
   const [detailStatus, setDetailStatus] = useState<RoomDetailStatus>('idle');
@@ -795,16 +867,46 @@ function RoomsPanel() {
   const [deleteMessage, setDeleteMessage] = useState('');
   const [deleting, setDeleting] = useState(false);
   const detailRequestId = useRef(0);
+  const roomListRequestId = useRef(0);
+  const { items: rooms, page, pageSize, total, totalPages } = roomPage;
 
-  const load = async () => {
+  const load = async (requestedPage = page, requestedPageSize = pageSize) => {
+    const requestId = roomListRequestId.current + 1;
+    roomListRequestId.current = requestId;
     setLoading(true);
     try {
-      setRooms(await api('/api/admin/rooms'));
+      const response = await api(
+        `/api/admin/rooms?page=${requestedPage}&page_size=${requestedPageSize}`,
+      ) as RoomPageResponse;
+      const nextRoomPage = normalizeRoomPageResponse(response);
+      if (roomListRequestId.current === requestId) setRoomPage(nextRoomPage);
+      return nextRoomPage;
     } finally {
-      setLoading(false);
+      if (roomListRequestId.current === requestId) setLoading(false);
     }
   };
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(1, DEFAULT_ROOM_PAGE_SIZE); }, []);
+
+  const changePage = (nextPage: number) => {
+    if (nextPage === page || nextPage < 1 || nextPage > totalPages) return;
+    setSelectedIds([]);
+    setDeleteMessage('');
+    void load(nextPage, pageSize);
+  };
+
+  const changePageSize = (nextPageSize: number) => {
+    if (nextPageSize === pageSize) return;
+    setSelectedIds([]);
+    setDeleteMessage('');
+    void load(1, nextPageSize);
+  };
+
+  const reloadAfterDeletion = async (deletedCount: number) => {
+    const refreshedPage = await load(page, pageSize);
+    if (refreshedPage.items.length !== 0 || page <= 1) return;
+    const fallbackPage = nextRoomPageAfterDeletion({ page, pageSize, total, deleted: deletedCount });
+    if (fallbackPage < page) await load(fallbackPage, pageSize);
+  };
 
   const showDetail = (id: string) => {
     const requestId = detailRequestId.current + 1;
@@ -829,7 +931,7 @@ function RoomsPanel() {
 
   const patchRoom = async (id: string, status: string) => {
     await api(`/api/admin/rooms/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
-    load();
+    void load();
     showDetail(id);
   };
 
@@ -854,7 +956,7 @@ function RoomsPanel() {
       }
       setSelectedIds((prev) => prev.filter((roomId) => roomId !== id));
       setDeleteMessage(`已删除房间 ${id}`);
-      load();
+      await reloadAfterDeletion(1);
     } catch (error) {
       setDeleteMessage(coerceErrorMessage(error));
     } finally {
@@ -881,7 +983,7 @@ function RoomsPanel() {
         setDetailError('');
       }
       setDeleteMessage(formatBatchDeleteFeedback('房间', result));
-      await load();
+      await reloadAfterDeletion(deletedIds.length);
     } catch (error) {
       setDeleteMessage(coerceErrorMessage(error));
     } finally {
@@ -910,7 +1012,7 @@ function RoomsPanel() {
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || '创建失败'); }
       const data = await res.json();
       setShowCreate(false); setNewRoomScenarioId(''); setNewRoomOwnerId('');
-      load(); showDetail(data.room_id);
+      void load(); showDetail(data.room_id);
     } catch (e: any) { setCreateError(e.message); }
     setCreating(false);
   };
@@ -928,10 +1030,42 @@ function RoomsPanel() {
             onDelete={batchDeleteRooms}
           />
           <button className="bh-button bh-button--yellow" onClick={() => { setShowCreate(!showCreate); if (!showCreate) { api(SCENARIO_ROOM_OPTIONS_ENDPOINT).then(setScenarioList); api('/api/admin/accounts').then(setAccountList); } }}>{showCreate ? '取消' : '新建房间'}</button>
-          <button className="bh-button" onClick={load} disabled={loading}>刷新</button>
+          <button className="bh-button" onClick={() => { void load(); }} disabled={loading}>刷新</button>
         </div>
       </div>
       {deleteMessage && <div className="bh-muted-box" style={{ marginTop: 8, color: deleting ? 'var(--bh-muted)' : 'var(--bh-blue)' }}>{deleteMessage}</div>}
+
+      <div className="bh-admin-room-pagination" aria-label="房间分页">
+        <label className="bh-admin-card-select">
+          <input
+            type="checkbox"
+            checked={rooms.length > 0 && rooms.every((room) => selectedIds.includes(room.room_id))}
+            disabled={loading || rooms.length === 0}
+            onChange={() => {
+              setSelectedIds((previous) => toggleCurrentPageSelection(previous, rooms.map((room) => room.room_id)));
+              setDeleteMessage('');
+            }}
+          />
+          <span>全选本页</span>
+        </label>
+        <span className="bh-batch-toolbar__count">
+          {total === 0 ? '共 0 个房间' : `第 ${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, total)} 个，共 ${total} 个房间`}
+        </span>
+        <label className="bh-admin-card-select">
+          <span>每页</span>
+          <select
+            className="bh-input"
+            value={pageSize}
+            disabled={loading}
+            onChange={(event) => changePageSize(Number(event.target.value))}
+          >
+            {ROOM_PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+          </select>
+        </label>
+        <button className="bh-button" type="button" disabled={loading || page <= 1} onClick={() => changePage(page - 1)}>上一页</button>
+        <span className="bh-batch-toolbar__count">第 {page} / {totalPages} 页</span>
+        <button className="bh-button" type="button" disabled={loading || page >= totalPages} onClick={() => changePage(page + 1)}>下一页</button>
+      </div>
 
       {showCreate && (
         <div className="bh-panel" style={{ marginTop: 8, padding: 12 }}>
@@ -976,6 +1110,9 @@ function RoomsPanel() {
               </div>
               <span>{r.scenario_title || '无剧本'}</span>
               <small style={{ color: ROOM_STATUS_COLORS[r.status] || 'var(--bh-muted)' }}>{r.status}</small>
+              {roomHasRetiredRuleSource(r) && (
+                <small style={{ color: 'var(--bh-red)' }}>规则源已失效，无法打开</small>
+              )}
               <div className="bh-admin-card-actions">
                 <button
                   className="bh-button bh-button--red"
