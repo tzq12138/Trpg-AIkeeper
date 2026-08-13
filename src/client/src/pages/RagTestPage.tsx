@@ -19,7 +19,21 @@ type RagResult = {
   source_type: string;
   content: string;
   metadata?: { title?: string; index?: number; total?: number; page?: number } | string;
+  citation?: { page_number?: number } | string;
   similarity?: number;
+};
+
+type AuthoritativeAudit = {
+  version_status: string;
+  runtime_eligible: boolean;
+  source: { filename: string; sha256: string };
+  pages: {
+    total: number;
+    indexable: number;
+    archived_non_retrieval: number;
+    needs_review: number;
+  };
+  gate: { status: string };
 };
 
 const SAMPLE_QUERIES = RAG_GOLDEN_QUESTIONS.map((question) => question.query);
@@ -43,6 +57,7 @@ async function api<T>(path: string, opts?: RequestInit): Promise<T> {
 
 export default function RagTestPage() {
   const [docs, setDocs] = useState<RuleDoc[]>([]);
+  const [authoritativeAudit, setAuthoritativeAudit] = useState<AuthoritativeAudit | null>(null);
   const [query, setQuery] = useState(SAMPLE_QUERIES[0]);
   const [results, setResults] = useState<RagResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -57,8 +72,17 @@ export default function RagTestPage() {
     }
   };
 
+  const loadAuthoritativeAudit = async () => {
+    try {
+      setAuthoritativeAudit(await api<AuthoritativeAudit>('/api/rag/coc7/authoritative-audit'));
+    } catch {
+      setAuthoritativeAudit(null);
+    }
+  };
+
   useEffect(() => {
     loadDocs();
+    loadAuthoritativeAudit();
   }, []);
 
   const search = async (nextQuery = query, goldenQuestion?: GoldenRagQuestion) => {
@@ -126,7 +150,24 @@ export default function RagTestPage() {
       </section>
 
       <section style={section}>
-        <h2 style={sectionTitle}>已导入规则书</h2>
+        <h2 style={sectionTitle}>正式 CoC7 规则源审计</h2>
+        {authoritativeAudit ? (
+          <div style={docCard}>
+            <div style={docTitle}>{authoritativeAudit.source.filename}</div>
+            {summarizeAuthoritativeAudit(authoritativeAudit).map((summary) => (
+              <div key={summary} style={docMeta}>{summary}</div>
+            ))}
+            <div style={{ ...docMeta, wordBreak: 'break-all' }}>
+              SHA-256：{authoritativeAudit.source.sha256}
+            </div>
+          </div>
+        ) : (
+          <div style={muted}>未读取到正式规则书审计；此信息仅管理员可见。</div>
+        )}
+      </section>
+
+      <section style={section}>
+        <h2 style={sectionTitle}>历史规则书索引（仅供维护）</h2>
         {docs.length === 0 ? (
           <div style={muted}>还没有读到规则书索引。</div>
         ) : (
@@ -182,7 +223,7 @@ export default function RagTestPage() {
                   <div style={resultHead}>
                     <strong>#{index + 1}</strong>
                     <span>{metadata.title || result.source_id}</span>
-                    <span>citation：{metadata.page ? `第 ${metadata.page} 页` : `chunk ${metadata.index ?? '-'} / ${metadata.total ?? '-'}`}</span>
+                    <span>citation：{formatCitation(result)}</span>
                     <span>sim {typeof result.similarity === 'number' ? result.similarity.toFixed(4) : '-'}</span>
                   </div>
                   <p style={snippet}>{result.content}</p>
@@ -206,6 +247,37 @@ function parseMetadata(metadata: RagResult['metadata']) {
     }
   }
   return metadata;
+}
+
+function parseCitation(citation: RagResult['citation']) {
+  if (!citation) return {};
+  if (typeof citation === 'string') {
+    try {
+      return JSON.parse(citation) as { page_number?: number };
+    } catch {
+      return {};
+    }
+  }
+  return citation;
+}
+
+export function formatCitation(result: RagResult): string {
+  const citation = parseCitation(result.citation);
+  if (typeof citation.page_number === 'number') return `第 ${citation.page_number} 页`;
+  const metadata = parseMetadata(result.metadata);
+  if (typeof metadata.page === 'number') return `第 ${metadata.page} 页`;
+  return `chunk ${metadata.index ?? '-'} / ${metadata.total ?? '-'}`;
+}
+
+export function summarizeAuthoritativeAudit(audit: AuthoritativeAudit): string[] {
+  const state = audit.version_status === 'published' && audit.runtime_eligible
+    ? '已发布，可运行'
+    : `${audit.version_status}，不可运行`;
+  return [
+    state,
+    `${audit.pages.total} 页（${audit.pages.indexable} 页可检索，${audit.pages.archived_non_retrieval} 页归档，${audit.pages.needs_review} 页待审）`,
+    `审计门禁：${audit.gate.status}`,
+  ];
 }
 
 const page: React.CSSProperties = {

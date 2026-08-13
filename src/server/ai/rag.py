@@ -724,7 +724,9 @@ class RAGStore:
                 elif not has_cjk_query:
                     lexical_evidence_sql = "CASE WHEN content ILIKE %s THEN 1 ELSE 0 END"
                     lexical_params.append(lexical_pattern)
-                min_rule_lexical_evidence = 1
+                min_rule_lexical_evidence = (
+                    2 if has_cjk_query and len(cjk_patterns) > 1 else 1
+                )
                 lexical_sql = (
                     "CASE WHEN content ILIKE %s THEN 1.0 "
                     "ELSE ts_rank_cd(to_tsvector('simple', content), "

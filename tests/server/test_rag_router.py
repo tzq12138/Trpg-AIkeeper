@@ -46,7 +46,7 @@ def _insert_unreviewed_official_version(test_db):
 
 def test_rule_docs_lists_indexed_rule_documents(client, test_db):
     setup_auth_test_data(test_db)
-    token = login(client)
+    token = login(client, "admin")
 
     test_db.execute(
         "INSERT INTO rule_documents (doc_id, title, category, content) VALUES (%s, %s, %s, %s)",
@@ -223,6 +223,32 @@ def test_authoritative_audit_is_not_available_to_a_host(client, test_db):
     response = client.get(
         "/api/rag/rule-set-versions/official-v1/audit",
         headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_current_authoritative_audit_uses_the_registered_official_source(client, test_db):
+    setup_auth_test_data(test_db)
+    rule_set_version_id = _insert_unreviewed_official_version(test_db)
+
+    response = client.get(
+        "/api/rag/coc7/authoritative-audit",
+        headers={"Authorization": f"Bearer {login(client, 'admin')}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rule_set_version_id"] == rule_set_version_id
+    assert response.json()["source"]["filename"] == "COC7th核心规则书v1.2.1.pdf"
+
+
+def test_current_authoritative_audit_remains_admin_only(client, test_db):
+    setup_auth_test_data(test_db)
+    _insert_unreviewed_official_version(test_db)
+
+    response = client.get(
+        "/api/rag/coc7/authoritative-audit",
+        headers={"Authorization": f"Bearer {login(client, 'testhost')}"},
     )
 
     assert response.status_code == 403

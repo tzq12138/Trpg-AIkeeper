@@ -229,6 +229,23 @@ def test_low_relevance_rule_rows_are_discarded_without_affecting_other_sources()
     assert len(scenario_store.search("量子护盾", source_types=["scenario"])) == 1
 
 
+def test_multi_term_cjk_rule_query_rejects_a_single_generic_word_match():
+    """One incidental two-character match must not validate an invented rule."""
+    weak_rule = _row()
+    weak_rule.update({
+        "source_type": "rule",
+        "similarity": 0.0628,
+        "lexical_score": 0.0,
+        "lexical_evidence": 1,
+        "score": 0.0471,
+    })
+    cursor = SearchCursor(rows=[weak_rule])
+    store = RAGStore(FakePgDb(cursor), FakeEmbedding())
+
+    assert store.search("量子护盾如何充能", source_types=["rule"]) == []
+    assert cursor.main_params[-2] == 2
+
+
 @pytest.mark.parametrize(
     ("query", "expected"),
     [

@@ -422,6 +422,46 @@ async def get_authoritative_rule_audit(request: Request, rule_set_version_id: st
         raise HTTPException(404, detail={"code": "authoritative_rule_version_not_found"}) from exc
 
 
+@router.get('/coc7/authoritative-audit')
+async def get_current_authoritative_rule_audit(request: Request):
+    """Expose the registered official CoC7 source audit to administrators only."""
+    _require_admin(request)
+    from .rules.authoritative_coc7 import (
+        AuthoritativeRulebookError,
+        OFFICIAL_RULEBOOK_FILENAME,
+        OFFICIAL_RULEBOOK_SHA256,
+        get_rule_version_audit,
+    )
+
+    row = request.app.state.db.execute(
+        """
+        SELECT rsv.rule_set_version_id
+        FROM rule_set_versions AS rsv
+        JOIN source_documents AS sd
+          ON sd.source_document_id = rsv.metadata ->> 'official_source_document_id'
+        WHERE sd.source_filename = %s
+          AND UPPER(sd.source_sha256) = %s
+          AND UPPER(rsv.source_sha256) = %s
+        ORDER BY rsv.version_number DESC
+        LIMIT 1
+        """,
+        (
+            OFFICIAL_RULEBOOK_FILENAME,
+            OFFICIAL_RULEBOOK_SHA256,
+            OFFICIAL_RULEBOOK_SHA256,
+        ),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, detail={"code": "authoritative_rule_version_not_found"})
+    try:
+        return get_rule_version_audit(
+            request.app.state.db,
+            str(row["rule_set_version_id"]),
+        )
+    except AuthoritativeRulebookError as exc:
+        raise HTTPException(404, detail={"code": "authoritative_rule_version_not_found"}) from exc
+
+
 @router.post('/rule-set-versions/{rule_set_version_id}/audit/approve')
 async def approve_authoritative_rule_audit(request: Request, rule_set_version_id: str):
     account = _require_admin(request)
@@ -566,11 +606,8 @@ async def search(request: Request, body: SearchRequest):
 
 @router.get('/rule-docs')
 async def rule_docs(request: Request):
-    """List rule documents — requires login."""
-    from .router_auth import get_account_from_token
-    account = get_account_from_token(request)
-    if not account:
-        raise HTTPException(401, "请先登录")
+    """List maintenance-only rule document indexes for an administrator."""
+    _require_admin(request)
     conn = request.app.state.db
     rows = conn.execute(
         """

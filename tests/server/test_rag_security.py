@@ -227,6 +227,16 @@ class TestRuleDocs:
         )
         assert res.status_code == 200
 
+    def test_rule_docs_are_not_available_to_a_host(self, client_with_data):
+        token = _login(client_with_data, "raghost", "test123")
+
+        res = client_with_data.get(
+            "/api/rag/rule-docs",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert res.status_code == 403
+
 
 class TestRAGHostAdmin:
     def test_index_as_host_succeeds(self, client_with_data):
