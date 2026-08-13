@@ -2261,12 +2261,44 @@ async def admin_overview(request: Request):
 async def list_rooms(request: Request):
     _require_admin(request)
     conn = request.app.state.db
-    rows = conn.execute(
-        "SELECT r.*, s.title as scenario_title FROM rooms r "
+    page_value = request.query_params.get("page")
+    page_size_value = request.query_params.get("page_size")
+    if (page_value is None) != (page_size_value is None):
+        raise HTTPException(422, "page and page_size must be provided together")
+
+    fields = (
+        "r.room_id, r.scenario_id, r.scenario_version_id, r.runtime_package_version_id, "
+        "r.owner_account_id, r.status, r.spoiler_level, r.created_at, r.started_at, "
+        "r.rule_source_status, r.rule_source_reason, s.title AS scenario_title"
+    )
+    query = (
+        f"SELECT {fields} FROM rooms r "
         "LEFT JOIN scenarios s ON r.scenario_id = s.scenario_id "
-        "ORDER BY r.created_at DESC"
-    ).fetchall()
-    return [dict(r) for r in rows]
+        "ORDER BY r.created_at DESC, r.room_id DESC"
+    )
+    if page_value is None:
+        rows = conn.execute(query).fetchall()
+        return [dict(row) for row in rows]
+
+    try:
+        page = int(page_value)
+        page_size = int(page_size_value)
+    except (TypeError, ValueError):
+        raise HTTPException(422, "page and page_size must be integers")
+    if page < 1 or page_size not in (10, 30, 50):
+        raise HTTPException(422, "invalid page or page_size")
+
+    total = conn.execute("SELECT COUNT(*) AS count FROM rooms").fetchone()["count"]
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    offset = (page - 1) * page_size
+    rows = conn.execute(f"{query} LIMIT %s OFFSET %s", (page_size, offset)).fetchall()
+    return {
+        "items": [dict(row) for row in rows],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+    }
 
 
 @router.get("/rooms/{room_id}")
