@@ -174,8 +174,20 @@ def _official_page_coverage(conn, source_document_id: str) -> dict:
         if str(row["extraction_status"]) not in allowed_statuses
     ]
     needs_review = any(str(row["extraction_status"]) == "needs_review" for row in rows)
+    source_part_rows = conn.execute(
+        """
+        SELECT page_number
+        FROM source_parts
+        WHERE source_document_id = %s
+          AND part_kind = 'page'
+        ORDER BY page_number
+        """,
+        (source_document_id,),
+    ).fetchall()
+    source_part_numbers = [int(row["page_number"]) for row in source_part_rows]
     return {
         "complete": page_numbers == expected_numbers,
+        "source_parts_complete": source_part_numbers == expected_numbers,
         "valid_statuses": not invalid_statuses,
         "needs_review": needs_review,
     }
@@ -185,6 +197,8 @@ def _assert_official_page_coverage(conn, source_document_id: str) -> None:
     coverage = _official_page_coverage(conn, source_document_id)
     if not coverage["complete"]:
         raise AuthoritativeRulebookError("official source must cover physical pages 1 through 380 exactly")
+    if not coverage["source_parts_complete"]:
+        raise AuthoritativeRulebookError("official source is missing a physical page source part")
     if not coverage["valid_statuses"]:
         raise AuthoritativeRulebookError("official source has invalid page extraction status")
     if coverage["needs_review"]:
@@ -227,6 +241,10 @@ def import_authoritative_coc7(conn, rag, actor_id: str) -> dict:
         existing_version = _linked_official_version(conn, existing_source["source_document_id"])
         if existing_version:
             coverage = _official_page_coverage(conn, existing_source["source_document_id"])
+            if not coverage["source_parts_complete"]:
+                raise AuthoritativeRulebookError(
+                    "existing official source import is missing a physical page source part"
+                )
             if not coverage["complete"] or not coverage["valid_statuses"]:
                 raise AuthoritativeRulebookError(
                     "existing official source import is incomplete or has invalid page status"

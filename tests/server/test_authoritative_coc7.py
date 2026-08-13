@@ -444,6 +444,35 @@ def test_import_rejects_an_existing_official_source_with_incomplete_page_coverag
         import_authoritative_coc7(test_db, _FakeRag(), actor_id="acc-admin")
 
 
+def test_import_rejects_an_existing_official_source_with_a_missing_page_source_part(
+    test_db, monkeypatch
+):
+    """A complete page audit cannot make a missing physical page part reusable."""
+    from src.server.rules import authoritative_coc7
+
+    monkeypatch.setattr(
+        authoritative_coc7,
+        "load_authoritative_rulebook_pages",
+        lambda: (
+            OfficialRulebookSpec(
+                filename="COC7th核心规则书v1.2.1.pdf",
+                page_count=380,
+                sha256="22F5F56B7A0989CBDED695D39C7D5EDDDDD809CFC9D2C47E4CF4C5D7EDEA6815",
+            ),
+            "registered/COC7th核心规则书v1.2.1.pdf",
+            _fake_official_pages(),
+        ),
+    )
+    first = import_authoritative_coc7(test_db, _FakeRag(), actor_id="acc-admin")
+    test_db.execute(
+        "DELETE FROM source_parts WHERE source_document_id = %s AND page_number = 380",
+        (first["source_document_id"],),
+    )
+
+    with pytest.raises(AuthoritativeRulebookError, match="source part"):
+        import_authoritative_coc7(test_db, _FakeRag(), actor_id="acc-admin")
+
+
 def test_rule_page_indexer_keeps_chunks_on_their_physical_page():
     db = _RecordingDb()
     store = RAGStore(db, _FakeEmbedding())
