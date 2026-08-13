@@ -242,6 +242,36 @@ def test_batch_delete_rooms_removes_real_collaboration_and_session_dependencies(
     }
 
 
+def test_batch_delete_room_removes_room_local_adjudications(client, test_db):
+    setup_auth_test_data(test_db)
+    room_id = "bulk-room-adjudication"
+    _insert_room(test_db, room_id)
+    test_db.execute(
+        "INSERT INTO room_rule_adjudications "
+        "(adjudication_id, room_id, question_key, summary, minimal_state) "
+        "VALUES ('bulk-room-adjudication-record', %s, '调查书架', "
+        "'已按当前公开场景状态处理该行动。', %s)",
+        (room_id, json.dumps({"scene": "门厅"}, ensure_ascii=False)),
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/admin/rooms/batch-delete",
+        headers=_admin_headers(client),
+        json={"ids": [room_id], "confirm": True},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted_ids"] == [room_id]
+    assert _count(test_db, "rooms", "room_id = %s", (room_id,)) == 0
+    assert _count(
+        test_db,
+        "room_rule_adjudications",
+        "room_id = %s",
+        (room_id,),
+    ) == 0
+
+
 def test_batch_delete_completed_room_skips_read_only_projection_scrub(client, test_db):
     setup_auth_test_data(test_db)
     room_id = "bulk-completed-room"

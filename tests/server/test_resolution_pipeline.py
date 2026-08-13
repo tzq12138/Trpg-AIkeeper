@@ -59,6 +59,16 @@ class FakeConn:
     def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
         params = params or ()
+        if normalized.startswith(
+            "SELECT rule_source_status, rule_source_reason FROM rooms WHERE room_id"
+        ):
+            room = self.rooms.get(params[0])
+            if not room:
+                return Rows()
+            return Rows([{
+                "rule_source_status": room.get("rule_source_status"),
+                "rule_source_reason": room.get("rule_source_reason"),
+            }])
         if normalized.startswith("SELECT * FROM actions WHERE action_id"):
             return Rows([self.actions[params[0]]] if params[0] in self.actions else [])
         if normalized.startswith("SELECT * FROM actions WHERE room_id"):

@@ -876,6 +876,40 @@ async def test_player_ws_rechecks_control_after_connection_registration(
 
 
 @pytest.mark.asyncio
+async def test_player_ws_removes_connection_when_room_retires_during_revalidation(
+    test_db,
+    monkeypatch,
+):
+    _insert_control_transition_fixture(test_db)
+    socket = _EndpointSocket(test_db)
+    original_connect = main_module.ws_manager.connect
+
+    async def connect_then_retire(websocket, room_id, connection_id):
+        await original_connect(websocket, room_id, connection_id)
+        test_db.execute(
+            "UPDATE rooms SET rule_source_status = 'rule_source_retired', "
+            "rule_source_reason = 'local_test_rule_version' "
+            "WHERE room_id = 'room-control-transition'"
+        )
+        test_db.commit()
+
+    monkeypatch.setattr(main_module.ws_manager, "connect", connect_then_retire)
+
+    await main_module.player_ws_endpoint(
+        socket,
+        "room-control-transition",
+        "token-control-transition",
+    )
+
+    assert socket.accepted is True
+    assert socket.closed == (4009, "rule_source_retired")
+    assert not main_module.ws_manager.is_connected(
+        "room-control-transition",
+        "player:char-control-transition",
+    )
+
+
+@pytest.mark.asyncio
 async def test_permanent_metadata_without_authoritative_zero_san_does_not_revoke_control(
     test_db,
 ):
@@ -1135,6 +1169,34 @@ def test_replacement_requires_compiled_safe_scene_and_creates_fresh_room_run_ent
     )
     assert conflicting_retry.status_code == 409
     assert conflicting_retry.json()["detail"]["code"] == "replacement_already_completed"
+
+
+def test_replacement_rejects_a_retired_room_before_idempotent_replay(client, test_db):
+    _insert_replacement_fixture(test_db)
+    test_db.execute(
+        "UPDATE rooms SET rule_source_status = 'rule_source_retired', "
+        "rule_source_reason = 'local_test_rule_version' "
+        "WHERE room_id = 'room-replacement'"
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/player/characters/char-original/replacement",
+        headers={
+            "X-Room-Token": "token-original",
+            "Idempotency-Key": "retired-replacement",
+        },
+        json={"templateId": "template-reserve"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "rule_source_retired",
+        "reason": "local_test_rule_version",
+    }
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM characters WHERE room_id = 'room-replacement'"
+    ).fetchone()["count"] == 1
 
 
 def test_restricted_npc_token_cannot_use_player_routes_or_restore_session(

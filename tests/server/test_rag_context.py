@@ -1,3 +1,5 @@
+import pytest
+
 from src.server.ai.contracts import KpCitation
 from src.server.ai.rag_context import RAGContextBuilder
 
@@ -86,4 +88,113 @@ def test_kp_citation_accepts_structured_provenance_without_breaking_legacy_field
     assert dumped["chunkId"] == "chunk-1"
     assert dumped["scenarioVersionId"] == "sv-1"
     assert dumped["anchor"] == {"page": 3}
+
+
+class _AdjudicationConnection:
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, sql, params):
+        self.calls.append((sql, params))
+        if "FROM rooms" in sql:
+            return Result({"scenario_id": "sc-1"})
+        return Result(None)
+
+
+class _EmptyRuleRag:
+    def search(self, _query, **kwargs):
+        if kwargs["source_types"] == ["scenario"]:
+            return [{
+                "chunk_id": "scenario-1",
+                "source_type": "scenario",
+                "source_id": "sc-1",
+                "content": "门厅有一道生锈的门锁。",
+                "similarity": 0.7,
+                "score": 0.7,
+                "citation": {},
+            }]
+        return []
+
+
+def test_context_builder_uses_only_current_room_adjudication_when_rule_search_is_empty(
+    monkeypatch,
+):
+    conn = _AdjudicationConnection()
+    lifecycle = __import__("src.server.rule_source_lifecycle", fromlist=["find_room_adjudication"])
+    monkeypatch.setattr(
+        lifecycle,
+        "find_room_adjudication",
+        lambda _conn, room_id, question: (
+            {
+                "summary": "门锁可以撬开，但会制造声响。",
+                "minimal_state": {"scene": "门厅", "visible_fact": "门锁已经生锈"},
+            }
+            if room_id == "room-a" and question == "我能砸开门吗"
+            else None
+        ),
+    )
+
+    context = RAGContextBuilder(conn, _EmptyRuleRag()).build(
+        "room-a",
+        "我能砸开门吗",
+    )
+
+    assert context["room_adjudication"] == {
+        "summary": "门锁可以撬开，但会制造声响。",
+        "minimal_state": {"scene": "门厅", "visible_fact": "门锁已经生锈"},
+    }
+    assert "account_id" not in str(context["room_adjudication"])
+
+
+def test_context_builder_omits_room_adjudication_when_rule_evidence_exists(monkeypatch):
+    class _RuleRag(_EmptyRuleRag):
+        def search(self, query, **kwargs):
+            if kwargs["source_types"] == ["rule"]:
+                return [{
+                    "chunk_id": "rule-1",
+                    "source_type": "rule",
+                    "source_id": "official-v1",
+                    "content": "规则依据。",
+                    "similarity": 0.9,
+                    "score": 0.9,
+                    "citation": {},
+                }]
+            return super().search(query, **kwargs)
+
+    lifecycle = __import__("src.server.rule_source_lifecycle", fromlist=["find_room_adjudication"])
+    monkeypatch.setattr(
+        lifecycle,
+        "find_room_adjudication",
+        lambda *_args: pytest.fail("规则候选存在时不应读取临时裁定"),
+    )
+
+    context = RAGContextBuilder(_AdjudicationConnection(), _RuleRag()).build(
+        "room-a",
+        "我能砸开门吗",
+    )
+
+    assert context["rules"]
+    assert "room_adjudication" not in context
+
+
+def test_context_builder_omits_room_adjudication_when_rule_search_fails(monkeypatch):
+    class _FailingRuleRag(_EmptyRuleRag):
+        def search(self, query, **kwargs):
+            if kwargs["source_types"] == ["rule"]:
+                raise RuntimeError("RAG unavailable")
+            return super().search(query, **kwargs)
+
+    lifecycle = __import__("src.server.rule_source_lifecycle", fromlist=["find_room_adjudication"])
+    monkeypatch.setattr(
+        lifecycle,
+        "find_room_adjudication",
+        lambda *_args: pytest.fail("规则检索失败时不得读取临时裁定"),
+    )
+
+    context = RAGContextBuilder(_AdjudicationConnection(), _FailingRuleRag()).build(
+        "room-a",
+        "我能砸开门吗",
+    )
+
+    assert "room_adjudication" not in context
 

@@ -30,6 +30,46 @@ def _make_scenario():
     }
 
 
+class _NoRuleEvidenceRag:
+    def search(self, *_args, **_kwargs):
+        return [
+            {
+                "source_type": "scenario",
+                "content": "公开场景：走廊里只有昏暗的灯光。",
+            }
+        ]
+
+
+class _RuleEvidenceRag:
+    def search(self, *_args, **_kwargs):
+        return [
+            {
+                "source_type": "rule",
+                "content": "规则证据：调查需要由主持人决定是否检定。",
+            }
+        ]
+
+
+class _FailingRag:
+    def search(self, *_args, **_kwargs):
+        raise RuntimeError("RAG unavailable")
+
+
+class _UnsafeNarrativeAIKP(AIKP):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.seen_contexts: list[dict] = []
+
+    def _mock_response(self, _batch: dict, context: dict) -> AIResponse:
+        self.seen_contexts.append(dict(context))
+        return AIResponse(
+            narrative=(
+                "管理员身份 admin-42 使用 owner-secret；原始安全边界文本称"
+                "管家是凶手，地下室藏着未揭示秘密。"
+            )
+        )
+
+
 async def test_mock_ai_generates_narrative():
     ai = AIKP(api_key="")
     batch = _make_batch()
@@ -120,6 +160,167 @@ async def test_batch_processing_flow(test_db):
     assert response is not None
     assert isinstance(response, AIResponse)
     assert processor.get_status("room-1")["batch_status"] == "completed"
+
+
+async def test_ai_kp_persists_and_reuses_only_safe_current_room_adjudication(test_db):
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token, spoiler_level) "
+        "VALUES ('room-adjudication', 'owner-secret', 'standard')"
+    )
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token) "
+        "VALUES ('char-adjudication', 'room-adjudication', 'Alice', 'player-secret')"
+    )
+    test_db.commit()
+    batch = {
+        "batch_id": "batch-adjudication",
+        "room_id": "room-adjudication",
+        "actions": [
+            {
+                "action_id": "action-adjudication",
+                "character_id": "char-adjudication",
+                "declared_intent": "调查书架",
+            }
+        ],
+    }
+    ai = _UnsafeNarrativeAIKP(
+        api_key="",
+        spoiler_controller=SpoilerController(test_db),
+        rag_store=_NoRuleEvidenceRag(),
+    )
+
+    first_response = await ai.process_batch(
+        "room-adjudication", batch, _make_scenario()
+    )
+    stored = test_db.execute(
+        "SELECT summary, minimal_state FROM room_rule_adjudications "
+        "WHERE room_id = 'room-adjudication'"
+    ).fetchone()
+
+    assert stored is not None
+    stored_text = json.dumps(dict(stored), ensure_ascii=False)
+    assert stored["minimal_state"] == {"scene": "昏暗走廊"}
+    assert stored["summary"]
+    assert stored["summary"] != first_response.narrative
+    for forbidden in (
+        "admin-42",
+        "owner-secret",
+        "player-secret",
+        "原始安全边界文本",
+        "管家是凶手",
+        "地下室藏着未揭示秘密",
+    ):
+        assert forbidden not in stored_text
+
+    await ai.process_batch("room-adjudication", batch, _make_scenario())
+
+    adjudication = ai.seen_contexts[-1]["room_adjudication"]
+    assert set(adjudication) == {"question_key", "summary", "minimal_state"}
+    assert adjudication["question_key"] == "调查书架"
+    assert adjudication["minimal_state"] == {"scene": "昏暗走廊"}
+    prompt = ai._build_user_message(batch, ai.seen_contexts[-1])
+    for forbidden in (
+        "admin-42",
+        "owner-secret",
+        "player-secret",
+        "原始安全边界文本",
+        "管家是凶手",
+        "地下室藏着未揭示秘密",
+    ):
+        assert forbidden not in prompt
+
+
+async def test_ai_kp_does_not_store_adjudication_when_rule_evidence_exists(test_db):
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token, spoiler_level) "
+        "VALUES ('room-with-rule', 'owner-rule', 'standard')"
+    )
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token) "
+        "VALUES ('char-with-rule', 'room-with-rule', 'Alice', 'player-rule')"
+    )
+    test_db.commit()
+    batch = {
+        "batch_id": "batch-with-rule",
+        "room_id": "room-with-rule",
+        "actions": [
+            {
+                "action_id": "action-with-rule",
+                "character_id": "char-with-rule",
+                "declared_intent": "调查书架",
+            }
+        ],
+    }
+    ai = _UnsafeNarrativeAIKP(
+        api_key="",
+        spoiler_controller=SpoilerController(test_db),
+        rag_store=_RuleEvidenceRag(),
+    )
+
+    await ai.process_batch("room-with-rule", batch, _make_scenario())
+
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM room_rule_adjudications "
+        "WHERE room_id = 'room-with-rule'"
+    ).fetchone()["count"] == 0
+    assert "room_adjudication" not in ai.seen_contexts[-1]
+
+
+async def test_ai_kp_does_not_store_adjudication_when_rule_search_fails(test_db):
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token, spoiler_level) "
+        "VALUES ('room-rag-failure', 'owner-failure', 'standard')"
+    )
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token) "
+        "VALUES ('char-rag-failure', 'room-rag-failure', 'Alice', 'player-failure')"
+    )
+    test_db.commit()
+    ai = _UnsafeNarrativeAIKP(
+        api_key="",
+        spoiler_controller=SpoilerController(test_db),
+        rag_store=_FailingRag(),
+    )
+
+    await ai.process_batch("room-rag-failure", {
+        "actions": [{"character_id": "char-rag-failure", "declared_intent": "调查书架"}],
+    }, _make_scenario())
+
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM room_rule_adjudications "
+        "WHERE room_id = 'room-rag-failure'"
+    ).fetchone()["count"] == 0
+    assert "room_adjudication" not in ai.seen_contexts[-1]
+
+
+async def test_ai_kp_does_not_copy_raw_scenario_fallback_into_adjudication(test_db):
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token, spoiler_level) "
+        "VALUES ('room-no-structured-scene', 'owner-raw', 'standard')"
+    )
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token) "
+        "VALUES ('char-no-structured-scene', 'room-no-structured-scene', 'Alice', 'player-raw')"
+    )
+    test_db.commit()
+    scenario = _make_scenario()
+    scenario["raw_text"] = "不得写入的原始场景边界文本"
+    scenario["knowledge_graph"] = json.dumps({"truth_summary": "不得写入的秘密"})
+    ai = _UnsafeNarrativeAIKP(
+        api_key="",
+        spoiler_controller=SpoilerController(test_db),
+        rag_store=_NoRuleEvidenceRag(),
+    )
+
+    await ai.process_batch("room-no-structured-scene", {
+        "actions": [{"character_id": "char-no-structured-scene", "declared_intent": "调查书架"}],
+    }, scenario)
+
+    stored = test_db.execute(
+        "SELECT minimal_state FROM room_rule_adjudications "
+        "WHERE room_id = 'room-no-structured-scene'"
+    ).fetchone()
+    assert stored["minimal_state"] == {}
 
 
 async def test_ai_timeout_handling():

@@ -19,14 +19,15 @@ def _require_auth_for_room(request: Request, room_id: str, write: bool = False):
     account = get_account_from_token(request)
     if not account:
         raise HTTPException(401, "请先登录")
-    if account.get("role") == "admin":
-        return account
     conn = request.app.state.db
     room = conn.execute(
         "SELECT owner_account_id FROM rooms WHERE room_id = %s", (room_id,)
     ).fetchone()
     if not room:
         raise HTTPException(404, "房间不存在")
+    _require_room_rule_source(conn, room_id)
+    if account.get("role") == "admin":
+        return account
     if room.get("owner_account_id") == account.get("account_id"):
         return account
     if write:
@@ -39,6 +40,18 @@ def _require_auth_for_room(request: Request, room_id: str, write: bool = False):
     if not char:
         raise HTTPException(403, "不是该房间的房主或玩家")
     return account
+
+
+def _require_room_rule_source(conn, room_id: str) -> None:
+    from .rule_source_lifecycle import (
+        RuleSourceRetiredError,
+        ensure_room_rule_source_available,
+    )
+
+    try:
+        ensure_room_rule_source_available(conn, room_id)
+    except RuleSourceRetiredError as exc:
+        raise HTTPException(409, detail=exc.detail) from exc
 
 
 def _require_admin(request: Request) -> dict:
@@ -373,6 +386,21 @@ async def import_authoritative_coc7_rules(request: Request):
         )
     except ValueError as exc:
         raise HTTPException(409, detail={"code": "authoritative_import_failed", "reason": str(exc)}) from exc
+
+
+@router.post('/retire-local-test-rules')
+async def retire_local_test_rules(request: Request, body: dict):
+    """Explicitly quarantine the legacy local-test corpus and dependent rooms."""
+    _require_admin(request)
+    if body.get("confirm") is not True:
+        raise HTTPException(
+            400,
+            detail={"code": "retire_local_test_rules_confirmation_required"},
+        )
+    from .rule_source_lifecycle import retire_local_test_rule_versions
+
+    result = retire_local_test_rule_versions(request.app.state.db)
+    return {"code": "local_test_rule_versions_retired", **result}
 
 
 @router.get('/rule-set-versions/{rule_set_version_id}/audit')

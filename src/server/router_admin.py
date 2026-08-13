@@ -840,6 +840,7 @@ def _delete_room_rows(
         "room_turns",
         "host_states",
         "room_rule_bindings",
+        "room_rule_adjudications",
         "prepared_rule_actions",
         "resolution_bundles",
         "player_action_submissions",

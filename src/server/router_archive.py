@@ -11,6 +11,7 @@ from .engine.runtime_integrity import (
     verify_recovery_dry_run_token,
 )
 from .player.auth import find_player_character
+from .rule_source_lifecycle import RuleSourceRetiredError, ensure_room_rule_source_available
 
 router = APIRouter(prefix="/api/rooms")
 
@@ -30,6 +31,7 @@ def _verify_owner_or_admin(request: Request, room_id: str) -> dict:
 
     # 1. X-Owner-Token
     if token and room.get("owner_token") == token:
+        _require_room_rule_source(conn, room_id)
         return room
 
     # 2. Account-based
@@ -38,7 +40,10 @@ def _verify_owner_or_admin(request: Request, room_id: str) -> dict:
         account = get_account_from_token(request)
         if account:
             if account.get("account_id") == room.get("owner_account_id"):
+                _require_room_rule_source(conn, room_id)
                 return room
+    except HTTPException:
+        raise
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning(
@@ -47,12 +52,22 @@ def _verify_owner_or_admin(request: Request, room_id: str) -> dict:
     raise HTTPException(403, "不是房间所有者")
 
 
+def _require_room_rule_source(conn, room_id: str) -> None:
+    try:
+        ensure_room_rule_source_available(conn, room_id)
+    except RuleSourceRetiredError as exc:
+        raise HTTPException(409, detail=exc.detail) from exc
+
+
 def _verify_player(request: Request, room_id: str = "") -> dict:
     token = request.headers.get("X-Room-Token", "")
     if not token:
         raise HTTPException(401, "缺少 X-Room-Token")
     conn = request.app.state.db
-    char = find_player_character(conn, token)
+    try:
+        char = find_player_character(conn, token)
+    except RuleSourceRetiredError as exc:
+        raise HTTPException(409, detail=exc.detail) from exc
     if not char or (room_id and char.get("room_id") != room_id):
         raise HTTPException(403, "令牌无效")
     return char

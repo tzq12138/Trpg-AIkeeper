@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import re
+import uuid
+
 from .rules.authoritative_coc7 import (
     OFFICIAL_RULEBOOK_FILENAME,
     OFFICIAL_RULEBOOK_SHA256,
@@ -150,9 +154,118 @@ def current_authoritative_base_version(conn) -> str | None:
     return None
 
 
+class RuleSourceRetiredError(RuntimeError):
+    """Raised when a room is retained for audit but no longer playable."""
+
+    def __init__(self, reason: str | None = None):
+        self.detail = {
+            "code": "rule_source_retired",
+            "reason": str(reason or "rule_source_retired"),
+        }
+        super().__init__(self.detail["code"])
+
+
 def ensure_room_rule_source_available(conn, room_id: str) -> None:
-    """Reserve a shared room-source check without altering room access in Task 1."""
-    conn.execute("SELECT room_id FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
+    """Fail closed only for rooms explicitly retired by the rule-source lifecycle."""
+    room = conn.execute(
+        "SELECT rule_source_status, rule_source_reason FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    if room and room.get("rule_source_status") == "rule_source_retired":
+        raise RuleSourceRetiredError(room.get("rule_source_reason"))
+
+
+def normalize_room_adjudication_question(question: str) -> str:
+    """Produce a stable, room-local lookup key without retaining raw prompt text."""
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(question or "").casefold())[:240]
+
+
+def _safe_adjudication_state(minimal_state: object) -> dict[str, object]:
+    if not isinstance(minimal_state, dict):
+        return {}
+    safe: dict[str, object] = {}
+    for key in ("scene", "visible_fact", "visible_facts", "situation"):
+        value = minimal_state.get(key)
+        if isinstance(value, str) and value.strip():
+            safe[key] = value.strip()[:500]
+        elif key == "visible_facts" and isinstance(value, list):
+            values = [item.strip()[:500] for item in value if isinstance(item, str) and item.strip()]
+            if values:
+                safe[key] = values[:8]
+    return safe
+
+
+def _safe_adjudication_summary(summary: object) -> str:
+    return str(summary or "").strip()[:500]
+
+
+def find_room_adjudication(conn, room_id: str, question: str) -> dict | None:
+    """Return only the safe, reusable record for this room and action question."""
+    question_key = normalize_room_adjudication_question(question)
+    if not question_key:
+        return None
+    row = conn.execute(
+        "SELECT question_key, summary, minimal_state FROM room_rule_adjudications "
+        "WHERE room_id = %s AND question_key = %s",
+        (room_id, question_key),
+    ).fetchone()
+    if not row:
+        return None
+    summary = _safe_adjudication_summary(row.get("summary"))
+    if not summary:
+        return None
+    minimal_state = row.get("minimal_state")
+    if isinstance(minimal_state, str):
+        try:
+            minimal_state = json.loads(minimal_state)
+        except json.JSONDecodeError:
+            minimal_state = {}
+    return {
+        "question_key": str(row.get("question_key") or question_key),
+        "summary": summary,
+        "minimal_state": _safe_adjudication_state(minimal_state),
+    }
+
+
+def upsert_room_adjudication(
+    conn,
+    room_id: str,
+    question: str,
+    summary: str,
+    minimal_state: dict | None,
+    rule_set_version_id: str | None = None,
+) -> dict | None:
+    """Persist the smallest safe room-local fallback, never the AI narrative."""
+    question_key = normalize_room_adjudication_question(question)
+    safe_summary = _safe_adjudication_summary(summary)
+    if not question_key or not safe_summary:
+        return None
+    safe_state = _safe_adjudication_state(minimal_state)
+    conn.execute(
+        """
+        INSERT INTO room_rule_adjudications (
+            adjudication_id, room_id, question_key, summary, minimal_state, rule_set_version_id
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (room_id, question_key) DO UPDATE SET
+            summary = EXCLUDED.summary,
+            minimal_state = EXCLUDED.minimal_state,
+            rule_set_version_id = EXCLUDED.rule_set_version_id,
+            updated_at = NOW()
+        """,
+        (
+            str(uuid.uuid4()),
+            room_id,
+            question_key,
+            safe_summary,
+            json.dumps(safe_state, ensure_ascii=False),
+            rule_set_version_id,
+        ),
+    )
+    return {
+        "question_key": question_key,
+        "summary": safe_summary,
+        "minimal_state": safe_state,
+    }
 
 
 def retire_local_test_rule_versions(conn) -> dict[str, int]:

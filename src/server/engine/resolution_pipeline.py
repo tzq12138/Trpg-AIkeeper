@@ -569,8 +569,13 @@ class ResolutionPipeline:
         ).fetchone()
         if not lifecycle_row:
             return {"status": "missing", "action_id": action_id}
+        from ..rule_source_lifecycle import ensure_room_rule_source_available
         from ..runtime_lifecycle import character_lifecycle_guard
 
+        ensure_room_rule_source_available(
+            self.conn,
+            str(lifecycle_row["room_id"]),
+        )
         lifecycle_character_ids = {str(lifecycle_row["character_id"])}
         try:
             lifecycle_character_ids.update(

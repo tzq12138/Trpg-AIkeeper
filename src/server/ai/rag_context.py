@@ -34,9 +34,7 @@ class RAGContextBuilder:
         clues = []
         assets = []
         citations = []
-
-        if not self.rag:
-            return self._empty_context(room_id)
+        rule_search_completed = False
 
         # Determine scenario_id from room if not provided
         if not scenario_id and room_id:
@@ -55,6 +53,8 @@ class RAGContextBuilder:
         ]
 
         for q, stypes, limit in queries:
+            if not self.rag:
+                break
             try:
                 results = self.rag.search(
                     q,
@@ -63,6 +63,8 @@ class RAGContextBuilder:
                     top_k=limit,
                     audience="ai",
                 )
+                if stypes == ["rule"]:
+                    rule_search_completed = True
                 for r in results:
                     citation = dict(r.get("citation") or {})
                     citation.setdefault("source_type", r["source_type"])
@@ -105,7 +107,7 @@ class RAGContextBuilder:
                     "skills": {k: v for k, v in xlsx.get("skills", {}).items() if int(v) > 0} if xlsx.get("skills") else {},
                 }
 
-        return {
+        context = {
             "room_id": room_id,
             "scenario_id": scenario_id,
             "rules": rules,
@@ -118,6 +120,13 @@ class RAGContextBuilder:
             "citations": citations,
             "query_debug": {"query": query, "source_quotas": SOURCE_QUOTAS},
         }
+        if room_id and self.rag and rule_search_completed and not rules:
+            from ..rule_source_lifecycle import find_room_adjudication
+
+            adjudication = find_room_adjudication(self.conn, room_id, query)
+            if adjudication:
+                context["room_adjudication"] = adjudication
+        return context
 
     def preview(self, room_id: str, action_text: str = "", character_id: str = "",
                 scenario_id: str = "") -> dict:

@@ -114,6 +114,27 @@ def test_replay_invalid_owner(client, test_db):
     assert resp.status_code == 403
 
 
+def test_owner_replay_rejects_retired_rule_source(client, test_db):
+    room_id, owner_token, _, _ = _setup_player(client, test_db)
+    test_db.execute(
+        "UPDATE rooms SET rule_source_status = 'rule_source_retired', "
+        "rule_source_reason = 'local_test_rule_version' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    response = client.get(
+        f"/api/rooms/{room_id}/replay",
+        headers={"X-Owner-Token": owner_token},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "rule_source_retired",
+        "reason": "local_test_rule_version",
+    }
+
+
 def test_host_timeline_route_is_mounted(client, test_db):
     room_id, owner_token, char_id, token = _setup_player(client, test_db)
     _insert_event(test_db, room_id, 1, "s2c_public_observation", "party", {"text": "timeline event"})

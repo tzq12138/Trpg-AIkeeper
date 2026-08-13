@@ -8,6 +8,7 @@ from src.server.engine.ending_conditions import EndingDecision
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.engine.roll_receipt import verify_roll_receipt
 from src.server.engine.state_service import StateService
+from src.server.rule_source_lifecycle import RuleSourceRetiredError
 from src.server.models import (
     ActionDraftStepDTO,
     DirectorActionStepDTO,
@@ -110,6 +111,29 @@ def test_director_plan_accepts_the_same_resolving_turn_snapshot(test_db):
     pipeline = ResolutionPipeline(test_db, _DialogueCompiler())
 
     assert pipeline._validate_director_plan(action, intent, room) is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_does_not_claim_a_retired_room_action_for_resolution(test_db):
+    _insert_action(test_db)
+    test_db.execute(
+        "UPDATE rooms SET rule_source_status = 'rule_source_retired', "
+        "rule_source_reason = 'local_test_rule_version' WHERE room_id = 'room-v2'"
+    )
+    test_db.commit()
+    dispatcher = _Dispatcher()
+
+    with pytest.raises(RuleSourceRetiredError):
+        await ResolutionPipeline(
+            test_db,
+            compiler=_DialogueCompiler(),
+            dispatcher=dispatcher,
+        ).resolve_action("action-v2")
+
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = 'action-v2'"
+    ).fetchone()["status"] == "queued"
+    assert dispatcher.events == []
 
 
 def test_shared_turn_scene_arrival_is_not_rejected_as_stale(test_db):

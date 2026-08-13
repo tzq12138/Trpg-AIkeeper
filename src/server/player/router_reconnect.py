@@ -5,6 +5,7 @@ from ..events.event_log import EventLog
 from ..host.ws_manager import NONTERMINAL_ACTION_STATUSES, manager
 from .private_data import PrivateDataDecryptionError, private_data_cipher_from_env
 from .auth import find_player_character
+from ..rule_source_lifecycle import RuleSourceRetiredError
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,10 @@ def _scene_snapshot(conn, room_id: str) -> dict:
 
 
 def _get_character(conn, token: str):
-    return find_player_character(conn, token)
+    try:
+        return find_player_character(conn, token)
+    except RuleSourceRetiredError as exc:
+        raise HTTPException(409, detail=exc.detail) from exc
 
 
 def _pending_submissions(conn, room_id: str, character_id: str) -> list[dict]:

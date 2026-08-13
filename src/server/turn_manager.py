@@ -5,6 +5,11 @@ import logging
 from datetime import datetime, timezone
 from datetime import timedelta
 
+from .rule_source_lifecycle import (
+    RuleSourceRetiredError,
+    ensure_room_rule_source_available,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -245,6 +250,14 @@ class TurnManager:
         for row in rows:
             turn = dict(row)
             if not _turn_window_expired(turn, now):
+                continue
+            try:
+                ensure_room_rule_source_available(self.conn, str(turn["room_id"]))
+            except RuleSourceRetiredError:
+                logger.info(
+                    "Skipping expired absence policies for retired room %s",
+                    turn["room_id"],
+                )
                 continue
             characters = self.conn.execute(
                 "SELECT character_id FROM characters WHERE room_id = %s AND status IN ('joined', 'ready') "

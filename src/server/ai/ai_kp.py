@@ -57,18 +57,29 @@ class AIKP:
                 "scenario_title": scenario.get("title", ""),
             }
 
+        query = self._adjudication_question(batch)
+        results = []
+        rule_search_completed = False
         rag_context = ''
         if self.rag_store:
             try:
-                action_texts = [a.get('declared_intent', '') for a in batch.get('actions', [])]
-                query = ' '.join(action_texts)
                 if query.strip():
                     results = self.rag_store.search(query, room_id=room_id, top_k=3)
+                    rule_search_completed = True
                     rag_context = '\n'.join([f"[{r['source_type']}] {r['content']}" for r in results])
             except Exception as e:
                 logger.warning('RAG search failed: %s', e)
 
         context['rag_context'] = rag_context
+        has_rule_evidence = any(
+            isinstance(result, dict) and result.get("source_type") == "rule"
+            for result in results
+        )
+        existing_adjudication = None
+        if query and rule_search_completed and not has_rule_evidence:
+            existing_adjudication = self._find_room_adjudication(room_id, query)
+            if existing_adjudication:
+                context["room_adjudication"] = existing_adjudication
 
         try:
             if self.is_mock:
@@ -76,6 +87,8 @@ class AIKP:
             else:
                 response = await self._call_deepseek(batch, context)
 
+            if query and rule_search_completed and not has_rule_evidence and not existing_adjudication:
+                self._store_room_adjudication(room_id, query, scenario)
             self._consecutive_failures[room_id] = 0
             return response
         except Exception as e:
@@ -146,7 +159,63 @@ class AIKP:
             parts.append("\n相关知识库参考:")
             parts.append(context["rag_context"])
 
+        adjudication = context.get("room_adjudication")
+        if isinstance(adjudication, dict):
+            summary = str(adjudication.get("summary") or "").strip()
+            if summary:
+                parts.append("\n当前公开场景的既有处理:")
+                parts.append(summary[:500])
+            minimal_state = adjudication.get("minimal_state")
+            if isinstance(minimal_state, dict):
+                for key in ("scene", "visible_fact", "situation"):
+                    value = minimal_state.get(key)
+                    if isinstance(value, str) and value.strip():
+                        parts.append(f"  {key}: {value[:500]}")
+
         return "\n".join(parts)
+
+    @staticmethod
+    def _adjudication_question(batch: dict) -> str:
+        return " ".join(
+            str(action.get("declared_intent") or action.get("intent") or "").strip()
+            for action in batch.get("actions", [])
+            if isinstance(action, dict)
+        ).strip()
+
+    def _find_room_adjudication(self, room_id: str, question: str) -> dict | None:
+        if not self.spoiler_controller:
+            return None
+        from ..rule_source_lifecycle import find_room_adjudication
+
+        return find_room_adjudication(self.spoiler_controller.conn, room_id, question)
+
+    def _store_room_adjudication(self, room_id: str, question: str, scenario: dict) -> None:
+        if not self.spoiler_controller:
+            return
+        from ..rule_source_lifecycle import upsert_room_adjudication
+
+        # Never retain model output, truth, identity, tokens, or hidden scenario data.
+        minimal_state: dict[str, str] = {}
+        raw_graph = scenario.get("knowledge_graph") if isinstance(scenario, dict) else None
+        if isinstance(raw_graph, str):
+            try:
+                raw_graph = json.loads(raw_graph)
+            except json.JSONDecodeError:
+                raw_graph = {}
+        scene = raw_graph.get("scene_description") if isinstance(raw_graph, dict) else ""
+        if isinstance(scene, str) and scene.strip():
+            minimal_state["scene"] = scene.strip()[:500]
+        try:
+            upsert_room_adjudication(
+                self.spoiler_controller.conn,
+                room_id,
+                question,
+                "已按当前公开场景状态处理该行动。",
+                minimal_state,
+                None,
+            )
+        except Exception as exc:
+            logger.warning("Could not save room-local adjudication for %s: %s", room_id, exc)
 
     def _normalize_response(self, raw: dict) -> AIResponse:
         state_suggestions = []

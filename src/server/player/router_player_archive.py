@@ -5,6 +5,10 @@ from typing import Literal
 from ..campaign_archive import project_campaign_archive
 from ..events.event_log import EventLog
 from .auth import find_player_character
+from ..rule_source_lifecycle import (
+    RuleSourceRetiredError,
+    ensure_room_rule_source_available,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -107,7 +111,10 @@ def _released_bundle_entries(conn, room_id: str, character_id: str, archive_type
 
 
 def _get_character(conn, token: str):
-    return find_player_character(conn, token)
+    try:
+        return find_player_character(conn, token)
+    except RuleSourceRetiredError as exc:
+        raise HTTPException(409, detail=exc.detail) from exc
 
 
 @router.get("/player/campaign-archive")
@@ -342,6 +349,10 @@ async def room_replay(
     ).fetchone()
     if not room:
         raise HTTPException(403, "Not room owner")
+    try:
+        ensure_room_rule_source_available(conn, room_id)
+    except RuleSourceRetiredError as exc:
+        raise HTTPException(409, detail=exc.detail) from exc
 
     rows = conn.execute(
         "SELECT sequence, event_type, audience, payload, issued_at FROM events "

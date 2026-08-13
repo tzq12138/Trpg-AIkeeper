@@ -77,6 +77,71 @@ class TestCreateRoom:
         assert data["status"] == "lobby"
         assert data["owner_account_id"] == "acc-admin"
 
+    def test_create_room_binds_the_current_authoritative_base_version(
+        self, client_with_data, test_db, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "src.server.rule_source_lifecycle.current_authoritative_base_version",
+            lambda _conn: "official-coc7-v1",
+        )
+        test_db.execute(
+            """
+            INSERT INTO rule_sets (
+                rule_set_id, name, slug, system, is_base, license_type, status, created_by
+            ) VALUES ('official-coc7-set', 'CoC7', 'official-coc7-current', 'coc7', TRUE,
+                      'authorized', 'published', 'acc-admin')
+            """
+        )
+        test_db.execute(
+            """
+            INSERT INTO rule_set_versions (
+                rule_set_version_id, rule_set_id, version_number, status, runtime_eligible,
+                source_sha256, created_by
+            ) VALUES ('official-coc7-v1', 'official-coc7-set', 1, 'published', TRUE,
+                      '22F5F56B7A0989CBDED695D39C7D5EDDDDD809CFC9D2C47E4CF4C5D7EDEA6815',
+                      'acc-admin')
+            """
+        )
+        test_db.commit()
+
+        room = _create_room(client_with_data)
+
+        binding = test_db.execute(
+            """
+            SELECT rule_set_version_id
+            FROM room_rule_bindings
+            WHERE room_id = %s
+            """,
+            (room["room_id"],),
+        ).fetchone()
+        assert binding == {"rule_set_version_id": "official-coc7-v1"}
+
+    def test_create_room_rejects_when_coc7_base_exists_without_eligible_version(
+        self, client_with_data, test_db, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "src.server.rule_source_lifecycle.current_authoritative_base_version",
+            lambda _conn: None,
+        )
+        test_db.execute(
+            """
+            INSERT INTO rule_sets (
+                rule_set_id, name, slug, system, is_base, license_type, status, created_by
+            ) VALUES ('official-coc7-draft', 'CoC7', 'official-coc7-draft', 'coc7', TRUE,
+                      'authorized', 'draft', 'acc-admin')
+            """
+        )
+        test_db.commit()
+
+        response = client_with_data.post(
+            "/api/rooms",
+            json={"scenario_id": "sc-test"},
+            headers={"Authorization": f"Bearer {_login(client_with_data)}"},
+        )
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == {"code": "rule_source_unavailable"}
+
 
 class TestRoomAiRuntimeBinding:
     def test_create_room_pins_ai_prompt_provider_and_rule_versions(

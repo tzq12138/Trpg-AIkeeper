@@ -323,7 +323,14 @@ async def health(request: Request):
 
 async def player_ws_endpoint(websocket: WebSocket, room_id: str, token: str, last_sequence: int = 0):
     conn = websocket.app.state.db
-    char = find_player_character(conn, token)
+    from .rule_source_lifecycle import RuleSourceRetiredError
+
+    try:
+        char = find_player_character(conn, token)
+    except RuleSourceRetiredError:
+        await websocket.accept()
+        await websocket.close(code=4009, reason="rule_source_retired")
+        return
     if not char or char["room_id"] != room_id:
         await websocket.accept()
         await websocket.close(code=4003, reason="Invalid token")
@@ -333,7 +340,12 @@ async def player_ws_endpoint(websocket: WebSocket, room_id: str, token: str, las
     connection_id = f"player:{character_id}"
 
     await ws_manager.connect(websocket, room_id, connection_id)
-    current = find_player_character(conn, token)
+    try:
+        current = find_player_character(conn, token)
+    except RuleSourceRetiredError:
+        ws_manager.disconnect(room_id, connection_id, websocket=websocket)
+        await websocket.close(code=4009, reason="rule_source_retired")
+        return
     if (
         not current
         or current["room_id"] != room_id

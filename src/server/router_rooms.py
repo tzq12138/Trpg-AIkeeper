@@ -181,6 +181,14 @@ async def create_room(request: Request):
     scenario_version_id = sc.get("published_version_id")
     if sc.get("publish_status") != "published" or not scenario_version_id:
         raise HTTPException(409, "剧本尚未确认发布，不能开房")
+    from .rule_source_lifecycle import current_authoritative_base_version
+    authoritative_base_version = current_authoritative_base_version(conn)
+    if authoritative_base_version is None:
+        has_coc7_base = conn.execute(
+            "SELECT 1 FROM rule_sets WHERE system = 'coc7' AND is_base = TRUE LIMIT 1"
+        ).fetchone()
+        if has_coc7_base:
+            raise HTTPException(409, detail={"code": "rule_source_unavailable"})
     runtime_package_version_id = _latest_ready_runtime_package_id(
         conn,
         scenario_version_id,
@@ -213,6 +221,12 @@ async def create_room(request: Request):
                 risk_contract_version, risk_contract_hash,
             ),
         )
+        if authoritative_base_version:
+            tx.execute(
+                "INSERT INTO room_rule_bindings (room_id, rule_set_version_id, priority) "
+                "VALUES (%s, %s, %s)",
+                (room_id, authoritative_base_version, 0),
+            )
         pin_room_ai_runtime(
             tx,
             room_id,
@@ -326,6 +340,7 @@ async def get_room(request: Request, room_id: str):
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
+    _require_room_rule_source(conn, room_id)
     scenario_title = ""
     player_count = 0
     if room.get("scenario_id"):
@@ -559,6 +574,7 @@ async def start_room(request: Request, room_id: str):
 
     if not is_owner:
         raise HTTPException(403, "不是房间所有者或管理员")
+    _require_room_rule_source(conn, room_id)
 
     # Require scenario
     if not room.get("scenario_id"):
@@ -782,21 +798,38 @@ def _verify_owner_or_admin(request: Request, room_id: str, conn):
             "SELECT * FROM rooms WHERE room_id = %s AND owner_token = %s", (room_id, owner_token)
         ).fetchone()
         if room:
+            _require_room_rule_source(conn, room_id)
             return
     try:
         from .router_auth import get_account_from_token
         account = get_account_from_token(request)
         if account:
             if account.get("role") == "admin":
+                _require_room_rule_source(conn, room_id)
                 return
             room = conn.execute(
                 "SELECT owner_account_id FROM rooms WHERE room_id = %s", (room_id,)
             ).fetchone()
             if room and room.get("owner_account_id") == account.get("account_id"):
+                _require_room_rule_source(conn, room_id)
                 return
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning("_verify_owner_or_admin: account lookup failed room=%s: %s", room_id, exc)
     raise HTTPException(403, "不是房间所有者或管理员")
+
+
+def _require_room_rule_source(conn, room_id: str) -> None:
+    from .rule_source_lifecycle import (
+        RuleSourceRetiredError,
+        ensure_room_rule_source_available,
+    )
+
+    try:
+        ensure_room_rule_source_available(conn, room_id)
+    except RuleSourceRetiredError as exc:
+        raise HTTPException(409, detail=exc.detail) from exc
 
 
 @router.get("/{room_id}/ai-status")

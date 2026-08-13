@@ -171,6 +171,7 @@ def _require_room_owner_or_admin(request: Request, room_id: str) -> dict:
         raise HTTPException(404, "房间不存在")
     room = dict(room)
     if request.headers.get("X-Owner-Token", "") == room["owner_token"]:
+        _require_room_rule_source(conn, room_id)
         return room
 
     from .router_auth import get_account_from_token
@@ -180,5 +181,18 @@ def _require_room_owner_or_admin(request: Request, room_id: str) -> dict:
         account.get("role") == "admin"
         or account.get("account_id") == room.get("owner_account_id")
     ):
+        _require_room_rule_source(conn, room_id)
         return room
     raise HTTPException(403, "不是房间所有者或管理员")
+
+
+def _require_room_rule_source(conn, room_id: str) -> None:
+    from .rule_source_lifecycle import (
+        RuleSourceRetiredError,
+        ensure_room_rule_source_available,
+    )
+
+    try:
+        ensure_room_rule_source_available(conn, room_id)
+    except RuleSourceRetiredError as exc:
+        raise HTTPException(409, detail=exc.detail) from exc

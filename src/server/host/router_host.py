@@ -30,6 +30,7 @@ def _verify_owner(request: Request, room_id: str) -> dict:
     # 1. X-Owner-Token (legacy)
     token = request.headers.get("X-Owner-Token", "")
     if token and room.get("owner_token") == token:
+        _require_room_rule_source(conn, room_id)
         return room
 
     # 2. Account-based auth
@@ -39,10 +40,14 @@ def _verify_owner(request: Request, room_id: str) -> dict:
         if account:
             if account.get("role") == "admin":
                 logger.info("_verify_owner: admin account=%s room=%s", account.get("username"), room_id)
+                _require_room_rule_source(conn, room_id)
                 return room
             if account.get("account_id") == room.get("owner_account_id"):
                 logger.info("_verify_owner: owner account=%s room=%s", account.get("username"), room_id)
+                _require_room_rule_source(conn, room_id)
                 return room
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning(
             "_verify_owner: account auth lookup failed room=%s error_type=%s",
@@ -52,6 +57,18 @@ def _verify_owner(request: Request, room_id: str) -> dict:
 
     logger.warning("_verify_owner: denied room=%s (token=%s, account failed)", room_id, bool(token))
     raise HTTPException(403, "不是房间所有者")
+
+
+def _require_room_rule_source(conn, room_id: str) -> None:
+    from ..rule_source_lifecycle import (
+        RuleSourceRetiredError,
+        ensure_room_rule_source_available,
+    )
+
+    try:
+        ensure_room_rule_source_available(conn, room_id)
+    except RuleSourceRetiredError as exc:
+        raise HTTPException(409, detail=exc.detail) from exc
 
 
 def _event_safe_record(value: dict | None) -> dict:
@@ -649,6 +666,14 @@ async def host_ws_endpoint(websocket: WebSocket, room_id: str, owner_token: str 
         await websocket.close(code=1008, reason="Policy violation")
         logger.warning("Host WS auth failed for room=%s ownerToken=%s authorized=%s",
                        room_id, bool(owner_token), authorized)
+        return
+
+    from ..rule_source_lifecycle import RuleSourceRetiredError, ensure_room_rule_source_available
+    try:
+        ensure_room_rule_source_available(conn, room_id)
+    except RuleSourceRetiredError:
+        await websocket.accept()
+        await websocket.close(code=4009, reason="rule_source_retired")
         return
 
     store = get_host_store(room_id, conn)

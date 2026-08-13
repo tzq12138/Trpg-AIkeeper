@@ -30,6 +30,7 @@ from ..scenario.xlsx_parser import parse_xlsx_character
 from ..router_auth import get_account_from_token
 from ..campaign_archive import CampaignReadOnlyError, ensure_campaign_writable
 from ..runtime_lifecycle import room_lifecycle_guard
+from ..rule_source_lifecycle import RuleSourceRetiredError, ensure_room_rule_source_available
 from .action_service import (
     ActionDraftError,
     submit_coc_background_decision,
@@ -57,6 +58,13 @@ def _join_rate_key(client_ip: str, account: dict | None) -> str:
 
 def _get_character(request: Request) -> dict:
     return require_player_character(request)
+
+
+def _require_room_rule_source(conn, room_id: str) -> None:
+    try:
+        ensure_room_rule_source_available(conn, room_id)
+    except RuleSourceRetiredError as exc:
+        raise HTTPException(409, detail=exc.detail) from exc
 
 
 def _completed_campaign_http_error(exc: CampaignReadOnlyError) -> HTTPException:
@@ -91,6 +99,7 @@ async def join_room(request: Request, room_id: str):
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
+    _require_room_rule_source(conn, room_id)
     account = _require_v2_join_account(request, dict(room))
     _check_rate_limit(_join_rate_key(client_ip, account))
     player_token = str(uuid.uuid4())
@@ -136,6 +145,7 @@ async def room_preflight(request: Request, room_id: str):
     ).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
+    _require_room_rule_source(conn, room_id)
     account = get_account_from_token(request)
     recovered = None
     if account:
@@ -171,6 +181,7 @@ async def get_join_info(request: Request, room_id: str):
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
+    _require_room_rule_source(conn, room_id)
     account = _require_v2_join_account(request, dict(room))
 
     room_status = room["status"]
@@ -274,6 +285,7 @@ async def restore_session(request: Request, character_id: str):
             raise HTTPException(404, "Character not found")
         if char.get("account_id") != account["account_id"]:
             raise HTTPException(403, "Not your character")
+        _require_room_rule_source(tx, str(char.get("room_id") or ""))
         if char.get("status") in {"left", "restricted_npc"}:
             raise HTTPException(409, detail={"code": "character_session_not_restorable"})
         if char.get("status") == "protected_inactive":
@@ -338,6 +350,7 @@ async def join_room_with_character(
     room = conn.execute("SELECT * FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
+    _require_room_rule_source(conn, room_id)
     account = _require_v2_join_account(request, dict(room))
     _check_rate_limit(_join_rate_key(client_ip, account))
     nickname = player_name.strip()
@@ -523,6 +536,7 @@ async def replace_permanently_insane_investigator(
         if not original:
             raise HTTPException(403, "Invalid token")
         original = dict(original)
+        _require_room_rule_source(tx, str(original["room_id"]))
         original_data = _json_val(original.get("xlsx_data")) or {}
         prior_transition = original_data.get("_replacement_transition")
         if isinstance(prior_transition, dict):
@@ -1170,6 +1184,16 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
         from ..turn_manager import TurnManager
         tm = TurnManager(conn)
 
+        try:
+            ensure_room_rule_source_available(conn, room_id)
+        except RuleSourceRetiredError:
+            logger.info(
+                "Skipping settlement for retired room %s turn %s",
+                room_id,
+                turn_id,
+            )
+            return
+
         # Atomically claim resolving — skip if another worker already took this turn
         if not tm.mark_resolving(turn_id):
             logger.info("Turn %s already claimed by another worker, skipping", turn_id)
@@ -1280,6 +1304,13 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
                                     dependent_action_ids,
                                     "collaboration_dependency_not_met",
                                 )
+            except RuleSourceRetiredError:
+                logger.info(
+                    "Stopping settlement for retired room %s turn %s",
+                    room_id,
+                    turn_id,
+                )
+                return
             except Exception as exc:
                 error_type = type(exc).__name__
                 logger.warning(
@@ -1347,6 +1378,15 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
                 narrative_parts.append(str(resolved["narrative"]))
         narrative = "\n".join(narrative_parts)
 
+        try:
+            ensure_room_rule_source_available(conn, room_id)
+        except RuleSourceRetiredError:
+            logger.info(
+                "Stopping settlement finalization for retired room %s turn %s",
+                room_id,
+                turn_id,
+            )
+            return
         _complete_collaboration_batches_for_actions(
             conn,
             [action["action_id"] for action in actions],
@@ -1545,6 +1585,21 @@ async def _resolve_collaboration_batch_background(app, contract_id: str):
     pg_db = getattr(app.state, "pg_db", None)
     conn = pg_db.get_connection() if pg_db else app.state.db
     try:
+        contract = conn.execute(
+            "SELECT room_id FROM collaboration_contracts WHERE contract_id = %s",
+            (contract_id,),
+        ).fetchone()
+        if not contract:
+            return
+        try:
+            ensure_room_rule_source_available(conn, str(contract["room_id"]))
+        except RuleSourceRetiredError:
+            logger.info(
+                "Skipping collaboration batch for retired room %s contract %s",
+                contract["room_id"],
+                contract_id,
+            )
+            return
         batch = conn.execute(
             "UPDATE collaboration_contract_batches SET status = 'resolving', started_at = NOW(), updated_at = NOW() "
             "WHERE contract_id = %s AND status = 'queued' RETURNING *",
@@ -1606,7 +1661,22 @@ async def _resolve_collaboration_batch_background(app, contract_id: str):
                     "collaboration_batch_requires_review",
                 )
                 return
+        try:
+            ensure_room_rule_source_available(conn, str(contract["room_id"]))
+        except RuleSourceRetiredError:
+            logger.info(
+                "Stopping collaboration batch finalization for retired room %s contract %s",
+                contract["room_id"],
+                contract_id,
+            )
+            return
         _complete_collaboration_batch_if_terminal(conn, contract_id)
+    except RuleSourceRetiredError:
+        logger.info(
+            "Stopping collaboration batch for retired contract %s",
+            contract_id,
+        )
+        return
     except Exception as exc:
         logger.error(
             "Collaboration batch resolution failed for contract %s error_type=%s",

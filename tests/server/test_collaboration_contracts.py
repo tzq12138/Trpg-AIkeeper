@@ -521,6 +521,252 @@ async def test_collaboration_batch_worker_claims_once_and_resolves_confirmed_act
 
 
 @pytest.mark.asyncio
+async def test_collaboration_batch_worker_leaves_queued_batch_untouched_when_room_retires(
+    client,
+    test_db,
+    monkeypatch,
+):
+    room, players = _setup_contract_room(client, test_db, player_count=2)
+    initiator, invitee = players
+    monkeypatch.setattr(
+        "src.server.player.router_actions_v2._schedule_collaboration_batch_resolution",
+        lambda *_: None,
+    )
+    created = client.post(
+        "/api/player/collaboration-contracts",
+        headers={"X-Room-Token": initiator["player_token"]},
+        json={
+            "sharedIntent": "一起调查走廊。",
+            "inviteeCharacterIds": [invitee["character_id"]],
+        },
+    )
+    contract_id = created.json()["contractId"]
+    accepted = client.post(
+        f"/api/player/collaboration-contracts/{contract_id}/responses",
+        headers={"X-Room-Token": invitee["player_token"]},
+        json={"decision": "accept"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    for index, player in enumerate((initiator, invitee), start=1):
+        draft = client.get(
+            "/api/player/action-drafts/current",
+            headers={"X-Room-Token": player["player_token"]},
+        ).json()
+        confirmed = client.post(
+            f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+            headers={"X-Room-Token": player["player_token"], "Idempotency-Key": f"retired-{index}"},
+            json={"confirmations": draft["confirmation_requirements"]},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+
+    test_db.execute(
+        "UPDATE rooms SET rule_source_status = 'rule_source_retired', "
+        "rule_source_reason = 'local_test_rule_version' WHERE room_id = %s",
+        (room["room_id"],),
+    )
+    test_db.commit()
+
+    class FailingPipeline:
+        async def resolve_action(self, _action_id):
+            raise AssertionError("retired batch must not reach the pipeline")
+
+    monkeypatch.setattr(client.app.state, "pipeline", FailingPipeline(), raising=False)
+    await _resolve_collaboration_batch_background(client.app, contract_id)
+
+    assert test_db.execute(
+        "SELECT status FROM collaboration_contract_batches WHERE contract_id = %s",
+        (contract_id,),
+    ).fetchone()["status"] == "queued"
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id IN ("
+        "SELECT action_id FROM actions WHERE room_id = %s) "
+        "ORDER BY action_id LIMIT 1",
+        (room["room_id"],),
+    ).fetchone()["status"] == "batched"
+
+
+@pytest.mark.asyncio
+async def test_collaboration_batch_stops_when_room_retires_after_last_action_resolution(
+    client,
+    test_db,
+    monkeypatch,
+):
+    room, players = _setup_contract_room(client, test_db, player_count=1)
+    player = players[0]
+    room_id = room["room_id"]
+    contract_id = "retired-after-resolution-contract"
+    action_id = "retired-after-resolution-batch-action"
+    draft_id = "retired-after-resolution-batch-draft"
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.execute(
+        "INSERT INTO action_drafts "
+        "(draft_id, room_id, character_id, intent_type, declared_intent, params, status) "
+        "VALUES (%s, %s, %s, 'dialogue', 'Wait.', '{}', 'confirmed')",
+        (draft_id, room_id, player["character_id"]),
+    )
+    test_db.execute(
+        "INSERT INTO actions "
+        "(action_id, room_id, character_id, draft_id, intent_type, declared_intent, status) "
+        "VALUES (%s, %s, %s, %s, 'dialogue', 'Wait.', 'batched')",
+        (action_id, room_id, player["character_id"], draft_id),
+    )
+    test_db.execute(
+        "INSERT INTO collaboration_contracts "
+        "(contract_id, room_id, initiator_character_id, shared_intent, status, expires_at) "
+        "VALUES (%s, %s, %s, 'Wait.', 'accepted', NOW() + INTERVAL '10 minutes')",
+        (contract_id, room_id, player["character_id"]),
+    )
+    test_db.execute(
+        "INSERT INTO collaboration_contract_drafts (contract_id, character_id, draft_id) "
+        "VALUES (%s, %s, %s)",
+        (contract_id, player["character_id"], draft_id),
+    )
+    test_db.execute(
+        "INSERT INTO collaboration_contract_batches (contract_id, room_id, action_ids) "
+        "VALUES (%s, %s, %s)",
+        (contract_id, room_id, json.dumps([action_id])),
+    )
+    test_db.commit()
+    events_before = test_db.execute(
+        "SELECT COUNT(*) AS count FROM events WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"]
+
+    class RetiringPipeline:
+        async def resolve_action(self, resolved_action_id):
+            test_db.execute(
+                "UPDATE actions SET status = 'completed' WHERE action_id = %s",
+                (resolved_action_id,),
+            )
+            test_db.execute(
+                "UPDATE rooms SET rule_source_status = 'rule_source_retired', "
+                "rule_source_reason = 'local_test_rule_version' WHERE room_id = %s",
+                (room_id,),
+            )
+            test_db.commit()
+            return {"status": "completed", "action_id": resolved_action_id}
+
+    monkeypatch.setattr(client.app.state, "pipeline", RetiringPipeline(), raising=False)
+    await _resolve_collaboration_batch_background(client.app, contract_id)
+
+    assert test_db.execute(
+        "SELECT status FROM collaboration_contract_batches WHERE contract_id = %s",
+        (contract_id,),
+    ).fetchone()["status"] == "resolving"
+    assert test_db.execute(
+        "SELECT status FROM collaboration_contracts WHERE contract_id = %s",
+        (contract_id,),
+    ).fetchone()["status"] == "accepted"
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = %s",
+        (action_id,),
+    ).fetchone()["status"] == "completed"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"] == events_before
+
+
+@pytest.mark.asyncio
+async def test_collaboration_batch_stops_when_room_retires_between_actions(
+    client,
+    test_db,
+    monkeypatch,
+):
+    room, players = _setup_contract_room(client, test_db, player_count=2)
+    first_player, second_player = players
+    room_id = room["room_id"]
+    contract_id = "retired-between-batch-actions-contract"
+    action_ids = [
+        "retired-between-batch-actions-first",
+        "retired-between-batch-actions-second",
+    ]
+    draft_ids = [
+        "retired-between-batch-actions-first-draft",
+        "retired-between-batch-actions-second-draft",
+    ]
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.execute(
+        "INSERT INTO collaboration_contracts "
+        "(contract_id, room_id, initiator_character_id, shared_intent, status, expires_at) "
+        "VALUES (%s, %s, %s, 'Wait.', 'accepted', NOW() + INTERVAL '10 minutes')",
+        (contract_id, room_id, first_player["character_id"]),
+    )
+    for action_id, draft_id, player in zip(action_ids, draft_ids, players):
+        test_db.execute(
+            "INSERT INTO action_drafts "
+            "(draft_id, room_id, character_id, intent_type, declared_intent, params, status) "
+            "VALUES (%s, %s, %s, 'dialogue', 'Wait.', '{}', 'confirmed')",
+            (draft_id, room_id, player["character_id"]),
+        )
+        test_db.execute(
+            "INSERT INTO actions "
+            "(action_id, room_id, character_id, draft_id, intent_type, declared_intent, status) "
+            "VALUES (%s, %s, %s, %s, 'dialogue', 'Wait.', 'batched')",
+            (action_id, room_id, player["character_id"], draft_id),
+        )
+        test_db.execute(
+            "INSERT INTO collaboration_contract_drafts (contract_id, character_id, draft_id) "
+            "VALUES (%s, %s, %s)",
+            (contract_id, player["character_id"], draft_id),
+        )
+    test_db.execute(
+        "INSERT INTO collaboration_contract_batches (contract_id, room_id, action_ids) "
+        "VALUES (%s, %s, %s)",
+        (contract_id, room_id, json.dumps(action_ids)),
+    )
+    test_db.commit()
+    events_before = test_db.execute(
+        "SELECT COUNT(*) AS count FROM events WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"]
+
+    class RetiringBetweenActionsPipeline:
+        def __init__(self):
+            self.calls = []
+
+        async def resolve_action(self, action_id):
+            self.calls.append(action_id)
+            if action_id == action_ids[0]:
+                test_db.execute(
+                    "UPDATE actions SET status = 'completed' WHERE action_id = %s",
+                    (action_id,),
+                )
+                test_db.execute(
+                    "UPDATE rooms SET rule_source_status = 'rule_source_retired', "
+                    "rule_source_reason = 'local_test_rule_version' WHERE room_id = %s",
+                    (room_id,),
+                )
+                test_db.commit()
+                return {"status": "completed", "action_id": action_id}
+            from src.server.rule_source_lifecycle import RuleSourceRetiredError
+
+            raise RuleSourceRetiredError("local_test_rule_version")
+
+    pipeline = RetiringBetweenActionsPipeline()
+    monkeypatch.setattr(client.app.state, "pipeline", pipeline, raising=False)
+    await _resolve_collaboration_batch_background(client.app, contract_id)
+
+    assert pipeline.calls == action_ids
+    assert test_db.execute(
+        "SELECT status FROM collaboration_contract_batches WHERE contract_id = %s",
+        (contract_id,),
+    ).fetchone()["status"] == "resolving"
+    assert test_db.execute(
+        "SELECT status FROM collaboration_contracts WHERE contract_id = %s",
+        (contract_id,),
+    ).fetchone()["status"] == "accepted"
+    assert test_db.execute(
+        "SELECT status FROM actions WHERE action_id = %s",
+        (action_ids[1],),
+    ).fetchone()["status"] == "batched"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"] == events_before
+
+
+@pytest.mark.asyncio
 async def test_collaboration_dependency_failure_blocks_the_dependent_action(
     client,
     test_db,

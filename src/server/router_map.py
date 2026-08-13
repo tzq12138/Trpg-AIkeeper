@@ -136,7 +136,9 @@ async def get_map_view(request: Request, room_id: str):
     # Validate token and get character — no anonymous fallback
     try:
         char = _get_character(request)
-    except HTTPException:
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            raise
         raise HTTPException(403, "无效或过期的玩家令牌")
 
     character_id = char["character_id"]
