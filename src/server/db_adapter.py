@@ -1288,6 +1288,57 @@ ALTER TABLE document_chunks ALTER COLUMN embedding TYPE vector USING embedding::
 CREATE INDEX IF NOT EXISTS idx_chunks_version_visibility ON document_chunks(scenario_version_id, visibility);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding_space
     ON document_chunks(embedding_model, embedding_dimensions);
+
+ALTER TABLE rule_set_versions
+    ADD COLUMN IF NOT EXISTS runtime_eligible BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE rooms
+    ADD COLUMN IF NOT EXISTS rule_source_status TEXT NOT NULL DEFAULT 'ready';
+ALTER TABLE rooms
+    ADD COLUMN IF NOT EXISTS rule_source_reason TEXT;
+
+CREATE TABLE IF NOT EXISTS rule_source_pages (
+    rule_source_page_id TEXT PRIMARY KEY,
+    source_document_id TEXT NOT NULL REFERENCES source_documents(source_document_id),
+    page_number INTEGER NOT NULL,
+    extraction_status TEXT NOT NULL,
+    text_sha256 TEXT NOT NULL,
+    extraction_method TEXT NOT NULL,
+    reviewed_by TEXT,
+    reviewed_at TIMESTAMP,
+    diagnostics JSONB NOT NULL DEFAULT '{}',
+    UNIQUE (source_document_id, page_number)
+);
+
+CREATE TABLE IF NOT EXISTS rule_version_publication_gates (
+    rule_set_version_id TEXT PRIMARY KEY REFERENCES rule_set_versions(rule_set_version_id),
+    status TEXT NOT NULL DEFAULT 'pending',
+    diagnostics JSONB NOT NULL DEFAULT '{}',
+    reviewed_by TEXT,
+    reviewed_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS room_rule_adjudications (
+    adjudication_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id),
+    question_key TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    minimal_state JSONB NOT NULL DEFAULT '{}',
+    rule_set_version_id TEXT REFERENCES rule_set_versions(rule_set_version_id),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (room_id, question_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rooms_rule_source_status
+    ON rooms(rule_source_status);
+CREATE INDEX IF NOT EXISTS idx_rule_source_pages_document_page
+    ON rule_source_pages(source_document_id, page_number);
+CREATE INDEX IF NOT EXISTS idx_document_chunks_rule_version_source_part
+    ON document_chunks(rule_set_version_id, source_part_id);
+CREATE INDEX IF NOT EXISTS idx_room_rule_adjudications_room_question
+    ON room_rule_adjudications(room_id, question_key);
 DO $$
 BEGIN
     IF NOT EXISTS (
