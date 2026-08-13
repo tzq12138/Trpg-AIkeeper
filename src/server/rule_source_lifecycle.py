@@ -149,7 +149,12 @@ def current_authoritative_base_version(conn) -> str | None:
         ).fetchone()
         if source:
             coverage = _official_page_coverage(conn, source["source_document_id"])
-            if coverage["complete"] and coverage["valid_statuses"] and not coverage["needs_review"]:
+            if (
+                coverage["complete"]
+                and coverage["source_parts_complete"]
+                and coverage["valid_statuses"]
+                and not coverage["needs_review"]
+            ):
                 return row["rule_set_version_id"]
     return None
 

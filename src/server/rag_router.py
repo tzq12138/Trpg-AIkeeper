@@ -321,7 +321,12 @@ async def publish_rule_set_version(request: Request, rule_set_version_id: str):
         from .rules.authoritative_coc7 import _official_page_coverage
 
         coverage = _official_page_coverage(conn, version["official_source_document_id"])
-        if not coverage["complete"] or not coverage["valid_statuses"] or coverage["needs_review"]:
+        if (
+            not coverage["complete"]
+            or not coverage["source_parts_complete"]
+            or not coverage["valid_statuses"]
+            or coverage["needs_review"]
+        ):
             raise HTTPException(409, detail={"code": "rule_version_gate_not_ready"})
     with conn.transaction() as tx:
         if not claimed_official:

@@ -473,6 +473,43 @@ def test_import_rejects_an_existing_official_source_with_a_missing_page_source_p
         import_authoritative_coc7(test_db, _FakeRag(), actor_id="acc-admin")
 
 
+def test_current_authoritative_base_version_rejects_a_missing_page_source_part(
+    test_db, monkeypatch
+):
+    """A damaged authoritative source cannot become a new-room base binding."""
+    from src.server.rules import authoritative_coc7
+
+    monkeypatch.setattr(
+        authoritative_coc7,
+        "load_authoritative_rulebook_pages",
+        lambda: (
+            OfficialRulebookSpec(
+                filename="COC7th核心规则书v1.2.1.pdf",
+                page_count=380,
+                sha256="22F5F56B7A0989CBDED695D39C7D5EDDDDD809CFC9D2C47E4CF4C5D7EDEA6815",
+            ),
+            "registered/COC7th核心规则书v1.2.1.pdf",
+            _fake_official_pages(),
+        ),
+    )
+    imported = import_authoritative_coc7(test_db, _FakeRag(), actor_id="acc-admin")
+    approve_rule_source_review(test_db, imported["rule_set_version_id"], "acc-admin")
+    test_db.execute(
+        "UPDATE rule_sets SET status = 'published' WHERE slug = 'official-coc7-core'"
+    )
+    test_db.execute(
+        "UPDATE rule_set_versions SET status = 'published', runtime_eligible = TRUE "
+        "WHERE rule_set_version_id = %s",
+        (imported["rule_set_version_id"],),
+    )
+    test_db.execute(
+        "DELETE FROM source_parts WHERE source_document_id = %s AND page_number = 380",
+        (imported["source_document_id"],),
+    )
+
+    assert current_authoritative_base_version(test_db) is None
+
+
 def test_rule_page_indexer_keeps_chunks_on_their_physical_page():
     db = _RecordingDb()
     store = RAGStore(db, _FakeEmbedding())

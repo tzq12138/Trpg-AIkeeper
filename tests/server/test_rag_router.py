@@ -147,6 +147,41 @@ def test_publishing_official_rules_rejects_an_unreviewed_gate(client, test_db):
     assert response.json()["detail"]["code"] == "rule_version_gate_not_ready"
 
 
+def test_publishing_official_rules_rejects_a_missing_page_source_part(client, test_db):
+    """A ready gate does not override missing page-level source evidence."""
+    setup_auth_test_data(test_db)
+    token = login(client, "admin")
+    rule_set_version_id = _insert_unreviewed_official_version(test_db)
+    test_db.execute(
+        "UPDATE rule_version_publication_gates SET status = 'ready' "
+        "WHERE rule_set_version_id = %s",
+        (rule_set_version_id,),
+    )
+    for page_number in range(1, 381):
+        test_db.execute(
+            "INSERT INTO rule_source_pages "
+            "(rule_source_page_id, source_document_id, page_number, extraction_status, text_sha256, extraction_method) "
+            "VALUES (%s, 'official-source', %s, 'indexable', %s, 'test')",
+            (f'official-page-{page_number}', page_number, f'page-{page_number}'),
+        )
+        if page_number != 380:
+            test_db.execute(
+                "INSERT INTO source_parts "
+                "(source_part_id, source_document_id, ordinal, part_kind, page_number, text_content, checksum) "
+                "VALUES (%s, 'official-source', %s, 'page', %s, 'page', %s)",
+                (f'official-part-{page_number}', page_number, page_number, f'part-{page_number}'),
+            )
+    test_db.commit()
+
+    response = client.post(
+        f"/api/rag/rule-set-versions/{rule_set_version_id}/publish",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "rule_version_gate_not_ready"
+
+
 def test_publishing_local_test_rules_is_rejected_without_reactivation(client, test_db):
     """A retired local fixture must never be made runnable through publish."""
     setup_auth_test_data(test_db)
