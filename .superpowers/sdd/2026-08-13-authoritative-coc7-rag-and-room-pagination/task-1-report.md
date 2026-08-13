@@ -25,7 +25,7 @@
 
 ## 提交
 
-Commit SHA：`916d038f234a9eb3fe8cd0e569780f84293203f6`。
+实现提交 SHA：`00600652f03f507f4881867e7666f0043cdecfec`（`feat: add authoritative CoC7 source model`）。
 
 ## 风险与边界
 
