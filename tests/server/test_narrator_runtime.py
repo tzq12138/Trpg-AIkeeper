@@ -59,6 +59,20 @@ class _StaticRuleExecutor:
         )
 
 
+class _FailureRuleExecutor:
+    async def execute(self, intent, *_args, **_kwargs):
+        return ResolutionResult(
+            actionId=intent.action_id,
+            roomId="narrator-room",
+            characterId="narrator-character",
+            mechanic=intent.intent_type,
+            isSuccess=False,
+            narrative="deterministic failed investigation",
+            mutations=[],
+            metadata={},
+        )
+
+
 class _TurnPipeline:
     async def resolve_action(self, action_id: str):
         return {
@@ -985,7 +999,7 @@ async def test_client_cannot_supply_generic_scene_progression_marker(client, tes
 
 
 @pytest.mark.asyncio
-async def test_named_runtime_clue_is_persisted_and_can_complete_an_ending(client, test_db):
+async def test_runtime_condition_clue_is_persisted_and_can_complete_an_ending(client, test_db):
     room_id, character_id, _ = _setup_narrator_room(client, test_db)
     runtime_row = test_db.execute(
         "SELECT runtime_package FROM runtime_package_versions WHERE scenario_version_id = "
@@ -1001,8 +1015,15 @@ async def test_named_runtime_clue_is_persisted_and_can_complete_an_ending(client
         "clue_dependencies": [{
             "clue_id": "g17-test-sheet",
             "name": "G-17 test sheet",
-            "description": "A water-damaged experiment record.",
+            "public_version": "A water-damaged experiment record.",
             "location": "兰花展厅",
+            "importance": "core",
+            "reveal_conditions": [{
+                "kind": "inspect",
+                "scene_id": "orchid-hall",
+            }],
+            "prerequisite_fact_refs": [],
+            "failure_outcome": {"preserve_core": True},
             "citation": {"source_part_id": "part-g17"},
         }],
         "ending_conditions": [{
@@ -1056,6 +1077,53 @@ async def test_named_runtime_clue_is_persisted_and_can_complete_an_ending(client
         "s2c_public_observation",
         "s2c_action_completed",
     } <= projected_event_types
+
+
+@pytest.mark.asyncio
+async def test_preserved_runtime_clue_is_committed_after_rule_failure(client, test_db):
+    room_id, character_id, _ = _setup_narrator_room(client, test_db)
+    runtime_row = test_db.execute(
+        "SELECT runtime_package FROM runtime_package_versions WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (room_id,),
+    ).fetchone()
+    runtime_package = dict(runtime_row["runtime_package"])
+    runtime_package.update({
+        "semantic_scenes": [{
+            "scene_id": "lobby",
+            "name": "Lobby",
+        }],
+        "clue_dependencies": [{
+            "clue_id": "failed-inspection-clue",
+            "name": "Failed inspection clue",
+            "public_version": "The brass key has a visible maker mark.",
+            "location": "Lobby",
+            "importance": "core",
+            "reveal_conditions": [{"kind": "inspect", "scene_id": "lobby"}],
+            "prerequisite_fact_refs": [],
+            "failure_outcome": {"preserve_core": True},
+        }],
+    })
+    test_db.execute(
+        "UPDATE runtime_package_versions SET runtime_package = %s WHERE scenario_version_id = "
+        "(SELECT scenario_version_id FROM rooms WHERE room_id = %s)",
+        (json.dumps(runtime_package, ensure_ascii=False), room_id),
+    )
+    _insert_action(test_db, room_id, character_id)
+
+    result = await ResolutionPipeline(
+        test_db,
+        compiler=_StaticCompiler("auto_failure"),
+        rule_executor=_FailureRuleExecutor(),
+    ).resolve_action("narrator-action")
+
+    clue = test_db.execute(
+        "SELECT source FROM clues WHERE room_id = %s AND character_id = %s",
+        (room_id, character_id),
+    ).fetchone()
+
+    assert result["status"] == "completed"
+    assert clue["source"] == "runtime:failed-inspection-clue"
 
 
 @pytest.mark.asyncio

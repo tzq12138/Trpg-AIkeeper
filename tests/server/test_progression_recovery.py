@@ -605,3 +605,247 @@ async def test_ai_proposed_uncompiled_clue_is_not_persisted(test_db, monkeypatch
     assert test_db.execute(
         "SELECT 1 FROM clues WHERE room_id = 'room-uncompiled-clue'"
     ).fetchone() is None
+
+
+def _runtime_clue_package():
+    return {
+        "semantic_scenes": [
+            {
+                "scene_id": "lost-property-counter",
+                "name": "失物局柜台",
+                "npcs_present": ["gao-clerk"],
+            },
+            {
+                "scene_id": "night-market",
+                "name": "夜市修表摊",
+                "npcs_present": ["zhong-watchmaker"],
+            },
+        ],
+        "npc_states": [
+            {
+                "npc_id": "zhong-watchmaker",
+                "name": "钟序",
+                "public_name": "钟师傅",
+            }
+        ],
+        "clue_dependencies": [
+            {
+                "clue_id": "brass-token",
+                "name": "黄铜寄存牌 47",
+                "description": "DESCRIPTION SECRET: 分拣机的真实用途。",
+                "public_version": "一枚会在午夜自行退回的黄铜寄存牌。",
+                "private_version": "PRIVATE SECRET: 完整停机顺序。",
+                "location": "失物局柜台",
+                "importance": "core",
+                "reveal_conditions": [
+                    {"kind": "inspect", "scene_id": "lost-property-counter"}
+                ],
+                "prerequisite_fact_refs": [],
+                "failure_outcome": {"preserve_core": True},
+            },
+            {
+                "clue_id": "token-scratch",
+                "name": "修复后的刻痕",
+                "public_version": "修复的刻痕写着“先归还，再记忆”。",
+                "location": "夜市修表摊",
+                "importance": "supporting",
+                "reveal_conditions": [
+                    {"kind": "ask_npc", "npc_id": "zhong-watchmaker"}
+                ],
+                "prerequisite_fact_refs": ["brass-token"],
+                "failure_outcome": {"preserve_core": True},
+            },
+        ],
+    }
+
+
+def _setup_runtime_clue_room(test_db, room_id: str, current_scene: str) -> None:
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token, status) VALUES (%s, %s, 'active')",
+        (room_id, f"owner-{room_id}"),
+    )
+    test_db.execute(
+        "INSERT INTO room_scene_state (room_id, current_scene, visited_scenes, version) "
+        "VALUES (%s, %s, %s, 1)",
+        (room_id, current_scene, json.dumps([current_scene])),
+    )
+    test_db.commit()
+
+
+@pytest.mark.asyncio
+async def test_runtime_condition_persists_public_clue_without_player_knowing_name(
+    test_db,
+    monkeypatch,
+):
+    from src.server.engine.resolution_pipeline import ResolutionPipeline
+    from src.server.models import PlayerIntent
+
+    room_id = "room-runtime-clue-public"
+    character_id = "char-runtime-clue-public"
+    _setup_runtime_clue_room(test_db, room_id, "lost-property-counter")
+    pipeline = ResolutionPipeline(test_db)
+    monkeypatch.setattr(
+        pipeline,
+        "_runtime_package_for_room",
+        lambda _room_id, *, executor=None: _runtime_clue_package(),
+    )
+
+    discovered = await pipeline._persist_named_runtime_clues(
+        {
+            "action_id": "action-runtime-clue-public",
+            "room_id": room_id,
+            "character_id": character_id,
+        },
+        PlayerIntent(
+            action_id="action-runtime-clue-public",
+            intent_type="dialogue",
+            declared_intent="我仔细检查柜台上的寄存牌和取件簿。",
+        ),
+    )
+
+    clue = test_db.execute(
+        "SELECT text, source, is_private FROM clues WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    event = test_db.execute(
+        "SELECT payload FROM events WHERE room_id = %s AND event_type = 's2c_clue_discovered'",
+        (room_id,),
+    ).fetchone()
+
+    assert [item["canonicalId"] for item in discovered] == ["brass-token"]
+    assert clue["source"] == "runtime:brass-token"
+    assert clue["is_private"] is True
+    assert clue["text"] == "黄铜寄存牌 47：一枚会在午夜自行退回的黄铜寄存牌。"
+    assert "DESCRIPTION SECRET" not in clue["text"]
+    assert "PRIVATE SECRET" not in clue["text"]
+    assert "DESCRIPTION SECRET" not in json.dumps(event["payload"], ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_runtime_condition_accepts_shared_prerequisite_for_npc_question(
+    test_db,
+    monkeypatch,
+):
+    from src.server.engine.resolution_pipeline import ResolutionPipeline
+    from src.server.models import PlayerIntent
+
+    room_id = "room-runtime-clue-shared"
+    character_id = "char-runtime-clue-shared"
+    _setup_runtime_clue_room(test_db, room_id, "night-market")
+    pipeline = ResolutionPipeline(test_db)
+    monkeypatch.setattr(
+        pipeline,
+        "_runtime_package_for_room",
+        lambda _room_id, *, executor=None: _runtime_clue_package(),
+    )
+    intent = PlayerIntent(
+        action_id="action-runtime-clue-shared-missing",
+        intent_type="dialogue",
+        declared_intent="我向钟师傅追问寄存牌上的刻痕。",
+    )
+
+    missing = await pipeline._persist_named_runtime_clues(
+        {
+            "action_id": intent.action_id,
+            "room_id": room_id,
+            "character_id": character_id,
+        },
+        intent,
+    )
+    test_db.execute(
+        "INSERT INTO clues (clue_id, room_id, character_id, text, source, is_private) "
+        "VALUES ('shared-brass-token', %s, 'other-character', '共享的寄存牌', 'runtime:brass-token', TRUE)",
+        (room_id,),
+    )
+    test_db.execute(
+        "INSERT INTO clue_shares (share_id, clue_id, shared_by, public_version, room_id) "
+        "VALUES ('share-brass-token', 'shared-brass-token', 'other-character', '共享的寄存牌', %s)",
+        (room_id,),
+    )
+    test_db.commit()
+    discovered = await pipeline._persist_named_runtime_clues(
+        {
+            "action_id": "action-runtime-clue-shared",
+            "room_id": room_id,
+            "character_id": character_id,
+        },
+        intent.model_copy(update={"action_id": "action-runtime-clue-shared"}),
+    )
+
+    assert missing == []
+    assert [item["canonicalId"] for item in discovered] == ["token-scratch"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_condition_persistence_is_idempotent_per_clue(
+    test_db,
+    monkeypatch,
+):
+    from src.server.engine.resolution_pipeline import ResolutionPipeline
+    from src.server.models import PlayerIntent
+
+    room_id = "room-runtime-clue-idempotent"
+    character_id = "char-runtime-clue-idempotent"
+    _setup_runtime_clue_room(test_db, room_id, "lost-property-counter")
+    pipeline = ResolutionPipeline(test_db)
+    monkeypatch.setattr(
+        pipeline,
+        "_runtime_package_for_room",
+        lambda _room_id, *, executor=None: _runtime_clue_package(),
+    )
+    action = {
+        "action_id": "action-runtime-clue-idempotent",
+        "room_id": room_id,
+        "character_id": character_id,
+    }
+    intent = PlayerIntent(
+        action_id=action["action_id"],
+        intent_type="dialogue",
+        declared_intent="我检查柜台上的寄存牌。",
+    )
+
+    first = await pipeline._persist_named_runtime_clues(action, intent)
+    repeated = await pipeline._persist_named_runtime_clues(action, intent)
+    count = test_db.execute(
+        "SELECT COUNT(*) AS count FROM clues WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"]
+
+    assert [item["canonicalId"] for item in first] == ["brass-token"]
+    assert repeated == []
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_condition_can_preserve_a_core_clue_after_failure(
+    test_db,
+    monkeypatch,
+):
+    from src.server.engine.resolution_pipeline import ResolutionPipeline
+    from src.server.models import PlayerIntent
+
+    room_id = "room-runtime-clue-preserved"
+    character_id = "char-runtime-clue-preserved"
+    _setup_runtime_clue_room(test_db, room_id, "lost-property-counter")
+    pipeline = ResolutionPipeline(test_db)
+    monkeypatch.setattr(
+        pipeline,
+        "_runtime_package_for_room",
+        lambda _room_id, *, executor=None: _runtime_clue_package(),
+    )
+
+    discovered = await pipeline._persist_named_runtime_clues(
+        {
+            "action_id": "action-runtime-clue-preserved",
+            "room_id": room_id,
+            "character_id": character_id,
+        },
+        PlayerIntent(
+            action_id="action-runtime-clue-preserved",
+            intent_type="dialogue",
+            declared_intent="我检查柜台上的寄存牌。",
+        ),
+        allow_failure_preservation=True,
+    )
+
+    assert [item["canonicalId"] for item in discovered] == ["brass-token"]

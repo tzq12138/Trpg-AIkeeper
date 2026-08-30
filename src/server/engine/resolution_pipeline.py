@@ -30,6 +30,7 @@ from .retro_items import RetroactiveClaimError, RetroactiveItemService
 from .reveal_ledger import RevealPolicyError
 from .roll_receipt import create_roll_receipt
 from .rule_executor import RuleExecutor
+from .runtime_reveal_conditions import select_runtime_clue
 
 logger = logging.getLogger(__name__)
 
@@ -1458,20 +1459,20 @@ class ResolutionPipeline:
             nonlocal deferred_effect_sequences
             nonlocal bundle
 
-            if resolution.is_success:
-                committed_runtime_clues = await self._persist_named_runtime_clues(
-                    action,
-                    intent,
-                    executor=transaction,
-                    publish=False,
-                )
-                runtime_clues_checked_with_state = True
-                if committed_runtime_clues:
-                    resolution.metadata = {
-                        **dict(resolution.metadata or {}),
-                        "runtime_clue_discoveries": committed_runtime_clues,
-                    }
-                    result_payload = resolution.model_dump(by_alias=True)
+            committed_runtime_clues = await self._persist_named_runtime_clues(
+                action,
+                intent,
+                executor=transaction,
+                publish=False,
+                allow_failure_preservation=not resolution.is_success,
+            )
+            runtime_clues_checked_with_state = True
+            if committed_runtime_clues:
+                resolution.metadata = {
+                    **dict(resolution.metadata or {}),
+                    "runtime_clue_discoveries": committed_runtime_clues,
+                }
+                result_payload = resolution.model_dump(by_alias=True)
 
             if verified_ending is None:
                 verified_ending = self._evaluate_verified_runtime_ending(
@@ -2103,7 +2104,6 @@ class ResolutionPipeline:
 
         if (
             is_v2
-            and resolution.is_success
             and not solo_damage_terminal
             and not ending_committed
             and not completed_with_state
@@ -2111,7 +2111,11 @@ class ResolutionPipeline:
             discovered_runtime_clues = (
                 committed_runtime_clues
                 if runtime_clues_checked_with_state
-                else await self._persist_named_runtime_clues(action, intent)
+                else await self._persist_named_runtime_clues(
+                    action,
+                    intent,
+                    allow_failure_preservation=not resolution.is_success,
+                )
             )
             if discovered_runtime_clues:
                 resolution.metadata = {
@@ -4626,6 +4630,7 @@ class ResolutionPipeline:
         *,
         executor=None,
         publish: bool = True,
+        allow_failure_preservation: bool = False,
     ) -> list[dict[str, Any]]:
         if executor is None and hasattr(self.conn, "transaction"):
             try:
@@ -4635,6 +4640,7 @@ class ResolutionPipeline:
                         intent,
                         executor=tx,
                         publish=False,
+                        allow_failure_preservation=allow_failure_preservation,
                     )
             except CampaignReadOnlyError:
                 return []
@@ -4644,9 +4650,6 @@ class ResolutionPipeline:
         provided_executor = executor
         executor = executor or self.conn
         ensure_campaign_writable(executor, action["room_id"])
-        declared = self._normalize_runtime_text(intent.declared_intent)
-        if not declared:
-            return []
         current_scene_row = executor.execute(
             "SELECT current_scene FROM room_scene_state WHERE room_id = %s",
             (action["room_id"],),
@@ -4667,53 +4670,60 @@ class ResolutionPipeline:
         dependencies = runtime_package.get("clue_dependencies")
         if not isinstance(dependencies, list):
             return []
-        scene_names = self._runtime_scene_names(runtime_package, current_scene_id)
+        selection = select_runtime_clue(
+            runtime_package,
+            current_scene_id,
+            intent.intent_type,
+            intent.declared_intent,
+            self._known_runtime_clue_ids(
+                executor,
+                action["room_id"],
+                action["character_id"],
+            ),
+            allow_failure_preservation=allow_failure_preservation,
+        )
+        if selection.rejected_condition_kinds:
+            logger.warning(
+                "Runtime clue conditions rejected room=%s action=%s codes=%s",
+                action["room_id"],
+                action.get("action_id"),
+                ",".join(selection.rejected_condition_kinds),
+            )
+        candidate = selection.candidate
+        if candidate is None:
+            return []
         discovered: list[dict[str, Any]] = []
-        for dependency in dependencies:
-            if not isinstance(dependency, dict):
-                continue
-            canonical_id = str(dependency.get("clue_id") or "").strip()
-            name = str(dependency.get("name") or "").strip()
-            normalized_name = self._normalize_runtime_text(name)
-            if (
-                not canonical_id
-                or not normalized_name
-                or normalized_name not in declared
-                or not self._runtime_clue_matches_scene(
-                    dependency,
-                    current_scene_id,
-                    scene_names,
-                )
-            ):
-                continue
-            source = f"runtime:{canonical_id}"
-            clue_id = "runtime-" + uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"{action['room_id']}:{action['character_id']}:{canonical_id}",
-            ).hex[:20]
-            description = str(dependency.get("description") or "").strip()
-            text = f"{name}：{description}" if description else name
-            created = executor.execute(
-                """
-                INSERT INTO clues (clue_id, room_id, character_id, text, source, is_private)
-                VALUES (%s, %s, %s, %s, %s, TRUE)
-                ON CONFLICT (clue_id) DO NOTHING
-                RETURNING clue_id
-                """,
-                (
-                    clue_id,
-                    action["room_id"],
-                    action["character_id"],
-                    text,
-                    source,
-                ),
-            ).fetchone()
-            if not created:
-                continue
+        canonical_id = candidate.canonical_id
+        source = f"runtime:{canonical_id}"
+        clue_id = "runtime-" + uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{action['room_id']}:{action['character_id']}:{canonical_id}",
+        ).hex[:20]
+        text = (
+            candidate.name
+            if not candidate.player_text or candidate.player_text == candidate.name
+            else f"{candidate.name}：{candidate.player_text}"
+        )
+        created = executor.execute(
+            """
+            INSERT INTO clues (clue_id, room_id, character_id, text, source, is_private)
+            VALUES (%s, %s, %s, %s, %s, TRUE)
+            ON CONFLICT (clue_id) DO NOTHING
+            RETURNING clue_id
+            """,
+            (
+                clue_id,
+                action["room_id"],
+                action["character_id"],
+                text,
+                source,
+            ),
+        ).fetchone()
+        if created:
             event_payload = {
                 "characterId": action["character_id"],
                 "clueId": clue_id,
-                "name": name,
+                "name": candidate.name,
                 "source": source,
                 "visibility": "self",
             }
@@ -4730,7 +4740,7 @@ class ResolutionPipeline:
             discovered.append({
                 "canonicalId": canonical_id,
                 "clueId": clue_id,
-                "name": name,
+                "name": candidate.name,
                 "eventSequence": event_sequence,
             })
         if publish and discovered:
@@ -4764,51 +4774,34 @@ class ResolutionPipeline:
             )
 
     @staticmethod
-    def _normalize_runtime_text(value: Any) -> str:
-        return "".join(char.casefold() for char in str(value or "") if char.isalnum())
-
-    def _runtime_scene_names(
-        self,
-        runtime_package: dict[str, Any],
-        current_scene_id: str,
+    def _known_runtime_clue_ids(
+        executor,
+        room_id: str,
+        character_id: str,
     ) -> set[str]:
-        names = {self._normalize_runtime_text(current_scene_id)}
-        for scene in runtime_package.get("semantic_scenes") or []:
-            if not isinstance(scene, dict):
-                continue
-            payload = self._json_value(scene.get("payload")) or {}
-            identifiers = {
-                str(scene.get("logical_key") or ""),
-                str(scene.get("scene_id") or ""),
-                str(payload.get("scene_id") or ""),
-                str(payload.get("id") or ""),
-            }
-            if current_scene_id not in identifiers:
-                continue
-            names.update(
-                self._normalize_runtime_text(value)
-                for value in (
-                    scene.get("name"),
-                    scene.get("title"),
-                    payload.get("name"),
-                    payload.get("title"),
-                )
-                if value
-            )
-        names.discard("")
-        return names
-
-    def _runtime_clue_matches_scene(
-        self,
-        dependency: dict[str, Any],
-        current_scene_id: str,
-        scene_names: set[str],
-    ) -> bool:
-        dependency_scene_id = str(dependency.get("scene_id") or "").strip()
-        if dependency_scene_id:
-            return dependency_scene_id == current_scene_id
-        location = self._normalize_runtime_text(dependency.get("location"))
-        return bool(location and location in scene_names)
+        rows = executor.execute(
+            """
+            SELECT clue_id, source FROM clues
+            WHERE room_id = %s AND character_id = %s
+            UNION
+            SELECT clues.clue_id, clues.source
+            FROM clue_shares
+            JOIN clues ON clues.clue_id = clue_shares.clue_id
+            WHERE clue_shares.room_id = %s
+            """,
+            (room_id, character_id, room_id),
+        ).fetchall()
+        known: set[str] = set()
+        for row in rows:
+            clue_id = str(row.get("clue_id") or "").strip()
+            source = str(row.get("source") or "").strip()
+            if clue_id:
+                known.add(clue_id)
+            if source.startswith("runtime:"):
+                canonical_id = source.removeprefix("runtime:").strip()
+                if canonical_id:
+                    known.add(canonical_id)
+        return known
 
     def _commit_verified_runtime_ending(
         self,
