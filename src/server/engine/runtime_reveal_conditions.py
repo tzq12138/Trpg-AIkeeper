@@ -157,6 +157,7 @@ def _any_condition_matches(
     conditions = dependency.get("reveal_conditions")
     if not isinstance(conditions, list) or not conditions:
         return False, []
+    normalized_intent_type = _text(intent_type).casefold()
     rejected: list[str] = []
     for condition in conditions:
         if not isinstance(condition, Mapping):
@@ -171,10 +172,14 @@ def _any_condition_matches(
         if not _condition_item_matches(condition, runtime_package, declared):
             continue
         if kind == "inspect":
+            if normalized_intent_type == "move":
+                continue
             if _contains_any(declared, _INSPECT_WORDS):
                 return True, rejected
             continue
         if kind == "research":
+            if normalized_intent_type == "move":
+                continue
             if _contains_any(declared, _RESEARCH_WORDS):
                 return True, rejected
             continue

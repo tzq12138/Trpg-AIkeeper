@@ -119,6 +119,28 @@ def test_select_runtime_clue_discovers_public_text_without_clue_name():
     assert "PRIVATE SECRET" not in selection.candidate.player_text
 
 
+def test_select_runtime_clue_does_not_treat_movement_as_inspection():
+    from src.server.engine.runtime_reveal_conditions import select_runtime_clue
+
+    inspection = select_runtime_clue(
+        _runtime_package(),
+        "lost-property-counter",
+        "move",
+        "我前往失物局柜台调查寄存牌的来历。",
+        set(),
+    )
+    research = select_runtime_clue(
+        _runtime_package(),
+        "archive-reading-room",
+        "move",
+        "我前往城市档案阅览室查阅市政档案。",
+        set(),
+    )
+
+    assert inspection.candidate is None
+    assert research.candidate is None
+
+
 def test_select_runtime_clue_requires_npc_alias_and_prerequisite():
     from src.server.engine.runtime_reveal_conditions import select_runtime_clue
 
