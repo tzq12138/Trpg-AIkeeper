@@ -1195,7 +1195,14 @@ async def _analyze_draft_locked(
                     character["character_id"],
                     type(exc).__name__,
                 )
-                if _can_use_local_director_fallback(draft):
+                if (
+                    _can_use_local_director_fallback(draft)
+                    or _local_generic_scene_progression(
+                        request.app.state.db,
+                        draft,
+                        director_context,
+                    )
+                ):
                     draft = _apply_local_director_plan(
                         request.app.state.db,
                         character,

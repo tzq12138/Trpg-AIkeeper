@@ -1889,6 +1889,98 @@ def test_local_fallback_resolves_a_named_generic_scene_target(client, test_db):
     assert draft["resolution_route"] == "local"
 
 
+def test_failing_director_recovers_high_risk_compiled_scene_transition_in_ai_only_room(
+    client,
+    test_db,
+    monkeypatch,
+):
+    room_id, _, player_token = _setup_player(client, test_db)
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    package_id = f"high-risk-generic-fallback-{room_id}"
+    citation = {"source_part_id": "part-cistern", "source_ref": "module.json#/scenes/2"}
+    test_db.execute(
+        """
+        INSERT INTO runtime_package_versions
+        (runtime_package_version_id, scenario_version_id, package_version_number,
+         gate_status, input_checksum, runtime_package, created_by)
+        VALUES (%s, %s, 99, 'ready', 'high-risk-generic-fallback', %s, 'test')
+        """,
+        (
+            package_id,
+            scenario_version_id,
+            json.dumps({
+                "runtime_policy": {"session_mode": "ai_only"},
+                "semantic_scenes": [
+                    {"scene_id": "orchid-hall", "name": "兰花展厅"},
+                    {"scene_id": "cistern", "name": "地下蓄水池"},
+                ],
+                "semantic_progression_rules": {
+                    "edges": [{
+                        "from_scene_id": "orchid-hall",
+                        "to_scene_id": "cistern",
+                        "relation_type": "transitions_to",
+                        "conditions": [],
+                        "citation": citation,
+                    }],
+                },
+            }, ensure_ascii=False),
+        ),
+    )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = %s WHERE room_id = %s",
+        (package_id, room_id),
+    )
+    test_db.execute(
+        "INSERT INTO room_scene_state (room_id, current_scene, visited_scenes, version) "
+        "VALUES (%s, 'orchid-hall', '[\"orchid-hall\"]', 1)",
+        (room_id,),
+    )
+    test_db.commit()
+    from src.server.player import router_actions_v2
+
+    def high_risk_move(body):
+        return ActionDraftDTO(
+            intent_type="move",
+            declared_intent=body.declared_intent,
+            understanding_summary="你将前往地下蓄水池。",
+            risk="high",
+            confirmation_requirements=["movement", "state_change"],
+            requires_confirmation=True,
+            confidence=0.9,
+            analysis_source="local_fallback",
+            resolution_route="local",
+            ephemeral=body.ephemeral,
+        )
+
+    monkeypatch.setattr(router_actions_v2, "analyze_action_draft", high_risk_move)
+
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = _FailingDirectorGateway()
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={
+                "declared_intent": "我走向地下蓄水池。",
+                "ephemeral": True,
+            },
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    draft = response.json()
+    assert draft["risk"] == "high"
+    assert draft["resolution_route"] == "local"
+    assert draft["adjudication_stage"] == "director_plan_validated"
+    assert draft["params"]["fromNodeId"] == "orchid-hall"
+    assert draft["params"]["targetNodeId"] == "cistern"
+    assert draft["semantic_progression"]["validated"] is True
+
+
 def test_director_uses_runtime_evidence_for_an_uncited_generic_scene_target(test_db):
     plan = DirectorPlanDTO(
         interpreted_intent="I take the marked path to the harbor.",
