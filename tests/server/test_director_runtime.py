@@ -639,6 +639,80 @@ def test_director_context_limits_runtime_package_to_current_solo_branch(test_db)
         assert secret not in rendered
 
 
+def test_director_context_never_projects_current_scene_raw_clue_dependency(
+    client,
+    test_db,
+):
+    from src.server.ai.director import build_director_context
+
+    room_id, character_id, _ = _setup_player(client, test_db)
+    scenario_version_id = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["scenario_version_id"]
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, gate_status, input_checksum, runtime_package, created_by) "
+        "VALUES ('current-clue-director-package', %s, 1, 'ready', 'sha', %s, 'test')",
+        (
+            scenario_version_id,
+            json.dumps({
+                "semantic_scenes": [{
+                    "scene_id": "current-vault",
+                    "name": "Current public vault",
+                }],
+                "clue_dependencies": [{
+                    "clue_id": "current-secret-clue",
+                    "name": "CURRENT CLUE NAME SECRET",
+                    "scene_id": "current-vault",
+                    "description": "CURRENT CLUE DESCRIPTION SECRET",
+                    "public_version": "CURRENT CLUE PUBLIC VERSION SECRET",
+                    "private_version": "CURRENT CLUE PRIVATE VERSION SECRET",
+                    "prerequisite_fact_refs": ["CURRENT CLUE PREREQUISITE SECRET"],
+                    "reveal_conditions": [{"kind": "inspect", "scene_id": "current-vault"}],
+                }],
+            }),
+        ),
+    )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = 'current-clue-director-package' "
+        "WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.execute(
+        "INSERT INTO room_scene_state (room_id, current_scene, visited_scenes, version) "
+        "VALUES (%s, 'current-vault', '[\"current-vault\"]', 1) "
+        "ON CONFLICT (room_id) DO UPDATE SET current_scene = EXCLUDED.current_scene",
+        (room_id,),
+    )
+    test_db.commit()
+    character = dict(test_db.execute(
+        "SELECT * FROM characters WHERE character_id = %s",
+        (character_id,),
+    ).fetchone())
+    draft = ActionDraftDTO(
+        intent_type="dialogue",
+        declared_intent="I inspect the room.",
+        understanding_summary="inspect the room",
+        risk="low",
+        confidence=0.8,
+        analysis_source="local_fallback",
+    )
+
+    context = build_director_context(test_db, character, draft)
+    rendered = json.dumps(context, ensure_ascii=False)
+
+    assert context["runtime_package"]["clue_dependencies"] == []
+    for secret in (
+        "CURRENT CLUE NAME SECRET",
+        "CURRENT CLUE DESCRIPTION SECRET",
+        "CURRENT CLUE PUBLIC VERSION SECRET",
+        "CURRENT CLUE PRIVATE VERSION SECRET",
+        "CURRENT CLUE PREREQUISITE SECRET",
+    ):
+        assert secret not in rendered
+
+
 def test_director_context_limits_generic_edges_to_current_scene(client, test_db):
     from src.server.ai.director import build_director_context
 

@@ -446,10 +446,7 @@ def _compact_runtime_package(
             matching_items(runtime_package.get("npc_states"), current_keys),
             max_items=20,
         ),
-        "clue_dependencies": _compact_value(
-            matching_items(runtime_package.get("clue_dependencies"), current_keys),
-            max_items=20,
-        ),
+        "clue_dependencies": [],
         "rule_triggers": _compact_value(
             matching_items(runtime_package.get("rule_triggers"), current_keys),
             max_items=20,
