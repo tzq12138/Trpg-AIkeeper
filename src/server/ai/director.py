@@ -1081,8 +1081,9 @@ def _generic_edge_conditions_are_met(conn, room_id: str, conditions: Any) -> boo
             return False
         if kind == "clue":
             discovered = conn.execute(
-                "SELECT 1 FROM clues WHERE room_id = %s AND clue_id = %s",
-                (room_id, identifier),
+                "SELECT 1 FROM clues "
+                "WHERE room_id = %s AND (clue_id = %s OR source = %s)",
+                (room_id, identifier, f"runtime:{identifier}"),
             ).fetchone()
             if not discovered:
                 return False

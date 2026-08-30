@@ -2051,6 +2051,56 @@ def test_director_rejects_generic_scene_edge_when_required_clue_is_missing(test_
     assert result["rejected"] is True
 
 
+def test_director_validates_generic_scene_edge_with_runtime_canonical_clue(test_db):
+    test_db.execute(
+        "INSERT INTO rooms (room_id, owner_token, status) VALUES "
+        "('generic-runtime-clue-room', 'generic-runtime-clue-owner', 'active')"
+    )
+    test_db.execute(
+        "INSERT INTO characters (character_id, room_id, player_name, player_token) VALUES "
+        "('generic-runtime-clue-character', 'generic-runtime-clue-room', 'Player', 'token')"
+    )
+    test_db.execute(
+        "INSERT INTO clues (clue_id, room_id, character_id, text, source) VALUES "
+        "('runtime-opaque-ticket', 'generic-runtime-clue-room', "
+        "'generic-runtime-clue-character', 'Ticket', 'runtime:ticket')"
+    )
+    test_db.commit()
+    plan = DirectorPlanDTO(
+        interpreted_intent="I take the marked path to the harbor.",
+        intent_type="move",
+        confidence=0.9,
+        semantic_progression={
+            "targetNodeId": "harbor",
+            "citation": {"source_part_id": "part-harbor", "page_number": 8},
+        },
+    )
+    context = {
+        "current_scene": {"current_scene": "study"},
+        "runtime_package": {
+            "semantic_progression_rules": {
+                "edges": [{
+                    "from_scene_id": "study",
+                    "to_scene_id": "harbor",
+                    "relation_type": "transitions_to",
+                    "conditions": [{"kind": "clue", "id": "ticket"}],
+                    "citation": {"source_part_id": "part-harbor", "page_number": 8},
+                }],
+            },
+        },
+    }
+
+    result = _validate_semantic_progression(
+        test_db,
+        {"room_id": "generic-runtime-clue-room", "xlsx_data": "{}"},
+        plan,
+        context,
+    )
+
+    assert result["validated"] is True
+    assert result["targetNodeId"] == "harbor"
+
+
 def test_director_validates_generic_scene_edge_when_required_scene_was_visited(client, test_db):
     room_id, _, _ = _setup_player(client, test_db)
     test_db.execute(
