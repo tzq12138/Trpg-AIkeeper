@@ -4,7 +4,9 @@ import { apiFetch, authHeaders } from '../shared/api';
 import { PlayerWS } from '../shared/ws';
 import { buildPlayerLobbyChecklist } from '../shared/lobby-checklist';
 import { teamMessageChannelLabel } from '../shared/team-message';
-import type { CampaignEndingDTO } from '../shared/types';
+import { confirmSessionZero, getSessionZero } from '../shared/player-api';
+import { SessionZeroPanel } from '../components/CampaignHomePanel';
+import type { CampaignEndingDTO, SessionZeroDTO } from '../shared/types';
 
 // ── types ──────────────────────────────────────────────────────────
 
@@ -75,6 +77,8 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
   const [chatInput, setChatInput] = useState('');
   const [error, setError] = useState('');
   const [campaignEnding, setCampaignEnding] = useState<CampaignEndingDTO | null>(null);
+  const [sessionZero, setSessionZero] = useState<SessionZeroDTO | null>(null);
+  const [sessionZeroError, setSessionZeroError] = useState('');
   const [entering, setEntering] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<PlayerWS | null>(null);
@@ -113,6 +117,36 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
     return data;
   }, [roomId]);
 
+  // ── Session Zero sync ────────────────────────────────────────────
+
+  const refreshSessionZero = useCallback(async () => {
+    try {
+      const next = await getSessionZero();
+      setSessionZero(next);
+      setSessionZeroError('');
+    } catch {
+      setSessionZeroError('安全边界确认暂时无法加载，请重试。');
+    }
+  }, []);
+
+  const confirmSessionZeroStep = async (step: string, contractHash?: string) => {
+    try {
+      await confirmSessionZero(step, contractHash);
+    } catch {
+      setSessionZeroError('安全边界版本已更新，或前置步骤尚未完成；请按当前版本重新确认。');
+    }
+    // Re-sync from the server: the confirmation may have advanced the step set
+    // or refreshed the risk contract hash. A failed confirm keeps its explicit
+    // error text (stale hash / out-of-order step) so the player understands why;
+    // the re-synced panel then shows the fresh steps for retry.
+    try {
+      const next = await getSessionZero();
+      setSessionZero(next);
+    } catch {
+      // Keep the existing error text; the retry affordance remains available.
+    }
+  };
+
   // ── initial load ─────────────────────────────────────────────────
 
   useEffect(() => {
@@ -128,6 +162,10 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
     })();
     return () => { cancelled = true; };
   }, [roomId, fetchCharacter, fetchLobby]);
+
+  useEffect(() => {
+    void refreshSessionZero();
+  }, [roomId, refreshSessionZero]);
 
   useEffect(() => {
     if (snapshot?.room_status !== 'completed') {
@@ -365,6 +403,30 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
             >
               {isReady ? '✅ 已准备 — 点击取消' : '❌ 点击准备'}
             </button>
+
+            {/* Session Zero: new joiners can legally confirm while staying here */}
+            <div style={{ marginTop: 20, borderTop: '2px solid var(--bh-ink)', paddingTop: 14 }}>
+              {!sessionZero && sessionZeroError && (
+                <div className="bh-error">
+                  {sessionZeroError}
+                  <button
+                    type="button"
+                    className="bh-button"
+                    style={{ marginLeft: 10 }}
+                    onClick={() => void refreshSessionZero()}
+                  >
+                    重试加载
+                  </button>
+                </div>
+              )}
+              {sessionZero && (
+                <SessionZeroPanel
+                  sessionZero={sessionZero}
+                  error={sessionZeroError}
+                  onConfirm={(step, contractHash) => void confirmSessionZeroStep(step, contractHash)}
+                />
+              )}
+            </div>
           </section>
 
           {/* RIGHT: Chat + Enter game */}
