@@ -326,6 +326,17 @@ async def run_automatic_action_review(
             "review_request_id": review_request_id,
             "outcome": (resolution or {}).get("status", current_status),
         }
+    previous_resolution = case.get("automatic_resolution")
+    if not isinstance(previous_resolution, dict):
+        previous_resolution = {}
+    # A case already awaiting the engine correction step must never re-run the
+    # gateway: its candidate is frozen for R5 and the retry budget is spent.
+    if previous_resolution.get("status") in {"awaiting_engine_review"}:
+        return {
+            "status": "known_state",
+            "review_request_id": review_request_id,
+            "outcome": "awaiting_engine_review",
+        }
 
     # 2. Sealed-evidence verification before anything else is re-examined.
     snapshot = case.get("evidence_snapshot")
@@ -375,13 +386,13 @@ async def run_automatic_action_review(
         }
 
     # 4. Admissible: bounded gateway re-interpretation of the frozen text.
-    previous = case.get("automatic_resolution") or {}
     attempts = 0
-    if isinstance(previous, dict):
-        try:
-            attempts = int((previous.get("review_attempts") or {}).get("count") or 0)
-        except (TypeError, ValueError):
-            attempts = 0
+    try:
+        attempts = int(
+            (previous_resolution.get("review_attempts") or {}).get("count") or 0
+        )
+    except (TypeError, ValueError):
+        attempts = 0
     gateway = getattr(app_state, "gateway", None)
     review_fn = getattr(gateway, "review_action_intent", None)
     candidate: dict | None = None
@@ -450,11 +461,13 @@ async def run_automatic_action_review(
         }
 
     # 5. Valid engine-validated candidate: keep the case pending for the
-    #    engine correction step (R5) — nothing was mutated here.
+    #    engine correction step (R5) — nothing was mutated here. The retry
+    #    budget travels with the case so it can never be reset by re-entry.
     payload = {
         "status": "awaiting_engine_review",
         "candidate": candidate,
         "reason_code": "admissible",
+        "review_attempts": {"count": attempts, "max": REVIEW_MAX_ATTEMPTS},
     }
     conn.execute(
         "UPDATE action_review_requests SET automatic_resolution = %s "

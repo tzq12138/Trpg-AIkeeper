@@ -130,7 +130,9 @@ def _accept_automatic_review(
                         "reason": "同一幂等键不能绑定不同异议载荷",
                     },
                 )
-            return _redacted_review_response(dict(existing))
+            replay = _redacted_review_response(dict(existing))
+            replay["created"] = False
+            return replay
     pending = conn.execute(
         "SELECT review_request_id FROM action_review_requests "
         "WHERE action_id = %s AND character_id = %s AND status = 'pending'",
@@ -191,10 +193,12 @@ def _accept_automatic_review(
                 409,
                 detail={"code": "review_already_pending"},
             ) from exc
-        return _redacted_review_response(dict(existing))
+        replay = _redacted_review_response(dict(existing))
+        replay["created"] = False
+        return replay
     conn.commit()
     # Automatic acceptance never creates a Host queue entry or Host event.
-    return _redacted_review_response(
+    summary = _redacted_review_response(
         dict(
             conn.execute(
                 "SELECT * FROM action_review_requests WHERE review_request_id = %s",
@@ -202,6 +206,8 @@ def _accept_automatic_review(
             ).fetchone()
         )
     )
+    summary["created"] = True
+    return summary
 
 
 @router.post("/actions/{action_id}/review-requests", status_code=201)
@@ -229,10 +235,14 @@ async def create_action_review(
             body,
             idempotency_key.strip(),
         )
-        _schedule_automatic_review_background(
-            request.app,
-            accepted["review_request_id"],
-        )
+        if accepted.get("created"):
+            # Only a freshly created case dispatches background work; an
+            # idempotent replay must not re-dispatch (bounded retry budget and
+            # provider calls are per-case, not per-request).
+            _schedule_automatic_review_background(
+                request.app,
+                accepted["review_request_id"],
+            )
         return accepted
     if action["status"] not in (
         "resolving",

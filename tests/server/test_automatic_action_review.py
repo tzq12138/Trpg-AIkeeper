@@ -123,9 +123,13 @@ def test_same_idempotency_key_replays_same_review_id(client, test_db):
     del room
     first = _post_review(client, joined, key="idem-same-1")
     assert first.status_code == 201, first.text
+    assert first.json()["created"] is True
     replay = _post_review(client, joined, key="idem-same-1")
     assert replay.status_code == 201, replay.text
     assert replay.json()["review_request_id"] == first.json()["review_request_id"]
+    # A replay is explicitly marked non-created so background work is never
+    # re-dispatched for it (bounded review budget stays per-case).
+    assert replay.json()["created"] is False
     assert test_db.execute(
         "SELECT COUNT(*) AS count FROM action_review_requests "
         "WHERE action_id = 'review-action'",
@@ -204,8 +208,12 @@ from src.server.engine.automatic_action_review import (
 class _CandidateReviewGateway:
     """Gateway stub whose review_action_intent returns one valid candidate."""
 
+    def __init__(self):
+        self.calls = 0
+
     async def review_action_intent(self, _context, room_id=None):
         del room_id
+        self.calls += 1
         return {
             "candidateExplanation": "冻结文本的本意是检查地板而非门框。",
             "reason": "重释只基于冻结原文。",
@@ -309,14 +317,22 @@ async def test_admissible_objection_with_candidate_waits_for_engine_review(clien
     room, joined = _setup_ai_only_completed_action(client, test_db)
     created = _post_review(client, joined, objection="结算对象理解错了").json()
     previous_gateway = client.app.state.gateway
-    client.app.state.gateway = _CandidateReviewGateway()
+    gateway = _CandidateReviewGateway()
+    client.app.state.gateway = gateway
     try:
         outcome = await run_automatic_action_review(
+            client.app.state, test_db, created["review_request_id"]
+        )
+        # A second dispatch on the same case must NOT re-run the gateway: the
+        # candidate is frozen for R5 and the review budget stays per-case.
+        second = await run_automatic_action_review(
             client.app.state, test_db, created["review_request_id"]
         )
     finally:
         client.app.state.gateway = previous_gateway
     assert outcome["status"] == "awaiting_engine_review"
+    assert second["status"] == "known_state"
+    assert gateway.calls == 1
     row = test_db.execute(
         "SELECT status, automatic_resolution FROM action_review_requests "
         "WHERE review_request_id = %s",
@@ -324,6 +340,7 @@ async def test_admissible_objection_with_candidate_waits_for_engine_review(clien
     ).fetchone()
     assert row["status"] == "pending"  # R5 consumes the candidate
     assert row["automatic_resolution"]["candidate"]["reason"] == "重释只基于冻结原文。"
+    assert row["automatic_resolution"]["review_attempts"]["max"] == REVIEW_MAX_ATTEMPTS
     room_row = test_db.execute(
         "SELECT runtime_status FROM rooms WHERE room_id = %s",
         (room["room_id"],),
