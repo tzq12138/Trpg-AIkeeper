@@ -101,6 +101,28 @@ async def lifespan(app: FastAPI):
     conn = pg_db.get_connection()
     app.state.db = conn
     app.state.pg_db = pg_db
+    from .engine.resolution_journal import sweep_expired_resolution_claims
+    from .engine.system_recovery import categorize_restart_recovery
+
+    swept = sweep_expired_resolution_claims(conn)
+    conn.commit()
+    if swept["released"]:
+        logger.warning(
+            "Recovery [WARN] released %s expired resolution claim(s) on startup",
+            swept["released"],
+        )
+    restart_groups = categorize_restart_recovery(conn)
+    unresolved_total = sum(len(items) for items in restart_groups.values())
+    if unresolved_total:
+        logger.warning(
+            "Recovery [WARN] %s unresolved action(s) after restart: running=%s "
+            "recovering=%s paused_system=%s paused_by_owner=%s",
+            unresolved_total,
+            len(restart_groups["running"]),
+            len(restart_groups["recovering"]),
+            len(restart_groups["paused_system"]),
+            len(restart_groups["paused_by_owner"]),
+        )
     from .rule_source_lifecycle import backfill_legacy_runtime_rule_publication_gates
 
     backfilled_rule_gates = backfill_legacy_runtime_rule_publication_gates(conn)

@@ -315,6 +315,47 @@ def execute_system_recovery(conn, room_id: str, proposal_id: str) -> dict[str, A
     }
 
 
+def categorize_restart_recovery(conn) -> dict[str, Any]:
+    """Group unresolved actions after a process restart by room runtime state.
+
+    Startup helper (R3): resolving actions whose journal claims are released
+    (pause-written or reclaimed by sweep) are grouped by their room's runtime
+    status so the caller can act per policy:
+      - running:      resume candidates (a crash left the action mid-flight
+                      without a system pause);
+      - recovering:   continuation of an interrupted recovery execution;
+      - paused_system:diagnostics only — never auto-resumed;
+      - paused_by_owner: explicitly excluded — the owner's pause owns it.
+    This function never executes anything; it only classifies.
+
+    Args:
+        conn: caller-owned connection.
+    Returns:
+        Dict keyed by room runtime status -> list of action_ids.
+    """
+    rows = conn.execute(
+        "SELECT a.action_id, a.room_id, r.room_runtime "
+        "FROM action_resolution_runs j "
+        "JOIN actions a ON a.action_id = j.action_id "
+        "JOIN (SELECT room_id, runtime_status AS room_runtime FROM rooms) r "
+        "  ON r.room_id = a.room_id "
+        "WHERE a.status = 'resolving' AND j.claim_token IS NULL "
+        "ORDER BY a.room_id, a.created_at",
+    ).fetchall()
+    grouped: dict[str, list[str]] = {
+        "running": [],
+        "recovering": [],
+        "paused_system": [],
+        "paused_by_owner": [],
+    }
+    for row in rows:
+        runtime = str(row.get("room_runtime") or "")
+        if runtime not in grouped:
+            continue
+        grouped[runtime].append(str(row["action_id"]))
+    return grouped
+
+
 def finalize_system_recovery(
     conn,
     room_id: str,

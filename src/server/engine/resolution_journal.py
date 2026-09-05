@@ -74,6 +74,40 @@ def release_interrupted_resolution(tx, action_id: str) -> None:
     )
 
 
+def sweep_expired_resolution_claims(conn, *, worker_id: str = "startup-sweep") -> dict:
+    """Release every expired claim still held over an unfinished resolution.
+
+    Startup hygiene (R3): a worker that died without pausing leaves a live
+    claim that would block any verified recovery until its TTL passes. This
+    function reclaims only claims whose expiry already passed — live claims
+    are never touched — and returns the released action ids so the caller can
+    decide what to resume/diagnose.
+
+    Args:
+        conn: caller-owned connection (caller commits).
+        worker_id: identity recorded on the released rows.
+    Returns:
+        Dict with released count and the released action ids.
+    """
+    rows = conn.execute(
+        "SELECT action_id FROM action_resolution_runs "
+        "WHERE claim_token IS NOT NULL AND claim_expires_at <= NOW() "
+        "ORDER BY action_id",
+    ).fetchall()
+    released: list[str] = []
+    for row in rows:
+        action_id = str(row["action_id"])
+        conn.execute(
+            "UPDATE action_resolution_runs SET claim_token = NULL, "
+            "claim_expires_at = NOW(), worker_id = %s, updated_at = NOW() "
+            "WHERE action_id = %s AND claim_token IS NOT NULL "
+            "AND claim_expires_at <= NOW()",
+            (worker_id, action_id),
+        )
+        released.append(action_id)
+    return {"released": len(released), "action_ids": released}
+
+
 def claim_resolution(conn, action_id: str, worker_id: str) -> dict | None:
     """Claim exclusive resolution ownership for one action.
 
