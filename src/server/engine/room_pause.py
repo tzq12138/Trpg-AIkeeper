@@ -23,10 +23,96 @@ class RoomPauseError(ValueError):
 
 
 def pause_blocks_new_actions(room: dict[str, Any] | None) -> bool:
-    """True once an owner pause has been requested, even before it is settled."""
+    """True once an owner pause is requested or the room is system-paused.
+
+    System pauses (paused_system) and active recovery (recovering) must also
+    reject new game actions; only owner resume or a verified recovery returns
+    the room to running.
+    """
     if not room:
         return False
-    return bool(room.get("pause_mode")) or room.get("runtime_status") == "paused_by_owner"
+    return (
+        bool(room.get("pause_mode"))
+        or room.get("runtime_status") in {"paused_by_owner", "paused_system", "recovering"}
+    )
+
+
+def sync_legacy_room_status(conn, room_id: str) -> None:
+    """Keep legacy rooms.status readers aligned with the runtime state.
+
+    Args:
+        conn: caller-owned connection (caller commits).
+        room_id: room whose legacy status column should mirror runtime_status.
+    """
+    conn.execute(
+        "UPDATE rooms SET status = CASE runtime_status "
+        "WHEN 'running' THEN 'active' "
+        "WHEN 'ended' THEN 'completed' "
+        "ELSE status END "
+        "WHERE room_id = %s AND status IN ('paused', 'paused_provider', 'active')",
+        (room_id,),
+    )
+
+
+def pause_room_for_system_integrity(
+    conn,
+    *,
+    room_id: str,
+    reason: str,
+    source: str,
+    action_id: str | None = None,
+    tx=None,
+) -> None:
+    """Write a system integrity pause in one transaction (R1 alignment).
+
+    The pause records runtime_status='paused_system' plus the legacy status
+    column, marks integrity read-only with the current state version, and —
+    crucially — never terminates the in-flight action. Preserving the action in
+    its current (claimed) state and its committed artifacts is what allows a
+    verified recovery proposal to resume the same action later.
+
+    Args:
+        conn: caller-owned connection.
+        room_id: room to pause.
+        reason: machine-readable integrity reason.
+        source: which subsystem requested the pause (resolution_pipeline,
+            collaboration_batch, ...).
+        action_id: optional in-flight action preserved for recovery; a status
+            event records the reason without transitioning the action.
+        tx: optional caller-owned transaction object; when omitted a new
+            transaction is opened and committed.
+    """
+    if tx is None:
+        with conn.transaction() as tx_ctx:
+            _write_pause_statements(tx_ctx, room_id, reason, source, action_id)
+        return
+    _write_pause_statements(tx, room_id, reason, source, action_id)
+
+
+def _write_pause_statements(tx, room_id: str, reason: str, source: str, action_id: str | None) -> None:
+    tx.execute(
+        "UPDATE rooms SET status = 'paused', runtime_status = 'paused_system', "
+        "integrity_status = 'read_only_recovery', integrity_reason = %s, "
+        "integrity_source = %s, integrity_state_version = state_version, "
+        "integrity_updated_at = NOW() WHERE room_id = %s",
+        (reason, source, room_id),
+    )
+    if action_id:
+        import json as _json
+
+        tx.execute(
+            "INSERT INTO action_status_events (action_id, status, metadata) "
+            "VALUES (%s, 'resolving', %s)",
+            (
+                action_id,
+                _json.dumps(
+                    {
+                        "reason_code": "room_integrity_paused",
+                        "note": "action preserved for recovery; not terminated",
+                    }
+                ),
+            ),
+        )
 
 
 def request_owner_pause(
@@ -155,6 +241,7 @@ def resume_owner_pause(
         "pause_resume_reason = %s WHERE room_id = %s",
         (actor_id, reason, room_id),
     )
+    sync_legacy_room_status(conn, room_id)
     from ..events.event_log import EventLog
 
     EventLog(conn).log_event(

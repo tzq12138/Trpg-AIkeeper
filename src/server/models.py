@@ -30,6 +30,7 @@ EngineEventType = Literal[
     "s2c_private_note_emergency_access",
     "s2c_ai_stage_changed", "s2c_player_clarification_required",
     "s2c_director_plan_validated", "s2c_narration_completed", "s2c_ai_recovery_required",
+    "s2c_room_pause_requested", "s2c_room_paused", "s2c_room_resumed",
 ]
 
 Audience = Literal["host", "player", "party", "system"]

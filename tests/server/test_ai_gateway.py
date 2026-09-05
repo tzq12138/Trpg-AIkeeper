@@ -66,6 +66,7 @@ async def test_all_provider_failures_return_structured_failure_without_empty_dto
     ]
     assert failure.last_error_code == "provider_unavailable"
     assert failure.fallback_available is False
+    assert failure.retryable is False  # null-response chains are not retryable
     assert gateway.last_provider_failure is failure
 
     # The public narration API must fail closed rather than manufacture an empty payload.

@@ -1746,24 +1746,19 @@ def _block_collaboration_batch(conn, contract_id: str, action_ids: list[str], re
             (contract_id,),
         )
         if ai_only and infrastructure_failure and contract:
+            # Collaboration batches enter the same recoverable system pause as
+            # single actions (R1): batched actions are preserved, not rejected.
             room_id = str(contract["room_id"])
-            tx.execute(
-                "UPDATE rooms SET status = 'paused', "
-                "integrity_status = 'read_only_recovery', integrity_reason = %s, "
-                "integrity_source = 'collaboration_batch', "
-                "integrity_state_version = state_version, integrity_updated_at = NOW() "
-                "WHERE room_id = %s",
-                (reason_code, room_id),
-            )
-            from ..events.event_log import EventLog
+            from ..engine.room_pause import pause_room_for_system_integrity
 
-            EventLog(tx).log_event(
-                room_id,
-                "s2c_room_paused",
-                "party",
-                {"reasonCode": reason_code, "mode": "read_only_recovery"},
-                commit=False,
+            pause_room_for_system_integrity(
+                conn,
+                room_id=room_id,
+                reason=reason_code,
+                source="collaboration_batch",
+                tx=tx,
             )
+            action_ids = []  # preserved for recovery; no terminal transitions
     for action_id in action_ids:
         target_status = "rejected" if ai_only else "awaiting_host_exception"
         with conn.transaction() as tx:

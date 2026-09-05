@@ -3703,51 +3703,43 @@ class ResolutionPipeline:
         action: dict[str, Any],
         reason: str,
     ) -> None:
-        payload = {"reason": reason}
-        with self.conn.transaction() as tx:
-            complete_action(
-                self.conn,
-                action["action_id"],
-                from_statuses=("resolving",),
-                to_status="rejected",
-                result=payload,
-                metadata={"reason_code": "room_integrity_paused"},
-                transaction=tx,
-            )
-            tx.execute(
-                "UPDATE rooms SET status = 'paused', "
-                "integrity_status = 'read_only_recovery', integrity_reason = %s, "
-                "integrity_source = 'resolution_pipeline', "
-                "integrity_state_version = state_version, integrity_updated_at = NOW() "
-                "WHERE room_id = %s",
-                (reason, action["room_id"]),
-            )
-            self._finalize_decision_audit(
-                action["action_id"],
-                engine_validation=None,
-                final_delta=self._terminal_decision_delta(
-                    tx,
-                    action,
-                    "rejected",
-                ),
-                transaction=tx,
-            )
-        await self.dispatcher.emit(
-            action["room_id"],
-            "s2c_action_completed",
-            "player",
-            {
-                "actionId": action["action_id"],
-                "status": "rejected",
-                "reason": reason,
-            },
-            character_id=action["character_id"],
+        """Pause the room after an authority-side integrity failure.
+
+        The in-flight action is never terminated here: it stays in its claimed
+        state together with its committed artifacts so a verified system
+        recovery proposal can resume it (R1). The pause and its reason are
+        written in one transaction; the previous terminal 'rejected' broadcast
+        is intentionally gone.
+        """
+        from .room_pause import pause_room_for_system_integrity
+
+        pause_room_for_system_integrity(
+            self.conn,
+            room_id=action["room_id"],
+            reason=reason,
+            source="resolution_pipeline",
+            action_id=action["action_id"],
         )
         await self.dispatcher.emit(
             action["room_id"],
             "s2c_room_paused",
             "party",
-            {"reasonCode": reason, "mode": "read_only_recovery"},
+            {
+                "reasonCode": reason,
+                "mode": "system_paused",
+                "actionId": action["action_id"],
+            },
+        )
+        await self.dispatcher.emit(
+            action["room_id"],
+            "s2c_ai_recovery_required",
+            "player",
+            {
+                "actionId": action["action_id"],
+                "characterId": action["character_id"],
+                "reasonCode": reason,
+            },
+            character_id=action["character_id"],
         )
 
     async def _await_host_exception(

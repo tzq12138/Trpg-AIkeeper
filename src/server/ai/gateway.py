@@ -47,6 +47,7 @@ class ProviderFailure:
     attempts: list[str]
     last_error_code: str
     fallback_available: bool
+    retryable: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +55,7 @@ class ProviderFailure:
             "attempts": list(self.attempts),
             "last_error_code": self.last_error_code,
             "fallback_available": self.fallback_available,
+            "retryable": self.retryable,
         }
 
 SCENARIO_STRUCTURE_SYSTEM_PROMPT = """你是TRPG剧本分析器。只返回JSON对象。
@@ -1155,6 +1157,7 @@ class AiGateway:
                 attempts=list(chain),
                 last_error_code=_provider_failure_code(error),
                 fallback_available=False,
+                retryable=_provider_failure_code(error) in {"timeout", "rate_limit", "connection_error"},
             )
         if task_type not in _DETERMINISTIC_FALLBACK_TASKS:
             chain.append("local_fallback:not_registered")
@@ -1183,6 +1186,7 @@ class AiGateway:
                 attempts=list(chain),
                 last_error_code=_provider_failure_code(error),
                 fallback_available=False,
+                retryable=_provider_failure_code(error) in {"timeout", "rate_limit", "connection_error"},
             )
         schema = TASK_SCHEMAS.get(task_type)
         if schema:

@@ -264,6 +264,9 @@ def execute_system_recovery(conn, room_id: str, proposal_id: str) -> dict[str, A
             "WHERE room_id = %s",
             (room_id,),
         )
+        from .room_pause import sync_legacy_room_status
+
+        sync_legacy_room_status(conn, room_id)
         tx.execute(
             "UPDATE runtime_recovery_proposals SET status = 'executed', executed_at = NOW() "
             "WHERE proposal_id = %s",
