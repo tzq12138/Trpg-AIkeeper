@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Investigator Terminal - Map</title>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&amp;family=Space+Grotesk:wght@400;700;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Configuration (Design System) -->
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "inverse-surface": "#1a1a1a",
+                        "primary": "#1a1a1a",
+                        "background": "#f5f0e8",
+                        "on-primary": "#ffffff",
+                        "surface-bright": "#faf7f2",
+                        "outline": "#1a1a1a",
+                        "surface-container-high": "#e8e3da",
+                        "secondary-fixed": "#ffdad6",
+                        "inverse-on-surface": "#f5f0e8",
+                        "secondary": "#e63b2e",
+                        "primary-fixed": "#ffcc00",
+                        "on-surface": "#1a1a1a",
+                        "surface-variant": "#e8e3da",
+                        "error-container": "#ffdad6",
+                        "error": "#cc0000",
+                        "secondary-container": "#ffdad6",
+                        "primary-fixed-dim": "#e6b800",
+                        "on-secondary": "#1a1a1a",
+                        "tertiary-fixed-dim": "#a8c6ff",
+                        "outline-variant": "#d0cbc3",
+                        "on-secondary-fixed": "#1a1a1a",
+                        "surface": "#f5f0e8",
+                        "surface-container": "#eee9e0",
+                        "on-primary-fixed-variant": "#1a1a1a",
+                        "on-error": "#ffffff",
+                        "on-primary-container": "#1a1a1a",
+                        "surface-dim": "#d6d1c9",
+                        "surface-container-low": "#f2ede5",
+                        "primary-container": "#ffcc00",
+                        "on-secondary-fixed-variant": "#1a1a1a",
+                        "surface-tint": "#1a1a1a",
+                        "on-tertiary": "#ffffff",
+                        "on-background": "#1a1a1a",
+                        "tertiary-container": "#d6e3ff",
+                        "on-secondary-container": "#1a1a1a",
+                        "tertiary-fixed": "#d6e3ff",
+                        "surface-container-highest": "#e2ddd4",
+                        "on-error-container": "#93000a",
+                        "surface-container-lowest": "#ffffff",
+                        "on-primary-fixed": "#1a1a1a",
+                        "inverse-primary": "#f5f0e8",
+                        "on-tertiary-fixed": "#1a1a1a",
+                        "on-tertiary-container": "#1a1a1a",
+                        "secondary-fixed-dim": "#ffb3ab",
+                        "on-surface-variant": "#4a4a4a",
+                        "tertiary": "#0055ff",
+                        "on-tertiary-fixed-variant": "#1a1a1a"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "fontFamily": {
+                        "headline": ["Space Grotesk"],
+                        "display": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Space Grotesk"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        /* Brutalist Blueprint Grid */
+        .blueprint-grid {
+            background-size: 40px 40px;
+            background-image: 
+                linear-gradient(to right, rgba(26, 26, 26, 0.1) 2px, transparent 2px),
+                linear-gradient(to bottom, rgba(26, 26, 26, 0.1) 2px, transparent 2px);
+        }
+        
+        /* Map Pan Simulation - Just for visual anchoring */
+        .map-canvas {
+            transform: translate(-5%, -5%) scale(1.1);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+</head>
+<body class="bg-background text-primary font-body h-screen w-full flex flex-col overflow-hidden selection:bg-primary-fixed selection:text-primary">
+<!-- TopAppBar -->
+<header class="bg-background text-primary w-full border-b-4 border-outline shadow-[4px_4px_0px_0px_rgba(26,26,26,1)] z-20 flex items-center justify-between px-4 py-4 relative shrink-0">
+<!-- Leading Avatar -->
+<div class="shrink-0 flex items-center justify-center">
+<div class="border-4 border-outline w-14 h-14 bg-surface-container-high overflow-hidden shadow-[2px_2px_0px_0px_rgba(26,26,26,1)]">
+<img alt="investigator_portrait" class="w-full h-full object-cover grayscale contrast-125 mix-blend-multiply" data-alt="A rugged, vintage black-and-white portrait of a 1920s investigator. The character wears a worn trench coat and fedora, shot in high contrast film noir style with heavy shadows. The image has a raw, halftone print aesthetic, fitting a stark, neo-brutalist interface designed in a stark black and white palette." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDUmmePp_iMmIZFmtnNcfGPKk52eXxgQaZDFPMGixqhDnbvdSvBR_hpgRXfzUgJRlGgZyObig8oeHEpqT-j0CyzSlUFMEr24fOQD6fh_eXcqWFLQoJmdTHpppVjnrQOWmcwJbR1qMzU_rUuDGgp1QCCX-82RaT16lUl3rj81AuSJt6dPEJVfCHHW4NXlGTjAGiwaMW-CI1UXPdrZuxXQ8eNwhhHUEMj27ydZdxoFmm3O7JtRUzL1v8"/>
+</div>
+</div>
+<!-- Headline / Brand -->
+<div class="flex-1 px-4 text-center">
+<h1 class="font-headline font-black text-2xl bg-primary-fixed text-on-primary-fixed px-2 inline-block uppercase tracking-tighter border-2 border-outline shadow-[2px_2px_0px_0px_rgba(26,26,26,1)]">
+                调查员_0824
+            </h1>
+</div>
+<!-- Trailing Action -->
+<div class="shrink-0 font-headline font-bold text-lg bg-surface border-4 border-outline px-2 py-1 shadow-[2px_2px_0px_0px_rgba(26,26,26,1)] flex items-center">
+<span class="material-symbols-outlined mr-1" style="font-variation-settings: 'FILL' 1;">favorite</span>
+<span class="tracking-tight uppercase">HP: 12 / SAN: 45</span>
+</div>
+</header>
+<!-- Main Content Area: Map Canvas -->
+<main class="flex-1 relative overflow-hidden bg-surface-container-high blueprint-grid pb-20">
+<!-- Floating Location Info (User Request) -->
+<div class="absolute top-4 left-4 z-10 bg-background border-4 border-outline p-3 shadow-[6px_6px_0px_0px_rgba(26,26,26,1)] max-w-[70%]">
+<h2 class="font-headline text-xl font-black uppercase tracking-tight mb-1">调查区域地图</h2>
+<div class="font-body text-sm font-bold flex items-center bg-primary-fixed text-on-primary-fixed px-2 py-1 border-2 border-outline inline-flex">
+<span class="material-symbols-outlined text-base mr-1">location_on</span>
+                曼彻斯特 - 圣约翰疗养院
+            </div>
+<div class="mt-2 text-xs font-bold uppercase tracking-widest flex items-center gap-2">
+<span class="w-2 h-2 bg-secondary border border-outline animate-pulse"></span>
+                追踪：已激活
+            </div>
+</div>
+<!-- Floating Legend / Floor Layers -->
+<div class="absolute top-4 right-4 z-10 bg-background border-4 border-outline p-2 shadow-[6px_6px_0px_0px_rgba(26,26,26,1)] flex flex-col gap-2">
+<div class="font-headline font-black text-xs uppercase text-center border-b-2 border-outline pb-1 mb-1">楼层</div>
+<button class="font-label text-sm font-black uppercase border-2 border-outline px-4 py-2 bg-surface text-primary hover:bg-primary hover:text-surface active:translate-x-1 active:translate-y-1 active:shadow-none transition-all shadow-[2px_2px_0px_0px_rgba(26,26,26,1)]">
+                3F - 屋顶
+            </button>
+<button class="font-label text-sm font-black uppercase border-2 border-outline px-4 py-2 bg-primary-fixed text-on-primary-fixed active:translate-x-1 active:translate-y-1 active:shadow-none transition-all shadow-[2px_2px_0px_0px_rgba(26,26,26,1)] flex items-center justify-between gap-2">
+                2F - 病房区 
+                <span class="material-symbols-outlined text-sm" style="font-variation-settings: 'FILL' 1;">my_location</span>
+</button>
+<button class="font-label text-sm font-black uppercase border-2 border-outline px-4 py-2 bg-surface text-primary hover:bg-primary hover:text-surface active:translate-x-1 active:translate-y-1 active:shadow-none transition-all shadow-[2px_2px_0px_0px_rgba(26,26,26,1)]">
+                1F - 大厅
+            </button>
+<button class="font-label text-sm font-black uppercase border-2 border-outline border-dashed px-4 py-2 bg-surface-dim text-on-surface-variant cursor-not-allowed flex items-center justify-between gap-2 opacity-70">
+                B1 - 地下室
+                <span class="material-symbols-outlined text-sm">lock</span>
+</button>
+</div>
+<!-- The Map Geometry -->
+<div class="absolute inset-0 map-canvas flex items-center justify-center p-8">
+<div class="relative w-full max-w-2xl aspect-square">
+<!-- Room 1: Unlocked / Main Hallway -->
+<div class="absolute top-1/4 left-[10%] w-[80%] h-1/4 bg-surface border-4 border-outline shadow-[8px_8px_0px_0px_rgba(26,26,26,0.1)] flex items-end justify-end p-2 group hover:bg-surface-bright transition-colors cursor-pointer">
+<span class="font-headline font-black text-outline opacity-50 uppercase text-lg tracking-widest">主走廊</span>
+</div>
+<!-- Room 2: Current Location (Highlighted) -->
+<div class="absolute top-1/2 left-[10%] w-[40%] h-[30%] bg-primary-fixed border-4 border-outline shadow-[8px_8px_0px_0px_rgba(26,26,26,1)] flex flex-col items-center justify-center p-4 cursor-crosshair z-10" onclick="document.getElementById('room-detail-overlay').classList.remove('hidden')">
+<span class="font-headline font-black text-on-primary-fixed text-2xl uppercase text-center mb-2 bg-background border-2 border-outline px-2 shadow-[2px_2px_0px_0px_rgba(26,26,26,1)]">病房 2B</span>
+<!-- Player Marker -->
+<div class="relative mt-2">
+<div class="w-8 h-8 bg-secondary border-4 border-outline shadow-[4px_4px_0px_0px_rgba(26,26,26,1)] flex items-center justify-center animate-bounce z-20">
+<span class="material-symbols-outlined text-on-primary font-bold text-lg" style="font-variation-settings: 'FILL' 1;">person</span>
+</div>
+<div class="absolute -bottom-2 -right-2 bg-background border-2 border-outline px-1 font-label text-[10px] font-black uppercase shadow-[2px_2px_0px_0px_rgba(26,26,26,1)]">你</div>
+</div>
+</div>
+<!-- Room 3: Exam Room (Explored) -->
+<div class="absolute top-1/2 left-[55%] w-[35%] h-[20%] bg-surface border-4 border-outline shadow-[6px_6px_0px_0px_rgba(26,26,26,0.2)] flex items-center justify-center cursor-pointer hover:bg-surface-bright transition-colors">
+<span class="font-headline font-bold text-outline opacity-70 uppercase text-sm">检查室 1</span>
+<!-- POI: Search Spot -->
+<div class="absolute -top-3 -right-3 w-8 h-8 bg-tertiary border-4 border-outline shadow-[2px_2px_0px_0px_rgba(26,26,26,1)] flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined text-sm" style="font-variation-settings: 'FILL' 1;">search</span>
+</div>
+</div>
+<!-- Room 4: Locked Area -->
+<div class="absolute top-[75%] left-[55%] w-[35%] h-[15%] bg-surface-container-high border-4 border-outline border-dashed flex items-center justify-center bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjZjVmMGU4Ij48L3JlY3Q+CjxwYXRoIGQ9Ik0wIDBMOCA4Wk04IDBMMCA4WiIgc3Ryb2tlPSIjMTExMSIgc3Ryb2tlLXdpZHRoPSIxIj48L3BhdGg+Cjwvc3ZnPg==')] opacity-80">
+<div class="bg-background border-2 border-outline p-1 shadow-[2px_2px_0px_0px_rgba(26,26,26,1)] flex items-center gap-1">
+<span class="material-symbols-outlined text-secondary text-sm" style="font-variation-settings: 'FILL' 1;">lock</span>
+<span class="font-headline font-black text-secondary text-xs uppercase">受限</span>
+</div>
+</div>
+</div>
+</div>
+<div class="fixed inset-0 z-50 flex items-end justify-center p-4 bg-primary/20 backdrop-blur-sm transition-all hidden" id="room-detail-overlay">
+<div class="w-full max-w-2xl bg-background border-4 border-outline shadow-[8px_8px_0px_0px_rgba(26,26,26,1)] p-6 relative animate-in slide-in-from-bottom duration-300">
+<!-- Close Button -->
+<button class="absolute -top-4 -right-4 w-10 h-10 bg-secondary text-on-primary border-4 border-outline shadow-[4px_4px_0px_0px_rgba(26,26,26,1)] flex items-center justify-center hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all" onclick="document.getElementById('room-detail-overlay').remove()">
+<span class="material-symbols-outlined">close</span>
+</button>
+<!-- Header -->
+<div class="mb-6">
+<div class="inline-block bg-primary-fixed text-on-primary-fixed px-3 py-1 border-2 border-outline font-headline font-black text-sm uppercase mb-2 shadow-[2px_2px_0px_0px_rgba(26,26,26,1)]">
+                位置详情
+            </div>
+<h3 class="font-headline font-black text-3xl uppercase tracking-tighter">病房 2B</h3>
+</div>
+<!-- Description -->
+<div class="bg-surface-container-high border-4 border-outline p-4 mb-8 shadow-[4px_4px_0px_0px_rgba(26,26,26,0.1)]">
+<p class="font-body text-base font-bold leading-relaxed">
+                充满福尔马林味道的封闭病房，床单上有凌乱的抓痕。
+            </p>
+</div>
+<!-- Actions -->
+<div class="flex flex-col gap-4">
+<button class="w-full bg-primary text-on-primary font-headline font-black py-4 border-4 border-outline shadow-[6px_6px_0px_0px_rgba(26,26,26,1)] hover:bg-secondary transition-colors flex items-center justify-center gap-2 active:translate-x-1 active:translate-y-1 active:shadow-none">
+<span class="material-symbols-outlined">search</span>
+                🔍 侦查环境
+            </button>
+<button class="w-full bg-surface border-4 border-outline font-headline font-black py-4 shadow-[6px_6px_0px_0px_rgba(26,26,26,1)] hover:bg-primary-fixed transition-colors flex items-center justify-center gap-2 active:translate-x-1 active:translate-y-1 active:shadow-none">
+<span class="material-symbols-outlined">door_open</span>
+                🚪 尝试进入
+            </button>
+</div>
+</div>
+</div></main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 left-0 w-full h-20 z-50 flex justify-around items-stretch bg-background border-t-4 border-outline">
+<!-- Tab 1: Skills (Inactive) -->
+<a class="flex flex-col items-center justify-center text-primary h-full px-2 hover:bg-secondary-fixed hover:text-on-secondary-fixed-variant active:scale-95 transition-transform w-full border-r-2 border-outline" href="#">
+<span class="material-symbols-outlined text-2xl mb-1">fitness_center</span>
+<span class="font-label text-xs uppercase font-black">技能</span>
+</a>
+<!-- Tab 2: Gear (Inactive) -->
+<a class="flex flex-col items-center justify-center text-primary h-full px-2 hover:bg-secondary-fixed hover:text-on-secondary-fixed-variant active:scale-95 transition-transform w-full border-r-2 border-outline" href="#">
+<span class="material-symbols-outlined text-2xl mb-1">inventory_2</span>
+<span class="font-label text-xs uppercase font-black">装备</span>
+</a>
+<!-- Tab 3: Logs (Inactive) -->
+<a class="flex flex-col items-center justify-center text-primary h-full px-2 hover:bg-secondary-fixed hover:text-on-secondary-fixed-variant active:scale-95 transition-transform w-full border-r-2 border-outline" href="#">
+<span class="material-symbols-outlined text-2xl mb-1">history_edu</span>
+<span class="font-label text-xs uppercase font-black">日志</span>
+</a>
+<!-- Tab 4: Map (Active) -->
+<a class="flex flex-col items-center justify-center bg-primary-fixed text-on-primary-fixed border-x-2 border-outline h-full px-2 hover:bg-secondary-fixed hover:text-on-secondary-fixed-variant active:scale-95 transition-transform w-full relative z-10 shadow-[-4px_0px_0px_0px_rgba(26,26,26,1)]" href="#">
+<span class="material-symbols-outlined text-2xl mb-1" style="font-variation-settings: 'FILL' 1;">map</span>
+<span class="font-label text-xs uppercase font-black">地图</span>
+</a>
+</nav>
+</body></html>

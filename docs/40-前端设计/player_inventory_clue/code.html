@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>调查日志 / 背包 - Investigator Terminal</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&amp;family=Space+Grotesk:wght@400;700;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "tertiary": "#0055ff",
+                        "secondary": "#e63b2e",
+                        "on-secondary-container": "#1a1a1a",
+                        "surface-container-high": "#e8e3da",
+                        "surface-tint": "#1a1a1a",
+                        "secondary-container": "#ffdad6",
+                        "surface-variant": "#e8e3da",
+                        "surface-container-lowest": "#ffffff",
+                        "outline": "#1a1a1a",
+                        "secondary-fixed-dim": "#ffb3ab",
+                        "on-tertiary-fixed-variant": "#1a1a1a",
+                        "on-primary-fixed": "#1a1a1a",
+                        "surface-container-low": "#f2ede5",
+                        "on-background": "#1a1a1a",
+                        "inverse-on-surface": "#f5f0e8",
+                        "error": "#cc0000",
+                        "inverse-primary": "#f5f0e8",
+                        "tertiary-fixed-dim": "#a8c6ff",
+                        "surface-container": "#eee9e0",
+                        "surface-container-highest": "#e2ddd4",
+                        "on-primary-container": "#1a1a1a",
+                        "surface-bright": "#faf7f2",
+                        "on-secondary": "#1a1a1a",
+                        "on-error-container": "#93000a",
+                        "inverse-surface": "#1a1a1a",
+                        "primary-fixed-dim": "#e6b800",
+                        "primary-container": "#ffcc00",
+                        "on-tertiary-fixed": "#1a1a1a",
+                        "on-surface-variant": "#4a4a4a",
+                        "surface-dim": "#d6d1c9",
+                        "on-primary-fixed-variant": "#1a1a1a",
+                        "tertiary-fixed": "#d6e3ff",
+                        "outline-variant": "#d0cbc3",
+                        "primary-fixed": "#ffcc00",
+                        "on-surface": "#1a1a1a",
+                        "background": "#f5f0e8",
+                        "on-error": "#ffffff",
+                        "on-tertiary": "#ffffff",
+                        "secondary-fixed": "#ffdad6",
+                        "on-secondary-fixed": "#1a1a1a",
+                        "on-primary": "#ffffff",
+                        "tertiary-container": "#d6e3ff",
+                        "on-tertiary-container": "#1a1a1a",
+                        "error-container": "#ffdad6",
+                        "surface": "#f5f0e8",
+                        "on-secondary-fixed-variant": "#1a1a1a",
+                        "primary": "#1a1a1a"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "fontFamily": {
+                        "headline": ["Space Grotesk", "sans-serif"],
+                        "display": ["Space Grotesk", "sans-serif"],
+                        "body": ["Inter", "sans-serif"],
+                        "label": ["Space Grotesk", "sans-serif"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; background-color: #f5f0e8; color: #1a1a1a; }
+        h1, h2, h3, .font-headline, .font-display, .font-label { font-family: 'Space Grotesk', sans-serif; }
+        
+        /* Neo-Brutalist Utility Classes */
+        .brutal-border { border: 3px solid #1a1a1a; }
+        .brutal-shadow { box-shadow: 4px 4px 0px 0px #1a1a1a; }
+        .brutal-shadow-hover:hover { box-shadow: 6px 6px 0px 0px #1a1a1a; transform: translate(-2px, -2px); }
+        .brutal-shadow-active:active { box-shadow: 0px 0px 0px 0px #1a1a1a; transform: translate(4px, 4px); }
+        
+        .corkboard-bg {
+            background-color: #e8e3da;
+            background-image: radial-gradient(#1a1a1a 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+
+        /* Bottom Sheet Transition */
+        #item-bottom-sheet {
+            transition: transform 0.3s ease-in-out;
+            transform: translateY(100%);
+        }
+        #item-bottom-sheet.open {
+            transform: translateY(0);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background min-h-screen flex flex-col pb-24 md:pb-0 overflow-x-hidden">
+<!-- TopAppBar -->
+<header class="bg-surface dark:bg-surface w-full top-0 sticky border-b-4 border-primary dark:border-primary-fixed shadow-[4px_4px_0px_0px_#1a1a1a] dark:shadow-[4px_4px_0px_0px_#ffcc00] z-40 flex justify-between items-center px-4 py-4 w-full">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-2xl font-black text-primary dark:text-primary-fixed uppercase">account_circle</span>
+<h1 class="font-headline uppercase text-2xl font-bold tracking-tighter text-primary dark:text-primary-fixed">调查日志 / 背包</h1>
+</div>
+<div class="font-headline font-bold text-sm bg-primary text-surface px-3 py-1 border-2 border-primary">
+            HP 12 | SAN 45
+        </div>
+</header>
+<main class="flex-grow p-4 md:p-8 flex flex-col gap-8 max-w-4xl mx-auto w-full md:mt-8">
+<!-- Inventory Section -->
+<section>
+<div class="flex justify-between items-end mb-4 border-b-4 border-primary pb-2">
+<h2 class="font-display text-4xl font-black uppercase">Inventory</h2>
+<span class="font-label text-sm font-bold bg-primary-container px-2 py-1 brutal-border">3 ITEMS</span>
+</div>
+<div class="grid grid-cols-3 md:grid-cols-4 gap-4">
+<!-- Item 1 -->
+<button class="brutal-border brutal-shadow brutal-shadow-hover bg-surface-container-lowest p-4 flex flex-col items-center justify-center gap-2 aspect-square transition-all group" onclick="openBottomSheet('手电筒', 'flashlight_on', '提供照明，探索黑暗区域必需。')">
+<span class="material-symbols-outlined text-4xl group-hover:scale-110 transition-transform">flashlight_on</span>
+<span class="font-label font-bold text-sm">手电筒</span>
+</button>
+<!-- Item 2 -->
+<button class="brutal-border brutal-shadow brutal-shadow-hover bg-primary-container p-4 flex flex-col items-center justify-center gap-2 aspect-square transition-all group" onclick="openBottomSheet('神秘符咒', 'auto_awesome', '散发着微弱光芒的古老符文。')">
+<span class="material-symbols-outlined text-4xl group-hover:scale-110 transition-transform">auto_awesome</span>
+<span class="font-label font-bold text-sm">神秘符咒</span>
+</button>
+<!-- Item 3 -->
+<button class="brutal-border brutal-shadow brutal-shadow-hover bg-surface-container-lowest p-4 flex flex-col items-center justify-center gap-2 aspect-square transition-all group" onclick="openBottomSheet('老旧的钥匙', 'key', '锈迹斑斑，似乎能打开地下室的门。')">
+<span class="material-symbols-outlined text-4xl group-hover:scale-110 transition-transform">key</span>
+<span class="font-label font-bold text-sm">老旧的钥匙</span>
+</button>
+</div>
+</section>
+<!-- Investigator Corkboard Section -->
+<section class="flex-grow flex flex-col">
+<div class="flex justify-between items-end mb-4 border-b-4 border-primary pb-2">
+<h2 class="font-display text-4xl font-black uppercase">Clue Board</h2>
+</div>
+<div class="corkboard-bg brutal-border brutal-shadow flex-grow relative min-h-[400px] p-6 overflow-hidden">
+<!-- Clue Card 1 -->
+<div class="absolute top-8 left-4 w-40 bg-surface-container-lowest brutal-border p-3 transform -rotate-3 cursor-pointer hover:rotate-0 hover:scale-105 transition-all shadow-md z-10">
+<div class="absolute -top-2 left-1/2 w-4 h-4 bg-secondary rounded-full border-2 border-primary transform -translate-x-1/2 z-20"></div>
+<img alt="Doctor Photo" class="w-full h-24 object-cover brutal-border mb-2" data-alt="A neo-brutalist styled grainy photograph of a missing doctor in a stark, high-contrast light mode setting. Thick black outlines, solid color blocks, primarily off-white and black with a subtle red accent. The subject looks concerned in a minimalist environment." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBE_835fP9NMg8pX_Ce8ekuGBcO8E27L6oHCsUpqGwJ9I0X5bft-czUSucft8RqRQZhxN6QKFZGk6Dx2kmQVlgZ8W-bFugl4AvbVNwyNnZu6uNXN0zX5KagFheTU8asaXc3OKnI1JITSfRFza2ge396AZm_r8xmjwTXxM38VvlYpNjiXwAHMthhDv0VHjTwZeKHpJpJ2UAL1_F8VKeRq0O2xGCnIYS94tH044P0UKa7aA9dHy7XvFo"/>
+<p class="font-label font-bold text-sm uppercase text-center border-t-2 border-primary pt-1 mt-1">失踪的医生</p>
+</div>
+<!-- Clue Card 2 -->
+<div class="absolute top-24 right-8 w-48 bg-primary-container brutal-border p-3 transform rotate-6 cursor-pointer hover:rotate-0 hover:scale-105 transition-all shadow-md z-20">
+<div class="absolute -top-2 left-1/2 w-4 h-4 bg-primary rounded-full border-2 border-primary transform -translate-x-1/2 z-20"></div>
+<img alt="Manchester Map" class="w-full h-32 object-cover brutal-border mb-2" data-alt="A highly stylized, geometric map of Manchester rendered in a Bauhaus neo-brutalist aesthetic. High contrast black lines on warm off-white background, harsh angles, solid color fills of primary yellow and black. Minimalist and functional." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDprqsGChdTgjH74OO2teVv5e8nwRNtaBfSIU0WgDq6z_0hNjuH6xgqyCnw7Op4bP6Jp3Y80QI6T11jlfvxH6h3I-qHAEny0hkwAsB5ur-aK_3MWmg-dZghBpB2tlwo_JXzBS-TJNlt0bRhwowigQIZcY_YHDES3rMGoxyx5SVGHi4yjFwwrrdsNNJcMb5egFDiMghB9ScUaKafsK8GQOdnO3mnQsfJfdhoqogxCs6a97n9j_EI2sg"/>
+<p class="font-label font-bold text-sm uppercase text-center border-t-2 border-primary pt-1 mt-1">曼彻斯特地图</p>
+</div>
+<!-- Clue Card 3 (Text Only) -->
+<div class="absolute bottom-12 left-20 w-36 bg-surface-container-lowest brutal-border p-4 transform -rotate-6 cursor-pointer hover:rotate-0 hover:scale-105 transition-all shadow-md z-10">
+<div class="absolute -top-2 left-1/2 w-4 h-4 bg-tertiary rounded-full border-2 border-primary transform -translate-x-1/2 z-20"></div>
+<p class="font-body text-xs mb-2">找到了一处看似用于仪式的石台，上面有干涸的血迹。</p>
+<p class="font-label font-bold text-sm uppercase text-center border-t-2 border-primary pt-1 mt-1 text-secondary">古神祭坛</p>
+</div>
+<!-- String connecting clues -->
+<svg class="absolute inset-0 w-full h-full pointer-events-none" style="z-index: 5;">
+<line stroke="#e63b2e" stroke-dasharray="5,5" stroke-width="3" x1="80" x2="250" y1="120" y2="180"></line>
+<line stroke="#1a1a1a" stroke-width="2" x1="140" x2="280" y1="320" y2="200"></line>
+</svg>
+</div>
+</section>
+</main>
+<!-- BottomNavBar (Mobile Only) -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex grid grid-cols-4 h-20 bg-surface dark:bg-surface border-t-4 border-primary dark:border-primary-fixed md:hidden">
+<a class="flex flex-col items-center justify-center text-primary dark:text-primary-fixed p-2 border-r-2 border-primary hover:bg-tertiary hover:text-on-tertiary transition-colors active:scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined mb-1">fitness_center</span>
+<span class="font-label uppercase text-xs font-bold">SKILLS</span>
+</a>
+<a class="flex flex-col items-center justify-center flex flex-col items-center justify-center bg-primary-container text-on-primary-container p-2 border-r-2 border-primary hover:bg-tertiary hover:text-on-tertiary transition-colors active:scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined mb-1">backpack</span>
+<span class="font-label uppercase text-xs font-bold">GEAR</span>
+</a>
+<a class="flex flex-col items-center justify-center text-primary dark:text-primary-fixed p-2 border-r-2 border-primary hover:bg-tertiary hover:text-on-tertiary transition-colors active:scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined mb-1">menu_book</span>
+<span class="font-label uppercase text-xs font-bold">LOGS</span>
+</a>
+<a class="flex flex-col items-center justify-center text-primary dark:text-primary-fixed p-2 border-r-2 border-primary last:border-r-0 hover:bg-tertiary hover:text-on-tertiary transition-colors active:scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined mb-1">explore</span>
+<span class="font-label uppercase text-xs font-bold">MAP</span>
+</a>
+</nav>
+<!-- Item Interaction Bottom Sheet -->
+<div class="fixed inset-0 bg-primary/50 backdrop-blur-sm z-50 hidden" id="item-bottom-sheet-backdrop" onclick="closeBottomSheet()"></div>
+<div class="fixed bottom-0 left-0 w-full bg-surface brutal-border border-b-0 p-6 z-50 md:max-w-md md:left-1/2 md:-translate-x-1/2 md:bottom-24 md:border-b-4 md:shadow-2xl" id="item-bottom-sheet">
+<div class="w-12 h-2 bg-primary mx-auto mb-6"></div>
+<div class="flex items-start gap-4 mb-8">
+<div class="w-16 h-16 bg-primary-container brutal-border flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-3xl" id="bs-icon">category</span>
+</div>
+<div>
+<h3 class="font-headline font-bold text-2xl uppercase mb-1" id="bs-title">Item Name</h3>
+<p class="font-body text-sm text-on-surface-variant" id="bs-desc">Description goes here.</p>
+</div>
+</div>
+<div class="flex flex-col gap-3">
+<button class="w-full bg-primary text-surface font-headline font-bold uppercase text-lg py-4 brutal-border hover:bg-primary-container hover:text-primary transition-colors brutal-shadow-active">
+                尝试使用 (USE)
+            </button>
+<button class="w-full bg-surface text-primary font-headline font-bold uppercase text-lg py-4 brutal-border hover:bg-surface-container-highest transition-colors brutal-shadow-active">
+                展示给队友 (SHOW)
+            </button>
+</div>
+</div>
+<script>
+        function openBottomSheet(title, icon, desc) {
+            document.getElementById('bs-title').innerText = title;
+            document.getElementById('bs-icon').innerText = icon;
+            document.getElementById('bs-desc').innerText = desc;
+            
+            document.getElementById('item-bottom-sheet-backdrop').classList.remove('hidden');
+            // Small delay to allow display:block to apply before animating transform
+            setTimeout(() => {
+                document.getElementById('item-bottom-sheet').classList.add('open');
+            }, 10);
+        }
+
+        function closeBottomSheet() {
+            document.getElementById('item-bottom-sheet').classList.remove('open');
+            setTimeout(() => {
+                document.getElementById('item-bottom-sheet-backdrop').classList.add('hidden');
+            }, 300); // match transition duration
+        }
+    </script>
+</body></html>
