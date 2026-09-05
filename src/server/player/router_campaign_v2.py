@@ -1139,7 +1139,7 @@ async def get_session_zero(request: Request):
     character = _require_character(request)
     conn = request.app.state.db
     room = conn.execute(
-        "SELECT risk_contract, risk_contract_version, risk_contract_hash "
+        "SELECT risk_contract, risk_contract_version, risk_contract_hash, session_mode "
         "FROM rooms WHERE room_id = %s",
         (character["room_id"],),
     ).fetchone()
@@ -1165,10 +1165,19 @@ async def get_session_zero(request: Request):
         for step in _SESSION_ZERO_STEPS
     ]
     from ..engine.risk_contract import public_risk_contract
+    from ..engine.session_zero_probes import required_probes_valid
 
+    buttons_complete = all(item["confirmed"] for item in steps)
+    probes_valid, missing_probes = (
+        required_probes_valid(conn, character["room_id"], character["character_id"])
+        if (room or {}).get("session_mode") == "ai_only"
+        else (True, [])
+    )
     return {
         "steps": steps,
-        "complete": all(item["confirmed"] for item in steps),
+        "complete": buttons_complete and probes_valid,
+        "probe_complete": probes_valid,
+        "missing_probes": missing_probes,
         "risk_contract": public_risk_contract(room.get("risk_contract") if room else None),
     }
 
@@ -1224,12 +1233,133 @@ async def confirm_session_zero(request: Request, step: str, body: SessionZeroCon
             contract_hash,
         ),
     )
+    # The final confirmation triggers server-issued projection/recovery probes
+    # for AI-only rooms; the start gate refuses to open until they are confirmed
+    # by the player's current device (AIO-SZ-004/007).
+    if step == "connection":
+        session_mode = conn.execute(
+            "SELECT session_mode FROM rooms WHERE room_id = %s",
+            (character["room_id"],),
+        ).fetchone()
+        if (session_mode or {}).get("session_mode") == "ai_only":
+            from ..engine.session_zero_probes import issue_probes_for_character
+
+            issue_probes_for_character(
+                conn,
+                character["room_id"],
+                character["character_id"],
+            )
     conn.commit()
     return {
         "step": step,
         "confirmed": True,
         "contract_version": contract_version,
         "contract_hash": contract_hash,
+    }
+
+
+class SessionZeroProbeConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    probe_id: str = Field(min_length=1, max_length=64)
+    probe_type: str = Field(pattern=r"^(private_projection|party_projection|device_recovery)$")
+    watermark: int | None = Field(default=None, ge=0)
+
+
+@router.get("/session-zero/probes")
+async def get_session_zero_probes(request: Request):
+    """Return this player's latest probes and their validity for the UI.
+
+    Args: authenticated player request.
+    Returns: probes list plus per-type validity and current controller device.
+    """
+    character = _require_character(request)
+    conn = request.app.state.db
+    from ..engine.session_zero_probes import (
+        PROBE_TYPES,
+        latest_probes_for_character,
+        probe_gate_status,
+    )
+
+    rows = latest_probes_for_character(conn, character["room_id"], character["character_id"])
+    by_type = {row["probe_type"]: row for row in rows}
+    validity = probe_gate_status(conn, character["room_id"]).get(
+        character["character_id"], {}
+    )
+    controller = conn.execute(
+        "SELECT device_session_id, device_id FROM player_device_sessions "
+        "WHERE character_id = %s AND status = 'active' AND is_controller = TRUE "
+        "ORDER BY expires_at DESC LIMIT 1",
+        (character["character_id"],),
+    ).fetchone()
+    return {
+        "probes": [
+            {
+                "probe_id": (by_type[probe_type].get("probe_id") if by_type.get(probe_type) else None),
+                "probe_type": probe_type,
+                "status": (by_type[probe_type].get("status") if by_type.get(probe_type) else "missing"),
+                "audience": (by_type[probe_type].get("audience") if by_type.get(probe_type) else ""),
+                "issued_watermark": (by_type[probe_type].get("issued_watermark") if by_type.get(probe_type) else 0),
+                "confirmed_at": (by_type[probe_type]["confirmed_at"].isoformat()
+                                 if by_type.get(probe_type) and by_type[probe_type].get("confirmed_at") else None),
+                "valid": bool(validity.get(probe_type, {}).get("valid")),
+                "reason": validity.get(probe_type, {}).get("reason"),
+            }
+            for probe_type in PROBE_TYPES
+        ],
+        "controller": {
+            "device_session_id": controller["device_session_id"],
+            "device_id": controller["device_id"],
+        }
+        if controller
+        else None,
+    }
+
+
+@router.post("/session-zero/probes/confirm")
+async def confirm_session_zero_probe(request: Request, body: SessionZeroProbeConfirm):
+    """Confirm one server-issued probe from the player's current device.
+
+    Device-recovery probes additionally require a watermark obtained from a
+    real /api/player/reconnect call (probe_watermark_insufficient otherwise).
+    """
+    character = _require_character(request)
+    conn = request.app.state.db
+    from ..engine.session_zero_probes import (
+        SessionZeroProbeError,
+        confirm_device_recovery_probe,
+        confirm_projection_probe,
+    )
+
+    try:
+        if body.probe_type == "device_recovery":
+            if body.watermark is None:
+                raise SessionZeroProbeError("probe_watermark_required")
+            updated = confirm_device_recovery_probe(
+                conn,
+                room_id=character["room_id"],
+                character_id=character["character_id"],
+                probe_id=body.probe_id,
+                watermark=body.watermark,
+            )
+        else:
+            updated = confirm_projection_probe(
+                conn,
+                room_id=character["room_id"],
+                character_id=character["character_id"],
+                probe_id=body.probe_id,
+                probe_type=body.probe_type,
+            )
+    except SessionZeroProbeError as exc:
+        raise HTTPException(409, detail={"code": exc.code}) from exc
+    conn.commit()
+    return {
+        "probe_id": updated["probe_id"],
+        "probe_type": updated["probe_type"],
+        "status": updated["status"],
+        "confirmed_at": (
+            updated["confirmed_at"].isoformat() if updated.get("confirmed_at") else None
+        ),
     }
 
 

@@ -826,6 +826,45 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_player_device_active_controller
 CREATE INDEX IF NOT EXISTS idx_player_device_sessions_room_last_seen
     ON player_device_sessions(room_id, last_seen_at DESC);
 
+-- Server-issued Session Zero projection/recovery probes (AIO-SZ-004/007).
+-- A probe proves the server emitted a private or party projection (or a
+-- device-recovery watermark) that the owning player's current device must
+-- confirm before the room may start. Invalidations recompute the gate.
+CREATE TABLE IF NOT EXISTS session_zero_probes (
+    probe_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    probe_type TEXT NOT NULL
+        CHECK (probe_type IN ('private_projection', 'party_projection', 'device_recovery')),
+    audience TEXT NOT NULL CHECK (audience IN ('player', 'party')),
+    event_type TEXT NOT NULL DEFAULT '',
+    event_payload JSONB NOT NULL DEFAULT '{}',
+    issued_watermark BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'issued'
+        CHECK (status IN ('issued', 'confirmed', 'expired', 'revoked')),
+    confirmed_watermark BIGINT,
+    device_session_id TEXT REFERENCES player_device_sessions(device_session_id) ON DELETE SET NULL,
+    issued_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    confirmed_at TIMESTAMP,
+    invalidated_at TIMESTAMP,
+    invalidate_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_zero_probes_character_status
+    ON session_zero_probes(room_id, character_id, probe_type, issued_at DESC);
+
+-- Append-only absent-policy history: initial value is frozen at Session Zero
+-- completion (AIO-SZ-005); later player changes are independently versioned.
+CREATE TABLE IF NOT EXISTS absent_policy_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    absent_policy TEXT NOT NULL,
+    snapshot_version INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    recorded_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (room_id, character_id, snapshot_version)
+);
+
 CREATE TABLE IF NOT EXISTS campaign_sessions (
     campaign_session_id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,

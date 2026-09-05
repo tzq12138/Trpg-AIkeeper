@@ -24,6 +24,10 @@ Element.prototype.scrollIntoView = Element.prototype.scrollIntoView || (() => {}
 vi.mock('../src/shared/player-api', () => ({
   getSessionZero: vi.fn(),
   confirmSessionZero: vi.fn(),
+  getSessionZeroProbes: vi.fn(async () => ({ probes: [], controller: null })),
+  confirmSessionZeroProbe: vi.fn(async () => ({ status: 'confirmed' })),
+  claimPlayerDevice: vi.fn(async () => ({ device_session_id: 'dev-1', device_id: 'device-A' })),
+  reconnectPlayer: vi.fn(async () => ({ last_sequence: 0 })),
 }));
 
 vi.mock('../src/shared/api', () => ({

@@ -113,6 +113,19 @@ def _create_started_room(client, test_db, installed, tokens, templates):
             room["room_id"],
         )
         headers = {"X-Room-Token": character["player_token"]}
+        # AI-only rooms require a controller device for the projection probes
+        # issued on the final confirmation (AIO-SZ-004/007). The device id must
+        # match the draft-confirm fallback (legacy:<character_id>) so later
+        # draft confirmations reuse this controller instead of colliding.
+        claimed = client.post(
+            "/api/player/device-sessions/claim",
+            headers=headers,
+            json={
+                "device_id": f"legacy:{character['character_id']}",
+                "takeover": True,
+            },
+        )
+        assert claimed.status_code == 200, claimed.text
         for step in (
             "character_rules",
             "safety",
@@ -129,6 +142,25 @@ def _create_started_room(client, test_db, installed, tokens, templates):
                 json=confirmation,
             )
             assert confirmed.status_code == 200, confirmed.text
+        probes = client.get(
+            "/api/player/session-zero/probes",
+            headers=headers,
+        )
+        assert probes.status_code == 200, probes.text
+        for probe in probes.json()["probes"]:
+            if probe["valid"] or probe["probe_id"] is None:
+                continue
+            confirm_body = {"probe_id": probe["probe_id"], "probe_type": probe["probe_type"]}
+            if probe["probe_type"] == "device_recovery":
+                reconnect = client.get("/api/player/reconnect", headers=headers)
+                assert reconnect.status_code == 200, reconnect.text
+                confirm_body["watermark"] = reconnect.json().get("last_sequence", 0)
+            confirmed_probe = client.post(
+                "/api/player/session-zero/probes/confirm",
+                headers=headers,
+                json=confirm_body,
+            )
+            assert confirmed_probe.status_code == 200, confirmed_probe.text
         ready = client.post(
             "/api/player/intent",
             headers=headers,

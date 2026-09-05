@@ -307,6 +307,9 @@ export interface SessionZeroDTO {
   steps: Array<{ step: string; confirmed: boolean; confirmed_at: string | null }>;
   complete: boolean;
   risk_contract: RiskContractDTO | null;
+  /** Server-derived probe completion (AI-only rooms; AIO-SZ-004/007/008). */
+  probe_complete?: boolean;
+  missing_probes?: string[];
 }
 
 export interface CampaignEndingDTO {

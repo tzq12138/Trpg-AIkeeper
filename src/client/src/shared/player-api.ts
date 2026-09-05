@@ -356,6 +356,41 @@ export async function getSessionZero(): Promise<SessionZeroDTO> {
   return requestJson('/api/player/session-zero');
 }
 
+export interface SessionZeroProbeDTO {
+  probe_id: string | null;
+  probe_type: 'private_projection' | 'party_projection' | 'device_recovery';
+  status: string;
+  audience: string;
+  issued_watermark: number;
+  confirmed_at: string | null;
+  valid: boolean;
+  reason: string | null;
+}
+
+export interface SessionZeroProbesDTO {
+  probes: SessionZeroProbeDTO[];
+  controller: { device_session_id: string; device_id: string } | null;
+}
+
+export async function getSessionZeroProbes(): Promise<SessionZeroProbesDTO> {
+  return requestJson('/api/player/session-zero/probes');
+}
+
+export async function confirmSessionZeroProbe(
+  probeId: string,
+  probeType: SessionZeroProbeDTO['probe_type'],
+  watermark?: number,
+): Promise<{ status: string }> {
+  return requestJson('/api/player/session-zero/probes/confirm', {
+    method: 'POST',
+    body: JSON.stringify({
+      probe_id: probeId,
+      probe_type: probeType,
+      ...(watermark !== undefined ? { watermark } : {}),
+    }),
+  });
+}
+
 export async function confirmSessionZero(
   step: string,
   contractHash?: string,

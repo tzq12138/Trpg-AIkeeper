@@ -4,7 +4,14 @@ import { apiFetch, authHeaders } from '../shared/api';
 import { PlayerWS } from '../shared/ws';
 import { buildPlayerLobbyChecklist } from '../shared/lobby-checklist';
 import { teamMessageChannelLabel } from '../shared/team-message';
-import { confirmSessionZero, getSessionZero } from '../shared/player-api';
+import {
+  claimPlayerDevice,
+  confirmSessionZero,
+  confirmSessionZeroProbe,
+  getSessionZero,
+  getSessionZeroProbes,
+  reconnectPlayer,
+} from '../shared/player-api';
 import { SessionZeroPanel } from '../components/CampaignHomePanel';
 import type { CampaignEndingDTO, SessionZeroDTO } from '../shared/types';
 
@@ -142,10 +149,51 @@ export default function PlayerLobby({ roomId }: { roomId: string }) {
     try {
       const next = await getSessionZero();
       setSessionZero(next);
+      if (next.missing_probes && next.missing_probes.length > 0) {
+        await confirmMissingProbes();
+      }
     } catch {
       // Keep the existing error text; the retry affordance remains available.
     }
   };
+
+  const probesBusyRef = useRef(false);
+
+  const confirmMissingProbes = useCallback(async () => {
+    if (probesBusyRef.current) return;
+    probesBusyRef.current = true;
+    try {
+      // Server-issued probes must be confirmed from the player's controller
+      // device (AIO-SZ-004/007). Claiming without takeover surfaces a clear
+      // message when another device currently owns the role.
+      try {
+        await claimPlayerDevice(false);
+      } catch {
+        setSessionZeroError('该角色已被另一台设备接管；请回到原设备确认，或在新设备重新加入。');
+        return;
+      }
+      const payload = await getSessionZeroProbes();
+      for (const probe of payload.probes) {
+        if (!probe.probe_id || probe.valid) continue;
+        if (probe.probe_type === 'device_recovery') {
+          const reconnect = await reconnectPlayer();
+          await confirmSessionZeroProbe(
+            probe.probe_id,
+            probe.probe_type,
+            reconnect.last_sequence ?? 0,
+          );
+        } else {
+          await confirmSessionZeroProbe(probe.probe_id, probe.probe_type);
+        }
+      }
+      const next = await getSessionZero();
+      setSessionZero(next);
+    } catch {
+      setSessionZeroError('连接探测确认失败；请刷新后重试。');
+    } finally {
+      probesBusyRef.current = false;
+    }
+  }, []);
 
   // ── initial load ─────────────────────────────────────────────────
 

@@ -73,6 +73,15 @@ def _ai_only_session_zero_blockers(conn, room: dict, chars: list[dict]) -> list[
                 missing.append("risk_contract")
         if not char.get("is_ready"):
             missing.append("ready")
+        if not missing:
+            # Every confirmation button and ready flag is satisfied: engine
+            # probes must still be valid (AIO-SZ-004/007). Invalid probes are
+            # recomputed on every gate call (AIO-SZ-008).
+            from .engine.session_zero_probes import required_probes_valid
+
+            _, missing_probes = required_probes_valid(conn, room["room_id"], character_id)
+            if missing_probes:
+                missing.extend(f"probe_{probe_type}" for probe_type in missing_probes)
         if missing:
             blockers.append({"character_id": character_id, "missing": sorted(missing)})
     return blockers
@@ -776,6 +785,27 @@ async def start_room(request: Request, room_id: str):
             )
         except RoomRuntimeContractError as exc:
             raise HTTPException(409, detail={"code": exc.code}) from exc
+        # Freeze each player's initial absent policy as snapshot v1 in the same
+        # start transaction (AIO-SZ-005). Later settings changes append higher
+        # versions and never overwrite this baseline.
+        frozen_rows = conn.execute(
+            "SELECT settings.character_id, settings.absent_policy "
+            "FROM room_player_settings AS settings WHERE settings.room_id = %s",
+            (room_id,),
+        ).fetchall()
+        for frozen in frozen_rows:
+            conn.execute(
+                "INSERT INTO absent_policy_snapshots "
+                "(snapshot_id, room_id, character_id, absent_policy, snapshot_version, reason) "
+                "VALUES (%s, %s, %s, %s, 1, 'session_zero_freeze') "
+                "ON CONFLICT (room_id, character_id, snapshot_version) DO NOTHING",
+                (
+                    f"snap-{room_id}-{frozen['character_id']}-1",
+                    room_id,
+                    frozen["character_id"],
+                    frozen["absent_policy"],
+                ),
+            )
 
     conn.execute(
         "UPDATE rooms SET status = 'active', runtime_status = 'running', "

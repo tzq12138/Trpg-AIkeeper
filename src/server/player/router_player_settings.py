@@ -107,5 +107,28 @@ async def update_player_settings(request: Request, body: PlayerSettingsUpdate):
             absent_policy,
         ),
     )
+    # Append-only absent-policy history: every later effective change is
+    # independently versioned and traceable on top of the frozen initial value
+    # (AIO-SZ-005). The freeze snapshot itself is written when the room starts.
+    if "absent_policy" in body.model_fields_set:
+        latest = conn.execute(
+            "SELECT COALESCE(MAX(snapshot_version), 0) AS version "
+            "FROM absent_policy_snapshots "
+            "WHERE room_id = %s AND character_id = %s",
+            (character["room_id"], character["character_id"]),
+        ).fetchone()
+        version = int(latest["version"] or 0) + 1
+        conn.execute(
+            "INSERT INTO absent_policy_snapshots "
+            "(snapshot_id, room_id, character_id, absent_policy, snapshot_version, reason) "
+            "VALUES (%s, %s, %s, %s, %s, 'player_settings_change')",
+            (
+                f"snap-{character['room_id']}-{character['character_id']}-{version}",
+                character["room_id"],
+                character["character_id"],
+                absent_policy,
+                version,
+            ),
+        )
     conn.commit()
     return _settings_response(conn, character)
