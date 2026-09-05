@@ -725,6 +725,15 @@ CREATE TABLE IF NOT EXISTS action_review_requests (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     resolved_at TIMESTAMP
 );
+-- R4 automatic review acceptance: immutable evidence snapshot + hash and an
+-- idempotency key binding one player+action pair to one review case.
+ALTER TABLE action_review_requests ADD COLUMN IF NOT EXISTS evidence_snapshot JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE action_review_requests ADD COLUMN IF NOT EXISTS evidence_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE action_review_requests ADD COLUMN IF NOT EXISTS automatic_resolution JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE action_review_requests ADD COLUMN IF NOT EXISTS idempotency_key TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_action_review_player_action_key
+    ON action_review_requests(character_id, action_id, idempotency_key)
+    WHERE idempotency_key <> '';
 
 CREATE TABLE IF NOT EXISTS compensation_transactions (
     transaction_id TEXT PRIMARY KEY,

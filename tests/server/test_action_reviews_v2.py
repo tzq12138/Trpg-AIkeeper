@@ -112,6 +112,13 @@ def test_player_review_request_creates_non_mutating_ai_suggestion(client, test_d
 
 
 def test_ai_only_player_review_does_not_enqueue_host_review(client, test_db):
+    """Test migration (04 §6, R4 spec): ai_only disputes are now ACCEPTED as
+    pending automatic cases instead of rejected with 409. The equivalent
+    coverage preserved here is exactly what the old test guarded — no Host
+    queue entry and no Host event is created — plus the new R4 contract:
+    201 + pending with a frozen evidence hash. Host manual endpoints still
+    reject ai_only (tested separately below).
+    """
     room, joined = _setup_completed_action(client, test_db)
     scenario = test_db.execute(
         "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
@@ -141,12 +148,15 @@ def test_ai_only_player_review_does_not_enqueue_host_review(client, test_db):
         json={"objection": "请重新检查这次规则解释"},
     )
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "AI_ONLY_HOST_ADJUDICATION_DISABLED"
+    assert response.status_code == 201, response.text
+    review = response.json()
+    assert review["status"] == "pending"
+    assert review["ai_suggestion"]["requires_host_review"] is False
+    assert review["evidence_hash"]
     assert test_db.execute(
         "SELECT COUNT(*) AS count FROM action_review_requests "
         "WHERE action_id = 'review-action'",
-    ).fetchone()["count"] == 0
+    ).fetchone()["count"] == 1
     assert test_db.execute(
         "SELECT COUNT(*) AS count FROM events "
         "WHERE room_id = %s AND audience = 'host' "
