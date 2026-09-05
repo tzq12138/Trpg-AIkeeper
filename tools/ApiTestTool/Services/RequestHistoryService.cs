@@ -29,10 +29,11 @@ public class RequestHistoryService
 
     public void Add(RequestHistoryEntry entry)
     {
-        // Sanitize secrets before persisting
+        // Sanitize secrets before persisting (request and response side)
         entry.RequestHeaders = SanitizeHeaders(entry.RequestHeaders);
         entry.RequestBody = SanitizeBody(entry.RequestBody);
         entry.Url = SanitizeUrl(entry.Url);
+        entry.ResponseBody = SanitizeBody(entry.ResponseBody);
 
         Entries.Insert(0, entry);
         while (Entries.Count > 1000) Entries.RemoveAt(Entries.Count - 1);
@@ -58,45 +59,92 @@ public class RequestHistoryService
         if (string.IsNullOrWhiteSpace(headers)) return headers;
         // Redact full header values for known sensitive headers
         var redacted = Regex.Replace(headers,
-            @"^(Authorization|X-Room-Token|X-Owner-Token|X-Account-Token):\s*.+$",
+            @"^(Authorization|Proxy-Authorization|X-Room-Token|X-Owner-Token|X-Account-Token|X-Api-Key|Cookie):\s*.+$",
             "$1: [REDACTED]",
             RegexOptions.Multiline | RegexOptions.IgnoreCase);
         return redacted;
     }
 
     /// <summary>
-    /// Redact password/token fields from JSON request bodies.
+    /// Recursively redact password/token/secret fields from JSON request or
+    /// response bodies. Non-JSON text gets a conservative credential-pattern pass.
     /// </summary>
     private static string SanitizeBody(string body)
     {
         if (string.IsNullOrWhiteSpace(body)) return body;
+        body = body.Trim();
+        if (!body.StartsWith("{") && !body.StartsWith("["))
+            return RedactCredentialPatterns(body);
         try
         {
-            // Only sanitize if it looks like JSON
-            body = body.Trim();
-            if (!body.StartsWith("{")) return body;
-
             var doc = JsonDocument.Parse(body);
             using var stream = new MemoryStream();
-            using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = false });
-
-            writer.WriteStartObject();
-            foreach (var prop in doc.RootElement.EnumerateObject())
+            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = false }))
             {
-                if (IsSensitiveField(prop.Name))
-                    writer.WriteString(prop.Name, "[REDACTED]");
-                else
-                    prop.WriteTo(writer);
+                WriteRedacted(writer, doc.RootElement);
+                writer.Flush();
             }
-            writer.WriteEndObject();
-            writer.Flush();
-
             return System.Text.Encoding.UTF8.GetString(stream.ToArray());
         }
         catch
         {
-            return body;
+            // Not valid JSON — fall back to conservative pattern redaction
+            return RedactCredentialPatterns(body);
         }
+    }
+
+    /// <summary>
+    /// Clone a JSON element while redacting sensitive property names at any depth.
+    /// </summary>
+    private static void WriteRedacted(Utf8JsonWriter writer, JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            writer.WriteStartObject();
+            foreach (var prop in element.EnumerateObject())
+            {
+                if (IsSensitiveField(prop.Name))
+                {
+                    writer.WriteString(prop.Name, "[REDACTED]");
+                }
+                else
+                {
+                    writer.WritePropertyName(prop.Name);
+                    WriteRedacted(writer, prop.Value);
+                }
+            }
+            writer.WriteEndObject();
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            writer.WriteStartArray();
+            foreach (var item in element.EnumerateArray())
+                WriteRedacted(writer, item);
+            writer.WriteEndArray();
+        }
+        else
+        {
+            element.WriteTo(writer);
+        }
+    }
+
+    /// <summary>
+    /// Conservative fallback for non-JSON bodies: redact name=value and
+    /// "name": "value" forms of known secret fields, plus Bearer tokens.
+    /// </summary>
+    private static string RedactCredentialPatterns(string text)
+    {
+        const string names = "(?:password|passwd|token|ownerToken|secret|api[_-]?key|admin_code|credential|jwt)";
+        var redacted = Regex.Replace(text,
+            $@"(?i)({names}\s*=\s*)[^&\s]+",
+            "$1[REDACTED]");
+        redacted = Regex.Replace(redacted,
+            $@"(?i)(\x22{names}\x22\s*:\s*\x22)[^\x22]*(\x22)",
+            "$1[REDACTED]$2");
+        redacted = Regex.Replace(redacted,
+            @"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+",
+            "$1[REDACTED]");
+        return redacted;
     }
 
     /// <summary>
@@ -105,9 +153,9 @@ public class RequestHistoryService
     private static string SanitizeUrl(string url)
     {
         if (string.IsNullOrWhiteSpace(url)) return url;
-        // Redact token values in query strings
+        // Redact token/secret values in query strings
         var redacted = Regex.Replace(url,
-            @"([?&](?:token|ownerToken|player_token|owner_token|lastSequence)=\s*)[^&\s]+",
+            @"([?&](?:token|ownerToken|player_token|owner_token|password|api_key|apikey|session|lastSequence)=\s*)[^&\s]+",
             "$1[REDACTED]",
             RegexOptions.IgnoreCase);
         return redacted;
@@ -116,9 +164,11 @@ public class RequestHistoryService
     private static bool IsSensitiveField(string name)
     {
         var lower = name.ToLowerInvariant();
-        return lower.Contains("password") || lower.Contains("token")
-            || lower.Contains("secret") || lower.Contains("api_key")
-            || lower.Contains("admin_code");
+        return lower.Contains("password") || lower.Contains("passwd")
+            || lower.Contains("token") || lower.Contains("secret")
+            || lower.Contains("api_key") || lower.Contains("apikey")
+            || lower.Contains("admin_code") || lower.Contains("credential")
+            || lower.Contains("jwt");
     }
 
     private void LoadToday()
