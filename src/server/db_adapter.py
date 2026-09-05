@@ -865,6 +865,40 @@ CREATE TABLE IF NOT EXISTS absent_policy_snapshots (
     UNIQUE (room_id, character_id, snapshot_version)
 );
 
+-- Resolution recovery journal (R2): per-action stage cursor, original
+-- idempotency/version credentials and a claim token so an expired worker's
+-- writes are refused. Effects record every authority-side side effect once.
+CREATE TABLE IF NOT EXISTS action_resolution_runs (
+    action_id TEXT PRIMARY KEY REFERENCES actions(action_id) ON DELETE CASCADE,
+    resolution_id TEXT NOT NULL UNIQUE,
+    worker_id TEXT NOT NULL DEFAULT '',
+    claim_token TEXT,
+    claim_generation INTEGER NOT NULL DEFAULT 0,
+    claimed_at TIMESTAMP,
+    claim_expires_at TIMESTAMP,
+    idempotency_key TEXT NOT NULL DEFAULT '',
+    intent_contract_version TEXT NOT NULL DEFAULT '',
+    rule_version_id TEXT NOT NULL DEFAULT '',
+    runtime_package_version_id TEXT NOT NULL DEFAULT '',
+    stage_cursor TEXT NOT NULL DEFAULT ''
+        CHECK (stage_cursor IN ('', 'intent_contract', 'mechanic_plan', 'roll_receipt',
+            'state_committed', 'reveal', 'narration', 'spoiler_guard', 'projection')),
+    artifacts JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_action_resolution_runs_expiry
+    ON action_resolution_runs(claim_expires_at, claim_generation);
+
+CREATE TABLE IF NOT EXISTS resolution_effects (
+    resolution_id TEXT NOT NULL REFERENCES action_resolution_runs(resolution_id) ON DELETE CASCADE,
+    effect_kind TEXT NOT NULL,
+    effect_key TEXT NOT NULL,
+    effect_payload JSONB NOT NULL DEFAULT '{}',
+    recorded_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (resolution_id, effect_kind, effect_key)
+);
+
 CREATE TABLE IF NOT EXISTS campaign_sessions (
     campaign_session_id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
