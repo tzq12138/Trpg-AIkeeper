@@ -230,8 +230,44 @@ def dry_run_system_recovery(conn, room_id: str, proposal_id: str) -> dict[str, A
 
 
 def execute_system_recovery(conn, room_id: str, proposal_id: str) -> dict[str, Any]:
+    """Persist the recovery work intent and return the actions to resume.
+
+    Phase 1 of a two-phase execution (R3): this call validates the proposal
+    and flips the room to `recovering` with the proposal `executing`, then
+    hands the preserved actions to the unified resolution scheduler. The room
+    is NOT declared `running` here — finalize_system_recovery() does that only
+    after every resumed action has completed and integrity re-verified.
+
+    Repeating execute after a successful run returns the known executed state
+    without re-running any side effect.
+
+    Args:
+        conn: caller-owned connection.
+        room_id: room under recovery.
+        proposal_id: dry-run-verified proposal id.
+    Returns:
+        Dict with status plus the list of resolving action_ids to resume.
+    Raises:
+        SystemRecoveryError: recovery_dry_run_required /
+        recovery_execution_in_progress / recovery_proposal_failed / ...
+    """
     with conn.transaction() as tx:
         proposal, row = _load_verified_proposal(tx, room_id, proposal_id)
+        if row.get("status") == "executed":
+            room = tx.execute(
+                "SELECT runtime_status FROM rooms WHERE room_id = %s", (room_id,)
+            ).fetchone()
+            return {
+                "status": str(room.get("runtime_status") or "running")
+                if room
+                else "running",
+                "proposal_id": proposal_id,
+                "already_executed": True,
+            }
+        if row.get("status") == "executing":
+            raise SystemRecoveryError("recovery_execution_in_progress")
+        if row.get("status") == "failed":
+            raise SystemRecoveryError("recovery_proposal_failed")
         if row.get("status") != "dry_run_verified":
             raise SystemRecoveryError("recovery_dry_run_required")
         room = tx.execute(
@@ -258,25 +294,126 @@ def execute_system_recovery(conn, room_id: str, proposal_id: str) -> dict[str, A
             commit=False,
         )
         tx.execute(
-            "UPDATE rooms SET runtime_status = 'running', integrity_status = 'healthy', "
-            "integrity_reason = NULL, integrity_source = NULL, "
-            "integrity_state_version = state_version, integrity_updated_at = NOW() "
-            "WHERE room_id = %s",
-            (room_id,),
+            "UPDATE runtime_recovery_proposals SET status = 'executing' "
+            "WHERE proposal_id = %s",
+            (proposal_id,),
         )
+        # The work intent: resolving actions whose released journal rows were
+        # recorded by the system pause. Only those may be resumed.
+        paused_rows = tx.execute(
+            "SELECT r.action_id FROM action_resolution_runs r "
+            "JOIN actions a ON a.action_id = r.action_id "
+            "WHERE a.room_id = %s AND a.status = 'resolving' "
+            "AND r.claim_token IS NULL ORDER BY a.created_at",
+            (room_id,),
+        ).fetchall()
+        actions_to_resume = [str(row["action_id"]) for row in paused_rows]
+    return {
+        "status": "recovering",
+        "proposal_id": proposal_id,
+        "actions_to_resume": actions_to_resume,
+    }
+
+
+def finalize_system_recovery(
+    conn,
+    room_id: str,
+    proposal_id: str,
+    *,
+    ok: bool,
+    failure_code: str = "recovery_resume_failed",
+) -> dict[str, Any]:
+    """Phase 2: mark the room running only after all recovery work completed.
+
+    ok=True requires every paused action to have completed; the room then
+    returns to `running` with healthy integrity. ok=False keeps the failure
+    traceable: the room stays (or returns to) paused_system with the recorded
+    reason and the proposal is marked failed — execute never fake-completes.
+
+    Args:
+        conn: caller-owned connection.
+        room_id: room under recovery.
+        proposal_id: proposal being finalized.
+        ok: whether every resumed action completed.
+        failure_code: machine-readable reason when ok=False.
+    Returns:
+        Dict with the resulting runtime status.
+    Raises:
+        SystemRecoveryError: recovery_proposal_not_found /
+        recovery_not_executing / room_not_found / room_not_recovering /
+        recovery_incomplete.
+    """
+    with conn.transaction() as tx:
+        row = tx.execute(
+            "SELECT status, proposal_hash FROM runtime_recovery_proposals "
+            "WHERE proposal_id = %s AND room_id = %s FOR UPDATE",
+            (proposal_id, room_id),
+        ).fetchone()
+        if not row:
+            raise SystemRecoveryError("recovery_proposal_not_found")
+        if row.get("status") == "executed":
+            return {"status": "running", "proposal_id": proposal_id, "already_executed": True}
+        if row.get("status") != "executing":
+            raise SystemRecoveryError("recovery_not_executing")
+        proposal_hash = str(row.get("proposal_hash") or "")
+        room = tx.execute(
+            "SELECT runtime_status FROM rooms WHERE room_id = %s FOR UPDATE",
+            (room_id,),
+        ).fetchone()
+        if not room:
+            raise SystemRecoveryError("room_not_found")
         from .room_pause import sync_legacy_room_status
 
-        sync_legacy_room_status(conn, room_id)
+        if ok:
+            if room.get("runtime_status") != "recovering":
+                raise SystemRecoveryError("room_not_recovering")
+            remaining = tx.execute(
+                "SELECT 1 AS one FROM actions WHERE room_id = %s "
+                "AND status = 'resolving' LIMIT 1",
+                (room_id,),
+            ).fetchone()
+            if remaining:
+                raise SystemRecoveryError("recovery_incomplete")
+            tx.execute(
+                "UPDATE rooms SET runtime_status = 'running', integrity_status = 'healthy', "
+                "integrity_reason = NULL, integrity_source = NULL, "
+                "integrity_state_version = state_version, integrity_updated_at = NOW() "
+                "WHERE room_id = %s",
+                (room_id,),
+            )
+            sync_legacy_room_status(conn, room_id)
+            tx.execute(
+                "UPDATE runtime_recovery_proposals SET status = 'executed', "
+                "executed_at = NOW() WHERE proposal_id = %s",
+                (proposal_id,),
+            )
+            EventLog(tx).log_event(
+                room_id,
+                "s2c_system_recovery_completed",
+                "system",
+                {"proposal_id": proposal_id, "proposal_hash": proposal_hash},
+                commit=False,
+            )
+            return {"status": "running", "proposal_id": proposal_id}
+        # Failure path: never claim running; keep the reason traceable.
+        if room.get("runtime_status") == "recovering":
+            tx.execute(
+                "UPDATE rooms SET runtime_status = 'paused_system', "
+                "integrity_status = 'read_only_recovery', integrity_reason = %s, "
+                "integrity_source = 'system_recovery', integrity_updated_at = NOW() "
+                "WHERE room_id = %s",
+                (failure_code, room_id),
+            )
         tx.execute(
-            "UPDATE runtime_recovery_proposals SET status = 'executed', executed_at = NOW() "
+            "UPDATE runtime_recovery_proposals SET status = 'failed' "
             "WHERE proposal_id = %s",
             (proposal_id,),
         )
         EventLog(tx).log_event(
             room_id,
-            "s2c_system_recovery_completed",
+            "s2c_system_recovery_failed",
             "system",
-            {"proposal_id": proposal_id, "proposal_hash": proposal["proposal_hash"]},
+            {"proposal_id": proposal_id, "reason_code": failure_code},
             commit=False,
         )
-    return {"status": "running", "proposal_id": proposal_id}
+        return {"status": "paused_system", "proposal_id": proposal_id}

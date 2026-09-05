@@ -113,6 +113,12 @@ def _write_pause_statements(tx, room_id: str, reason: str, source: str, action_i
                 ),
             ),
         )
+        # Record (or release) the resolution journal row in the SAME
+        # transaction so a verified recovery can resume the same action with
+        # the same resolution_id (R3); never journal outside the pause.
+        from .resolution_journal import release_interrupted_resolution
+
+        release_interrupted_resolution(tx, action_id)
 
 
 def request_owner_pause(
@@ -196,6 +202,11 @@ def settle_owner_pause_at_boundary(
         return False
     if room.get("runtime_status") == "paused_by_owner":
         return True
+    if room.get("runtime_status") in {"paused_system", "recovering"}:
+        # A system integrity pause is never settled through the owner-pause
+        # boundary machinery: it stays system semantics until a verified
+        # recovery finalizes (or fails) it (R3).
+        return False
     conn.execute(
         "UPDATE rooms SET runtime_status = 'paused_by_owner', pause_cursor = %s, "
         "paused_at = NOW() WHERE room_id = %s",

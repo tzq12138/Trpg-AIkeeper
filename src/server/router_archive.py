@@ -16,6 +16,7 @@ from .engine.system_recovery import (
     create_system_recovery_proposal,
     dry_run_system_recovery,
     execute_system_recovery,
+    finalize_system_recovery,
 )
 from .player.auth import find_player_character
 from .rule_source_lifecycle import RuleSourceRetiredError, ensure_room_rule_source_available
@@ -394,9 +395,54 @@ async def execute_ai_only_recovery_proposal(
     conn = request.app.state.db
     _require_ai_only_system_recovery(conn, room_id)
     try:
-        return execute_system_recovery(conn, room_id, proposal_id)
+        # Phase 1: validate, persist recovering + work intent (already executed
+        # proposals return their known state without re-running side effects).
+        state = execute_system_recovery(conn, room_id, proposal_id)
+        if state.get("already_executed"):
+            return state
+        # Phase 1.5: resume each preserved action through the same fully wired
+        # background pipeline used by every other background resolution path.
+        resumed: list[dict] = []
+        action_ids = state.get("actions_to_resume") or []
+        if action_ids:
+            from .player.router_player import _create_background_pipeline
+
+            pipeline = _create_background_pipeline(request.app, conn)
+            for action_id in action_ids:
+                outcome = await pipeline.resume_action(action_id)
+                resumed.append(outcome)
+                if outcome.get("status") not in ("completed", "resolved"):
+                    raise SystemRecoveryError(
+                        f"resume_incomplete:{action_id}:{outcome.get('status')}"
+                    )
+        # Phase 2: only after every resumed action completed does the room
+        # return to running with healthy integrity.
+        final = finalize_system_recovery(conn, room_id, proposal_id, ok=True)
     except SystemRecoveryError as exc:
+        try:
+            finalize_system_recovery(
+                conn,
+                room_id,
+                proposal_id,
+                ok=False,
+                failure_code=str(exc.code),
+            )
+        except SystemRecoveryError:
+            pass
         raise HTTPException(409, detail={"code": exc.code}) from exc
+    except Exception as exc:
+        try:
+            finalize_system_recovery(
+                conn,
+                room_id,
+                proposal_id,
+                ok=False,
+                failure_code=type(exc).__name__,
+            )
+        except SystemRecoveryError:
+            pass
+        raise HTTPException(502, detail={"code": "recovery_resume_failed"}) from exc
+    return {"status": final["status"], "proposal_id": proposal_id, "resumed": resumed}
 
 
 # ── Campaign endpoints ──

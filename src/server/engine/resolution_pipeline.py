@@ -92,6 +92,97 @@ class ResolutionPipeline:
         self.gateway = gateway
         self.state_service = state_service
         self.host_connection_checker = host_connection_checker
+        # Set only while a verified system recovery is re-executing a paused
+        # action (R3); guards that would normally refuse work while the room
+        # is paused/recovering must not block the recovery run itself.
+        self._recovery_resume_action_ids: set[str] = set()
+
+    def _is_recovery_resume(self, action_id: str) -> bool:
+        return action_id in self._recovery_resume_action_ids
+
+    async def resume_action(self, action_id: str) -> dict[str, Any]:
+        """Resume one integrity-paused action from its verified journal row.
+
+        R3 entry point used by the recovery executor. Callers cannot hand over
+        a free cursor: the action must still be `resolving`, the journal row
+        must already exist (the system pause recorded it), and only pauses
+        with an empty stage cursor (nothing durably committed) are resumable
+        at this stage. The resumed run re-executes the frozen action row under
+        the SAME journal resolution_id — never a new one — so identity-based
+        idempotency and traceability hold across the recovery.
+
+        Args:
+            action_id: action preserved by the system pause.
+        Returns:
+            Result dict with the final status plus the reused resolution_id.
+        Raises:
+            ResolutionJournalError: action_not_resolving /
+            resolution_run_missing / resume_stage_unsupported / claim_busy.
+        """
+        from .resolution_journal import (
+            ResolutionJournalError,
+            claim_resolution,
+            load_resolution,
+            release_interrupted_resolution,
+        )
+
+        action = self.conn.execute(
+            "SELECT * FROM actions WHERE action_id = %s", (action_id,)
+        ).fetchone()
+        if not action:
+            return {"status": "missing", "action_id": action_id}
+        if action["status"] in ("completed", "resolved"):
+            return {
+                "status": action["status"],
+                "action_id": action_id,
+                "resolution_id": (
+                    load_resolution(self.conn, action_id) or {}
+                ).get("resolution_id"),
+                "already_completed": True,
+            }
+        if action["status"] != "resolving":
+            raise ResolutionJournalError("action_not_resolving")
+        run = load_resolution(self.conn, action_id)
+        if not run:
+            raise ResolutionJournalError("resolution_run_missing")
+        if run.get("stage_cursor"):
+            raise ResolutionJournalError("resume_stage_unsupported")
+        claimed = claim_resolution(self.conn, action_id, "recovery-resume")
+        if claimed is None:
+            raise ResolutionJournalError("claim_busy")
+        resolution_id = claimed["resolution_id"]
+        self.conn.commit()
+        self._recovery_resume_action_ids.add(action_id)
+        try:
+            transition_action(
+                self.conn,
+                action_id,
+                from_statuses=("resolving",),
+                to_status="queued",
+                metadata={
+                    "reason_code": "system_recovery_resume",
+                    "resolution_id": resolution_id,
+                },
+            )
+            self.conn.commit()
+            result = await self._resolve_action_core(action_id)
+        finally:
+            self._recovery_resume_action_ids.discard(action_id)
+            try:
+                release_interrupted_resolution(self.conn, action_id)
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                logger.warning(
+                    "Failed to release resolution claim after resume action=%s",
+                    action_id,
+                )
+        return {
+            "status": result.get("status"),
+            "action_id": action_id,
+            "resolution_id": resolution_id,
+            "resumed": True,
+        }
 
     async def resolve_queued_room(self, room_id: str) -> dict[str, Any]:
         rows = self.conn.execute(
@@ -743,7 +834,7 @@ class ResolutionPipeline:
         ).fetchone()
         from .room_pause import pause_blocks_new_actions, settle_owner_pause_at_boundary
 
-        if pause_blocks_new_actions(pause_state):
+        if pause_blocks_new_actions(pause_state) and not self._is_recovery_resume(action_id):
             with self.conn.transaction() as tx:
                 settle_owner_pause_at_boundary(
                     tx,
@@ -828,7 +919,10 @@ class ResolutionPipeline:
         if not character or not room:
             await self._reject(action, "missing room or character")
             return {"status": "rejected", "action_id": action_id}
-        if (room.get("integrity_status") or "healthy") != "healthy":
+        if (
+            (room.get("integrity_status") or "healthy") != "healthy"
+            and not self._is_recovery_resume(action_id)
+        ):
             integrity_status = str(room.get("integrity_status") or "healthy")
             reason = (
                 "room_provider_paused"
@@ -2610,6 +2704,11 @@ class ResolutionPipeline:
         """Requeue an in-flight action only while no roll or state effect exists."""
         from .room_pause import pause_blocks_new_actions, settle_owner_pause_at_boundary
 
+        if self._is_recovery_resume(action["action_id"]):
+            # A verified recovery is re-executing this exact action while the
+            # room sits in recovering; requeueing it would strand the run the
+            # recovery was created to finish.
+            return False
         pause_state = self.conn.execute(
             "SELECT runtime_status, pause_mode FROM rooms WHERE room_id = %s",
             (action["room_id"],),

@@ -39,6 +39,41 @@ class ResolutionJournalError(ValueError):
         super().__init__(code)
 
 
+def release_interrupted_resolution(tx, action_id: str) -> None:
+    """Record an interrupted resolution in the same transaction as its pause.
+
+    Called from the system-pause write (R3). Creates the run row when the
+    resolution was not journaled yet and always releases any live claim, so a
+    later verified recovery can reclaim the SAME resolution_id with the next
+    claim generation. The row carries no stage cursor here: the pause is the
+    durable frontier at this stage, and resume_action decides how much of the
+    frozen action row may be re-executed.
+
+    Args:
+        tx: caller-owned transaction/cursor (pause transaction).
+        action_id: action being interrupted by the system pause.
+    """
+    existing = tx.execute(
+        "SELECT 1 AS one FROM action_resolution_runs WHERE action_id = %s",
+        (action_id,),
+    ).fetchone()
+    if not existing:
+        tx.execute(
+            "INSERT INTO action_resolution_runs "
+            "(action_id, resolution_id, worker_id, claim_token, claim_generation, "
+            "claimed_at, claim_expires_at) "
+            "VALUES (%s, %s, 'system-pause', NULL, 1, NOW(), NOW())",
+            (action_id, str(uuid.uuid4())),
+        )
+        return
+    tx.execute(
+        "UPDATE action_resolution_runs SET claim_token = NULL, "
+        "claim_expires_at = NOW(), worker_id = 'system-pause', updated_at = NOW() "
+        "WHERE action_id = %s",
+        (action_id,),
+    )
+
+
 def claim_resolution(conn, action_id: str, worker_id: str) -> dict | None:
     """Claim exclusive resolution ownership for one action.
 
