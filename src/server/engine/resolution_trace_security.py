@@ -34,10 +34,15 @@ def _canonical_payload(trace: dict[str, Any]) -> bytes:
 
 
 def _cipher() -> Fernet:
-    master_secret = (
-        os.getenv("AI_CONFIG_MASTER_KEY", "").strip()
-        or os.getenv("JWT_SECRET", "aikeeper-change-me-in-production")
-    )
+    master_secret = os.getenv("AI_CONFIG_MASTER_KEY", "").strip() or os.getenv("JWT_SECRET", "").strip()
+    if not master_secret:
+        # Local development only. In production main.py refuses to boot with an
+        # unset/default JWT_SECRET (unless AIKEEPER_DEV_MODE=1), so this static
+        # fallback must never encrypt a trace outside an explicit dev run.
+        dev_mode = os.getenv("AIKEEPER_DEV_MODE", "").lower() in ("1", "true", "yes")
+        if not dev_mode:
+            raise ResolutionTraceSecurityError("trace_encryption_secret_unset")
+        master_secret = "aikeeper-change-me-in-production"
     key = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
