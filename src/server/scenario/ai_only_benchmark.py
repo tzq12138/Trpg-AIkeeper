@@ -64,8 +64,22 @@ class BenchmarkObservation:
     player_ratings: tuple[float, ...] = ()
 
 
-def aggregate_benchmark(observations: Iterable[BenchmarkObservation]) -> dict:
+def aggregate_benchmark(
+    observations: Iterable[BenchmarkObservation],
+    *,
+    browser_observations: Iterable[BenchmarkObservation] = (),
+) -> dict:
+    """Aggregate fixed-seed AI-only sessions into a release report.
+
+    Args:
+        observations: simulation sessions only (never fabricate sessions).
+        browser_observations: real browser sessions, counted independently
+            (V2); each item is one real session and contributes its ratings.
+    Returns:
+        Report dict with sample/metrics/hard_blockers/release_blockers.
+    """
     sessions = list(observations)
+    browser_sessions = list(browser_observations)
     accepted_actions = sum(max(0, item.accepted_actions) for item in sessions)
     clarification_count = sum(max(0, item.clarification_count) for item in sessions)
     correction_count = sum(max(0, item.player_correction_count) for item in sessions)
@@ -75,22 +89,58 @@ def aggregate_benchmark(observations: Iterable[BenchmarkObservation]) -> dict:
     ending_count = sum(
         item.ending_type in _AUTHORED_ENDING_TYPES for item in sessions
     )
-    latencies = [
-        max(0, int(value))
+    raw_latencies = [
+        float(value)
         for item in sessions
         for value in item.ordinary_action_latencies_ms
     ]
+    # Non-finite values are rejected by validation below; keep them out of the
+    # p95 computation so int() never crashes on NaN/Inf.
+    latencies = [
+        int(value) for value in raw_latencies if _finite_positive(value)
+    ]
     player_ratings = [
         max(0.0, float(value))
-        for item in sessions
+        for item in browser_sessions
         for value in item.player_ratings
     ]
-    real_browser_sessions = sum(
-        max(0, item.real_browser_session_count) for item in sessions
-    )
+    real_browser_sessions = len(browser_sessions)
     silent_misunderstanding_total = sum(
         max(0, item.silent_misinterpretation_count) for item in sessions
     )
+    session_ids = [str(item.session_id) for item in sessions]
+    invalid_values: list[str] = []
+    if len(session_ids) != len(set(session_ids)):
+        invalid_values.append("duplicate_session_ids")
+    for item in sessions:
+        for latency in item.ordinary_action_latencies_ms:
+            if not _finite_positive(latency, integer=True):
+                invalid_values.append("non_finite_or_negative_latency")
+        for rating in item.player_ratings:
+            if not _finite_range(rating, 1.0, 5.0):
+                invalid_values.append("rating_out_of_range")
+        for count_field in (
+            "accepted_actions",
+            "clarification_count",
+            "unnecessary_check_count",
+            "player_correction_count",
+            "host_adjudication_count",
+            "ai_only_host_exception_count",
+            "severe_spoiler_count",
+            "illegal_state_mutation_count",
+            "duplicate_roll_count",
+            "duplicate_submission_count",
+            "deadlock_count",
+            "trace_actions",
+            "trace_complete_actions",
+            "silent_misinterpretation_count",
+        ):
+            if getattr(item, count_field, 0) is not None and int(
+                getattr(item, count_field) or 0
+            ) < 0:
+                invalid_values.append("negative_count")
+        if int(item.trace_complete_actions or 0) > int(item.trace_actions or 0):
+            invalid_values.append("trace_complete_exceeds_total")
 
     metrics = {
         "clarification_ratio": _ratio_metric(
@@ -189,6 +239,33 @@ def aggregate_benchmark(observations: Iterable[BenchmarkObservation]) -> dict:
         release_blockers.append("real_browser_evidence")
     if hard_blockers:
         release_blockers.append("hard_blockers")
+    if invalid_values:
+        release_blockers.append("invalid_observation_values")
+    # Missing evidence is an independent blocker even at full sample size:
+    # required ratios/latency/ratings denominators of zero and actions that
+    # never entered the pipeline must never read as clean zeros (V2).
+    metric_evidence_missing = (
+        accepted_actions == 0
+        or not latencies
+        or not player_ratings
+        or real_browser_sessions == 0
+    )
+    if metric_evidence_missing:
+        release_blockers.append("missing_metric_evidence")
+    trace_evidence_missing = (
+        sum(max(0, item.trace_actions) for item in sessions) == 0
+        or any(
+            int(item.trace_actions or 0) > 0
+            and int(item.trace_complete_actions or 0) == 0
+            for item in sessions
+        )
+    )
+    if trace_evidence_missing:
+        release_blockers.append("missing_trace_evidence")
+    if browser_sessions and not any(
+        item.player_ratings for item in browser_sessions
+    ):
+        release_blockers.append("browser_evidence_invalid")
     release_blockers.extend(observe_threshold_breaches)
 
     return {
@@ -276,3 +353,25 @@ def _rating_metric(values: list[float]) -> dict:
         "value": average,
         "scope": "real_browser_player_ratings",
     }
+
+
+def _finite_positive(value, *, integer: bool = False) -> bool:
+    """True when value is a finite, non-negative number (int check optional)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    if number < 0 or number != number or number in (float("inf"), float("-inf")):
+        return False
+    if integer and int(number) != number:
+        return False
+    return True
+
+
+def _finite_range(value, low: float, high: float) -> bool:
+    """True when value is finite and inside [low, high]."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return number == number and low <= number <= high
