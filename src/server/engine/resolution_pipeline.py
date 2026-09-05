@@ -24,7 +24,7 @@ from ..campaign_archive import (
 )
 from .action_lifecycle import complete_action, transition_action
 from .fallback_narrative import render_action_aware_fallback
-from .host_autonomy import decide_host_autonomy
+from .host_autonomy import decide_host_autonomy, room_session_mode
 from .projection import ProjectionDispatcher
 from .retro_items import RetroactiveClaimError, RetroactiveItemService
 from .reveal_ledger import RevealPolicyError
@@ -34,7 +34,7 @@ from .runtime_reveal_conditions import select_runtime_clue
 
 logger = logging.getLogger(__name__)
 
-_NARRATOR_TIMEOUT_SECONDS = 30
+_NARRATOR_TIMEOUT_SECONDS = 55
 _SAFE_LAST_OBSERVED_DISTANCES = {
     "engaged": "近处",
     "near": "近距离",
@@ -564,6 +564,103 @@ class ResolutionPipeline:
         }
 
     async def resolve_action(self, action_id: str) -> dict[str, Any]:
+        """Resolve one action and finalize its redacted, action-level trace."""
+        trace_recorder = None
+        trace_started = False
+        lifecycle_row = self.conn.execute(
+            "SELECT * FROM actions WHERE action_id = %s",
+            (action_id,),
+        ).fetchone()
+        if lifecycle_row and getattr(self.conn, "_pool", None) is not None:
+            try:
+                from .resolution_trace import ResolutionTraceRecorder
+
+                trace_recorder = ResolutionTraceRecorder(self.conn)
+                trace_recorder.start(
+                    dict(lifecycle_row),
+                    state_version=int(lifecycle_row.get("base_state_version") or 0),
+                )
+                trace_recorder.record_stage(
+                    action_id,
+                    "input_received",
+                    {
+                        "intent_type": lifecycle_row.get("intent_type"),
+                        "input_hash": lifecycle_row.get("idempotency_key") or "",
+                    },
+                )
+                trace_started = True
+            except Exception as exc:
+                logger.warning(
+                    "Resolution trace start failed action=%s error_type=%s",
+                    action_id,
+                    type(exc).__name__,
+                )
+                trace_recorder = None
+        try:
+            try:
+                result = await self._resolve_action_core(action_id)
+            except Exception as exc:
+                if trace_started and trace_recorder is not None:
+                    try:
+                        trace_recorder.finalize(
+                            action_id,
+                            status="failed",
+                            data={"error_code": type(exc).__name__},
+                        )
+                    except Exception:
+                        logger.debug("Failed to finalize failed resolution trace action=%s", action_id)
+                raise
+            if trace_started and trace_recorder is not None:
+                try:
+                    trace_data = self._trace_result_data(result)
+                    trace_recorder.record_stage(action_id, "resolution_returned", trace_data)
+                    trace_recorder.finalize(
+                        action_id,
+                        status=str(result.get("status") or "completed"),
+                        outcome=trace_data.get("resolution_outcome"),
+                        data=trace_data,
+                    )
+                except Exception:
+                    logger.debug("Failed to finalize resolution trace action=%s", action_id)
+            return result
+        finally:
+            if trace_recorder is not None:
+                trace_recorder.close()
+
+    @staticmethod
+    def _trace_result_data(result: dict[str, Any]) -> dict[str, Any]:
+        payload = result.get("result") if isinstance(result, dict) else {}
+        payload = payload if isinstance(payload, dict) else {}
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        outcome = (
+            payload.get("resolution_outcome")
+            or payload.get("outcome")
+            or metadata.get("resolution_outcome")
+            or metadata.get("outcome")
+        )
+        if outcome is None and isinstance(payload.get("isSuccess"), bool):
+            outcome = "success" if payload["isSuccess"] else "failure"
+        data: dict[str, Any] = {
+            "resolution_status": result.get("status") if isinstance(result, dict) else "",
+            "resolution_outcome": outcome,
+        }
+        for source, target in (
+            ("authoritative_mechanic_plan", "authoritative_mechanic_plan"),
+            ("mechanic_plan", "mechanic_plan"),
+            ("roll_receipt", "roll_receipt"),
+            ("receipt", "roll_receipt"),
+            ("state_mutations", "state_mutations"),
+            ("mutations", "state_mutations"),
+            ("spoiler_guard", "spoiler_guard"),
+            ("projection_dispatch", "projection_dispatch"),
+        ):
+            if source in payload:
+                data[target] = payload[source]
+            elif source in metadata:
+                data[target] = metadata[source]
+        return data
+
+    async def _resolve_action_core(self, action_id: str) -> dict[str, Any]:
         lifecycle_row = self.conn.execute(
             "SELECT * FROM actions WHERE action_id = %s",
             (action_id,),
@@ -640,6 +737,21 @@ class ResolutionPipeline:
         )
         if action["status"] not in {"queued", "batched"} and not is_player_choice_resume:
             return {"status": action["status"], "action_id": action_id}
+        pause_state = self.conn.execute(
+            "SELECT runtime_status, pause_mode FROM rooms WHERE room_id = %s",
+            (action["room_id"],),
+        ).fetchone()
+        from .room_pause import pause_blocks_new_actions, settle_owner_pause_at_boundary
+
+        if pause_blocks_new_actions(pause_state):
+            with self.conn.transaction() as tx:
+                settle_owner_pause_at_boundary(
+                    tx,
+                    action["room_id"],
+                    boundary="pre_roll",
+                    action_id=action_id,
+                )
+            return {"status": "paused_by_owner", "action_id": action_id}
         if not is_player_choice_resume:
             from .action_consent import enforce_action_consent_gate
 
@@ -844,10 +956,7 @@ class ResolutionPipeline:
             "current_scene": str(scene_row.get("current_scene") or "") if scene_row else "",
             **(scene_variables if isinstance(scene_variables, dict) else {}),
         }
-        runtime_policy = self._json_value(runtime_package.get("runtime_policy"))
-        if not isinstance(runtime_policy, dict):
-            runtime_policy = {}
-        session_mode = str(runtime_policy.get("session_mode") or "")
+        session_mode = room_session_mode(self.conn, action["room_id"]) or ""
         is_ai_only = session_mode == "ai_only"
         inventory = self.conn.execute(
             "SELECT * FROM inventory WHERE character_id = %s", (action["character_id"],)
@@ -1092,6 +1201,9 @@ class ResolutionPipeline:
                 compiled = await self.compiler.compile(intent, scenario or {}, character_data)
             if retroactive_decision and retroactive_decision.branch == "roll_required":
                 compiled = MechanicCompileResult(triggeredMechanic="luck_check")
+            if not is_player_choice_resume and not action.get("receipt"):
+                if self._pause_before_rule_execution(action):
+                    return {"status": "paused_by_owner", "action_id": action_id}
             if not composite_steps:
                 resolution = await self.rule_executor.execute(
                     intent,
@@ -2482,6 +2594,8 @@ class ResolutionPipeline:
                 },
             )
 
+        self._settle_owner_pause_after_projection(action)
+
         return {
             "status": completion_status,
             "action_id": action_id,
@@ -2491,6 +2605,48 @@ class ResolutionPipeline:
                 for prepared_reaction in prepared_reactions
             ],
         }
+
+    def _pause_before_rule_execution(self, action: dict[str, Any]) -> bool:
+        """Requeue an in-flight action only while no roll or state effect exists."""
+        from .room_pause import pause_blocks_new_actions, settle_owner_pause_at_boundary
+
+        pause_state = self.conn.execute(
+            "SELECT runtime_status, pause_mode FROM rooms WHERE room_id = %s",
+            (action["room_id"],),
+        ).fetchone()
+        if not pause_blocks_new_actions(pause_state):
+            return False
+        with self.conn.transaction() as tx:
+            if not settle_owner_pause_at_boundary(
+                tx,
+                action["room_id"],
+                boundary="pre_roll",
+                action_id=action["action_id"],
+            ):
+                return False
+            return transition_action(
+                self.conn,
+                action["action_id"],
+                from_statuses=("resolving",),
+                to_status="queued",
+                metadata={
+                    "reason_code": "owner_pause_before_roll",
+                    "pause_cursor": "pre_roll",
+                },
+                transaction=tx,
+            )
+
+    def _settle_owner_pause_after_projection(self, action: dict[str, Any]) -> bool:
+        """Persist a pending pause after this action's committed projection phase."""
+        from .room_pause import settle_owner_pause_at_boundary
+
+        with self.conn.transaction() as tx:
+            return settle_owner_pause_at_boundary(
+                tx,
+                action["room_id"],
+                boundary="post_projection",
+                action_id=action["action_id"],
+            )
 
     def _finalize_decision_audit(
         self,
@@ -3652,6 +3808,12 @@ class ResolutionPipeline:
             return
         try:
             self._record_ai_stage(action["action_id"], stage)
+            stage_data = {"ai_stage": stage}
+            if stage == "directing":
+                stage_data["mechanic_plan"] = {"status": "proposal_only"}
+            elif stage == "validating_rules":
+                stage_data["authoritative_mechanic_plan"] = {"status": "engine_validated"}
+            self._record_trace_stage(action["action_id"], f"ai_stage:{stage}", stage_data)
             await self.dispatcher.emit(
                 action["room_id"],
                 "s2c_ai_stage_changed",
@@ -3664,6 +3826,33 @@ class ResolutionPipeline:
             )
         except Exception:
             logger.debug("Failed to emit AI stage %s for action %s", stage, action["action_id"])
+
+    def _record_trace_stage(
+        self,
+        action_id: str,
+        name: str,
+        data: dict[str, Any] | None = None,
+        *,
+        status: str = "completed",
+    ) -> None:
+        if getattr(self.conn, "_pool", None) is None:
+            return
+        recorder = None
+        try:
+            from .resolution_trace import ResolutionTraceRecorder
+
+            recorder = ResolutionTraceRecorder(self.conn)
+            recorder.record_stage(
+                action_id,
+                name,
+                data or {},
+                status=status,
+            )
+        except Exception:
+            logger.debug("Failed to record resolution trace stage action=%s stage=%s", action_id, name)
+        finally:
+            if recorder is not None:
+                recorder.close()
 
     def _record_ai_stage(self, action_id: str, stage: str) -> None:
         row = self.conn.execute(
@@ -3730,6 +3919,7 @@ class ResolutionPipeline:
                         payload,
                         action["room_id"],
                         action_id=action["action_id"],
+                        timeout_seconds=_NARRATOR_TIMEOUT_SECONDS,
                     ),
                     timeout=_NARRATOR_TIMEOUT_SECONDS,
                 )
@@ -4044,6 +4234,11 @@ class ResolutionPipeline:
         bundle: dict[str, Any],
     ):
         host_projection = bundle["host_projection"]
+        self._record_trace_stage(
+            action["action_id"],
+            "state_mutation",
+            {"state_mutations": resolution.mutations or []},
+        )
 
         await self.dispatcher.emit(
             action["room_id"],
@@ -4124,6 +4319,13 @@ class ResolutionPipeline:
                             type(exc).__name__,
                         )
 
+        self._record_trace_stage(
+            action["action_id"],
+            "spoiler_guard",
+            {"spoiler_guard": {"status": spoiler_status}},
+            status="completed" if spoiler_status != "none" else "not_needed",
+        )
+
         party_projection = bundle["party_projection"]
         party_projection["narrativeText"] = final_text
         party_projection["spoilerStatus"] = spoiler_status
@@ -4160,6 +4362,20 @@ class ResolutionPipeline:
             character_id=action["character_id"],
         )
         self._mark_resolution_bundle_projected(bundle)
+        self._record_trace_stage(
+            action["action_id"],
+            "projection_dispatch",
+            {
+                "projection_dispatch": {
+                    "status": "emitted",
+                    "event_types": [
+                        "s2c_reveal_transaction",
+                        "s2c_public_observation",
+                        "s2c_action_completed",
+                    ],
+                }
+            },
+        )
 
     async def _project_saved_bundle(self, action: dict[str, Any], bundle: dict[str, Any]) -> None:
         """Emit persisted view projections only; this path must never touch authority."""

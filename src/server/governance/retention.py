@@ -89,6 +89,26 @@ class RetentionService:
 
     def _snapshot(self, cutoff: str, conn=None) -> dict:
         db = conn or self.conn
+        redacted_resolution_traces = [
+            str(row["candidate_id"])
+            for row in db.execute(
+                "SELECT resolution_trace_id AS candidate_id FROM resolution_traces "
+                "WHERE created_at <= %s::timestamptz - INTERVAL '180 days' "
+                "ORDER BY resolution_trace_id",
+                (cutoff,),
+            ).fetchall()
+        ]
+        full_resolution_traces = [
+            str(row["candidate_id"])
+            for row in db.execute(
+                "SELECT resolution_trace_id AS candidate_id "
+                "FROM resolution_trace_secure_payloads "
+                "WHERE expires_at <= %s::timestamptz "
+                "OR resolution_trace_id = ANY(%s) "
+                "ORDER BY resolution_trace_id",
+                (cutoff, redacted_resolution_traces),
+            ).fetchall()
+        ]
         diagnostics = [
             int(row["candidate_id"])
             for row in db.execute(
@@ -127,6 +147,8 @@ class RetentionService:
                 ).fetchall()
             ]
         references = [
+            *(f"resolution_trace_secure_payloads:{candidate_id}" for candidate_id in full_resolution_traces),
+            *(f"resolution_traces:{candidate_id}" for candidate_id in redacted_resolution_traces),
             *(f"ai_call_logs:{candidate_id}" for candidate_id in diagnostics),
             *(f"ai_call_logs:{candidate_id}" for candidate_id in decisions),
             *(
@@ -136,6 +158,8 @@ class RetentionService:
             ),
         ]
         counts = {
+            "full_resolution_traces": len(full_resolution_traces),
+            "redacted_resolution_traces": len(redacted_resolution_traces),
             "diagnostics": len(diagnostics),
             "ai_decisions": len(decisions),
             "governance_audits": sum(len(ids) for ids in governance.values()),
@@ -150,6 +174,8 @@ class RetentionService:
         return {
             "counts": counts,
             "candidate_digest": digest,
+            "full_resolution_traces": full_resolution_traces,
+            "redacted_resolution_traces": redacted_resolution_traces,
             "diagnostics": diagnostics,
             "ai_decisions": decisions,
             "governance": governance,
@@ -231,6 +257,16 @@ class RetentionService:
                 "id",
                 snapshot["ai_decisions"],
             )
+            full_resolution_traces_count = delete_candidates(
+                "resolution_trace_secure_payloads",
+                "resolution_trace_id",
+                snapshot["full_resolution_traces"],
+            )
+            redacted_resolution_traces_count = delete_candidates(
+                "resolution_traces",
+                "resolution_trace_id",
+                snapshot["redacted_resolution_traces"],
+            )
             governance_count = 0
             governance_columns = {
                 "admin_data_purge_audits": "audit_id",
@@ -245,6 +281,8 @@ class RetentionService:
                     snapshot["governance"][table],
                 )
             counts = {
+                "full_resolution_traces": full_resolution_traces_count,
+                "redacted_resolution_traces": redacted_resolution_traces_count,
                 "diagnostics": diagnostics_count,
                 "ai_decisions": decisions_count,
                 "governance_audits": governance_count,

@@ -18,6 +18,7 @@ from .runtime_lifecycle import (
     character_lifecycle_guard,
     room_lifecycle_guard,
 )
+from .engine.host_autonomy import is_ai_only_room
 from .rule_source_lifecycle import qualified_rule_version_predicate
 
 router = APIRouter(prefix="/api/admin")
@@ -34,6 +35,7 @@ ALLOWED_MIME_TYPES = {
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp3", ".wav", ".ogg", ".webm", ".pdf"}
 BLOCKED_EXTENSIONS = {".svg", ".html", ".htm", ".js", ".exe", ".sh", ".bat", ".ps1", ".php"}
 MAX_ASSET_SIZE = 50 * 1024 * 1024  # 50 MB
+AI_ONLY_ADMIN_STATE_PATCH_FORBIDDEN = "AI_ONLY_ADMIN_STATE_PATCH_FORBIDDEN"
 
 # Magic bytes for file header validation
 MAGIC_BYTES: dict[str, bytes] = {
@@ -2331,6 +2333,14 @@ async def update_room(request: Request, room_id: str):
         raise HTTPException(404, "房间不存在")
     body = await request.json()
     allowed = ["status", "scenario_id", "spoiler_level"]
+    if is_ai_only_room(conn, room_id) and any(key in body for key in allowed):
+        raise HTTPException(
+            409,
+            detail={
+                "code": AI_ONLY_ADMIN_STATE_PATCH_FORBIDDEN,
+                "reason": "纯 AI 房间不允许管理员直接修改房间游戏状态",
+            },
+        )
     sets, vals = [], []
     for k in allowed:
         if k in body:
@@ -2434,6 +2444,16 @@ async def update_character(request: Request, character_id: str):
 
     # Fields that update xlsx_data
     stat_fields = {"hp", "max_hp", "san", "max_san", "mp", "max_mp", "luck", "status_tags"}
+    if is_ai_only_room(conn, str(char["room_id"])) and (
+        stat_fields | {"is_ready", "status"}
+    ).intersection(body):
+        raise HTTPException(
+            409,
+            detail={
+                "code": AI_ONLY_ADMIN_STATE_PATCH_FORBIDDEN,
+                "reason": "纯 AI 房间不允许管理员直接修改角色游戏状态",
+            },
+        )
     xlsx = json.loads(char.get("xlsx_data") or "{}")
     for k in stat_fields & set(body.keys()):
         xlsx[k] = body[k]
@@ -3363,6 +3383,200 @@ async def install_golden_module(request: Request, module_id: str):
     }
 
 
+@router.post("/golden-modules/{module_id}/upgrade", status_code=201)
+async def upgrade_golden_module(request: Request, module_id: str):
+    """Publish the current golden-module source as a new immutable version."""
+    account = _require_admin(request)
+    module, module_path = _load_golden_module(module_id)
+    manifest = module.get("manifest", {})
+    raw_knowledge_graph = module.get("knowledge_graph", {})
+    scenario_assets = module.get("scenario_assets", {})
+    templates = module.get("character_templates", [])
+    quality_report = module.get("quality_report", {})
+    if (
+        manifest.get("format") != "aikeeper-golden-module"
+        or not isinstance(raw_knowledge_graph, dict)
+        or not all(
+            isinstance(raw_knowledge_graph.get(key), list)
+            and raw_knowledge_graph[key]
+            for key in ("scenes", "npcs", "clues")
+        )
+        or not isinstance(scenario_assets, dict)
+        or not isinstance(templates, list)
+        or not templates
+    ):
+        raise HTTPException(422, "黄金模组结构不完整")
+    text_map = scenario_assets.get("text_map", {})
+    if not isinstance(text_map, dict):
+        raise HTTPException(422, "黄金模组缺少文字地图")
+    nodes = _golden_map_nodes(text_map.get("nodes", []))
+    edges = _golden_map_edges(text_map.get("edges", []))
+    if not nodes:
+        raise HTTPException(422, "黄金模组缺少文字地图节点")
+
+    conn = request.app.state.db
+    scenario_id = f"golden-{module_id}"
+    scenario = conn.execute(
+        "SELECT 1 FROM scenarios WHERE scenario_id = %s", (scenario_id,)
+    ).fetchone()
+    if not scenario:
+        raise HTTPException(404, "黄金模组尚未安装")
+
+    raw_module = module_path.read_bytes()
+    source_sha256 = hashlib.sha256(raw_module).hexdigest()
+    latest_source = conn.execute(
+        "SELECT source_sha256 FROM source_documents "
+        "WHERE scenario_id = %s AND source_kind = 'golden_module' "
+        "ORDER BY created_at DESC, source_document_id DESC LIMIT 1",
+        (scenario_id,),
+    ).fetchone()
+    if latest_source and latest_source.get("source_sha256") == source_sha256:
+        raise HTTPException(409, "黄金模组已是最新版本")
+
+    rule_version = conn.execute(
+        "SELECT rsv.rule_set_version_id FROM rule_set_versions rsv "
+        "JOIN rule_sets rs ON rs.rule_set_id = rsv.rule_set_id "
+        "WHERE rs.system = 'coc7' AND rs.is_base = TRUE AND "
+        + qualified_rule_version_predicate("rsv.rule_set_version_id")
+        + " ORDER BY rsv.version_number DESC, rsv.rule_set_version_id DESC LIMIT 1"
+    ).fetchone()
+    if not rule_version:
+        raise HTTPException(409, "需要先发布授权的 CoC7 规则版本")
+
+    next_version = conn.execute(
+        "SELECT COALESCE(MAX(version_number), 0) + 1 AS version_number "
+        "FROM scenario_versions WHERE scenario_id = %s",
+        (scenario_id,),
+    ).fetchone()
+    version_number = int(next_version["version_number"])
+    scenario_version_id = f"{scenario_id}-v{version_number}"
+    source_document_id = f"{scenario_id}-source-v{version_number}"
+    source_part_id = f"{source_document_id}-part-1"
+    map_id = f"{scenario_id}-map-v{version_number}"
+    created_by = account.get("account_id", "unknown")
+    knowledge_graph = _normalize_golden_knowledge_graph(
+        raw_knowledge_graph,
+        module.get("citations", []),
+        source_part_id=source_part_id,
+    )
+    prep_package = {
+        "golden_module": manifest,
+        "citations": module.get("citations", []),
+        "rag_expectations": module.get("rag_expectations", []),
+    }
+    with conn.transaction() as transaction:
+        transaction.execute(
+            "INSERT INTO source_documents "
+            "(source_document_id, scenario_id, source_kind, title, source_filename, mime_type, source_sha256, "
+            "storage_path, license_type, license_ref, status, metadata, created_by) "
+            "VALUES (%s, %s, 'golden_module', %s, 'module.json', 'application/json', %s, %s, 'authorized', %s, 'parsed', %s, %s)",
+            (
+                source_document_id, scenario_id, manifest.get("title", module_id), source_sha256,
+                str(module_path.relative_to(Path(__file__).resolve().parents[2])).replace("\\", "/"),
+                manifest.get("license", {}).get("license_id", ""),
+                json.dumps({
+                    "module_id": module_id,
+                    "schema_version": manifest.get("schema_version", ""),
+                    "supersedes_version_id": conn.execute(
+                        "SELECT published_version_id FROM scenarios WHERE scenario_id = %s",
+                        (scenario_id,),
+                    ).fetchone().get("published_version_id"),
+                }, ensure_ascii=False),
+                created_by,
+            ),
+        )
+        transaction.execute(
+            "INSERT INTO source_parts "
+            "(source_part_id, source_document_id, ordinal, part_kind, text_content, mime_type, anchor, checksum) "
+            "VALUES (%s, %s, 1, 'text', %s, 'application/json', %s, %s)",
+            (
+                source_part_id, source_document_id, module.get("raw_text", ""),
+                json.dumps({"source_ref": "module.json#/raw_text"}), source_sha256,
+            ),
+        )
+        transaction.execute(
+            "INSERT INTO scenario_versions "
+            "(scenario_version_id, scenario_id, version_number, status, knowledge_graph, quality_report, prep_package, created_by) "
+            "VALUES (%s, %s, %s, 'draft', %s, %s, %s, %s)",
+            (
+                scenario_version_id, scenario_id, version_number,
+                json.dumps(knowledge_graph, ensure_ascii=False),
+                json.dumps(quality_report, ensure_ascii=False),
+                json.dumps(prep_package, ensure_ascii=False), created_by,
+            ),
+        )
+        transaction.execute(
+            "INSERT INTO scenario_version_sources (scenario_version_id, source_document_id, ordinal) "
+            "VALUES (%s, %s, 1)",
+            (scenario_version_id, source_document_id),
+        )
+        transaction.execute(
+            "INSERT INTO scenario_rule_bindings (scenario_version_id, rule_set_version_id) VALUES (%s, %s)",
+            (scenario_version_id, rule_version["rule_set_version_id"]),
+        )
+        transaction.execute(
+            "INSERT INTO scenario_maps "
+            "(map_id, scenario_id, generated_by, status, map_type, nodes, edges, paths, confirmed_at) "
+            "VALUES (%s, %s, 'golden_module', 'confirmed', 'graph', %s, %s, %s, NOW())",
+            (
+                map_id, scenario_id, json.dumps(nodes, ensure_ascii=False),
+                json.dumps(edges, ensure_ascii=False),
+                json.dumps([
+                    {
+                        "pathId": f"path-{index}",
+                        "fromNodeId": edge["from_node"],
+                        "toNodeId": edge["to_node"],
+                        "isOneWay": edge["is_one_way"],
+                        "label": edge["label"],
+                    }
+                    for index, edge in enumerate(edges)
+                ], ensure_ascii=False),
+            ),
+        )
+
+    from .scenario.content_projection import ContentProjectionService
+    from .scenario.module_compiler import ModuleCompiler
+
+    ContentProjectionService(conn).rebuild(
+        scenario_version_id,
+        knowledge_graph,
+        requested_by=created_by,
+    )
+    runtime_package = ModuleCompiler(conn).compile(
+        scenario_version_id,
+        requested_by=created_by,
+    )
+    if runtime_package["gate_status"] != "ready":
+        raise HTTPException(422, {
+            "message": "黄金模组运行包未达到可开团门槛",
+            "quality_exceptions": runtime_package["quality_exceptions"],
+        })
+
+    conn.execute(
+        "UPDATE scenario_versions SET status = 'published', published_at = NOW() "
+        "WHERE scenario_version_id = %s",
+        (scenario_version_id,),
+    )
+    conn.execute(
+        "UPDATE scenarios SET raw_text = %s, knowledge_graph = %s, scenario_assets = %s, "
+        "quality_report = %s, import_status = 'structured', publish_status = 'published', "
+        "published_version_id = %s WHERE scenario_id = %s",
+        (
+            module.get("raw_text", ""), json.dumps(knowledge_graph, ensure_ascii=False),
+            json.dumps(scenario_assets, ensure_ascii=False), json.dumps(quality_report, ensure_ascii=False),
+            scenario_version_id, scenario_id,
+        ),
+    )
+    conn.commit()
+    return {
+        "scenarioId": scenario_id,
+        "scenarioVersionId": scenario_version_id,
+        "title": manifest.get("title", module_id),
+        "status": "published",
+        "runtimePackage": runtime_package,
+    }
+
+
 @router.post("/scenarios/{scenario_id}/map/generate")
 async def admin_generate_map(
     request: Request,
@@ -3710,7 +3924,7 @@ async def create_sensitive_access_grant(request: Request, response: Response):
     if (
         not incident_id
         or not reason
-        or scope != "ai_decision:read"
+        or scope not in {"ai_decision:read", "resolution_trace:read"}
         or ttl < 1
         or ttl > 900
     ):
@@ -3790,6 +4004,169 @@ async def rag_context_preview(request: Request):
     if not room_id:
         raise HTTPException(400, "room_id required")
     return builder.preview(room_id, action_text, character_id, scenario_id)
+
+
+@router.get("/rooms/{room_id}/resolution-traces")
+async def admin_resolution_traces(request: Request, room_id: str, limit: int = 50):
+    """Return bounded operational trace metadata without sensitive phase payloads."""
+    _require_admin(request)
+    try:
+        bounded_limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        bounded_limit = 50
+    rows = request.app.state.db.execute(
+        "SELECT resolution_trace_id, action_id, room_id, state_version, status, "
+        "resolution_outcome, trace, trace_hash, created_at, updated_at "
+        "FROM resolution_traces WHERE room_id = %s "
+        "ORDER BY created_at DESC, resolution_trace_id DESC LIMIT %s",
+        (room_id, bounded_limit),
+    ).fetchall()
+
+    def _project(row: dict) -> dict:
+        trace = row.get("trace") or {}
+        if isinstance(trace, str):
+            try:
+                trace = json.loads(trace)
+            except (TypeError, ValueError):
+                trace = {}
+        trace = trace if isinstance(trace, dict) else {}
+        phases = trace.get("phases") if isinstance(trace.get("phases"), list) else []
+        phase_names = [
+            str(phase.get("name"))
+            for phase in phases
+            if isinstance(phase, dict) and phase.get("name")
+        ]
+        authority = trace.get("authority_chain")
+        authority = authority if isinstance(authority, dict) else {}
+        return {
+            "resolution_trace_id": row.get("resolution_trace_id"),
+            "action_id": row.get("action_id"),
+            "room_id": row.get("room_id"),
+            "state_version": int(row.get("state_version") or 0),
+            "status": row.get("status"),
+            "resolution_outcome": row.get("resolution_outcome"),
+            "trace_hash": row.get("trace_hash") or trace.get("trace_hash") or "",
+            "input_hash": trace.get("input_hash") or "",
+            "phase_count": len(phase_names),
+            "phase_names": phase_names,
+            "authority_chain": {
+                str(key): {"present": value is not None}
+                for key, value in authority.items()
+            },
+            "created_at": row.get("created_at").isoformat()
+            if hasattr(row.get("created_at"), "isoformat")
+            else row.get("created_at"),
+            "updated_at": row.get("updated_at").isoformat()
+            if hasattr(row.get("updated_at"), "isoformat")
+            else row.get("updated_at"),
+        }
+
+    return {
+        "items": [_project(dict(row)) for row in rows],
+        "limit": bounded_limit,
+        "next_cursor": None,
+    }
+
+
+async def _read_full_resolution_trace(
+    request: Request,
+    response: Response,
+    *,
+    room_id: str,
+    trace_id: str,
+    resource_type: str,
+) -> dict:
+    account = _require_admin(request)
+    body = await _safe_json(request)
+    incident_id = str(body.get("incident_id") or "").strip()
+    reason = str(body.get("reason") or "").strip()
+    grant = request.headers.get("X-Sensitive-Access-Grant", "")
+    from .engine.resolution_trace_security import (
+        ResolutionTraceSecurityError,
+        decrypt_resolution_trace,
+    )
+    from .governance.retention import RetentionError, verify_sensitive_access_grant
+
+    async with _governance_actor_guard(request, str(account["account_id"])) as conn:
+        try:
+            verify_sensitive_access_grant(
+                grant,
+                actor_id=account["account_id"],
+                incident_id=incident_id,
+                reason=reason,
+                scope="resolution_trace:read",
+            )
+        except RetentionError as exc:
+            raise HTTPException(403, detail={"code": exc.code}) from exc
+        with conn.transaction() as tx:
+            row = tx.execute(
+                "SELECT secure.ciphertext, secure.payload_hash, traces.trace_hash "
+                "FROM resolution_trace_secure_payloads AS secure "
+                "JOIN resolution_traces AS traces "
+                "ON traces.resolution_trace_id = secure.resolution_trace_id "
+                "WHERE secure.resolution_trace_id = %s AND secure.room_id = %s",
+                (trace_id, room_id),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, "resolution trace not found")
+            try:
+                trace = decrypt_resolution_trace(row["ciphertext"], row["payload_hash"])
+            except ResolutionTraceSecurityError as exc:
+                raise HTTPException(409, detail={"code": exc.code}) from exc
+            if str(trace.get("trace_hash") or "") != str(row.get("trace_hash") or ""):
+                raise HTTPException(
+                    409,
+                    detail={"code": "resolution_trace_integrity_failed"},
+                )
+            tx.execute(
+                "INSERT INTO private_data_access_audits "
+                "(private_data_access_audit_id, room_id, host_account_id, reason, "
+                "incident_id, scope, resource_type, resource_id) "
+                "VALUES (%s, %s, %s, %s, %s, 'resolution_trace:read', %s, %s)",
+                (
+                    f"access-{uuid.uuid4().hex}",
+                    room_id,
+                    account["account_id"],
+                    reason,
+                    incident_id,
+                    resource_type,
+                    trace_id,
+                ),
+            )
+    response.headers["Cache-Control"] = "no-store"
+    return {"resolution_trace_id": trace_id, "trace": trace}
+
+
+@router.post("/rooms/{room_id}/resolution-traces/{trace_id}/full")
+async def admin_full_resolution_trace(
+    request: Request,
+    response: Response,
+    room_id: str,
+    trace_id: str,
+):
+    return await _read_full_resolution_trace(
+        request,
+        response,
+        room_id=room_id,
+        trace_id=trace_id,
+        resource_type="resolution_trace",
+    )
+
+
+@router.post("/rooms/{room_id}/resolution-traces/{trace_id}/full/export")
+async def admin_export_full_resolution_trace(
+    request: Request,
+    response: Response,
+    room_id: str,
+    trace_id: str,
+):
+    return await _read_full_resolution_trace(
+        request,
+        response,
+        room_id=room_id,
+        trace_id=trace_id,
+        resource_type="resolution_trace_export",
+    )
 
 
 @router.post("/rag/reindex")

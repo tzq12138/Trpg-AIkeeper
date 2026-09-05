@@ -385,6 +385,25 @@ CREATE TABLE IF NOT EXISTS actions (
     completed_at TIMESTAMP
 );
 
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS resolution_trace_id TEXT;
+
+CREATE TABLE IF NOT EXISTS resolution_traces (
+    resolution_trace_id TEXT PRIMARY KEY,
+    action_id TEXT NOT NULL REFERENCES actions(action_id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL,
+    state_version INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    resolution_outcome TEXT,
+    trace JSONB NOT NULL DEFAULT '{}',
+    trace_hash TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (action_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_resolution_traces_room_created
+    ON resolution_traces(room_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS prepared_rule_actions (
     action_id TEXT PRIMARY KEY REFERENCES actions(action_id) ON DELETE CASCADE,
     room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,

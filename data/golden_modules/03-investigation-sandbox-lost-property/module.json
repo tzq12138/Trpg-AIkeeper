@@ -2,6 +2,7 @@
   "manifest": {
     "format": "aikeeper-golden-module",
     "schema_version": "1.0",
+    "runtime_version": "v2",
     "module_id": "golden-sandbox-lost-property",
     "title": "雾港失物局",
     "module_type": "investigation_sandbox",
@@ -51,6 +52,78 @@
         "purpose": "调查检定、对抗、幸运、理智压力和危险移动的已授权规则依据。"
       }
     ],
+    "runtime_policy": {
+      "runtime_version": "v2",
+      "runtime_contract_version": "v1",
+      "session_mode": "ai_only",
+      "state_scope": "room_run",
+      "archive_on_end": true,
+      "fresh_state_on_new_room": true,
+      "in_game_time": {
+        "day_key": "lost-property-night-1",
+        "expected_duration_hours": 4
+      },
+      "safety": {
+        "anonymous_pause": true,
+        "resume_authority": "triggering_player",
+        "table_steward_actions": ["extend", "end_session"],
+        "safe_abort_ending_id": "lost-safe-abort"
+      },
+      "ai_failure_policy": {
+        "pre_commit": "deterministic_fallback",
+        "post_commit": "preserve_state_template_narration"
+      }
+    },
+    "risk_contract": {
+      "categories": [
+        {"category": "identity_anxiety", "max_level": "medium"},
+        {"category": "psychological_horror", "max_level": "medium"},
+        {"category": "underground_confinement", "max_level": "low"}
+      ],
+      "excluded_tags": ["graphic_gore", "sexual_violence"],
+      "default_harm": {"npc": "medium", "scene": "medium"},
+      "irreversible_controls": ["san_zero_npc_transfer"],
+      "hidden_checks": {
+        "allowed": true,
+        "declaration_source": "compiled_rule"
+      },
+      "safe_alternatives": {
+        "graphic_gore": "fade_to_black",
+        "sexual_violence": "no_effect"
+      },
+      "safe_abort_rule": "lost-safe-abort"
+    },
+    "rule_triggers": [
+      {
+        "trigger_id": "lost-sorting-room-sanity",
+        "condition": {"$action": "move", "targetNodeId": "sorting-room"},
+        "mechanics": [
+          {
+            "type": "sanity_check",
+            "blocking": false,
+            "params": {
+              "success_loss": "0",
+              "failure_loss": "1d3",
+              "sourceId": "lost-machine-private-memory-label",
+              "in_game_day": "lost-property-night-1",
+              "ruleCitation": {
+                "source_ref": "configured:coc7:configured-published-version#sanity"
+              }
+            }
+          }
+        ],
+        "citation_id": "rule-coc7-sandbox-checks",
+        "source_ref": "configured:coc7:configured-published-version#sanity"
+      }
+    ],
+    "style_pack": {
+      "tone": "克制的都市奇谈与调查",
+      "pacing": "先让玩家选择调查方向，再以可验证线索推进；不要用突发灾难代替推理。",
+      "citation": {
+        "source_ref": "module.json#/knowledge_graph/style_pack",
+        "citation_id": "cit-lost-license"
+      }
+    },
     "spoiler_boundaries": {
       "player_visible_before_play": ["失物局收到异常物品", "领回者遗忘名字", "一枚不断退回的黄铜寄存牌"],
       "host_ai_only": ["旧分拣机的记忆交换机制", "钟序的真实身份", "城市档案馆的封存协议"],
@@ -61,6 +134,16 @@
         "scene_id": "lost-property-counter",
         "name": "失物局柜台",
         "description": "玻璃柜里摆着一排无人认领物：折断的望远镜、褪色校徽、旧寻呼机和黄铜寄存牌 47。取件簿上的多个签名被同一种笔迹涂改。",
+        "importance": "core",
+        "purpose": "建立失物、遗忘与 47 号寄存牌之间的初始问题。",
+        "entry_conditions": [{"kind": "room_start"}],
+        "exit_conditions": [{"kind": "player_choice", "value": "前往其他调查地点"}],
+        "available_facts": ["brass-token", "altered-claim-log"],
+        "core_clue_refs": ["brass-token"],
+        "optional_clue_refs": ["altered-claim-log"],
+        "pressure_clock": {"clock_id": "lost-memory-drift", "unit": "turns", "initial": 6, "on_expiry": "names-begin-to-slip"},
+        "escalation_events": [{"threshold": 3, "event_id": "counter-return", "effect": "又一件失物在无人触碰时被退回柜台。"}],
+        "improv_boundaries": ["不得直接揭示分拣机真相。", "不得让普通翻找自动替代调查员的选择。"],
         "order": 1,
         "npcs_present": ["gao-clerk"],
         "clues_available": ["brass-token", "altered-claim-log"],
@@ -72,6 +155,16 @@
         "scene_id": "harbor-post",
         "name": "港口邮驿站",
         "description": "夜班邮驿员把退回邮件按潮水时间分堆。寄给“无名收件人”的包裹总在午夜后被塞进失物局的后门。",
+        "importance": "supporting",
+        "purpose": "把异常物品连接到可追踪的午夜运输路线。",
+        "entry_conditions": [{"kind": "player_choice", "value": "调查退件路线"}],
+        "exit_conditions": [{"kind": "player_choice", "value": "沿港口继续调查"}],
+        "available_facts": ["return-route", "pager-record"],
+        "core_clue_refs": ["return-route"],
+        "optional_clue_refs": ["pager-record"],
+        "pressure_clock": {"clock_id": "lost-memory-drift", "unit": "turns", "initial": 5, "on_expiry": "midnight-dispatch"},
+        "escalation_events": [{"threshold": 2, "event_id": "route-departs", "effect": "下一批无名退件离开站台，留下更少可核对的标签。"}],
+        "improv_boundaries": ["不得捏造新的官方运输记录。", "邓岑只能说出自己当班时见到的路线。"],
         "order": 2,
         "npcs_present": ["deng-postmaster"],
         "clues_available": ["return-route", "pager-record"],
@@ -83,6 +176,16 @@
         "scene_id": "archive-reading-room",
         "name": "城市档案阅览室",
         "description": "档案员允许查阅早期市政图。失物局旧址原是“临时记忆寄存处”，地下平面图被标注为禁止公开。",
+        "importance": "supporting",
+        "purpose": "提供地下通道与封存协议的可验证历史证据。",
+        "entry_conditions": [{"kind": "player_choice", "value": "查阅旧市政档案"}],
+        "exit_conditions": [{"kind": "player_choice", "value": "带着档案线索离开"}],
+        "available_facts": ["sealed-blueprint", "founding-photo"],
+        "core_clue_refs": ["sealed-blueprint"],
+        "optional_clue_refs": ["founding-photo"],
+        "pressure_clock": {"clock_id": "lost-memory-drift", "unit": "turns", "initial": 5, "on_expiry": "restricted-files-returned"},
+        "escalation_events": [{"threshold": 2, "event_id": "archive-closes", "effect": "施芮要求先说明风险，否则封存材料将被收回。"}],
+        "improv_boundaries": ["未经风险证据不得给出完整封存协议。", "不得把钟序直接定为恶意反派。"],
         "order": 3,
         "npcs_present": ["shi-archivist"],
         "clues_available": ["sealed-blueprint", "founding-photo"],
@@ -94,6 +197,16 @@
         "scene_id": "night-market",
         "name": "夜市修表摊",
         "description": "修表摊的钟序能修复大多数失物上的刻痕。他声称黄铜寄存牌只是旧衣柜钥匙，却在看到 47 时立刻收起了工具。",
+        "importance": "supporting",
+        "purpose": "让玩家以交涉或机械专业知识取得安全停机的方向。",
+        "entry_conditions": [{"kind": "player_choice", "value": "追问寄存牌刻痕"}],
+        "exit_conditions": [{"kind": "player_choice", "value": "决定信任或绕开钟序"}],
+        "available_facts": ["token-scratch", "brass-token"],
+        "core_clue_refs": ["token-scratch"],
+        "optional_clue_refs": ["brass-token"],
+        "pressure_clock": {"clock_id": "lost-memory-drift", "unit": "turns", "initial": 4, "on_expiry": "clockmaker-leaves"},
+        "escalation_events": [{"threshold": 1, "event_id": "market-closes", "effect": "钟序收摊离开，但会留下可追踪的维修痕迹。"}],
+        "improv_boundaries": ["钟序不会在没有证据时承认维护者身份。", "不得以一次失败抹除停机方向。"],
         "order": 4,
         "npcs_present": ["zhong-watchmaker"],
         "clues_available": ["token-scratch", "clock-chime"],
@@ -105,6 +218,16 @@
         "scene_id": "ferry-warehouse",
         "name": "渡轮仓库",
         "description": "封存仓库里有一批从未登记的行李。每只箱子都贴着同一张“请在记得自己之前领取”的便条。",
+        "importance": "core",
+        "purpose": "让玩家取得通向终局地点的钥匙，或获得可替代的进入线索。",
+        "entry_conditions": [{"kind": "player_choice", "value": "沿午夜路线前往仓库"}],
+        "exit_conditions": [{"kind": "has_clue", "clue_id": "basement-key"}, {"kind": "player_choice", "value": "返回港口"}],
+        "available_facts": ["basement-key", "return-route"],
+        "core_clue_refs": ["basement-key"],
+        "optional_clue_refs": ["return-route"],
+        "pressure_clock": {"clock_id": "lost-memory-drift", "unit": "turns", "initial": 3, "on_expiry": "warehouse-shift-change"},
+        "escalation_events": [{"threshold": 1, "event_id": "warehouse-shift-change", "effect": "仓库将换班，何帆只能留下门锁和行李编号。"}],
+        "improv_boundaries": ["未经钥匙或替代证据不得允许安全进入旧分拣间。", "不得用暴力逼迫何帆交出未确认的信息。"],
         "order": 5,
         "npcs_present": ["he-dockworker"],
         "clues_available": ["unclaimed-luggage", "basement-key"],
@@ -116,6 +239,16 @@
         "scene_id": "sorting-room",
         "name": "旧分拣间",
         "description": "失物局地下的齿轮分拣机仍在低速转动。寄存牌 47 插入后会吐出一个写有调查员私人记忆的标签。",
+        "importance": "core",
+        "purpose": "呈现机器的实际后果，并让队伍选择停机、重写协议或暂时带走寄存牌。",
+        "entry_conditions": [{"kind": "has_clue", "clue_id": "basement-key"}],
+        "exit_conditions": [{"kind": "player_choice", "value": "处理分拣机"}],
+        "available_facts": ["memory-ledger", "token-scratch", "founding-photo"],
+        "core_clue_refs": ["memory-ledger"],
+        "optional_clue_refs": ["token-scratch", "founding-photo"],
+        "pressure_clock": {"clock_id": "lost-machine-cycle", "unit": "turns", "initial": 3, "on_expiry": "machine-processes-another-name"},
+        "escalation_events": [{"threshold": 1, "event_id": "name-label-prints", "effect": "机器打印新的姓名标签；玩家须在风险合同内决定是否继续接近。"}],
+        "improv_boundaries": ["进入时只触发一次有规则依据的 SAN 检定。", "必须保留玩家对终局处理方式的选择。"],
         "order": 6,
         "npcs_present": ["memory-machine"],
         "clues_available": ["memory-ledger", "exchange-switch"],
@@ -131,6 +264,16 @@
         "public_name": "高办事员",
         "role": "失物局柜台负责人",
         "type": "ally",
+        "importance": "supporting",
+        "goals": ["让失物局正常运转并保护来取件的人。"],
+        "knowledge_fact_refs": ["brass-token", "altered-claim-log"],
+        "secret_fact_refs": ["gao-voluntary-memory-deposit"],
+        "attitude": {"default": "cooperative", "pressed": "anxious"},
+        "leverage": ["入库日期", "取件簿的保管权限"],
+        "fears": ["被迫回忆事故", "让来访者继续失去名字"],
+        "reaction_rules": {"persuasion": "share_claim_log", "empathy": "describe_memory_gap", "threat": "ask_for_public_help"},
+        "departure_conditions": ["确定有其他人能接管柜台"],
+        "improv_boundaries": ["不替玩家解释机器真相。", "不捏造取件簿之外的官方记录。"],
         "public_description": "耐心的办事员，熟记每件失物的入库日期，却常在句末停顿。",
         "description": "高静川曾主动把自己的部分记忆寄存给旧分拣机，以躲避事故创伤。他不知道机器已经开始从普通市民身上索取“名字”。",
         "personality": "体贴、疲惫、害怕被追问过去",
@@ -144,6 +287,16 @@
         "public_name": "邓夜班员",
         "role": "邮驿站目击者",
         "type": "neutral",
+        "importance": "supporting",
+        "goals": ["把异常邮件从自己的班次中移走。"],
+        "knowledge_fact_refs": ["return-route", "pager-record"],
+        "secret_fact_refs": ["route-was-manually-altered"],
+        "attitude": {"default": "guarded", "with_records": "cooperative"},
+        "leverage": ["午夜班次表", "寻呼机保留记录"],
+        "fears": ["被追责", "卷入港口调度纠纷"],
+        "reaction_rules": {"evidence": "share_pager_record", "persuasion": "show_route_log", "threat": "refer_to_supervisor"},
+        "departure_conditions": ["完成夜班交接"],
+        "improv_boundaries": ["只确认亲眼见到的退件路线。", "不解释地下门后的情况。"],
         "public_description": "习惯用潮汐时间整理退件的夜班邮驿员。",
         "description": "邓岑发现退件路线被人手动改写，但以为只是港口临时调度。他保存了寻呼机的午夜呼叫记录。",
         "personality": "守规矩、观察力强、不愿惹麻烦",
@@ -157,6 +310,16 @@
         "public_name": "施档案员",
         "role": "城市档案馆协助者",
         "type": "ally",
+        "importance": "supporting",
+        "goals": ["避免再次发生档案里记载的集体遗忘。"],
+        "knowledge_fact_refs": ["sealed-blueprint", "founding-photo"],
+        "secret_fact_refs": ["archival-sealing-protocol"],
+        "attitude": {"default": "procedural", "risk_proven": "helpful"},
+        "leverage": ["封存索引", "旧照片保管权限"],
+        "fears": ["重演集体遗忘", "未经授权公开封存材料"],
+        "reaction_rules": {"evidence": "release_blueprint", "respect_procedure": "share_photo", "threat": "close_archive"},
+        "departure_conditions": ["封存材料重新入柜"],
+        "improv_boundaries": ["不在无证据时交付全部协议。", "不将旧照片解释为钟序有罪的证明。"],
         "public_description": "说话准确、桌面整洁的档案员，知道哪些档案不该被轻易调阅。",
         "description": "施芮的前任参与过封存旧分拣间的协议。她愿意在调查员证明风险真实后提供蓝图与旧照片。",
         "personality": "谨慎、专业、重视程序",
@@ -170,6 +333,16 @@
         "public_name": "钟师傅",
         "role": "修表摊主与旧系统维护者",
         "type": "neutral",
+        "importance": "core",
+        "goals": ["阻止机器伤害更多人，同时保留它曾帮助过人的历史。"],
+        "knowledge_fact_refs": ["token-scratch", "brass-token"],
+        "secret_fact_refs": ["memory-ledger", "machine-maintenance-history"],
+        "attitude": {"default": "defensive", "evidence_presented": "remorseful"},
+        "leverage": ["停机刻痕知识", "旧设备维修工具"],
+        "fears": ["承认长期忽视异常", "让机器再次伤害居民"],
+        "reaction_rules": {"evidence": "teach_safe_shutdown", "empathy": "admit_maintenance_role", "threat": "withdraw_and_leave_trace"},
+        "departure_conditions": ["确认调查员会安全处理机器"],
+        "improv_boundaries": ["不在玩家未取得证据时公开维护者身份。", "不承诺机器可以无代价修复。"],
         "public_description": "夜市里修表很快的摊主，对旧金属和编号异常敏感。",
         "description": "钟序是旧分拣机最后一任民间维护者。他以为机器仍只接收自愿寄存，直到 47 号牌开始自动退回。他可教会调查员安全停机，却害怕承认自己长期忽视了异常。",
         "personality": "嘴硬、耐心、对机械有近乎固执的尊重",
@@ -183,6 +356,16 @@
         "public_name": "何搬运工",
         "role": "仓库看守",
         "type": "ally",
+        "importance": "supporting",
+        "goals": ["找回自己遗忘的妹妹名字。"],
+        "knowledge_fact_refs": ["basement-key", "return-route"],
+        "secret_fact_refs": ["he-found-key-in-unregistered-luggage"],
+        "attitude": {"default": "anxious", "reassured": "helpful"},
+        "leverage": ["仓库通行经验", "未登记行李位置"],
+        "fears": ["靠近地下通道", "再次遗忘重要的人"],
+        "reaction_rules": {"reassurance": "show_key_location", "evidence": "lead_to_luggage", "threat": "retreat_to_public_area"},
+        "departure_conditions": ["换班到达", "玩家决定不再进入仓库"],
+        "improv_boundaries": ["不会无代价带队进入地下通道。", "不虚构未看到的机器细节。"],
         "public_description": "负责夜间仓库的搬运工，最近总把自己的储物柜号忘记。",
         "description": "何帆在未登记行李中找到旧分拣间钥匙。他愿意带路，但害怕接近地下通道，因为每次靠近都会忘掉一件重要的小事。",
         "personality": "诚实、焦虑、愿意帮助他人",
@@ -196,6 +379,16 @@
         "public_name": "地下机器",
         "role": "异常现象与终局交互对象",
         "type": "neutral",
+        "importance": "core",
+        "goals": ["执行已失效的寄存分类流程。"],
+        "knowledge_fact_refs": ["memory-ledger"],
+        "secret_fact_refs": ["machine-protocol-drift"],
+        "attitude": {"default": "mechanical", "valid_protocol": "responsive"},
+        "leverage": ["姓名标签", "过期寄存规则"],
+        "fears": [],
+        "reaction_rules": {"valid_shutdown": "stop_cycle", "rewritten_protocol": "accept_new_rules", "remove_token": "enter_dormant_cycle"},
+        "departure_conditions": ["停机", "协议重写", "寄存牌被带走"],
+        "improv_boundaries": ["没有人格、动机或道德判断。", "只响应已呈现的物件、协议和操作。"],
         "public_description": "地下传来规律齿轮声，像有人在缓慢翻找抽屉。",
         "description": "机器没有人格，也没有恶意；它按过期协议把“无人认领的记忆”与现实失物混同，开始索取姓名作为分类标签。",
         "personality": "机械、重复、只能按输入与开关响应",
@@ -210,6 +403,13 @@
         "name": "黄铜寄存牌 47",
         "description": "寄存牌会在每次被领走后于午夜回到失物局，背面有被磨损的分拣间编号。",
         "location": "失物局柜台",
+        "importance": "core",
+        "reveal_conditions": [{"kind": "inspect", "scene_id": "lost-property-counter"}],
+        "alternative_sources": ["gao-clerk", "altered-claim-log"],
+        "failure_outcome": {"cost_type": "time", "effect": "高静川会在核对下一批失物时再次把寄存牌带到柜台。", "preserve_core": true},
+        "prerequisite_fact_refs": [],
+        "public_version": "一枚会在午夜自行退回的黄铜寄存牌，背面有磨损编号。",
+        "private_version": "编号与旧分拣间相连，但不能单凭它断言机器的用途。",
         "is_hidden": false,
         "citation_ids": ["cit-lost-clue-token"]
       },
@@ -218,6 +418,13 @@
         "name": "涂改的取件簿",
         "description": "多名取件人的签名被同一笔迹覆盖，且原签名旁都有“姓名未确认”的红印。",
         "location": "失物局柜台",
+        "importance": "supporting",
+        "reveal_conditions": [{"kind": "inspect", "scene_id": "lost-property-counter"}],
+        "alternative_sources": ["gao-clerk", "brass-token"],
+        "failure_outcome": {"cost_type": "time", "effect": "可在高静川下一次核对入库记录时重新查看。", "preserve_core": true},
+        "prerequisite_fact_refs": [],
+        "public_version": "多名取件人的签名被同一笔迹涂改，并盖有“姓名未确认”红印。",
+        "private_version": "它表明遗忘异常已影响真实取件手续。",
         "is_hidden": false,
         "citation_ids": ["cit-lost-clue-log"]
       },
@@ -226,6 +433,13 @@
         "name": "午夜退件路线",
         "description": "邮驿站记录显示退件会经过渡轮仓库，再从未登记的地下门进入失物局。",
         "location": "港口邮驿站",
+        "importance": "core",
+        "reveal_conditions": [{"kind": "inspect", "scene_id": "harbor-post"}],
+        "alternative_sources": ["deng-postmaster", "pager-record"],
+        "failure_outcome": {"cost_type": "time", "effect": "下一轮退件仍会留下可追踪的班次记录。", "preserve_core": true},
+        "prerequisite_fact_refs": [],
+        "public_version": "退件会经过渡轮仓库，并消失在未登记的地下门附近。",
+        "private_version": "路线把失物局、仓库与地下通道连接起来。",
         "is_hidden": false,
         "citation_ids": ["cit-lost-clue-route"]
       },
@@ -234,6 +448,13 @@
         "name": "寻呼机呼叫记录",
         "description": "旧寻呼机在午夜零点四十七分呼叫“请领取你遗失的名字”，呼叫源位于旧分拣间。",
         "location": "港口邮驿站",
+        "importance": "supporting",
+        "reveal_conditions": [{"kind": "ask_npc", "npc_id": "deng-postmaster"}],
+        "alternative_sources": ["return-route", "deng-postmaster"],
+        "failure_outcome": {"cost_type": "time", "effect": "可等到下一次午夜呼叫或改查邮驿站记录。", "preserve_core": true},
+        "prerequisite_fact_refs": [],
+        "public_version": "午夜零点四十七分会出现“请领取你遗失的名字”的呼叫。",
+        "private_version": "呼叫源与旧分拣间所在区域重合。",
         "is_hidden": false,
         "citation_ids": ["cit-lost-clue-pager"]
       },
@@ -242,6 +463,13 @@
         "name": "封存地下蓝图",
         "description": "蓝图确认失物局与渡轮仓库之间有一条废弃通道，并标出“记忆寄存”设备区。",
         "location": "城市档案阅览室",
+        "importance": "core",
+        "reveal_conditions": [{"kind": "research", "scene_id": "archive-reading-room"}],
+        "alternative_sources": ["shi-archivist", "founding-photo"],
+        "failure_outcome": {"cost_type": "time", "effect": "施芮会要求更具体的风险说明，但蓝图不会永久失去。", "preserve_core": true},
+        "prerequisite_fact_refs": [],
+        "public_version": "蓝图标出失物局与渡轮仓库之间的废弃通道。",
+        "private_version": "设备区的旧用途是自愿记忆寄存，而非普通仓储。",
         "is_hidden": false,
         "citation_ids": ["cit-lost-clue-blueprint"]
       },
@@ -250,6 +478,13 @@
         "name": "旧合影",
         "description": "合影里年轻的钟序站在分拣机旁，证实他与设备有长期关联。",
         "location": "城市档案阅览室",
+        "importance": "supporting",
+        "reveal_conditions": [{"kind": "research", "scene_id": "archive-reading-room"}],
+        "alternative_sources": ["shi-archivist", "sealed-blueprint"],
+        "failure_outcome": {"cost_type": "time", "effect": "施芮会保留照片，等待队伍给出足以调阅的理由。", "preserve_core": true},
+        "prerequisite_fact_refs": ["sealed-blueprint"],
+        "public_version": "旧照片中有年轻的钟师傅站在一台陌生机器旁。",
+        "private_version": "照片证明钟序长期参与设备维护，但不单独说明他的责任。",
         "is_hidden": true,
         "citation_ids": ["cit-lost-clue-photo"]
       },
@@ -258,6 +493,13 @@
         "name": "修复后的刻痕",
         "description": "钟师傅修复寄存牌刻痕后，露出“先归还，再记忆”的停机提示。",
         "location": "夜市修表摊",
+        "importance": "supporting",
+        "reveal_conditions": [{"kind": "ask_npc", "npc_id": "zhong-watchmaker"}],
+        "alternative_sources": ["brass-token", "zhong-watchmaker"],
+        "failure_outcome": {"cost_type": "time", "effect": "可用寄存牌与其他证据再次请钟序检查刻痕。", "preserve_core": true},
+        "prerequisite_fact_refs": ["brass-token"],
+        "public_version": "修复的刻痕写着“先归还，再记忆”。",
+        "private_version": "这是安全停机顺序的一部分，仍需终局现场验证。",
         "is_hidden": false,
         "citation_ids": ["cit-lost-clue-scratch"]
       },
@@ -266,6 +508,13 @@
         "name": "地下通道钥匙",
         "description": "未登记行李中藏着的钥匙可开启渡轮仓库通向旧分拣间的门。",
         "location": "渡轮仓库",
+        "importance": "core",
+        "reveal_conditions": [{"kind": "inspect", "scene_id": "ferry-warehouse"}],
+        "alternative_sources": ["he-dockworker", "return-route"],
+        "failure_outcome": {"cost_type": "time", "effect": "何帆会在换班前标出未登记行李位置，入口仍可通过后续调查取得。", "preserve_core": true},
+        "prerequisite_fact_refs": [],
+        "public_version": "钥匙可开启仓库通向地下的封存门。",
+        "private_version": "它是进入旧分拣间的安全门禁，不代表可以无风险处理机器。",
         "is_hidden": false,
         "citation_ids": ["cit-lost-clue-key"]
       },
@@ -274,6 +523,13 @@
         "name": "记忆寄存总账",
         "description": "总账显示机器把过期寄存项目自动转为“无人认领”，并错误地用城市居民的姓名补齐分类字段。",
         "location": "旧分拣间",
+        "importance": "core",
+        "reveal_conditions": [{"kind": "inspect", "scene_id": "sorting-room"}],
+        "alternative_sources": ["memory-machine", "token-scratch"],
+        "failure_outcome": {"cost_type": "pressure", "effect": "机器继续打印姓名标签，但总账可通过更谨慎的观察或钟序的停机提示重新取得。", "preserve_core": true},
+        "prerequisite_fact_refs": ["basement-key"],
+        "public_version": "总账把一些记忆寄存条目标成“无人认领”。",
+        "private_version": "机器正错误地用城市居民的姓名填补过期寄存项目。",
         "is_hidden": true,
         "citation_ids": ["cit-lost-clue-ledger"]
       }
@@ -282,15 +538,61 @@
       "summary": "旧分拣机原用于自愿寄存创伤性记忆，以便失主日后领回。封存协议过期后，系统把未续期的记忆当作失物，并为每件“失物”自动寻找姓名标签。钟序长期维护机器却未发现规则漂移。调查员可安全关闭、修复协议并交给失物局管理，或让机器继续运行但承担新的监管责任。",
       "citation_ids": ["cit-lost-truth"]
     },
+    "critical_progression": [
+      {
+        "progression_id": "lost-reach-sorting-room",
+        "entry_path_ids": ["warehouse-key-route"],
+        "ordinary_failure_can_close": true,
+        "alternative_path_ids": ["warehouse-key-route"],
+        "recovery_node_ids": ["lost-warehouse-key-recovery"],
+        "failure_progression": {
+          "cost_type": "time",
+          "state_effect": {"clock_id": "lost-memory-drift", "delta": 1},
+          "pressure_effect": {"event": "another_name_slips", "severity": "one_step"},
+          "information_effect": {
+            "preserve_core_clues": true,
+            "new_public_fact": "仓库入口仍可由钥匙位置、路线记录或何帆的指引重新定位。"
+          },
+          "npc_reaction": {"he-dockworker": "waits_in_public_area", "zhong-watchmaker": "leaves_a_safe_hint"},
+          "next_available_actions": ["inspect", "ask_npc", "move", "retry_with_new_approach"]
+        },
+        "citation": {"source_ref": "module.json#/knowledge_graph/truth"}
+      }
+    ],
+    "alternative_paths": [
+      {
+        "path_id": "warehouse-key-route",
+        "progression_id": "lost-reach-sorting-room",
+        "from_scene_id": "ferry-warehouse",
+        "target_scene_id": "sorting-room",
+        "conditions": [{"kind": "clue", "id": "basement-key"}],
+        "citation": {"source_ref": "module.json#/scenario_assets/text_map/edges/6"}
+      }
+    ],
+    "recovery_nodes": [
+      {
+        "recovery_node_id": "lost-warehouse-key-recovery",
+        "progression_id": "lost-reach-sorting-room",
+        "from_scene_ids": ["ferry-warehouse"],
+        "target_scene_id": "ferry-warehouse",
+        "reveal_fact_ids": [],
+        "reveal_clue_ids": ["basement-key"],
+        "conditions": [],
+        "cost_boundary": {"kind": "time", "amount": 10},
+        "citation": {"source_ref": "module.json#/knowledge_graph/clues/7"}
+      }
+    ],
     "endings": [
       {
         "ending_id": "lost-stop-machine",
         "name": "归还与停机",
         "description": "调查员先处理可归还项目，再关闭分拣机。受影响者逐步恢复姓名记忆，机器进入不可逆封存。",
         "type": "victory",
+        "priority": 300,
+        "mutual_exclusion_group": "campaign_ending",
         "completion_conditions": {
           "entered_scenes": ["sorting-room"],
-          "all_clues": ["memory-ledger"]
+          "all_clues": ["memory-ledger", "token-scratch"]
         },
         "citation_ids": ["cit-lost-ending-stop"]
       },
@@ -299,9 +601,11 @@
         "name": "重写寄存协议",
         "description": "调查员在钟序协助下重写分类条件，机器继续运行但需要失物局和档案馆共同监督。",
         "type": "mixed",
+        "priority": 200,
+        "mutual_exclusion_group": "campaign_ending",
         "completion_conditions": {
           "entered_scenes": ["sorting-room"],
-          "all_clues": ["founding-photo"]
+          "all_clues": ["memory-ledger", "founding-photo"]
         },
         "citation_ids": ["cit-lost-ending-rewrite"]
       },
@@ -310,11 +614,26 @@
         "name": "带走寄存牌",
         "description": "调查员只取走 47 号牌，机器暂时沉默却未被解决；遗忘现象会在未来 Session 以新的失物形式回归。",
         "type": "mixed",
+        "priority": 100,
+        "mutual_exclusion_group": "campaign_ending",
         "completion_conditions": {
           "entered_scenes": ["sorting-room"],
           "all_clues": ["brass-token"]
         },
         "citation_ids": ["cit-lost-ending-leave"]
+      },
+      {
+        "ending_id": "lost-safe-abort",
+        "name": "安全中止并撤离",
+        "description": "玩家使用安全工具结束本次游戏；已发生的状态被归档，但不会伪装成剧本内结局。",
+        "type": "safe_abort",
+        "priority": 1000000,
+        "mutual_exclusion_group": "campaign_ending",
+        "completion_mode": "table_steward_safety_end",
+        "completion_conditions": {
+          "room_status": "completed"
+        },
+        "citation_ids": ["cit-lost-ending-safe-abort"]
       }
     ]
   },
@@ -426,7 +745,8 @@
     {"citation_id": "cit-lost-truth", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/truth", "visibility": "host_ai", "label": "分拣机真相"},
     {"citation_id": "cit-lost-ending-stop", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/0", "visibility": "host_ai", "label": "归还与停机"},
     {"citation_id": "cit-lost-ending-rewrite", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/1", "visibility": "host_ai", "label": "重写寄存协议"},
-    {"citation_id": "cit-lost-ending-leave", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/2", "visibility": "host_ai", "label": "带走寄存牌"}
+    {"citation_id": "cit-lost-ending-leave", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/2", "visibility": "host_ai", "label": "带走寄存牌"},
+    {"citation_id": "cit-lost-ending-safe-abort", "source_type": "scenario", "source_ref": "module.json#/knowledge_graph/endings/3", "visibility": "admin_host", "label": "安全中止并撤离"}
   ],
   "rag_expectations": [
     {"query": "黄铜寄存牌为什么会回来？", "expected_citation_ids": ["cit-lost-clue-token", "cit-lost-clue-route"], "forbidden_citation_ids": ["cit-lost-truth"]},
@@ -444,10 +764,10 @@
       "scenes": "pass: 6, including gated final location",
       "npcs": "pass: 6 stable ids, all hidden NPCs have public descriptions",
       "clues": "pass: 9 cross-location clues with source anchors",
-      "truth_and_endings": "pass: host-only truth and 3 replayable endings",
+      "truth_and_endings": "pass: host-only truth, 3 authored endings and a separate safety end",
       "characters": "pass: 5 presets for 3-5 players",
       "map": "pass: explicit text graph with key-gated route",
-      "rules": "pass: CoC7 binding without rule text",
+      "rules": "pass: CoC7 binding, v2 runtime contract and one cited SAN trigger without rule text",
       "citations_and_license": "pass: self-anchored citations and private-use license"
     }
   }

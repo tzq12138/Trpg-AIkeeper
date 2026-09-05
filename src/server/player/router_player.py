@@ -1162,17 +1162,9 @@ def _dependent_combat_action_ids(plan: dict, completed_action_id: str) -> set[st
 
 
 def _room_session_mode(conn, room_id: str) -> str:
-    row = conn.execute(
-        "SELECT packages.runtime_package "
-        "FROM rooms "
-        "LEFT JOIN runtime_package_versions AS packages "
-        "ON packages.runtime_package_version_id = rooms.runtime_package_version_id "
-        "WHERE rooms.room_id = %s",
-        (room_id,),
-    ).fetchone()
-    package = _json_val(row.get("runtime_package")) if row else {}
-    policy = package.get("runtime_policy") if isinstance(package, dict) else None
-    return str(policy.get("session_mode") or "") if isinstance(policy, dict) else ""
+    from ..engine.host_autonomy import room_session_mode
+
+    return room_session_mode(conn, room_id) or ""
 
 
 async def _settle_turn_background(app, room_id: str, turn_id: str):
@@ -1526,6 +1518,7 @@ async def _resolve_action_background(app, action_id: str):
                 compiler=compiler,
                 dispatcher=ProjectionDispatcher(conn),
                 state_service=StateService(conn),
+                gateway=getattr(app.state, "gateway", None),
                 host_connection_checker=lambda room_id: ws_manager.is_connected(room_id, "host"),
             )
             await pipeline.resolve_action(action_id)

@@ -4,11 +4,18 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from .events.event_log import EventLog
 from .campaign_archive import CampaignArchive, CampaignReadOnlyError
 from .models import CampaignArchiveQuery
+from .engine.host_autonomy import host_adjudication_block_detail, is_ai_only_room
 from .engine.runtime_integrity import (
     CheckpointIntegrityError,
     issue_recovery_dry_run_token,
     recovery_proposal_hash,
     verify_recovery_dry_run_token,
+)
+from .engine.system_recovery import (
+    SystemRecoveryError,
+    create_system_recovery_proposal,
+    dry_run_system_recovery,
+    execute_system_recovery,
 )
 from .player.auth import find_player_character
 from .rule_source_lifecycle import RuleSourceRetiredError, ensure_room_rule_source_available
@@ -181,6 +188,8 @@ async def list_checkpoints(request: Request, room_id: str):
 @router.post("/{room_id}/restore/{checkpoint_id}")
 async def restore_checkpoint(request: Request, room_id: str, checkpoint_id: str):
     _verify_owner_or_admin(request, room_id)
+    if is_ai_only_room(request.app.state.db, room_id):
+        raise HTTPException(409, detail=host_adjudication_block_detail())
     body = await request.json()
     proposal = body.get("proposal")
     if not isinstance(proposal, dict):
@@ -329,6 +338,67 @@ async def dry_run_restore_checkpoint(
     return {**result, "dryRunToken": issue_recovery_dry_run_token(claims)}
 
 
+# ── AI-only system recovery ──
+
+def _require_ai_only_system_recovery(conn, room_id: str) -> None:
+    if not is_ai_only_room(conn, room_id):
+        raise HTTPException(409, detail={"code": "ai_only_recovery_required"})
+
+
+@router.post("/{room_id}/recovery/proposals", status_code=201)
+async def create_ai_only_recovery_proposal(request: Request, room_id: str):
+    """Generate a recovery proposal from the newest verified checkpoint.
+
+    The caller cannot nominate a checkpoint or submit a replacement proposal:
+    recovery provenance remains entirely system-generated for AI-only rooms.
+    """
+    _verify_owner_or_admin(request, room_id)
+    conn = request.app.state.db
+    _require_ai_only_system_recovery(conn, room_id)
+    try:
+        proposal = create_system_recovery_proposal(conn, room_id)
+    except SystemRecoveryError as exc:
+        raise HTTPException(409, detail={"code": exc.code}) from exc
+    return {"status": "proposed", "proposal": proposal}
+
+
+@router.post("/{room_id}/recovery/proposals/{proposal_id}/dry-run")
+async def dry_run_ai_only_recovery_proposal(
+    request: Request,
+    room_id: str,
+    proposal_id: str,
+):
+    _verify_owner_or_admin(request, room_id)
+    conn = request.app.state.db
+    _require_ai_only_system_recovery(conn, room_id)
+    try:
+        return dry_run_system_recovery(conn, room_id, proposal_id)
+    except SystemRecoveryError as exc:
+        raise HTTPException(409, detail={"code": exc.code}) from exc
+
+
+@router.post("/{room_id}/recovery/proposals/{proposal_id}/execute")
+async def execute_ai_only_recovery_proposal(
+    request: Request,
+    room_id: str,
+    proposal_id: str,
+):
+    _verify_owner_or_admin(request, room_id)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    if body.get("confirm") is not True:
+        raise HTTPException(400, detail={"code": "recovery_confirmation_required"})
+    conn = request.app.state.db
+    _require_ai_only_system_recovery(conn, room_id)
+    try:
+        return execute_system_recovery(conn, room_id, proposal_id)
+    except SystemRecoveryError as exc:
+        raise HTTPException(409, detail={"code": exc.code}) from exc
+
+
 # ── Campaign endpoints ──
 
 @router.get("/{room_id}/campaign")
@@ -354,8 +424,32 @@ async def get_campaign_summary(request: Request, room_id: str,
 
 @router.post("/{room_id}/end")
 async def end_campaign(request: Request, room_id: str):
-    _verify_owner_or_admin(request, room_id)
+    room = _verify_owner_or_admin(request, room_id)
     conn = request.app.state.db
+    if is_ai_only_room(conn, room_id):
+        actor_id = str(room.get("owner_account_id") or "owner")
+        try:
+            from .router_auth import get_account_from_token
+
+            account = get_account_from_token(request)
+            if account:
+                actor_id = str(account.get("account_id") or actor_id)
+        except Exception:
+            pass
+        archive = CampaignArchive(conn)
+        try:
+            finalized = archive.terminate_by_owner(room_id, actor_id=actor_id)
+        except CampaignReadOnlyError as exc:
+            raise HTTPException(409, detail={"code": str(exc)}) from exc
+        return {
+            "status": "ended",
+            "ending_type": "aborted",
+            "ending_status": "aborted",
+            "ending_id": None,
+            "termination_reason": "owner_terminated",
+            "state_version": finalized.state_version,
+        }
+
     body = {}
     try:
         body = await request.json()

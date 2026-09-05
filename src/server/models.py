@@ -995,7 +995,7 @@ class Checkpoint(BaseModel):
 
 
 class CampaignEnding(BaseModel):
-    ending_type: Literal["victory", "defeat", "mixed", "abandoned"]
+    ending_type: Literal["victory", "defeat", "mixed", "abandoned", "aborted"]
     summary: str
     highlights: list[str] = []
     character_arcs: list[dict[str, Any]] = []

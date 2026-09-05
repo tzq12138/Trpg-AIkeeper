@@ -63,7 +63,11 @@ def _matching_decision(ending: Any, facts: dict[str, Any]) -> EndingDecision | N
     citation = ending.get("citation")
     conditions = ending.get("completion_conditions")
     declared_priority = ending.get("priority", 0)
-    exclusive_group = str(ending.get("exclusive_group") or "campaign_ending").strip()
+    exclusive_group = str(
+        ending.get("mutual_exclusion_group")
+        or ending.get("exclusive_group")
+        or "campaign_ending"
+    ).strip()
     if (
         not ending_id
         or ending_type not in _ENDING_TYPES

@@ -452,13 +452,18 @@ class ConfiguredOpenAIProvider(BaseAiProvider):
             return None
 
     def _request_timeout(self, task_type: str, context: dict) -> int:
-        if task_type != "structure_scenario":
+        if task_type not in {
+            "structure_scenario",
+            "analyze_director_action",
+            "narrate_action",
+        }:
             return self.timeout
         try:
             requested = int(context.get("timeout_seconds", self.timeout))
         except (TypeError, ValueError):
             return self.timeout
-        return max(self.timeout, min(requested, 900))
+        maximum = 900 if task_type == "structure_scenario" else 60
+        return max(self.timeout, min(requested, maximum))
 
     async def test_connection(self) -> dict:
         started = time.monotonic()

@@ -11,12 +11,28 @@ from ..engine.compensation_service import (
     recalculate_action_review,
     resolve_action_review,
 )
+from ..engine.host_autonomy import (
+    AiOnlyResolutionPolicy,
+    host_adjudication_block_detail,
+    room_session_mode,
+)
 from ..events.event_log import EventLog
 from ..runtime_lifecycle import character_lifecycle_guard
 from .router_host import _verify_owner
 
 
 router = APIRouter(prefix="/api/host")
+
+
+def _ensure_host_review_allowed(conn, room_id: str) -> None:
+    reason = AiOnlyResolutionPolicy(
+        session_mode=room_session_mode(conn, room_id),
+    ).host_exception_reason("host_exception")
+    if reason:
+        raise HTTPException(
+            409,
+            detail=host_adjudication_block_detail(),
+        )
 
 
 class CompensationMutation(BaseModel):
@@ -57,6 +73,7 @@ class ActionExceptionResolution(BaseModel):
 @router.get("/{room_id}/action-reviews")
 async def list_action_reviews(request: Request, room_id: str):
     _verify_owner(request, room_id)
+    _ensure_host_review_allowed(request.app.state.db, room_id)
     rows = request.app.state.db.execute(
         "SELECT arr.review_request_id, arr.action_id, arr.character_id, arr.original_intent, "
         "arr.objection, arr.status, arr.ai_suggestion, arr.created_at, "
@@ -212,6 +229,7 @@ async def resolve_review(
 ):
     _verify_owner(request, room_id)
     conn = request.app.state.db
+    _ensure_host_review_allowed(conn, room_id)
     review = conn.execute(
         "SELECT arr.*, a.room_id FROM action_review_requests arr "
         "JOIN actions a ON a.action_id = arr.action_id "
@@ -252,6 +270,7 @@ async def recalculate_review(
 ):
     _verify_owner(request, room_id)
     conn = request.app.state.db
+    _ensure_host_review_allowed(conn, room_id)
     review = conn.execute(
         "SELECT arr.*, a.room_id FROM action_review_requests arr "
         "JOIN actions a ON a.action_id = arr.action_id "
@@ -284,6 +303,7 @@ async def recalculate_review(
 @router.get("/{room_id}/action-exceptions")
 async def list_action_exceptions(request: Request, room_id: str):
     _verify_owner(request, room_id)
+    _ensure_host_review_allowed(request.app.state.db, room_id)
     rows = request.app.state.db.execute(
         "SELECT action_id, character_id, intent_type, declared_intent, status, created_at "
         "FROM actions WHERE room_id = %s AND status = 'awaiting_host_exception' "
@@ -302,6 +322,7 @@ async def resolve_action_exception(
 ):
     _verify_owner(request, room_id)
     conn = request.app.state.db
+    _ensure_host_review_allowed(conn, room_id)
     action = conn.execute(
         "SELECT action_id, character_id, status FROM actions "
         "WHERE action_id = %s AND room_id = %s",

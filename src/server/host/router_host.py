@@ -1,6 +1,7 @@
 import json
 import logging
 import uuid
+import hmac
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request, HTTPException
 from ..models import EngineEvent, HostPublicSceneTimeUpdate, RevealTransaction
 from .host_store import HostStore, HOST_VISIBLE_EVENTS, PRIVATE_EVENTS
@@ -13,6 +14,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/host")
 
 _host_stores: dict[str, HostStore] = {}
+
+
+async def _resume_queued_actions(request: Request, room_id: str) -> list[str]:
+    """Return pause-preserved queued actions to the normal automatic scheduler."""
+    conn = request.app.state.db
+    rows = conn.execute(
+        "SELECT action_id FROM actions WHERE room_id = %s AND status = 'queued' "
+        "ORDER BY created_at, action_id",
+        (room_id,),
+    ).fetchall()
+    if not rows:
+        return []
+    from ..player.router_actions_v2 import _schedule_action_resolution
+
+    action_ids = [str(row["action_id"]) for row in rows]
+    for action_id in action_ids:
+        _schedule_action_resolution(request.app, conn, action_id)
+    return action_ids
 
 
 def _verify_owner(request: Request, room_id: str) -> dict:
@@ -57,6 +76,24 @@ def _verify_owner(request: Request, room_id: str) -> dict:
 
     logger.warning("_verify_owner: denied room=%s (token=%s, account failed)", room_id, bool(token))
     raise HTTPException(403, "不是房间所有者")
+
+
+def _verify_stage_client(request: Request, room_id: str) -> dict:
+    """Authorize only the capability scoped to read-only public stage data."""
+    conn = request.app.state.db
+    room = conn.execute(
+        "SELECT * FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    if not room:
+        raise HTTPException(404, "房间不存在")
+    room = dict(room)
+    supplied = request.headers.get("X-Stage-Token", "")
+    expected = str(room.get("stage_token") or "")
+    if not supplied or not expected or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(403, "不是公共舞台客户端")
+    _require_room_rule_source(conn, room_id)
+    return room
 
 
 def _require_room_rule_source(conn, room_id: str) -> None:
@@ -147,7 +184,7 @@ async def get_hud(request: Request, room_id: str):
 @router.get("/{room_id}/stage-projection")
 async def get_stage_projection(request: Request, room_id: str):
     """Return a display-safe projection without host controls or exact resources."""
-    _verify_owner(request, room_id)
+    _verify_stage_client(request, room_id)
     conn = request.app.state.db
 
     from .hud_builder import build_hud
@@ -396,12 +433,82 @@ async def emergency_reset(request: Request, room_id: str):
 
 @router.post("/{room_id}/pause")
 async def pause_host(request: Request, room_id: str):
-    _verify_owner(request, room_id)
+    owner_info = _verify_owner(request, room_id)
     conn = request.app.state.db
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    from ..engine.room_pause import (
+        RoomPauseError,
+        pause_blocks_new_actions,
+        request_owner_pause,
+        resume_owner_pause,
+    )
+
+    if pause_blocks_new_actions(owner_info) and "mode" not in body:
+        with conn.transaction() as tx:
+            try:
+                result = resume_owner_pause(
+                    tx,
+                    room_id,
+                    actor_id=owner_info.get("owner_account_id"),
+                    reason=str(body.get("reason") or "owner_resume")[:500],
+                )
+            except RoomPauseError as exc:
+                raise HTTPException(409, detail={"code": exc.code}) from exc
+        store = get_host_store(room_id, conn)
+        store.is_paused = False
+        store.save_state(conn)
+        resumed_action_ids = await _resume_queued_actions(request, room_id)
+        return {**result, "room_id": room_id, "resumed_action_ids": resumed_action_ids}
+
+    mode = str(body.get("mode") or "soft_pause")
+    reason = str(body.get("reason") or "owner_pause").strip()[:500]
+    with conn.transaction() as tx:
+        try:
+            result = request_owner_pause(
+                tx,
+                room_id,
+                mode=mode,
+                actor_id=owner_info.get("owner_account_id"),
+                reason=reason or "owner_pause",
+            )
+        except RoomPauseError as exc:
+            raise HTTPException(409, detail={"code": exc.code}) from exc
     store = get_host_store(room_id, conn)
-    store.is_paused = not store.is_paused
+    store.is_paused = True
     store.save_state(conn)
-    return {"status": "paused" if store.is_paused else "resumed", "room_id": room_id}
+    return {**result, "room_id": room_id}
+
+
+@router.post("/{room_id}/resume")
+async def resume_host(request: Request, room_id: str):
+    owner_info = _verify_owner(request, room_id)
+    conn = request.app.state.db
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    from ..engine.room_pause import RoomPauseError, resume_owner_pause
+
+    with conn.transaction() as tx:
+        try:
+            result = resume_owner_pause(
+                tx,
+                room_id,
+                actor_id=owner_info.get("owner_account_id"),
+                reason=str(body.get("reason") or "owner_resume")[:500],
+            )
+        except RoomPauseError as exc:
+            raise HTTPException(409, detail={"code": exc.code}) from exc
+    store = get_host_store(room_id, conn)
+    store.is_paused = False
+    store.save_state(conn)
+    resumed_action_ids = await _resume_queued_actions(request, room_id)
+    return {**result, "room_id": room_id, "resumed_action_ids": resumed_action_ids}
 
 
 def _presentation_status(store: HostStore) -> dict:
@@ -463,7 +570,7 @@ async def get_presentation(request: Request, room_id: str):
 @router.get("/{room_id}/stage-presentation")
 async def get_stage_presentation(request: Request, room_id: str):
     """Return only the safe, already-released narration selected for public playback."""
-    _verify_owner(request, room_id)
+    _verify_stage_client(request, room_id)
     conn = request.app.state.db
     return _public_presentation_projection(conn, room_id, get_host_store(room_id, conn))
 

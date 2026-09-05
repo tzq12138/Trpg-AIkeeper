@@ -98,6 +98,57 @@ class CampaignArchive:
 
         return ending
 
+    def terminate_by_owner(
+        self,
+        room_id: str,
+        *,
+        actor_id: str,
+    ) -> CampaignFinalization:
+        """End an AI-only room without allowing the owner to author an ending."""
+        terminated_at = datetime.now(timezone.utc).isoformat()
+        with self.conn.transaction() as tx:
+            room = tx.execute(
+                "SELECT room_id, status FROM rooms WHERE room_id = %s FOR UPDATE",
+                (room_id,),
+            ).fetchone()
+            if not room:
+                raise CampaignReadOnlyError("campaign_room_missing")
+            if str(room.get("status") or "") in {"completed", "archived"}:
+                raise CampaignReadOnlyError("campaign_already_completed")
+
+            finalized = finalize_campaign(
+                self.conn,
+                room_id,
+                ending_type="aborted",
+                summary="本次冒险由房主终止，未生成叙事结局。",
+                highlights=[],
+                expected_room_statuses=("lobby", "suggested", "active", "paused"),
+                ending_event_payload={
+                    "ending_type": "aborted",
+                    "endingType": "aborted",
+                    "ending_status": "aborted",
+                    "endingStatus": "aborted",
+                    "termination_reason": "owner_terminated",
+                    "terminationReason": "owner_terminated",
+                    "actorAccountId": actor_id,
+                    "terminatedAt": terminated_at,
+                },
+                transaction=tx,
+            )
+            if finalized is None:
+                raise CampaignReadOnlyError("campaign_already_completed")
+            tx.execute(
+                "UPDATE rooms SET runtime_status = 'ended', "
+                "campaign_lifecycle_status = 'finalized', "
+                "ending_status = 'aborted', ending_id = NULL, "
+                "termination_reason = 'owner_terminated', "
+                "termination_actor_id = %s, terminated_at = %s "
+                "WHERE room_id = %s",
+                (actor_id, terminated_at, room_id),
+            )
+
+        return finalized
+
     def get_campaign_summary(
         self,
         room_id: str,
@@ -272,7 +323,7 @@ def ensure_campaign_writable(executor, room_id: str) -> dict:
     ).fetchone()
     if not room:
         raise CampaignReadOnlyError("campaign_room_missing")
-    if str(room.get("status") or "") in {"completed", "archived"}:
+    if str(room.get("status") or "") in {"completed", "ended", "archived"}:
         raise CampaignReadOnlyError("campaign_completed_read_only")
     return dict(room)
 

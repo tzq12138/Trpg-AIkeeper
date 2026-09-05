@@ -1,5 +1,6 @@
 """Conservative routing policy for actions submitted while the Host is away."""
 
+import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -22,6 +23,63 @@ _BLOCKING_CONFIRMATIONS = {
     "visibility_change",
 }
 _DELEGATED_INTENT_TYPES = {"dialogue", "move", "skill_check", "use_item"}
+AI_ONLY_HOST_ADJUDICATION_DISABLED = "AI_ONLY_HOST_ADJUDICATION_DISABLED"
+
+
+@dataclass(frozen=True)
+class AiOnlyResolutionPolicy:
+    """Explicit boundary for ordinary action resolution in an AI-only room."""
+
+    session_mode: str | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.session_mode == "ai_only"
+
+    def host_exception_reason(self, resolution_route: str | None) -> str | None:
+        if self.enabled and resolution_route == "host_exception":
+            return "ai_only_host_exception_forbidden"
+        return None
+
+
+def is_ai_only_room(conn, room_id: str) -> bool:
+    """Return whether the bound runtime package explicitly opts into AI-only."""
+    return AiOnlyResolutionPolicy(session_mode=room_session_mode(conn, room_id)).enabled
+
+
+def host_adjudication_block_detail() -> dict[str, str]:
+    """Stable, non-sensitive error payload for blocked Host adjudication APIs."""
+    return {
+        "code": AI_ONLY_HOST_ADJUDICATION_DISABLED,
+        "reason": "纯 AI 房间不允许 Host 进行游戏内裁决",
+    }
+
+
+def room_session_mode(conn, room_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT rooms.session_mode, packages.runtime_package "
+        "FROM rooms "
+        "LEFT JOIN runtime_package_versions AS packages "
+        "ON packages.runtime_package_version_id = rooms.runtime_package_version_id "
+        "WHERE rooms.room_id = %s",
+        (room_id,),
+    ).fetchone()
+    persisted_mode = str(row.get("session_mode") or "").strip() if row else ""
+    if persisted_mode:
+        return persisted_mode
+    runtime_package = row.get("runtime_package") if row else None
+    if isinstance(runtime_package, str):
+        try:
+            runtime_package = json.loads(runtime_package)
+        except json.JSONDecodeError:
+            runtime_package = {}
+    if not isinstance(runtime_package, dict):
+        return None
+    runtime_policy = runtime_package.get("runtime_policy")
+    if not isinstance(runtime_policy, dict):
+        return None
+    value = runtime_policy.get("session_mode")
+    return str(value) if value else None
 
 
 @dataclass(frozen=True)
@@ -40,7 +98,7 @@ def decide_host_autonomy(
 ) -> HostAutonomyDecision:
     """Classify an action without trusting client-supplied safety declarations."""
     analysis = _analysis(params)
-    if session_mode == "ai_only":
+    if AiOnlyResolutionPolicy(session_mode=session_mode).enabled:
         if _is_engine_resolvable(intent_type, params or {}, analysis):
             return HostAutonomyDecision(route="offline_autonomy")
         return HostAutonomyDecision(

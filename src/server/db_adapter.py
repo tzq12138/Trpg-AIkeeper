@@ -88,8 +88,31 @@ CREATE TABLE IF NOT EXISTS rooms (
     scenario_version_id TEXT,
     runtime_package_version_id TEXT,
     owner_token TEXT NOT NULL,
+    stage_token TEXT NOT NULL DEFAULT '',
     owner_account_id TEXT,
     status TEXT NOT NULL DEFAULT 'lobby',
+    runtime_status TEXT NOT NULL DEFAULT 'lobby',
+    session_mode TEXT,
+    session_mode_frozen_at TIMESTAMP,
+    session_mode_frozen_reason TEXT,
+    version_bundle JSONB NOT NULL DEFAULT '{}'::jsonb,
+    version_bundle_hash TEXT NOT NULL DEFAULT '',
+    version_bundle_locked_at TIMESTAMP,
+    pause_mode TEXT,
+    pause_requested_at TIMESTAMP,
+    pause_requested_by TEXT,
+    pause_reason TEXT,
+    pause_cursor TEXT,
+    paused_at TIMESTAMP,
+    pause_resumed_at TIMESTAMP,
+    pause_resumed_by TEXT,
+    pause_resume_reason TEXT,
+    campaign_lifecycle_status TEXT NOT NULL DEFAULT 'not_started',
+    ending_status TEXT,
+    ending_id TEXT,
+    termination_reason TEXT,
+    termination_actor_id TEXT,
+    terminated_at TIMESTAMP,
     spoiler_level TEXT DEFAULT 'standard',
     state_version INTEGER NOT NULL DEFAULT 0,
     player_experience_version TEXT NOT NULL DEFAULT 'v2',
@@ -533,6 +556,43 @@ CREATE TABLE IF NOT EXISTS actions (
     completed_at TIMESTAMP
 );
 
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS resolution_trace_id TEXT;
+
+CREATE TABLE IF NOT EXISTS resolution_traces (
+    resolution_trace_id TEXT PRIMARY KEY,
+    action_id TEXT NOT NULL REFERENCES actions(action_id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL,
+    state_version INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    resolution_outcome TEXT,
+    trace JSONB NOT NULL DEFAULT '{}',
+    trace_hash TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (action_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_resolution_traces_room_created
+    ON resolution_traces(room_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS resolution_trace_secure_payloads (
+    resolution_trace_id TEXT PRIMARY KEY
+        REFERENCES resolution_traces(resolution_trace_id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL,
+    ciphertext TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    encryption_key_version TEXT NOT NULL DEFAULT 'trace-v1',
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_resolution_trace_secure_payloads_expiry
+    ON resolution_trace_secure_payloads(expires_at, resolution_trace_id);
+
+ALTER TABLE resolution_trace_secure_payloads
+    DROP CONSTRAINT IF EXISTS resolution_trace_secure_payloads_room_id_fkey;
+
 CREATE TABLE IF NOT EXISTS prepared_rule_actions (
     action_id TEXT PRIMARY KEY REFERENCES actions(action_id) ON DELETE CASCADE,
     room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
@@ -969,6 +1029,24 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS runtime_recovery_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    source_checkpoint_id TEXT NOT NULL REFERENCES checkpoints(checkpoint_id),
+    source_state_version INTEGER NOT NULL,
+    target_state_version INTEGER NOT NULL,
+    proposal JSONB NOT NULL,
+    proposal_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    expires_at TIMESTAMP NOT NULL,
+    dry_run_at TIMESTAMP,
+    executed_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_recovery_proposals_room_status
+    ON runtime_recovery_proposals(room_id, status, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS campaign_archives (
     archive_id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL,
@@ -1228,6 +1306,7 @@ ALTER TABLE characters ADD COLUMN IF NOT EXISTS account_id TEXT;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'player';
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS owner_account_id TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS stage_token TEXT NOT NULL DEFAULT '';
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS player_experience_version TEXT NOT NULL DEFAULT 'v1';
 ALTER TABLE rooms ALTER COLUMN player_experience_version SET DEFAULT 'v2';
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS action_pacing_preset TEXT NOT NULL DEFAULT 'standard';
@@ -1612,6 +1691,7 @@ ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;
 ALTER TABLE ai_call_logs ALTER COLUMN provider TYPE TEXT;
 ALTER TABLE ai_call_logs ALTER COLUMN provider_order TYPE TEXT;
 ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS decision_audit_id TEXT;
+ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS resolution_trace_id TEXT;
 ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT '';
 ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS template_version TEXT NOT NULL DEFAULT '';
 ALTER TABLE ai_call_logs ADD COLUMN IF NOT EXISTS rule_version TEXT NOT NULL DEFAULT '';
@@ -1776,6 +1856,28 @@ ALTER TABLE rooms ADD COLUMN IF NOT EXISTS integrity_reason TEXT;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS integrity_source TEXT;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS integrity_state_version INTEGER;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS integrity_updated_at TIMESTAMP;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS runtime_status TEXT NOT NULL DEFAULT 'lobby';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS session_mode TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS session_mode_frozen_at TIMESTAMP;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS session_mode_frozen_reason TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS version_bundle JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS version_bundle_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS version_bundle_locked_at TIMESTAMP;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS pause_mode TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS pause_requested_at TIMESTAMP;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS pause_requested_by TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS pause_reason TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS pause_cursor TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS paused_at TIMESTAMP;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS pause_resumed_at TIMESTAMP;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS pause_resumed_by TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS pause_resume_reason TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS campaign_lifecycle_status TEXT NOT NULL DEFAULT 'not_started';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS ending_status TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS ending_id TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS termination_reason TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS termination_actor_id TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS terminated_at TIMESTAMP;
 ALTER TABLE events ADD COLUMN IF NOT EXISTS action_id TEXT;
 ALTER TABLE events ADD COLUMN IF NOT EXISTS state_version INTEGER;
 ALTER TABLE events ADD COLUMN IF NOT EXISTS payload_hash TEXT NOT NULL DEFAULT '';

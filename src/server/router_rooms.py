@@ -1,6 +1,7 @@
 import uuid
 import json
 import logging
+import secrets
 from typing import Literal
 
 from fastapi import APIRouter, Request, HTTPException
@@ -8,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_
 
 from .models import RoomCreate
 from .turn_manager import TurnManager
+from .engine.host_autonomy import host_adjudication_block_detail, is_ai_only_room
 
 router = APIRouter(prefix="/api/rooms")
 logger = logging.getLogger(__name__)
@@ -33,6 +35,47 @@ ACTION_TIMING_PRESETS = {
         "resolution_seconds": 300,
     },
 }
+
+_AI_ONLY_SESSION_ZERO_STEPS = (
+    "character_rules",
+    "safety",
+    "ai_host",
+    "private_data",
+    "connection",
+)
+
+
+def _ai_only_session_zero_blockers(conn, room: dict, chars: list[dict]) -> list[dict]:
+    """Compute existing server-verifiable Session Zero requirements per player."""
+    if not chars:
+        return [{"scope": "room", "missing": ["players"]}]
+    rows = conn.execute(
+        "SELECT character_id, step, contract_version, contract_hash "
+        "FROM session_zero_confirmations WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchall()
+    confirmations: dict[str, dict[str, dict]] = {}
+    for row in rows:
+        confirmations.setdefault(str(row["character_id"]), {})[str(row["step"])] = dict(row)
+
+    blockers: list[dict] = []
+    for char in chars:
+        character_id = str(char["character_id"])
+        by_step = confirmations.get(character_id, {})
+        missing = [step for step in _AI_ONLY_SESSION_ZERO_STEPS if step not in by_step]
+        safety = by_step.get("safety")
+        if room.get("risk_contract_hash") and (
+            not safety
+            or safety.get("contract_version") != room.get("risk_contract_version")
+            or safety.get("contract_hash") != room.get("risk_contract_hash")
+        ):
+            if "risk_contract" not in missing:
+                missing.append("risk_contract")
+        if not char.get("is_ready"):
+            missing.append("ready")
+        if missing:
+            blockers.append({"character_id": character_id, "missing": sorted(missing)})
+    return blockers
 
 
 def _latest_ready_runtime_package_id(conn, scenario_version_id: str) -> str | None:
@@ -193,6 +236,8 @@ async def create_room(request: Request):
         conn,
         scenario_version_id,
     )
+    from .engine.runtime_governance import runtime_package_session_mode
+    session_mode = runtime_package_session_mode(conn, runtime_package_version_id)
     risk_contract, risk_contract_version, risk_contract_hash = _runtime_risk_contract(
         conn,
         scenario_version_id,
@@ -207,15 +252,16 @@ async def create_room(request: Request):
 
     room_id = str(uuid.uuid4())[:8]
     owner_token = str(uuid.uuid4())
+    stage_token = secrets.token_urlsafe(32)
     from .ai.ai_config import pin_room_ai_runtime
     with conn.transaction() as tx:
         tx.execute(
-            "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, "
-            "owner_token, owner_account_id, spoiler_level, risk_contract, "
+            "INSERT INTO rooms (room_id, scenario_id, scenario_version_id, runtime_package_version_id, session_mode, "
+            "owner_token, stage_token, owner_account_id, spoiler_level, risk_contract, "
             "risk_contract_version, risk_contract_hash) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
-                room_id, scenario_id, scenario_version_id, runtime_package_version_id, owner_token,
+                room_id, scenario_id, scenario_version_id, runtime_package_version_id, session_mode, owner_token, stage_token,
                 owner_account_id, body.get("spoiler_level", "standard"),
                 json.dumps(risk_contract, ensure_ascii=False) if risk_contract else None,
                 risk_contract_version, risk_contract_hash,
@@ -234,10 +280,11 @@ async def create_room(request: Request):
             runtime_package_version_id=runtime_package_version_id,
         )
     return {
-        "room_id": room_id, "owner_token": owner_token,
+        "room_id": room_id, "owner_token": owner_token, "stage_token": stage_token,
         "status": "lobby", "scenario_title": sc["title"],
         "scenario_id": scenario_id, "scenario_version_id": scenario_version_id,
         "runtime_package_version_id": runtime_package_version_id,
+        "session_mode": session_mode,
         "risk_contract_version": risk_contract_version,
         "risk_contract_hash": risk_contract_hash,
         "owner_account_id": owner_account_id,
@@ -458,15 +505,24 @@ async def set_room_scenario(request: Request, room_id: str):
         runtime_package_version_id,
     )
     # Check room status
-    room = conn.execute("SELECT status FROM rooms WHERE room_id = %s", (room_id,)).fetchone()
+    room = conn.execute(
+        "SELECT status, session_mode_frozen_at FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
     if not room:
         raise HTTPException(404, "Room not found")
+    if room.get("session_mode_frozen_at"):
+        raise HTTPException(409, detail={"code": "runtime_contract_frozen"})
     if room["status"] in ("active", "completed", "archived"):
         raise HTTPException(409, "Cannot change scenario in active/completed/archived room")
+    from .engine.runtime_governance import runtime_package_session_mode
+
+    session_mode = runtime_package_session_mode(conn, runtime_package_version_id)
     conn.execute(
         "UPDATE rooms SET scenario_id = %s, scenario_version_id = %s, "
         "runtime_package_version_id = %s, risk_contract = %s, "
-        "risk_contract_version = %s, risk_contract_hash = %s WHERE room_id = %s",
+        "risk_contract_version = %s, risk_contract_hash = %s, session_mode = %s "
+        "WHERE room_id = %s",
         (
             scenario_id,
             scenario_version_id,
@@ -474,6 +530,7 @@ async def set_room_scenario(request: Request, room_id: str):
             json.dumps(risk_contract, ensure_ascii=False) if risk_contract else None,
             risk_contract_version,
             risk_contract_hash,
+            session_mode,
             room_id,
         ),
     )
@@ -494,6 +551,8 @@ async def update_room(request: Request, room_id: str):
 
     # Update scenario
     if "scenario_id" in body:
+        if room.get("session_mode_frozen_at"):
+            raise HTTPException(409, detail={"code": "runtime_contract_frozen"})
         if room["status"] in ("active",):
             raise HTTPException(409, "进行中的房间不能切换剧本，请先暂停")
         sc = conn.execute(
@@ -514,10 +573,13 @@ async def update_room(request: Request, room_id: str):
             sc["published_version_id"],
             runtime_package_version_id,
         )
+        from .engine.runtime_governance import runtime_package_session_mode
+
+        session_mode = runtime_package_session_mode(conn, runtime_package_version_id)
         conn.execute(
             "UPDATE rooms SET scenario_id = %s, scenario_version_id = %s, "
             "runtime_package_version_id = %s, risk_contract = %s, "
-            "risk_contract_version = %s, risk_contract_hash = %s "
+            "risk_contract_version = %s, risk_contract_hash = %s, session_mode = %s "
             "WHERE room_id = %s",
             (
                 body["scenario_id"],
@@ -526,6 +588,7 @@ async def update_room(request: Request, room_id: str):
                 json.dumps(risk_contract, ensure_ascii=False) if risk_contract else None,
                 risk_contract_version,
                 risk_contract_hash,
+                session_mode,
                 room_id,
             ),
         )
@@ -536,6 +599,11 @@ async def update_room(request: Request, room_id: str):
 
     # Update status
     if "status" in body:
+        if room.get("session_mode_frozen_at") and is_ai_only_room(conn, room_id):
+            raise HTTPException(
+                409,
+                detail={"code": "ai_only_runtime_state_patch_forbidden"},
+            )
         valid = {"draft", "lobby", "active", "paused", "completed", "archived"}
         if body["status"] not in valid:
             raise HTTPException(400, f"无效状态: {body['status']}")
@@ -543,6 +611,46 @@ async def update_room(request: Request, room_id: str):
 
     conn.commit()
     return await get_room(request, room_id)
+
+
+@router.patch("/{room_id}/session-mode")
+async def update_room_session_mode(request: Request, room_id: str):
+    """Choose a runtime-package-supported mode before authoritative play begins."""
+    conn = request.app.state.db
+    _verify_owner_or_admin(request, room_id, conn)
+    body = await request.json()
+    requested_mode = str(body.get("session_mode") or "").strip()
+    if not requested_mode:
+        raise HTTPException(400, detail={"code": "session_mode_required"})
+    room = conn.execute(
+        "SELECT room_id, status, runtime_package_version_id, session_mode_frozen_at "
+        "FROM rooms WHERE room_id = %s FOR UPDATE",
+        (room_id,),
+    ).fetchone()
+    if not room:
+        raise HTTPException(404, "房间不存在")
+    if room.get("session_mode_frozen_at") or room.get("status") != "lobby":
+        raise HTTPException(409, detail={"code": "session_mode_frozen"})
+    from .engine.runtime_governance import runtime_package_supported_session_modes
+
+    supported_modes = runtime_package_supported_session_modes(
+        conn,
+        room.get("runtime_package_version_id"),
+    )
+    if requested_mode not in supported_modes:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "session_mode_not_supported_for_runtime",
+                "supported_session_modes": sorted(supported_modes),
+            },
+        )
+    conn.execute(
+        "UPDATE rooms SET session_mode = %s WHERE room_id = %s",
+        (requested_mode, room_id),
+    )
+    conn.commit()
+    return {"room_id": room_id, "session_mode": requested_mode, "frozen": False}
 
 
 @router.post("/{room_id}/start")
@@ -594,6 +702,28 @@ async def start_room(request: Request, room_id: str):
         pass
     force_start = body.get("force_start", False)
 
+    ai_only_blockers = (
+        _ai_only_session_zero_blockers(conn, room, chars)
+        if is_ai_only_room(conn, room_id)
+        else []
+    )
+    if ai_only_blockers:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "AI_ONLY_SESSION_ZERO_INCOMPLETE",
+                "missing": ai_only_blockers,
+            },
+        )
+    if force_start and is_ai_only_room(conn, room_id):
+        raise HTTPException(
+            409,
+            detail={
+                "code": "AI_ONLY_FORCE_START_FORBIDDEN",
+                "reason": "纯 AI 房间不得跳过 Session Zero 或就绪门禁",
+            },
+        )
+
     # ── force_start hardening ──
     # New clients MUST send reason + confirm.  Old {force_start: true} payload
     # is tolerated as transitional but logged as a warning.
@@ -631,8 +761,24 @@ async def start_room(request: Request, room_id: str):
             },
         )
 
+    if is_ai_only_room(conn, room_id):
+        from .engine.runtime_governance import (
+            RoomRuntimeContractError,
+            freeze_room_runtime_contract,
+        )
+
+        try:
+            freeze_room_runtime_contract(
+                conn,
+                room_id,
+                reason="session_zero_completed",
+            )
+        except RoomRuntimeContractError as exc:
+            raise HTTPException(409, detail={"code": exc.code}) from exc
+
     conn.execute(
-        "UPDATE rooms SET status = 'active', started_at = NOW() WHERE room_id = %s",
+        "UPDATE rooms SET status = 'active', runtime_status = 'running', "
+        "campaign_lifecycle_status = 'running', started_at = NOW() WHERE room_id = %s",
         (room_id,),
     )
     conn.commit()
@@ -757,6 +903,8 @@ async def get_current_turn(request: Request, room_id: str):
 async def skip_character(request: Request, room_id: str, turn_id: str):
     conn = request.app.state.db
     _verify_owner_or_admin(request, room_id, conn)
+    if is_ai_only_room(conn, room_id):
+        raise HTTPException(409, detail=host_adjudication_block_detail())
     body = await request.json()
     character_id = body.get("character_id", "")
     if not character_id:
@@ -928,6 +1076,32 @@ async def get_room_ai_provider_status(request: Request, room_id: str):
         "last_error_category": str(
             health.get("last_error_category") or "" if health else ""
         ),
+    }
+
+
+@router.get("/{room_id}/stage-access")
+async def get_stage_access(request: Request, room_id: str):
+    """Issue the room's separate read-only StageClient credential to its owner."""
+    conn = request.app.state.db
+    _verify_owner_or_admin(request, room_id, conn)
+    with conn.transaction() as tx:
+        room = tx.execute(
+            "SELECT stage_token FROM rooms WHERE room_id = %s FOR UPDATE",
+            (room_id,),
+        ).fetchone()
+        if not room:
+            raise HTTPException(404, "Room not found")
+        stage_token = str(room.get("stage_token") or "")
+        if not stage_token:
+            stage_token = secrets.token_urlsafe(32)
+            tx.execute(
+                "UPDATE rooms SET stage_token = %s WHERE room_id = %s",
+                (stage_token, room_id),
+            )
+    return {
+        "room_id": room_id,
+        "stage_token": stage_token,
+        "stage_url": f"/host/{room_id}/stage#stage_token={stage_token}",
     }
 
 

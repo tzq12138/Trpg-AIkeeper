@@ -500,16 +500,9 @@ def apply_room_runtime_policy(
 ) -> ActionDraftDTO:
     if draft.resolution_route != "host_exception":
         return draft
-    row = conn.execute(
-        "SELECT packages.runtime_package FROM rooms "
-        "LEFT JOIN runtime_package_versions AS packages "
-        "ON packages.runtime_package_version_id = rooms.runtime_package_version_id "
-        "WHERE rooms.room_id = %s",
-        (room_id,),
-    ).fetchone()
-    runtime_package = _json_value(row.get("runtime_package") if row else None) or {}
-    runtime_policy = _json_value(runtime_package.get("runtime_policy")) or {}
-    if runtime_policy.get("session_mode") != "ai_only":
+    from ..engine.host_autonomy import room_session_mode
+
+    if room_session_mode(conn, room_id) != "ai_only":
         return draft
 
     ambiguities = list(draft.intent_contract.ambiguities)
@@ -1272,12 +1265,22 @@ def confirm_action_draft(
 
         room = tx.execute(
             "SELECT status, state_version, risk_contract_version, risk_contract_hash, "
-            "integrity_status, integrity_reason "
+            "integrity_status, integrity_reason, runtime_status, pause_mode, session_mode "
             "FROM rooms WHERE room_id = %s FOR UPDATE",
             (character["room_id"],),
         ).fetchone()
         if not room or room["status"] in {"completed", "archived"}:
             raise ActionDraftError(409, {"code": "room_not_active"})
+        from ..engine.room_pause import pause_blocks_new_actions
+
+        if pause_blocks_new_actions(room):
+            raise ActionDraftError(
+                409,
+                {
+                    "code": "room_paused_by_owner",
+                    "mode": room.get("pause_mode"),
+                },
+            )
         if (room.get("integrity_status") or "healthy") != "healthy":
             integrity_status = str(room.get("integrity_status") or "healthy")
             raise ActionDraftError(
@@ -1319,6 +1322,24 @@ def confirm_action_draft(
                     "code": "sync_required",
                     "base_state_version": draft.get("base_state_version", 0),
                     "current_state_version": room.get("state_version", 0),
+                },
+            )
+        from ..engine.host_autonomy import AiOnlyResolutionPolicy, room_session_mode
+
+        session_mode = str(room.get("session_mode") or "").strip()
+        if not session_mode:
+            session_mode = room_session_mode(tx, character["room_id"]) or ""
+        is_ai_only = AiOnlyResolutionPolicy(session_mode=session_mode).enabled
+
+        host_exception_reason = AiOnlyResolutionPolicy(
+            session_mode=session_mode,
+        ).host_exception_reason(analysis.get("resolution_route"))
+        if host_exception_reason:
+            raise ActionDraftError(
+                409,
+                {
+                    "code": host_exception_reason,
+                    "reason": "纯 AI 房间必须由玩家澄清、确认或安全拒绝，不能转交 Host 裁决",
                 },
             )
         is_prepared_action = draft["intent_type"] == "prepared_action"
@@ -1416,6 +1437,21 @@ def confirm_action_draft(
                 initial_status,
             ),
         )
+        if initial_status == "queued" and is_ai_only and room["status"] == "active":
+            from ..engine.runtime_governance import (
+                RoomRuntimeContractError,
+                freeze_room_runtime_contract,
+            )
+
+            try:
+                freeze_room_runtime_contract(
+                    tx,
+                    character["room_id"],
+                    reason="first_authoritative_action_queued",
+                    action_id=action_id,
+                )
+            except RoomRuntimeContractError as exc:
+                raise ActionDraftError(409, {"code": exc.code}) from exc
         from ..ai.decision_audit import DecisionAuditRecorder
 
         relinked_audits = DecisionAuditRecorder(tx).relink_draft(

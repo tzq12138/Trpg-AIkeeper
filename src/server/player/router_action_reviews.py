@@ -5,6 +5,11 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..events.event_log import EventLog
+from ..engine.host_autonomy import (
+    AI_ONLY_HOST_ADJUDICATION_DISABLED,
+    AiOnlyResolutionPolicy,
+    room_session_mode,
+)
 from .router_actions_v2 import _require_character
 
 
@@ -29,6 +34,16 @@ async def create_action_review(request: Request, action_id: str, body: ActionRev
     ).fetchone()
     if not action:
         raise HTTPException(404, detail={"code": "action_not_found"})
+    if AiOnlyResolutionPolicy(
+        session_mode=room_session_mode(conn, str(action["room_id"])),
+    ).enabled:
+        raise HTTPException(
+            409,
+            detail={
+                "code": AI_ONLY_HOST_ADJUDICATION_DISABLED,
+                "reason": "纯 AI 房间的行动复核不能创建 Host 待处理请求",
+            },
+        )
     if action["status"] not in (
         "resolving",
         "awaiting_player_choice",

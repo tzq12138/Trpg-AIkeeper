@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 
 _SOLO_PROGRESS_WORDS = ("继续", "出发", "上车", "登上", "前进", "前往", "启程")
 _SOLO_BEAR_ATTACK_WORDS = ("攻击", "砍", "刺", "斗殴", "搏斗", "出刀", "小刀")
-_DIRECTOR_ANALYSIS_TIMEOUT_SECONDS = 30
+_DIRECTOR_ANALYSIS_TIMEOUT_SECONDS = 55
 _STATEFUL_INPUT_MODES = {"action", "item_action", "map_move", "combat_action"}
 _PRIVATE_INPUT_MODE = "private_note"
 _PARTY_CHANNEL_INPUT_MODE = "party_chat"
@@ -846,6 +846,21 @@ async def receive_action_submission(request: Request, body: PlayerActionSubmissi
         and _active_safety_pauses(conn, character["room_id"])
     ):
         raise HTTPException(409, detail={"code": "safety_paused"})
+    if _submission_requires_analysis(conn, body.input_mode, character["room_id"]):
+        room_pause = conn.execute(
+            "SELECT runtime_status, pause_mode FROM rooms WHERE room_id = %s",
+            (character["room_id"],),
+        ).fetchone()
+        from ..engine.room_pause import pause_blocks_new_actions
+
+        if pause_blocks_new_actions(room_pause):
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "room_paused_by_owner",
+                    "mode": room_pause.get("pause_mode") if room_pause else None,
+                },
+            )
 
     visibility = body.requested_visibility or _default_submission_visibility(body.input_mode)
     if body.input_mode in {_PRIVATE_INPUT_MODE, _SAFETY_INPUT_MODE}:
@@ -1118,6 +1133,7 @@ async def _analyze_draft_locked(
                         {
                             **director_context,
                             "suppress_response_log": body.ephemeral,
+                            "timeout_seconds": _DIRECTOR_ANALYSIS_TIMEOUT_SECONDS,
                         },
                         room_id=character["room_id"],
                     ),

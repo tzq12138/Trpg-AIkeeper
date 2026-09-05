@@ -156,15 +156,23 @@ class DecisionAuditRecorder:
                final_delta: dict | None = None) -> str:
         audit_id = f"decision-{uuid.uuid4().hex}"
         expires_at = datetime.now(timezone.utc) + timedelta(days=90)
+        resolution_trace_id = None
+        if action_id:
+            trace_row = self.conn.execute(
+                "SELECT resolution_trace_id FROM actions WHERE action_id = %s",
+                (action_id,),
+            ).fetchone()
+            if trace_row:
+                resolution_trace_id = trace_row.get("resolution_trace_id")
         self.conn.execute(
             "INSERT INTO ai_call_logs "
-            "(decision_audit_id, room_id, action_id, task_type, provider, model, status, "
+            "(decision_audit_id, resolution_trace_id, room_id, action_id, task_type, provider, model, status, "
             "template_version, rule_version, context_hash, citations, structured_proposal, "
             "engine_validation, final_delta, record_kind, expires_at, draft_id, "
             "draft_revision, audit_state) "
-            "VALUES (%s, %s, %s, %s, %s, %s, 'ok', %s, %s, %s, %s, %s, %s, %s, "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'ok', %s, %s, %s, %s, %s, %s, %s, "
             "'decision', %s, %s, %s, 'current')",
-            (audit_id, room_id, action_id or None, task_type, provider, model,
+            (audit_id, resolution_trace_id, room_id, action_id or None, task_type, provider, model,
              template_version, rule_version, minimal_context_hash(context),
              json.dumps([_clean_citation(c) for c in citations or []]),
              json.dumps(_clean_structured_proposal(

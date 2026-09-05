@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from ..config import Settings
@@ -28,6 +29,32 @@ from ..scenario.content_package import ContentPackage
 logger = logging.getLogger(__name__)
 _IMPORT_STRUCTURE_TIMEOUT_SECONDS = 180
 _AUTHORITATIVE_AUDIT_TASKS = {"analyze_director_action", "narrate_action"}
+_DETERMINISTIC_FALLBACK_TASKS = {
+    "generate_narrative",
+    "resolve_turn",
+    "resolve_sanity",
+    "structure_scenario",
+    "compile_mechanic",
+    "query_knowledge",
+}
+
+
+@dataclass(frozen=True)
+class ProviderFailure:
+    """Structured fail-closed result when no provider can complete a task."""
+
+    task_type: str
+    attempts: list[str]
+    last_error_code: str
+    fallback_available: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "task_type": self.task_type,
+            "attempts": list(self.attempts),
+            "last_error_code": self.last_error_code,
+            "fallback_available": self.fallback_available,
+        }
 
 SCENARIO_STRUCTURE_SYSTEM_PROMPT = """你是TRPG剧本分析器。只返回JSON对象。
 提取 scenes、npcs、clues、branches、truth、endings。
@@ -207,6 +234,7 @@ class AiGateway:
     def __init__(self, settings: Settings | None = None, db_conn=None):
         self.settings = settings or Settings.from_env()
         self.db = db_conn
+        self.last_provider_failure: ProviderFailure | None = None
         self._providers: dict[str, BaseAiProvider] = {}
         self._provider_order: list[str] = []
         self._init_providers()
@@ -383,6 +411,8 @@ class AiGateway:
             self._prepare_narrative_context(context),
             room_id,
         )
+        if isinstance(result, ProviderFailure):
+            return None
         return self._normalize_narrative_result(result)
 
     async def analyze_action_draft(self, context: dict, room_id: str | None = None) -> dict | None:
@@ -426,6 +456,8 @@ class AiGateway:
         if system_prompt is None:
             return None
         prepared["system_prompt"] = system_prompt
+        if context.get("timeout_seconds") is not None:
+            prepared["timeout_seconds"] = context["timeout_seconds"]
         prepared["user_message"] = json.dumps(
             provider_context,
             ensure_ascii=False,
@@ -438,6 +470,8 @@ class AiGateway:
             audit_context=context,
             template_version="m0-runtime-v1",
         )
+        if isinstance(result, ProviderFailure):
+            return None
         if isinstance(result, DirectorPlanDTO):
             if local_action_id:
                 result = result.model_copy(
@@ -464,6 +498,7 @@ class AiGateway:
         room_id: str | None = None,
         *,
         action_id: str | None = None,
+        timeout_seconds: int | None = None,
     ) -> dict | None:
         local_action_id = str(action_id or context.get("local_action_id") or context.get("action_id") or "")
         prepared = _scrub_narrator_provider_payload(context)
@@ -474,6 +509,8 @@ class AiGateway:
         if system_prompt is None:
             return None
         prepared["system_prompt"] = system_prompt
+        if timeout_seconds is not None:
+            prepared["timeout_seconds"] = timeout_seconds
         prepared["user_message"] = json.dumps(
             _scrub_narrator_provider_payload(context),
             ensure_ascii=False,
@@ -486,6 +523,8 @@ class AiGateway:
             audit_context={**context, "action_id": local_action_id},
             template_version="m0-runtime-v1",
         )
+        if isinstance(result, ProviderFailure):
+            return None
         if not isinstance(result, dict):
             return None
         result = _normalize_narrator_provider_result(result, context)
@@ -504,7 +543,8 @@ class AiGateway:
                    "timeout_seconds": _IMPORT_STRUCTURE_TIMEOUT_SECONDS,
                    "system_prompt": SCENARIO_STRUCTURE_SYSTEM_PROMPT,
                    "user_message": json.dumps({"rawText": truncated}, ensure_ascii=False)}
-        return await self._call_providers("structure_scenario", context)
+        result = await self._call_providers("structure_scenario", context)
+        return None if isinstance(result, ProviderFailure) else result
 
     async def structure_content_package(self, package: ContentPackage | dict) -> dict:
         if isinstance(package, ContentPackage):
@@ -535,6 +575,8 @@ class AiGateway:
                 required_capabilities={"image"},
                 disable_local_fallback=True,
             )
+            if isinstance(result, ProviderFailure):
+                result = None
             if result is not None:
                 return result
             if len(canonical_text.strip()) >= 50:
@@ -568,19 +610,21 @@ class AiGateway:
             "user_message": json.dumps(payload, ensure_ascii=False),
         }
         required_capabilities = {"image"} if payload.get("requires_multimodal") else None
-        return await self._call_providers(
+        result = await self._call_providers(
             "repair_runtime_contract",
             context,
             required_capabilities=required_capabilities,
             disable_local_fallback=True,
         )
+        return None if isinstance(result, ProviderFailure) else result
 
     async def compile_mechanic(self, intent: Any, scenario: dict, character: dict) -> dict:
         intent_dict = intent.model_dump() if hasattr(intent, 'model_dump') else intent
         context = {"intent": intent_dict, "scenario": scenario, "character": character,
                    "system_prompt": "你是TRPG机制编译器。返回 triggeredMechanic, skillName, difficulty。",
                    "user_message": json.dumps(intent_dict, ensure_ascii=False)}
-        return await self._call_providers("compile_mechanic", context)
+        result = await self._call_providers("compile_mechanic", context)
+        return None if isinstance(result, ProviderFailure) else result
 
     async def generate_map(self, scenes: list[dict]) -> dict:
         context = {"scenes": scenes,
@@ -792,6 +836,8 @@ class AiGateway:
                    "system_prompt": system_prompt,
                    "user_message": json.dumps({"query": query, "sources": sources}, ensure_ascii=False)}
         result = await self._call_providers("query_knowledge", context, room_id)
+        if isinstance(result, ProviderFailure):
+            return None
         if isinstance(result, KnowledgeAnswer):
             return result
         if isinstance(result, dict):
@@ -800,12 +846,16 @@ class AiGateway:
 
     async def resolve_turn(self, context: dict, room_id: str | None = None) -> KpResponse:
         result = await self._call_providers("resolve_turn", context, room_id)
+        if isinstance(result, ProviderFailure):
+            return None
         if isinstance(result, KpResponse):
             return result
         return KpResponse(**result) if isinstance(result, dict) else KpResponse()
 
     async def resolve_sanity(self, context: dict, room_id: str | None = None) -> KpResponse:
         result = await self._call_providers("resolve_sanity", context, room_id)
+        if isinstance(result, ProviderFailure):
+            return None
         if isinstance(result, KpResponse):
             return result
         return KpResponse(**result) if isinstance(result, dict) else KpResponse()
@@ -907,11 +957,12 @@ class AiGateway:
         model_used = ""
         status = "error"
         final_result: Any = None
+        self.last_provider_failure = None
 
         for provider in providers:
             try:
                 raw = await provider.call(task_type, context)
-                if raw is None:
+                if raw is None or raw == {}:
                     if provider is tracked_provider:
                         tracked_failure = "empty_response"
                     fallback_chain.append(f"{provider.name}:null_response")
@@ -992,6 +1043,7 @@ class AiGateway:
                 provider_used = provider.name
                 model_used = _provider_model(provider)
                 status = "success"
+                self.last_provider_failure = None
                 if provider is tracked_provider:
                     tracked_success = True
                     tracked_failure = ""
@@ -1038,7 +1090,12 @@ class AiGateway:
                 last_error,
                 disable_local_fallback=disable_local_fallback,
             )
-            status = "fallback"
+            if isinstance(final_result, ProviderFailure):
+                self.last_provider_failure = final_result
+                status = "provider_failure"
+                last_error = final_result.last_error_code
+            else:
+                status = "fallback"
 
         if room_id and tracked_binding_id:
             from .provider_health import RoomProviderHealth
@@ -1093,17 +1150,53 @@ class AiGateway:
         disable_local_fallback: bool = False,
     ) -> Any:
         if disable_local_fallback:
-            return None
+            return ProviderFailure(
+                task_type=task_type,
+                attempts=list(chain),
+                last_error_code=_provider_failure_code(error),
+                fallback_available=False,
+            )
+        if task_type not in _DETERMINISTIC_FALLBACK_TASKS:
+            chain.append("local_fallback:not_registered")
+            return ProviderFailure(
+                task_type=task_type,
+                attempts=list(chain),
+                last_error_code="fallback_not_registered",
+                fallback_available=False,
+            )
         lb = self._providers.get("local", LocalFallbackProvider())
-        raw = await lb.call(task_type, context)
-        if raw is None:
-            raw = {}
+        fallback_attempt = "local_fallback"
+        try:
+            raw = await lb.call(task_type, context)
+        except Exception as exc:
+            chain.append(f"{fallback_attempt}:{type(exc).__name__}")
+            return ProviderFailure(
+                task_type=task_type,
+                attempts=list(chain),
+                last_error_code=_provider_failure_code(str(exc)),
+                fallback_available=False,
+            )
+        if raw is None or raw == {}:
+            chain.append(f"{fallback_attempt}:null_response")
+            return ProviderFailure(
+                task_type=task_type,
+                attempts=list(chain),
+                last_error_code=_provider_failure_code(error),
+                fallback_available=False,
+            )
         schema = TASK_SCHEMAS.get(task_type)
-        if schema and raw:
+        if schema:
             try:
                 return schema(**raw)
-            except Exception:
-                pass
+            except Exception as exc:
+                chain.append(f"{fallback_attempt}:schema_fail")
+                return ProviderFailure(
+                    task_type=task_type,
+                    attempts=list(chain),
+                    last_error_code=_provider_failure_code(str(exc)),
+                    fallback_available=False,
+                )
+        chain.append(f"{fallback_attempt}:ok")
         return raw
 
     def _normalize_narrative_result(self, result: Any) -> NarrativePayload:
@@ -1314,6 +1407,20 @@ def _provider_model(provider: Any) -> str:
     return "provider-managed"
 
 
+def _provider_failure_code(error: Any) -> str:
+    """Map provider internals to a stable, non-sensitive failure code."""
+    value = str(error or "").strip().lower()
+    if "timeout" in value:
+        return "timeout"
+    if "schema" in value or "validation" in value:
+        return "schema_validation_failed"
+    if "invalid" in value:
+        return "invalid_response"
+    if "empty" in value or "null" in value:
+        return "empty_response"
+    return "provider_unavailable"
+
+
 def _drop_empty_citation_versions(value: Any) -> Any:
     if isinstance(value, dict):
         return {
@@ -1478,6 +1585,9 @@ def _normalize_narrator_provider_result(
     result["director_plan_digest"] = str(context.get("director_plan_digest") or "")
     if result.get("status") == "success":
         result["status"] = "completed"
+    if isinstance(result.get("environment_changes"), str):
+        change = result["environment_changes"].strip()
+        result["environment_changes"] = [change] if change else []
 
     allowed_refs = _allowed_narration_fact_refs(context)
     fact_refs = result.get("fact_refs")
@@ -1528,9 +1638,17 @@ def _normalize_narrator_provider_result(
             fact_refs.get("environment_changes"),
             allowed_refs,
         )
-    ) and visible_changes and visible_change_ref:
-        result["environment_changes"] = visible_changes
-        fact_refs["environment_changes"] = [visible_change_ref]
+    ):
+        if visible_changes and visible_change_ref:
+            result["environment_changes"] = visible_changes
+            fact_refs["environment_changes"] = [visible_change_ref]
+        elif fallback_refs:
+            result["environment_changes"] = [
+                "本次冒险已结束。"
+                if context.get("adventure_ended")
+                else "当前场景仍可互动。"
+            ]
+            fact_refs["environment_changes"] = [fallback_refs[0]]
 
     if (
         not _non_empty_string_list(result.get("interactable_objects"))
@@ -1613,7 +1731,7 @@ def _scene_fact_ref(context: dict[str, Any]) -> str:
 def _non_empty_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
-    return [str(item).strip() for item in value if str(item).strip()]
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 def _fact_ref_for_visible_change(context: dict[str, Any], change: str) -> str:

@@ -446,6 +446,9 @@ def _build_runtime_package(
         "schema_version": "runtime_package.v1",
         "scenario_version_id": version["scenario_version_id"],
         "scenario_title": version.get("scenario_title") or "",
+        "runtime_contract_version": str(
+            _json_object(graph.get("runtime_policy")).get("runtime_contract_version") or ""
+        ),
         "world_book": {
             "synopsis": graph.get("synopsis") or prep_package.get("summary") or "",
             "truth": graph.get("truth") if isinstance(graph.get("truth"), dict) else {},
@@ -539,6 +542,8 @@ def _quality_exceptions(
     issues.extend(_branch_issues_from_graph(graph, items))
     issues.extend(_projection_diagnostic_issues(projection_diagnostics))
     issues.extend(_runtime_citation_issues(graph))
+    if _runtime_contract_required(graph):
+        issues.extend(_runtime_contract_issues(graph))
     issues.extend(_ending_condition_issues(graph, items))
     issues.extend(_character_control_issues(graph, items))
     issues.extend(_progression_contract_issues(graph, items, edges))
@@ -1397,6 +1402,251 @@ def _ending_condition_issues(
     return issues
 
 
+_RUNTIME_SCENE_FIELDS = {
+    "importance": str,
+    "purpose": str,
+    "entry_conditions": list,
+    "exit_conditions": list,
+    "available_facts": list,
+    "core_clue_refs": list,
+    "optional_clue_refs": list,
+    "pressure_clock": dict,
+    "escalation_events": list,
+    "improv_boundaries": list,
+}
+
+_RUNTIME_NPC_FIELDS = {
+    "importance": str,
+    "goals": list,
+    "knowledge_fact_refs": list,
+    "secret_fact_refs": list,
+    "attitude": dict,
+    "leverage": list,
+    "fears": list,
+    "reaction_rules": dict,
+    "departure_conditions": list,
+    "improv_boundaries": list,
+}
+
+_RUNTIME_CLUE_FIELDS = {
+    "importance": str,
+    "reveal_conditions": list,
+    "alternative_sources": list,
+    "failure_outcome": dict,
+    "prerequisite_fact_refs": list,
+    "public_version": str,
+    "private_version": str,
+}
+
+_RUNTIME_FAILURE_FIELDS = {
+    "cost_type": str,
+    "state_effect": dict,
+    "pressure_effect": dict,
+    "information_effect": dict,
+    "npc_reaction": dict,
+    "next_available_actions": list,
+}
+
+
+def _core_clue_sources(clue: dict[str, Any]) -> set[str]:
+    """Distinct acquisition sources for a core clue.
+
+    Reveal conditions contribute their scene/NPC/item anchors and declared
+    alternatives contribute their source ids; a source reused by both the
+    primary path and the alternatives only counts once (P0-4-D20).
+    """
+    sources: set[str] = set()
+    for condition in clue.get("reveal_conditions") or []:
+        if not isinstance(condition, dict):
+            continue
+        for key in ("npc_id", "scene_id", "clue_id", "item_id"):
+            source_id = str(condition.get(key) or "").strip()
+            if source_id:
+                sources.add(source_id)
+    for source in clue.get("alternative_sources") or []:
+        if isinstance(source, str) and source.strip():
+            sources.add(source.strip())
+    return sources
+
+
+def _has_clue_recovery_node(clue: dict[str, Any]) -> bool:
+    """A usable recovery node requires a stable id, trigger conditions and an
+    explicit reveal scope (P0-4-D20 / AIO-CLUE-003)."""
+    node = clue.get("recovery_node")
+    if not isinstance(node, dict):
+        return False
+    node_id = str(node.get("recovery_node_id") or node.get("node_id") or "").strip()
+    triggers = node.get("trigger_conditions")
+    return bool(
+        node_id
+        and isinstance(triggers, list)
+        and triggers
+        and isinstance(node.get("reveal_scope"), dict)
+    )
+
+
+def _runtime_contract_required(graph: dict[str, Any]) -> bool:
+    runtime_policy = _json_object(graph.get("runtime_policy"))
+    return str(runtime_policy.get("runtime_contract_version") or "").strip() == "v1"
+
+
+def _runtime_contract_issues(graph: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate the small, deterministic runtime contract used by Golden Runs.
+
+    The contract is opt-in through ``runtime_policy.runtime_contract_version`` so
+    older imported scenarios remain compatible while a module that advertises
+    the contract cannot silently compile with presentation-only content.
+    """
+    issues: list[dict[str, Any]] = []
+
+    def check_collection(collection_name: str, fields: dict[str, type]) -> None:
+        values = _json_list(graph.get(collection_name))
+        for index, value in enumerate(values):
+            if not isinstance(value, dict):
+                issues.append(_issue(
+                    f"invalid_runtime_{collection_name[:-1]}",
+                    f"Runtime {collection_name} entries must be objects.",
+                    target_type=collection_name[:-1],
+                    target_key=str(index),
+                    waivable=False,
+                ))
+                continue
+            item_id = str(
+                value.get(f"{collection_name[:-1]}_id")
+                or value.get("id")
+                or value.get("name")
+                or index
+            ).strip()
+            for field_name, expected_type in fields.items():
+                field_value = value.get(field_name)
+                valid_type = isinstance(field_value, expected_type)
+                non_empty_string = expected_type is str and bool(str(field_value or "").strip())
+                if not valid_type or (expected_type is str and not non_empty_string):
+                    issues.append(_issue(
+                        f"missing_runtime_{collection_name[:-1]}_field",
+                        f"Runtime {collection_name[:-1]} requires field '{field_name}'.",
+                        target_type=collection_name[:-1],
+                        target_key=f"{item_id}:{field_name}",
+                        waivable=False,
+                    ))
+            if collection_name == "clues" and value.get("importance") == "core":
+                alternatives = value.get("alternative_sources")
+                if not isinstance(alternatives, list) or not alternatives:
+                    issues.append(_issue(
+                        "core_clue_without_alternative_source",
+                        "Core clues require at least one alternative source.",
+                        target_type="clue",
+                        target_key=f"{item_id}:alternative_sources",
+                        waivable=False,
+                    ))
+                elif (
+                    len(_core_clue_sources(value)) < 2
+                    and not _has_clue_recovery_node(value)
+                ):
+                    issues.append(_issue(
+                        "core_clue_non_independent_sources",
+                        "Core clue sources must be independent: at least two "
+                        "distinct acquired sources, or one source plus a "
+                        "compiled recovery node.",
+                        target_type="clue",
+                        target_key=f"{item_id}:alternative_sources",
+                        waivable=False,
+                    ))
+                failure_outcome = value.get("failure_outcome")
+                if not isinstance(failure_outcome, dict) or failure_outcome.get("preserve_core") is not True:
+                    issues.append(_issue(
+                        "core_clue_failure_can_lock",
+                        "A single failed attempt must not permanently lock a core clue.",
+                        target_type="clue",
+                        target_key=f"{item_id}:failure_outcome",
+                        waivable=False,
+                    ))
+
+    check_collection("scenes", _RUNTIME_SCENE_FIELDS)
+    check_collection("npcs", _RUNTIME_NPC_FIELDS)
+    check_collection("clues", _RUNTIME_CLUE_FIELDS)
+
+    for index, progression in enumerate(_json_list(graph.get("critical_progression"))):
+        if not isinstance(progression, dict):
+            continue
+        progression_id = str(
+            progression.get("progression_id") or progression.get("id") or index
+        ).strip()
+        failure_progression = progression.get("failure_progression")
+        if not isinstance(failure_progression, dict):
+            issues.append(_issue(
+                "missing_runtime_failure_progression",
+                "Critical progression requires a structured failure progression.",
+                target_type="critical_progression",
+                target_key=f"{progression_id}:failure_progression",
+                waivable=False,
+            ))
+            continue
+        for field_name, expected_type in _RUNTIME_FAILURE_FIELDS.items():
+            field_value = failure_progression.get(field_name)
+            valid_type = isinstance(field_value, expected_type)
+            non_empty_string = expected_type is str and bool(str(field_value or "").strip())
+            if not valid_type or (expected_type is str and not non_empty_string):
+                issues.append(_issue(
+                    "missing_runtime_failure_progression_field",
+                    f"Failure progression requires field '{field_name}'.",
+                    target_type="critical_progression",
+                    target_key=f"{progression_id}:failure_progression:{field_name}",
+                    waivable=False,
+                ))
+        information_effect = failure_progression.get("information_effect")
+        if not isinstance(information_effect, dict) or information_effect.get("preserve_core_clues") is not True:
+            issues.append(_issue(
+                "failure_progression_can_lock_core_clue",
+                "Failure progression must preserve access to core clues.",
+                target_type="critical_progression",
+                target_key=f"{progression_id}:failure_progression:information_effect",
+                waivable=False,
+            ))
+
+    seen_priority_groups: dict[tuple[str, int], str] = {}
+    for index, ending in enumerate(_json_list(graph.get("endings"))):
+        if not isinstance(ending, dict):
+            continue
+        ending_id = str(
+            ending.get("ending_id") or ending.get("id") or ending.get("name") or index
+        ).strip()
+        mutual_group = ending.get("mutual_exclusion_group")
+        if not isinstance(mutual_group, str) or not mutual_group.strip():
+            issues.append(_issue(
+                "missing_runtime_ending_field",
+                "Runtime endings require a mutual exclusion group.",
+                target_type="ending",
+                target_key=f"{ending_id}:mutual_exclusion_group",
+                waivable=False,
+            ))
+            continue
+        declared_priority = ending.get("priority")
+        if not isinstance(declared_priority, int) or isinstance(declared_priority, bool):
+            issues.append(_issue(
+                "missing_runtime_ending_field",
+                "Runtime endings require an integer priority.",
+                target_type="ending",
+                target_key=f"{ending_id}:priority",
+                waivable=False,
+            ))
+            continue
+        group_priority = (str(mutual_group).strip(), int(declared_priority))
+        if group_priority in seen_priority_groups:
+            issues.append(_issue(
+                "ending_group_priority_conflict",
+                f"Endings '{seen_priority_groups[group_priority]}' and '{ending_id}' "
+                "share a priority inside the same mutual exclusion group; "
+                "Engine selection would be ambiguous.",
+                target_type="ending",
+                target_key=f"{ending_id}:priority",
+                waivable=False,
+            ))
+        else:
+            seen_priority_groups[group_priority] = ending_id
+    return issues
+
+
 def _ending_definition(ending: dict[str, Any]) -> dict[str, Any]:
     payload = _json_object(ending.get("payload"))
     if not payload:
@@ -1468,6 +1718,11 @@ def _normalized_runtime_ending(
         "priority": priority,
         "exclusive_group": str(
             result.get("exclusive_group") or "campaign_ending"
+        ).strip(),
+        "mutual_exclusion_group": str(
+            result.get("mutual_exclusion_group")
+            or result.get("exclusive_group")
+            or "campaign_ending"
         ).strip(),
     })
     return result
