@@ -1167,6 +1167,26 @@ def _room_session_mode(conn, room_id: str) -> str:
     return room_session_mode(conn, room_id) or ""
 
 
+def build_turn_resolved_projection(turn_id: str, results: list) -> dict:
+    """Build the audience-safe s2c_turn_resolved payload for a settled turn.
+
+    The raw per-action result rows carry private declared intents and
+    resolution mutations; broadcasting them to the party would leak private
+    content, so only an aggregate projection is emitted here.
+
+    Args:
+        turn_id: identifier of the settled turn.
+        results: per-action result rows (used for the action count only).
+    Returns:
+        Sanitized party payload {"turnId", "actionCount", "summary"}.
+    """
+    return {
+        "turnId": str(turn_id),
+        "actionCount": len(results or []),
+        "summary": "本回合行动已分别结算；请查看最新场景叙事后继续描述行动。",
+    }
+
+
 async def _settle_turn_background(app, room_id: str, turn_id: str):
     """Auto-settle a turn when all players have submitted."""
     logger.info("Auto-settling turn %s for room %s", turn_id, room_id)
@@ -1420,8 +1440,12 @@ async def _settle_turn_background(app, room_id: str, turn_id: str):
                     {"turn_id": turn_id, "combat_summary": combat_summary},
                 )
             else:
-                await dispatcher.emit(room_id, "s2c_turn_resolved", "party",
-                                      {"turn_id": turn_id, "narrative": narrative, "actions": results})
+                await dispatcher.emit(
+                    room_id,
+                    "s2c_turn_resolved",
+                    "party",
+                    build_turn_resolved_projection(turn_id, results),
+                )
 
     except Exception as exc:
         logger.error(
@@ -1505,22 +1529,46 @@ def _released_stage_narration(conn, room_id: str, action_id: str) -> str | None:
     return str(text).strip() if isinstance(text, str) and text.strip() else None
 
 
+def _create_background_pipeline(app, conn) -> ResolutionPipeline:
+    """Build one fully wired ResolutionPipeline bound to a caller-provided conn.
+
+    Every background path (single action, collaboration batch, main app) must
+    agree on dependencies: the ProjectionDispatcher carries the app-level cache
+    and spoiler guard, and StateService / ResolutionPipeline share that same
+    dispatcher instance plus the same connection. The caller owns the
+    connection (acquire once, release in finally) and performs the action claim;
+    this helper never claims or closes connections itself.
+
+    Args:
+        app: FastAPI app whose state carries compiler/cache/spoiler_guard/gateway.
+        conn: caller-owned database connection.
+    Returns:
+        A ResolutionPipeline wired to dispatcher/state_service/gateway/guard.
+    """
+    from ..engine import state_service as state_service_module
+
+    dispatcher = ProjectionDispatcher(
+        conn,
+        cache=getattr(app.state, "cache", None),
+        spoiler_guard=getattr(app.state, "spoiler_guard", None),
+    )
+    state_service = state_service_module.StateService(conn, dispatcher=dispatcher)
+    return ResolutionPipeline(
+        conn,
+        compiler=getattr(app.state, "compiler", None) or MechanicCompiler(api_key=""),
+        dispatcher=dispatcher,
+        spoiler_guard=getattr(app.state, "spoiler_guard", None),
+        gateway=getattr(app.state, "gateway", None),
+        state_service=state_service,
+    )
+
+
 async def _resolve_action_background(app, action_id: str):
     pg_db = getattr(app.state, "pg_db", None)
     if pg_db:
         conn = pg_db.get_connection()
         try:
-            compiler = getattr(app.state, "compiler", None) or MechanicCompiler(api_key="")
-            from ..engine.state_service import StateService
-
-            pipeline = ResolutionPipeline(
-                conn,
-                compiler=compiler,
-                dispatcher=ProjectionDispatcher(conn),
-                state_service=StateService(conn),
-                gateway=getattr(app.state, "gateway", None),
-                host_connection_checker=lambda room_id: ws_manager.is_connected(room_id, "host"),
-            )
+            pipeline = _create_background_pipeline(app, conn)
             await pipeline.resolve_action(action_id)
         except Exception as exc:
             logger.error(
@@ -1615,13 +1663,7 @@ async def _resolve_collaboration_batch_background(app, contract_id: str):
             )
             return
         if pg_db:
-            compiler = getattr(app.state, "compiler", None) or MechanicCompiler(api_key="")
-            pipeline = ResolutionPipeline(
-                conn,
-                compiler=compiler,
-                dispatcher=ProjectionDispatcher(conn),
-                host_connection_checker=lambda room_id: ws_manager.is_connected(room_id, "host"),
-            )
+            pipeline = _create_background_pipeline(app, conn)
         else:
             pipeline = getattr(app.state, "pipeline", None)
         if not pipeline:
