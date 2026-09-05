@@ -1,0 +1,459 @@
+<Window x:Class="ApiTestTool.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctrl="clr-namespace:ApiTestTool.Converters"
+        xmlns:vm="clr-namespace:ApiTestTool.ViewModels"
+        Title="AI-Keeper API Test Tool" Height="800" Width="1400"
+        MinHeight="600" MinWidth="1000"
+        WindowStartupLocation="CenterScreen">
+
+    <Window.Resources>
+        <ctrl:JsonPrettyConverter x:Key="JsonPretty"/>
+        <ctrl:HttpMethodColorConverter x:Key="MethodColor"/>
+        <ctrl:BoolToVisibilityConverter x:Key="BoolVis"/>
+        <ctrl:InverseBoolConverter x:Key="InvBool"/>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>  <!-- Auth bar -->
+            <RowDefinition Height="*"/>     <!-- Main content -->
+            <RowDefinition Height="Auto"/>  <!-- Status bar -->
+        </Grid.RowDefinitions>
+
+        <!-- ═══ Auth Bar ═══ -->
+        <Border Grid.Row="0" Background="#282840" BorderBrush="#424260" BorderThickness="0,0,0,1" Padding="8,6">
+            <WrapPanel>
+                <TextBlock Text="AI-Keeper API Tester" FontSize="16" FontWeight="Bold"
+                           Foreground="#2196F3" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                <TextBlock Text="URL:" Foreground="#A0A0C0" VerticalAlignment="Center" Margin="4,0"/>
+                <TextBox Text="{Binding AuthManager.State.BaseUrl, UpdateSourceTrigger=PropertyChanged}"
+                         Width="200" VerticalAlignment="Center" Margin="4,0,12,0"/>
+                <TextBlock Text="Bearer:" Foreground="#A0A0C0" VerticalAlignment="Center" Margin="4,0"/>
+                <TextBox Text="{Binding AuthManager.State.BearerToken, UpdateSourceTrigger=PropertyChanged}"
+                         Width="180" VerticalAlignment="Center" Margin="4,0,2,0"
+                         ToolTip="Bearer Token (Authorization header)"/>
+                <TextBlock Text="Room:" Foreground="#A0A0C0" VerticalAlignment="Center" Margin="4,0"/>
+                <TextBox Text="{Binding AuthManager.State.RoomToken, UpdateSourceTrigger=PropertyChanged}"
+                         Width="140" VerticalAlignment="Center" Margin="4,0,2,0"
+                         ToolTip="X-Room-Token (Player auth)"/>
+                <TextBlock Text="Owner:" Foreground="#A0A0C0" VerticalAlignment="Center" Margin="4,0"/>
+                <TextBox Text="{Binding AuthManager.State.OwnerToken, UpdateSourceTrigger=PropertyChanged}"
+                         Width="140" VerticalAlignment="Center" Margin="4,0,2,0"
+                         ToolTip="X-Owner-Token (Host auth)"/>
+                <Button Content="保存" Width="56" Margin="8,0,0,0" Click="SaveAuth_Click"
+                        ToolTip="保存当前环境到 %APPDATA%"/>
+            </WrapPanel>
+        </Border>
+
+        <!-- ═══ Main Tab Control ═══ -->
+        <TabControl Grid.Row="1" Background="#1E1E2E" BorderThickness="0">
+            <!-- ── Tab 1: API Test ── -->
+            <TabItem Header="  API 测试  ">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="260"/>
+                        <ColumnDefinition Width="3*"/>
+                        <ColumnDefinition Width="4*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Left: Endpoint Tree -->
+                    <Border Grid.Column="0" Background="#282840" BorderBrush="#424260" BorderThickness="0,0,1,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TextBox Grid.Row="0" Margin="6" Tag="筛选端点..." TextChanged="EndpointFilter_TextChanged"/>
+                            <TreeView Grid.Row="1" x:Name="EndpointTree" Margin="0,4,0,0"
+                                      SelectedItemChanged="EndpointTree_SelectedItemChanged"
+                                      Background="Transparent" BorderThickness="0">
+                                <TreeView.ItemTemplate>
+                                    <HierarchicalDataTemplate ItemsSource="{Binding Endpoints}">
+                                        <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="0,2"/>
+                                        <HierarchicalDataTemplate.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="4,1">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding Method}" FontWeight="Bold" FontSize="11"
+                                                                   Foreground="{Binding Method, Converter={StaticResource MethodColor}}"
+                                                                   Width="48"/>
+                                                        <TextBlock Text="{Binding Description}" FontSize="11"
+                                                                   Foreground="#A0A0C0"
+                                                                   TextTrimming="CharacterEllipsis" MaxWidth="180"/>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </HierarchicalDataTemplate.ItemTemplate>
+                                    </HierarchicalDataTemplate>
+                                </TreeView.ItemTemplate>
+                            </TreeView>
+                        </Grid>
+                    </Border>
+
+                    <!-- Center: Request Builder -->
+                    <Border Grid.Column="1" Background="#1E1E2E" Padding="10">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <!-- Method + URL -->
+                                <TextBlock Text="{Binding RequestBuilder.MethodLabel}" Style="{StaticResource HeaderText}"
+                                           Margin="0,0,0,8"/>
+                                <TextBlock Text="{Binding RequestBuilder.UrlPreview}" Foreground="#6C6C8A"
+                                           FontSize="12" Margin="0,0,0,12"/>
+
+                                <!-- Path Params -->
+                                <TextBlock Text="Path 参数" Foreground="#A0A0C0" FontSize="12"
+                                           Visibility="{Binding RequestBuilder.PathFields.Count, Converter={StaticResource BoolVis}}"/>
+                                <ItemsControl ItemsSource="{Binding RequestBuilder.PathFields}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,2">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="120"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Name}" Foreground="#6C6C8A" VerticalAlignment="Center"/>
+                                                <TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- Query Params -->
+                                <TextBlock Text="Query 参数" Foreground="#A0A0C0" FontSize="12" Margin="0,8,0,0"
+                                           Visibility="{Binding RequestBuilder.QueryFields.Count, Converter={StaticResource BoolVis}}"/>
+                                <ItemsControl ItemsSource="{Binding RequestBuilder.QueryFields}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,2">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="120"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Name}" Foreground="#6C6C8A" VerticalAlignment="Center"/>
+                                                <TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- Headers -->
+                                <TextBlock Text="Headers" Foreground="#A0A0C0" FontSize="12" Margin="0,12,0,0"/>
+                                <ItemsControl ItemsSource="{Binding RequestBuilder.HeaderFields}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,2">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="130"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Name}" Foreground="#6C6C8A" VerticalAlignment="Center"/>
+                                                <TextBox Grid.Column="1" Text="{Binding Value, Mode=OneWay}"
+                                                         IsReadOnly="True" Background="#323250"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- Body -->
+                                <TextBlock Text="Request Body" Foreground="#A0A0C0" FontSize="12" Margin="0,12,0,4"/>
+                                <TextBox Text="{Binding RequestBuilder.RequestBody, UpdateSourceTrigger=PropertyChanged}"
+                                         Height="140" AcceptsReturn="True" TextWrapping="Wrap"
+                                         FontFamily="Consolas" FontSize="12"
+                                         VerticalScrollBarVisibility="Auto"
+                                         IsEnabled="{Binding RequestBuilder.HasFileUpload, Converter={StaticResource InvBool}}"/>
+
+                                <!-- File upload -->
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0"
+                                            Visibility="{Binding RequestBuilder.HasFileUpload, Converter={StaticResource BoolVis}}">
+                                    <Button Content="选择文件..." Command="{Binding RequestBuilder.PickFileCommand}"/>
+                                    <TextBlock Text="{Binding RequestBuilder.SelectedFilePath}" Foreground="#A0A0C0"
+                                               VerticalAlignment="Center" Margin="8,0" TextTrimming="CharacterEllipsis"
+                                               MaxWidth="300"/>
+                                </StackPanel>
+
+                                <!-- Send button -->
+                                <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                                    <Button Content="▶ 发送请求" Style="{StaticResource PrimaryButton}"
+                                            Command="{Binding RequestBuilder.SendRequestCommand}"
+                                            Width="120" Height="36"
+                                            IsEnabled="{Binding RequestBuilder.IsSending, Converter={StaticResource InvBool}}"/>
+                                    <TextBlock Text="{Binding RequestBuilder.StatusText}" Foreground="#6C6C8A"
+                                               VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+
+                    <!-- Right: Response Viewer -->
+                    <Border Grid.Column="2" Background="#1E1E2E" Padding="10">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- Status bar -->
+                            <Border Grid.Row="0" Background="#282840" Padding="10" CornerRadius="4"
+                                    Visibility="{Binding ResponseViewer.HasResponse, Converter={StaticResource BoolVis}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Background="{Binding ResponseViewer.StatusColor}" CornerRadius="3" Padding="6,2" Margin="0,0,8,0">
+                                        <TextBlock Text="{Binding ResponseViewer.StatusCode}" FontWeight="Bold"
+                                                   FontSize="16" Foreground="White"/>
+                                    </Border>
+                                    <TextBlock Text="{Binding ResponseViewer.StatusText}" Foreground="#E0E0F0"
+                                               VerticalAlignment="Center" FontSize="14"/>
+                                    <TextBlock Text=" · " Foreground="#6C6C8A" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding ResponseViewer.ElapsedText}" Foreground="#FF9800"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Headers -->
+                            <Expander Grid.Row="1" Header="Response Headers" IsExpanded="False"
+                                      Visibility="{Binding ResponseViewer.HasResponse, Converter={StaticResource BoolVis}}"
+                                      Margin="0,8,0,0" Foreground="#A0A0C0">
+                                <ListBox ItemsSource="{Binding ResponseViewer.ResponseHeaders}"
+                                         MaxHeight="150" Background="#32325A" BorderThickness="0">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock FontSize="11" FontFamily="Consolas">
+                                                <Run Text="{Binding Key}" Foreground="#2196F3"/><Run Text=": " Foreground="#6C6C8A"/><Run Text="{Binding Value}" Foreground="#E0E0F0"/>
+                                            </TextBlock>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Expander>
+
+                            <!-- Response Body -->
+                            <TextBox Grid.Row="2" Text="{Binding ResponseViewer.ResponseBody}"
+                                     IsReadOnly="True" FontFamily="Consolas" FontSize="12"
+                                     TextWrapping="Wrap" AcceptsReturn="True"
+                                     VerticalScrollBarVisibility="Auto"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     Background="#252538" Margin="0,8,0,0"/>
+
+                            <!-- Empty state -->
+                            <TextBlock Grid.Row="2" Text="选择一个端点并点击发送请求，响应将显示在这里。"
+                                       Foreground="#6C6C8A" HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" FontSize="14"
+                                       Visibility="{Binding ResponseViewer.HasResponse, Converter={StaticResource InvBool}}"/>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- ── Tab 2: WebSocket ── -->
+            <TabItem Header="  WebSocket  ">
+                <Grid Background="#1E1E2E" Margin="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Connection bar -->
+                    <Border Grid.Row="0" Background="#282840" Padding="10" CornerRadius="4">
+                        <WrapPanel>
+                            <TextBlock Text="房间:" Foreground="#A0A0C0" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                            <TextBox Text="{Binding WebSocket.RoomId, UpdateSourceTrigger=PropertyChanged}"
+                                     Width="200" Margin="0,0,12,0"/>
+                            <ComboBox SelectedItem="{Binding WebSocket.Role}" Width="80" Margin="0,0,12,0">
+                                <ComboBoxItem Content="player"/>
+                                <ComboBoxItem Content="host"/>
+                            </ComboBox>
+                            <Button Content="连接" Style="{StaticResource GreenButton}"
+                                    Command="{Binding WebSocket.ConnectCommand}"
+                                    IsEnabled="{Binding WebSocket.IsConnected, Converter={StaticResource InvBool}}"
+                                    Width="70" Margin="0,0,8,0"/>
+                            <Button Content="断开" Style="{StaticResource RedButton}"
+                                    Command="{Binding WebSocket.DisconnectCommand}"
+                                    IsEnabled="{Binding WebSocket.IsConnected}"
+                                    Width="70" Margin="0,0,16,0"/>
+                            <TextBlock Text="{Binding WebSocket.ConnectStatus}" Foreground="#FF9800"
+                                       VerticalAlignment="Center" FontWeight="Bold"/>
+                            <Button Content="清空" Margin="12,0,0,0"
+                                    Command="{Binding WebSocket.ClearMessagesCommand}"/>
+                        </WrapPanel>
+                    </Border>
+
+                    <!-- Messages -->
+                    <ListBox Grid.Row="1" ItemsSource="{Binding WebSocket.Messages}"
+                             Background="#252538" Margin="0,8,0,8" BorderThickness="0"
+                             VirtualizingPanel.ScrollUnit="Pixel">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="2,1">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding TimeStr}" Foreground="#6C6C8A" FontSize="11"
+                                                   FontFamily="Consolas" Width="90"/>
+                                        <TextBlock Text="{Binding Arrow}" FontWeight="Bold" Width="20"
+                                                   Foreground="{Binding Direction, Converter={StaticResource MethodColor}}"/>
+                                        <TextBlock Text="{Binding EventType}" Foreground="#A0A0C0"
+                                                   FontSize="11" Width="140" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="{Binding Payload}" Foreground="#E0E0F0"
+                                                   FontSize="11" FontFamily="Consolas"
+                                                   TextTrimming="CharacterEllipsis" MaxWidth="600"/>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- Send bar -->
+                    <Border Grid.Row="2" Background="#282840" Padding="8" CornerRadius="4">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Text="{Binding WebSocket.SendMessage, UpdateSourceTrigger=PropertyChanged}"
+                                     Grid.Column="0" Margin="0,0,8,0"
+                                     ToolTip="发送 JSON 消息到 WebSocket"/>
+                            <Button Content="发送" Grid.Column="1" Width="60"
+                                    Command="{Binding WebSocket.SendCommand}"
+                                    IsEnabled="{Binding WebSocket.IsConnected}"/>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- ── Tab 3: Flows ── -->
+            <TabItem Header="  流程执行  ">
+                <Grid Background="#1E1E2E" Margin="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="2*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Flow list + controls -->
+                    <Border Grid.Column="0" Background="#282840" Padding="10" Margin="0,0,8,0" CornerRadius="4">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="预置流程" Style="{StaticResource HeaderText}" Margin="0,0,0,8"/>
+                            <ListBox Grid.Row="1" ItemsSource="{Binding FlowRunner.Flows}"
+                                     SelectedItem="{Binding FlowRunner.SelectedFlow}"
+                                     Background="Transparent" BorderThickness="0">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="4">
+                                            <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
+                                            <TextBlock Text="{Binding Description}" Foreground="#6C6C8A"
+                                                       FontSize="11" TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <Button Grid.Row="2" Content="▶ 执行流程" Style="{StaticResource PrimaryButton}"
+                                    Command="{Binding FlowRunner.RunFlowCommand}"
+                                    IsEnabled="{Binding FlowRunner.IsRunning, Converter={StaticResource InvBool}}"
+                                    Height="36" Margin="0,8,0,0"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Progress + results -->
+                    <Border Grid.Column="1" Background="#282840" Padding="10" CornerRadius="4">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="执行进度" Style="{StaticResource HeaderText}" Margin="0,0,0,8"/>
+                            <TextBox Grid.Row="1" Text="{Binding FlowRunner.ProgressText, Mode=OneWay}"
+                                     IsReadOnly="True" FontFamily="Consolas" FontSize="12"
+                                     AcceptsReturn="True" TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     Background="#252538" BorderThickness="0"/>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- ── Tab 4: History ── -->
+            <TabItem Header="  请求历史  ">
+                <Grid Background="#1E1E2E" Margin="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3*"/>
+                        <ColumnDefinition Width="4*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- History list -->
+                    <Border Grid.Column="0" Background="#282840" Padding="10" Margin="0,0,8,0" CornerRadius="4">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="请求历史" Style="{StaticResource HeaderText}"/>
+                                <Button Content="清空" Margin="12,0,0,0" FontSize="11"
+                                        Click="ClearHistory_Click"/>
+                            </StackPanel>
+                            <ListBox Grid.Row="1" ItemsSource="{Binding History.Entries}"
+                                     SelectedItem="{Binding History.SelectedEntry}"
+                                     Background="Transparent" BorderThickness="0">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="2">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding Method}" FontWeight="Bold" FontSize="11"
+                                                           Foreground="{Binding Method, Converter={StaticResource MethodColor}}"
+                                                           Width="50"/>
+                                                <TextBlock Text="{Binding Url}" Foreground="#E0E0F0" FontSize="11"
+                                                           TextTrimming="CharacterEllipsis" MaxWidth="300"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="50,0,0,0">
+                                                <Border Background="{Binding StatusColor}" CornerRadius="2" Padding="4,1">
+                                                    <TextBlock Text="{Binding StatusCode}" Foreground="White" FontSize="10"/>
+                                                </Border>
+                                                <TextBlock Foreground="#6C6C8A" FontSize="10" Margin="8,0,0,0">
+                                                    <TextBlock.Text><Binding Path="ElapsedMs" StringFormat="{}ms"/></TextBlock.Text>
+                                                </TextBlock>
+                                                <TextBlock Foreground="#6C6C8A" FontSize="10" Margin="8,0,0,0">
+                                                    <TextBlock.Text><Binding Path="Timestamp" StringFormat="HH:mm:ss"/></TextBlock.Text>
+                                                </TextBlock>
+                                                           Foreground="#6C6C8A" FontSize="10" Margin="8,0,0,0"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </Border>
+
+                    <!-- Detail -->
+                    <Border Grid.Column="1" Background="#282840" Padding="10" CornerRadius="4">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="详情" Style="{StaticResource HeaderText}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="1" Text="Request Body:" Foreground="#A0A0C0" FontSize="11"/>
+                            <TextBox Grid.Row="2" Text="{Binding History.SelectedEntry.RequestBody}"
+                                     IsReadOnly="True" FontFamily="Consolas" FontSize="11"
+                                     AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
+                                     Background="#32325A" BorderThickness="0"/>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+        </TabControl>
+
+        <!-- ═══ Status Bar ═══ -->
+        <Border Grid.Row="2" Background="#282840" BorderBrush="#424260" BorderThickness="0,1,0,0" Padding="8,4">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="AI-Keeper Backend: " Foreground="#6C6C8A" FontSize="11"/>
+                <TextBlock Text="{Binding AuthManager.State.BaseUrl}" Foreground="#E0E0F0" FontSize="11"/>
+                <TextBlock Text=" | " Foreground="#424260" FontSize="11"/>
+                <TextBlock Text="{Binding RequestBuilder.StatusText}" Foreground="#A0A0C0" FontSize="11"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

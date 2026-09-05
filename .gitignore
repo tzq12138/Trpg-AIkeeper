@@ -17,3 +17,6 @@ data/scenarios/
 log/
 .env
 .env.*
+
+tools/ApiTestTool/bin/
+tools/ApiTestTool/obj/

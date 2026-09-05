@@ -1,0 +1,501 @@
+
+=== A. 队伍建议：只理解，不执行 ===
+{
+  "record": {
+    "semantic_record_id": "sem_261f9e937dff",
+    "utterance": {
+      "utterance_id": "utt_d42e9dbf8931",
+      "room_id": "room_hospital",
+      "speaker_character_id": "char_me",
+      "channel": "party",
+      "raw_text": "要不等守卫过去后，我从后门进去看看？",
+      "language": "zh-CN"
+    },
+    "candidate": {
+      "discourse_act": "proposal",
+      "commitment": "proposal",
+      "macro_goal": "等待守卫经过后，从后门进入并观察内部",
+      "steps": [
+        {
+          "step_id": "step_c45eb7a7",
+          "frame": "Wait",
+          "actor_entity_id": "char_me",
+          "target": null,
+          "destination": null,
+          "item": null,
+          "receiver": null,
+          "condition": {
+            "kind": "entity_action",
+            "subject": {
+              "surface": "守卫",
+              "role": "condition_subject",
+              "expected_kinds": [
+                "npc"
+              ],
+              "bound_entity_id": "npc_guard",
+              "candidate_entity_ids": [
+                "npc_guard"
+              ],
+              "confidence": 0.96
+            },
+            "predicate": "pass_by",
+            "value": null
+          },
+          "temporal_relation": null,
+          "constraints": [],
+          "confidence": 0.95
+        },
+        {
+          "step_id": "step_23dea540",
+          "frame": "Move",
+          "actor_entity_id": "char_me",
+          "target": null,
+          "destination": {
+            "surface": "后门",
+            "role": "destination",
+            "expected_kinds": [
+              "location",
+              "object"
+            ],
+            "bound_entity_id": "loc_back_door",
+            "candidate_entity_ids": [
+              "loc_back_door"
+            ],
+            "confidence": 0.97
+          },
+          "item": null,
+          "receiver": null,
+          "condition": null,
+          "temporal_relation": "after:step_c45eb7a7",
+          "constraints": [],
+          "confidence": 0.96
+        },
+        {
+          "step_id": "step_648e78f2",
+          "frame": "Observe",
+          "actor_entity_id": "char_me",
+          "target": {
+            "surface": "后门里面",
+            "role": "target",
+            "expected_kinds": [
+              "location"
+            ],
+            "bound_entity_id": "loc_back_door",
+            "candidate_entity_ids": [
+              "loc_back_door"
+            ],
+            "confidence": 0.96
+          },
+          "destination": null,
+          "item": null,
+          "receiver": null,
+          "condition": null,
+          "temporal_relation": "after:step_23dea540",
+          "constraints": [],
+          "confidence": 0.84
+        }
+      ],
+      "assumptions": [
+        "守卫经过后，后门仍可接近"
+      ],
+      "parser_confidence": 0.93
+    },
+    "ambiguities": [],
+    "risk_level": "none",
+    "handling": "discussion_only",
+    "player_summary": "我把这句话理解为队伍建议，不会执行行动。计划内容：等待守卫经过后，从后门进入并观察内部。",
+    "parser_version": "demo-parser-1.0.0",
+    "semantic_schema_version": "1.0.0"
+  },
+  "action": null
+}
+
+=== B1. 行动草稿：解析并等待确认 ===
+{
+  "record": {
+    "semantic_record_id": "sem_c867d19d68a6",
+    "utterance": {
+      "utterance_id": "utt_a8ef0ca777f1",
+      "room_id": "room_hospital",
+      "speaker_character_id": "char_me",
+      "channel": "party",
+      "raw_text": "我现在等守卫过去后，从后门进去看看，但不碰桌上的信。",
+      "language": "zh-CN"
+    },
+    "candidate": {
+      "discourse_act": "action",
+      "commitment": "confirmed_candidate",
+      "macro_goal": "等待守卫经过后，从后门进入并观察内部",
+      "steps": [
+        {
+          "step_id": "step_b2c20563",
+          "frame": "Wait",
+          "actor_entity_id": "char_me",
+          "target": null,
+          "destination": null,
+          "item": null,
+          "receiver": null,
+          "condition": {
+            "kind": "entity_action",
+            "subject": {
+              "surface": "守卫",
+              "role": "condition_subject",
+              "expected_kinds": [
+                "npc"
+              ],
+              "bound_entity_id": "npc_guard",
+              "candidate_entity_ids": [
+                "npc_guard"
+              ],
+              "confidence": 0.96
+            },
+            "predicate": "pass_by",
+            "value": null
+          },
+          "temporal_relation": null,
+          "constraints": [],
+          "confidence": 0.95
+        },
+        {
+          "step_id": "step_6d45f489",
+          "frame": "Move",
+          "actor_entity_id": "char_me",
+          "target": null,
+          "destination": {
+            "surface": "后门",
+            "role": "destination",
+            "expected_kinds": [
+              "location",
+              "object"
+            ],
+            "bound_entity_id": "loc_back_door",
+            "candidate_entity_ids": [
+              "loc_back_door"
+            ],
+            "confidence": 0.97
+          },
+          "item": null,
+          "receiver": null,
+          "condition": null,
+          "temporal_relation": "after:step_b2c20563",
+          "constraints": [],
+          "confidence": 0.96
+        },
+        {
+          "step_id": "step_1f560614",
+          "frame": "Observe",
+          "actor_entity_id": "char_me",
+          "target": {
+            "surface": "后门里面",
+            "role": "target",
+            "expected_kinds": [
+              "location"
+            ],
+            "bound_entity_id": "loc_back_door",
+            "candidate_entity_ids": [
+              "loc_back_door"
+            ],
+            "confidence": 0.96
+          },
+          "destination": null,
+          "item": null,
+          "receiver": null,
+          "condition": null,
+          "temporal_relation": "after:step_6d45f489",
+          "constraints": [
+            {
+              "kind": "exclude_interaction",
+              "target": {
+                "surface": "桌上的信",
+                "role": "excluded_target",
+                "expected_kinds": [
+                  "item"
+                ],
+                "bound_entity_id": "item_letter",
+                "candidate_entity_ids": [
+                  "item_letter"
+                ],
+                "confidence": 0.96
+              },
+              "value": null
+            }
+          ],
+          "confidence": 0.84
+        }
+      ],
+      "assumptions": [
+        "守卫经过后，后门仍可接近"
+      ],
+      "parser_confidence": 0.93
+    },
+    "ambiguities": [],
+    "risk_level": "medium",
+    "handling": "requires_confirmation",
+    "player_summary": "等待守卫经过后，从后门进入并观察内部；不会互动：桌上的信。请确认后再执行。",
+    "parser_version": "demo-parser-1.0.0",
+    "semantic_schema_version": "1.0.0"
+  },
+  "action": null
+}
+
+=== B2. 玩家确认后：生成 Transaction 命令 ===
+{
+  "record": {
+    "semantic_record_id": "sem_c867d19d68a6",
+    "utterance": {
+      "utterance_id": "utt_a8ef0ca777f1",
+      "room_id": "room_hospital",
+      "speaker_character_id": "char_me",
+      "channel": "party",
+      "raw_text": "我现在等守卫过去后，从后门进去看看，但不碰桌上的信。",
+      "language": "zh-CN"
+    },
+    "candidate": {
+      "discourse_act": "action",
+      "commitment": "confirmed_candidate",
+      "macro_goal": "等待守卫经过后，从后门进入并观察内部",
+      "steps": [
+        {
+          "step_id": "step_b2c20563",
+          "frame": "Wait",
+          "actor_entity_id": "char_me",
+          "target": null,
+          "destination": null,
+          "item": null,
+          "receiver": null,
+          "condition": {
+            "kind": "entity_action",
+            "subject": {
+              "surface": "守卫",
+              "role": "condition_subject",
+              "expected_kinds": [
+                "npc"
+              ],
+              "bound_entity_id": "npc_guard",
+              "candidate_entity_ids": [
+                "npc_guard"
+              ],
+              "confidence": 0.96
+            },
+            "predicate": "pass_by",
+            "value": null
+          },
+          "temporal_relation": null,
+          "constraints": [],
+          "confidence": 0.95
+        },
+        {
+          "step_id": "step_6d45f489",
+          "frame": "Move",
+          "actor_entity_id": "char_me",
+          "target": null,
+          "destination": {
+            "surface": "后门",
+            "role": "destination",
+            "expected_kinds": [
+              "location",
+              "object"
+            ],
+            "bound_entity_id": "loc_back_door",
+            "candidate_entity_ids": [
+              "loc_back_door"
+            ],
+            "confidence": 0.97
+          },
+          "item": null,
+          "receiver": null,
+          "condition": null,
+          "temporal_relation": "after:step_b2c20563",
+          "constraints": [],
+          "confidence": 0.96
+        },
+        {
+          "step_id": "step_1f560614",
+          "frame": "Observe",
+          "actor_entity_id": "char_me",
+          "target": {
+            "surface": "后门里面",
+            "role": "target",
+            "expected_kinds": [
+              "location"
+            ],
+            "bound_entity_id": "loc_back_door",
+            "candidate_entity_ids": [
+              "loc_back_door"
+            ],
+            "confidence": 0.96
+          },
+          "destination": null,
+          "item": null,
+          "receiver": null,
+          "condition": null,
+          "temporal_relation": "after:step_6d45f489",
+          "constraints": [
+            {
+              "kind": "exclude_interaction",
+              "target": {
+                "surface": "桌上的信",
+                "role": "excluded_target",
+                "expected_kinds": [
+                  "item"
+                ],
+                "bound_entity_id": "item_letter",
+                "candidate_entity_ids": [
+                  "item_letter"
+                ],
+                "confidence": 0.96
+              },
+              "value": null
+            }
+          ],
+          "confidence": 0.84
+        }
+      ],
+      "assumptions": [
+        "守卫经过后，后门仍可接近"
+      ],
+      "parser_confidence": 0.93
+    },
+    "ambiguities": [],
+    "risk_level": "medium",
+    "handling": "requires_confirmation",
+    "player_summary": "等待守卫经过后，从后门进入并观察内部；不会互动：桌上的信。请确认后再执行。",
+    "parser_version": "demo-parser-1.0.0",
+    "semantic_schema_version": "1.0.0"
+  },
+  "action": {
+    "action_id": "act_b2e37e835f21",
+    "idempotency_key": "semantic:utt_a8ef0ca777f1",
+    "room_id": "room_hospital",
+    "character_id": "char_me",
+    "source_utterance_id": "utt_a8ef0ca777f1",
+    "source_semantic_record_id": "sem_c867d19d68a6",
+    "action_type": "semantic_action",
+    "macro_goal": "等待守卫经过后，从后门进入并观察内部",
+    "steps": [
+      {
+        "frame": "Wait",
+        "actor_entity_id": "char_me",
+        "target_entity_id": null,
+        "destination_entity_id": null,
+        "item_entity_id": null,
+        "receiver_entity_id": null,
+        "condition": {
+          "kind": "entity_action",
+          "subjectEntityId": "npc_guard",
+          "predicate": "pass_by",
+          "value": null
+        },
+        "temporal_relation": null,
+        "constraints": []
+      },
+      {
+        "frame": "Move",
+        "actor_entity_id": "char_me",
+        "target_entity_id": null,
+        "destination_entity_id": "loc_back_door",
+        "item_entity_id": null,
+        "receiver_entity_id": null,
+        "condition": null,
+        "temporal_relation": "after:step_b2c20563",
+        "constraints": []
+      },
+      {
+        "frame": "Observe",
+        "actor_entity_id": "char_me",
+        "target_entity_id": "loc_back_door",
+        "destination_entity_id": null,
+        "item_entity_id": null,
+        "receiver_entity_id": null,
+        "condition": null,
+        "temporal_relation": "after:step_6d45f489",
+        "constraints": [
+          {
+            "kind": "exclude_interaction",
+            "targetEntityId": "item_letter",
+            "value": null
+          }
+        ]
+      }
+    ],
+    "status": "confirmed"
+  }
+}
+
+=== C. 指代歧义：不执行，只问一个问题 ===
+{
+  "record": {
+    "semantic_record_id": "sem_547a154bfd69",
+    "utterance": {
+      "utterance_id": "utt_20c315d078be",
+      "room_id": "room_hospital",
+      "speaker_character_id": "char_me",
+      "channel": "party",
+      "raw_text": "我把钥匙给她。",
+      "language": "zh-CN"
+    },
+    "candidate": {
+      "discourse_act": "action",
+      "commitment": "confirmed_candidate",
+      "macro_goal": "把钥匙交给一名女性对象",
+      "steps": [
+        {
+          "step_id": "step_1e3a5bdb",
+          "frame": "TransferItem",
+          "actor_entity_id": "char_me",
+          "target": null,
+          "destination": null,
+          "item": {
+            "surface": "钥匙",
+            "role": "item",
+            "expected_kinds": [
+              "item"
+            ],
+            "bound_entity_id": "item_key",
+            "candidate_entity_ids": [
+              "item_key"
+            ],
+            "confidence": 0.98
+          },
+          "receiver": {
+            "surface": "她",
+            "role": "receiver",
+            "expected_kinds": [
+              "character",
+              "npc"
+            ],
+            "bound_entity_id": null,
+            "candidate_entity_ids": [
+              "char_anna",
+              "npc_nurse"
+            ],
+            "confidence": 0.42
+          },
+          "condition": null,
+          "temporal_relation": null,
+          "constraints": [],
+          "confidence": 0.9
+        }
+      ],
+      "assumptions": [],
+      "parser_confidence": 0.9
+    },
+    "ambiguities": [
+      {
+        "field_path": "steps.0.receiver",
+        "surface": "她",
+        "candidate_entity_ids": [
+          "char_anna",
+          "npc_nurse"
+        ],
+        "question": "“她”指的是安娜、护士中的哪一个？"
+      }
+    ],
+    "risk_level": "high",
+    "handling": "needs_clarification",
+    "player_summary": "“她”指的是安娜、护士中的哪一个？",
+    "parser_version": "demo-parser-1.0.0",
+    "semantic_schema_version": "1.0.0"
+  },
+  "action": null
+}
