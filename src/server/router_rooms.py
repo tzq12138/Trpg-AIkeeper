@@ -431,6 +431,7 @@ async def get_room(request: Request, room_id: str):
         "spoiler_level": room.get("spoiler_level", "standard"),
         "speech_routing": room.get("speech_routing", "party_message"),
         "host_autonomy_policy": room.get("host_autonomy_policy", "host_required"),
+        "session_mode": room.get("session_mode") or "",
         "risk_contract": public_risk_contract(room.get("risk_contract")),
         "created_at": str(room.get("created_at", "")),
         "started_at": str(room.get("started_at", "")) if room.get("started_at") else None,

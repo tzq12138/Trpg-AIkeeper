@@ -224,6 +224,16 @@ class TestGetRoom:
         assert result["room_id"] == data["room_id"]
         assert "owner_token" not in result
 
+    def test_get_room_reports_server_derived_session_mode(self, client_with_data):
+        """Room detail must carry session_mode so the Host UI branches on the
+        server-derived mode instead of guessing from autonomy policy."""
+        data = _create_room(client_with_data)
+        res = client_with_data.get(f"/api/rooms/{data['room_id']}")
+        assert res.status_code == 200
+        result = res.json()
+        assert "session_mode" in result
+        assert result["session_mode"] in {"ai_only", "assisted", "host_led", ""}
+
     def test_get_room_not_found(self, client_with_data):
         res = client_with_data.get("/api/rooms/nonexistent")
         assert res.status_code == 404

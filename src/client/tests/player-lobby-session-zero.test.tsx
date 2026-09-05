@@ -16,6 +16,9 @@ import type { SessionZeroDTO } from '../src/shared/types';
 // jsdom does not implement scrollIntoView; the lobby chat auto-scroll needs it.
 Element.prototype.scrollIntoView = Element.prototype.scrollIntoView || (() => {});
 
+// Silences the "environment is not configured to support act(...)" warning.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 // ── mocks ────────────────────────────────────────────────────────────
 
 vi.mock('../src/shared/player-api', () => ({

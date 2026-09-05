@@ -23,6 +23,7 @@ interface RoomData {
   scenario_title?: string;
   speech_routing?: 'party_message' | 'npc_dialogue';
   host_autonomy_policy?: HostAutonomyPolicy;
+  session_mode?: string;
   players: LobbyPlayer[];
 }
 
@@ -42,6 +43,52 @@ function normalizePlayer(p: Record<string, any>): LobbyPlayer {
     is_ready: p.is_ready ?? p.isReady ?? false,
     status: p.status || 'joined',
   };
+}
+
+const SESSION_ZERO_MISSING_LABELS: Record<string, string> = {
+  players: '至少一名玩家',
+  character_rules: '角色规则确认',
+  safety: '安全边界确认',
+  ai_host: 'AI / Host 裁决方式确认',
+  private_data: '私人数据确认',
+  connection: '连接与设备确认',
+  risk_contract: '安全边界（最新版）',
+  ready: '准备就绪',
+};
+
+export interface SessionZeroMissingEntry {
+  character_id: string;
+  missing: string[];
+}
+
+/**
+ * Render the structured AI_ONLY_SESSION_ZERO_INCOMPLETE 409 body without ever
+ * stringifying the detail object (which would display "[object Object]").
+ */
+export function SessionZeroMissingBlock({
+  entries,
+  players,
+}: {
+  entries: SessionZeroMissingEntry[];
+  players: LobbyPlayer[];
+}) {
+  const nameFor = (characterId: string) => {
+    const player = players.find((p) => p.character_id === characterId);
+    return player?.player_name || player?.investigator_name || characterId;
+  };
+  return (
+    <div style={{ marginTop: 12, padding: 12, border: '3px solid var(--bh-red)', background: 'var(--bh-yellow)' }}>
+      <p style={{ fontWeight: 900, fontSize: 14 }}>开始被拒绝：以下准备项尚未完成</p>
+      {entries.map((entry) => (
+        <p key={entry.character_id} style={{ fontSize: 13, marginTop: 6 }}>
+          <strong>{nameFor(entry.character_id)}</strong>：
+          {entry.missing
+            .map((item) => SESSION_ZERO_MISSING_LABELS[item] || item)
+            .join('、') || '未知缺项'}
+        </p>
+      ))}
+    </div>
+  );
 }
 
 export function HostAutonomyPolicyControl({
@@ -85,6 +132,7 @@ export default function HostLobby({ roomId }: { roomId: string }) {
   const [savingScenario, setSavingScenario] = useState(false);
   const [startError, setStartError] = useState('');
   const [notReadyList, setNotReadyList] = useState<LobbyPlayer[]>([]);
+  const [sessionZeroMissing, setSessionZeroMissing] = useState<SessionZeroMissingEntry[]>([]);
   const [savingSpeechRouting, setSavingSpeechRouting] = useState(false);
   const [savingHostAutonomyPolicy, setSavingHostAutonomyPolicy] = useState(false);
   const [sceneTime, setSceneTime] = useState('');
@@ -297,6 +345,7 @@ export default function HostLobby({ roomId }: { roomId: string }) {
     const token = getSlotValue('owner_token') || '';
     setStartError('');
     setNotReadyList([]);
+    setSessionZeroMissing([]);
 
     try {
       const res = await fetch(`/api/rooms/${roomId}/start`, {
@@ -306,11 +355,21 @@ export default function HostLobby({ roomId }: { roomId: string }) {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const token = stageToken || await fetchStageToken();
-        window.location.href = buildStageClientUrl(roomId, token);
+        // The room is running regardless of Stage availability: enter the host
+        // operations console. Stage is an optional link from here on — a
+        // missing/expired Stage token must never reverse a successful start.
+        window.location.href = `/host/${roomId}/console`;
       } else if (data.status === 'not_ready') {
         setNotReadyList(data.not_ready_players || []);
         setStartError('有玩家未准备');
+      } else if (data.detail && typeof data.detail === 'object') {
+        const code = (data.detail as any).code;
+        if (code === 'AI_ONLY_SESSION_ZERO_INCOMPLETE') {
+          setSessionZeroMissing((data.detail as any).missing || []);
+          setStartError('请先补齐准备缺项');
+        } else {
+          setStartError(String((data.detail as any).reason || '开始失败'));
+        }
       } else {
         setStartError(String(data.detail || '开始失败'));
       }
@@ -322,6 +381,7 @@ export default function HostLobby({ roomId }: { roomId: string }) {
   // ── derived ──────────────────────────────────────────────────────
 
   const ownerToken = getSlotValue('owner_token') || '';
+  const isAiOnlyRoom = room?.session_mode === 'ai_only';
   const stageUrl = buildStageClientUrl(roomId, stageToken);
   const unreadyPlayers = players.filter((p) => !p.is_ready);
   const canStart = players.length > 0 && !!scenarioTitle && unreadyPlayers.length === 0;
@@ -464,11 +524,13 @@ export default function HostLobby({ roomId }: { roomId: string }) {
               </p>
             </div>
 
-            <HostAutonomyPolicyControl
-              policy={room?.host_autonomy_policy || 'host_required'}
-              disabled={savingHostAutonomyPolicy}
-              onChange={(policy) => void updateHostAutonomyPolicy(policy)}
-            />
+            {!isAiOnlyRoom && (
+              <HostAutonomyPolicyControl
+                policy={room?.host_autonomy_policy || 'host_required'}
+                disabled={savingHostAutonomyPolicy}
+                onChange={(policy) => void updateHostAutonomyPolicy(policy)}
+              />
+            )}
 
             {/* Start button + reason */}
             {room?.status === 'lobby' && (
@@ -485,8 +547,13 @@ export default function HostLobby({ roomId }: { roomId: string }) {
                   <p className="bh-start-reason">{disabledReason}</p>
                 )}
 
-                {/* Force start when server returns not_ready */}
-                {startError && notReadyList.length > 0 && (
+                {/* Structured AI_ONLY_SESSION_ZERO_INCOMPLETE detail */}
+                {sessionZeroMissing.length > 0 && (
+                  <SessionZeroMissingBlock entries={sessionZeroMissing} players={players} />
+                )}
+
+                {/* Force start when server returns not_ready (non-ai_only rooms) */}
+                {startError && !isAiOnlyRoom && notReadyList.length > 0 && (
                   <div style={{ marginTop: 12, padding: 12, border: '3px solid var(--bh-red)', background: 'var(--bh-yellow)' }}>
                     <p style={{ fontWeight: 900, fontSize: 14 }}>{startError}</p>
                     <p style={{ fontSize: 12, marginTop: 4 }}>
@@ -502,7 +569,7 @@ export default function HostLobby({ roomId }: { roomId: string }) {
                   </div>
                 )}
 
-                {startError && notReadyList.length === 0 && (
+                {startError && notReadyList.length === 0 && sessionZeroMissing.length === 0 && (
                   <p className="bh-start-reason" style={{ borderColor: 'var(--bh-red)' }}>{startError}</p>
                 )}
               </div>
