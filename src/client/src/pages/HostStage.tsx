@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-import { buildHostHeaders } from '../shared/host-auth';
-import { getSlotValue } from '../shared/identity';
+import { buildStageClientHeaders, getStageClientToken } from '../shared/stage-client';
 import {
   normalizePublicStage,
   normalizePublicStagePresentation,
@@ -20,16 +19,18 @@ export default function HostStage({ roomId }: { roomId: string }) {
   const [stage, setStage] = useState<PublicStageData | null>(null);
   const [presentation, setPresentation] = useState<PublicStagePresentation | null>(null);
   const [error, setError] = useState('');
+  const [stageToken] = useState(() => getStageClientToken(roomId));
 
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
+      if (!stageToken) {
+        if (!cancelled) setError('缺少公共舞台访问凭据。请从房主大厅重新打开舞台。');
+        return;
+      }
       try {
         const response = await fetch(`/api/host/${encodeURIComponent(roomId)}/stage-projection`, {
-          headers: buildHostHeaders(
-            getSlotValue('owner_token') || '',
-            getSlotValue('account_token') || '',
-          ),
+          headers: buildStageClientHeaders(stageToken),
         });
         if (!response.ok) throw new Error('stage projection unavailable');
         const payload = await response.json() as Record<string, unknown>;
@@ -38,10 +39,7 @@ export default function HostStage({ roomId }: { roomId: string }) {
           setError('');
         }
         const presentationResponse = await fetch(`/api/host/${encodeURIComponent(roomId)}/stage-presentation`, {
-          headers: buildHostHeaders(
-            getSlotValue('owner_token') || '',
-            getSlotValue('account_token') || '',
-          ),
+          headers: buildStageClientHeaders(stageToken),
         });
         if (!presentationResponse.ok) throw new Error('stage presentation unavailable');
         const presentationPayload = await presentationResponse.json() as Record<string, unknown>;
@@ -59,7 +57,7 @@ export default function HostStage({ roomId }: { roomId: string }) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [roomId]);
+  }, [roomId, stageToken]);
 
   const recentEvents = stage?.recent_events || [];
   const latestNarration = presentation?.available && presentation.narrative_text

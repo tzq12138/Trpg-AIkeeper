@@ -3,6 +3,7 @@ import { getSlotValue } from '../shared/identity';
 import { buildRoomWsUrl } from '../shared/ws-url';
 import { buildHostLaunchChecklist } from '../shared/host-launch-checklist';
 import { updatePublicSceneTime } from '../shared/public-scene-time';
+import { buildStageClientUrl } from '../shared/stage-client';
 import HostCampaignControls from '../components/HostCampaignControls';
 
 // ── types ──────────────────────────────────────────────────────────
@@ -90,6 +91,7 @@ export default function HostLobby({ roomId }: { roomId: string }) {
   const [savingSceneTime, setSavingSceneTime] = useState(false);
   const [sceneTimeError, setSceneTimeError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [stageToken, setStageToken] = useState('');
 
   // ── data fetching ────────────────────────────────────────────────
 
@@ -106,6 +108,25 @@ export default function HostLobby({ roomId }: { roomId: string }) {
   }, [roomId]);
 
   useEffect(() => { loadRoom(); }, [loadRoom]);
+
+  const fetchStageToken = useCallback(async () => {
+    const ownerToken = getSlotValue('owner_token') || '';
+    if (!ownerToken) return '';
+    try {
+      const response = await fetch(`/api/rooms/${roomId}/stage-access`, {
+        headers: { 'X-Owner-Token': ownerToken },
+      });
+      if (!response.ok) return '';
+      const payload = await response.json() as { stage_token?: string };
+      const token = payload.stage_token || '';
+      if (token) setStageToken(token);
+      return token;
+    } catch {
+      return '';
+    }
+  }, [roomId]);
+
+  useEffect(() => { void fetchStageToken(); }, [fetchStageToken]);
 
   useEffect(() => {
     const ownerToken = getSlotValue('owner_token') || '';
@@ -285,7 +306,8 @@ export default function HostLobby({ roomId }: { roomId: string }) {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        window.location.href = `/host/${roomId}/stage`;
+        const token = stageToken || await fetchStageToken();
+        window.location.href = buildStageClientUrl(roomId, token);
       } else if (data.status === 'not_ready') {
         setNotReadyList(data.not_ready_players || []);
         setStartError('有玩家未准备');
@@ -300,6 +322,7 @@ export default function HostLobby({ roomId }: { roomId: string }) {
   // ── derived ──────────────────────────────────────────────────────
 
   const ownerToken = getSlotValue('owner_token') || '';
+  const stageUrl = buildStageClientUrl(roomId, stageToken);
   const unreadyPlayers = players.filter((p) => !p.is_ready);
   const canStart = players.length > 0 && !!scenarioTitle && unreadyPlayers.length === 0;
   const launchChecklist = buildHostLaunchChecklist({
@@ -499,7 +522,7 @@ export default function HostLobby({ roomId }: { roomId: string }) {
                   </a>
                   <a
                     className="bh-button"
-                    href={`/host/${roomId}/stage`}
+                    href={stageUrl}
                     style={{ flex: 1, textAlign: 'center', padding: 16, fontSize: 18 }}
                   >
                     打开公共舞台

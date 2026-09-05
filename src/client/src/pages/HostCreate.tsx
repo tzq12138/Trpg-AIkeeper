@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getSlotValue, setSlotValue } from '../shared/identity';
 import { getScenarioLaunchBadge } from '../shared/host-scenario-card';
+import { buildStageClientUrl } from '../shared/stage-client';
 
 type LaunchableScenario = {
   scenario_id: string;
@@ -12,6 +13,7 @@ type LaunchableScenario = {
 
 export default function HostCreate() {
   const [roomId, setRoomId] = useState('');
+  const [stageToken, setStageToken] = useState('');
   const [scenarios, setScenarios] = useState<LaunchableScenario[]>([]);
   const [selectedScenario, setSelectedScenario] = useState('');
   const [account, setAccount] = useState<any>(null);
@@ -51,6 +53,7 @@ export default function HostCreate() {
       if (!res.ok) { setError(data.detail || '创建失败'); setCreating(false); return; }
       setSlotValue('owner_token', data.owner_token);
       setRoomId(data.room_id);
+      setStageToken(data.stage_token || '');
     } catch (e: any) {
       setError(e.message || '网络错误');
     }
@@ -90,7 +93,7 @@ export default function HostCreate() {
         <p>房间号：<strong>{roomId}</strong></p>
         <div className="bh-action-row">
           <a className="bh-button bh-button--yellow" href={`/host/${roomId}`}>进入大厅</a>
-          <a className="bh-button bh-button--black" href={`/host/${roomId}/stage`}>打开主舞台</a>
+          <a className="bh-button bh-button--black" href={buildStageClientUrl(roomId, stageToken)}>打开主舞台</a>
         </div>
       </section>
     );
