@@ -187,3 +187,145 @@ def test_still_running_action_is_refused_with_not_sealed_reason(client, test_db)
     detail = response.json()["detail"]
     assert detail["code"] == "review_not_available"
     assert "evidence_not_sealed" in detail["reason"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R4 slice B — run_automatic_action_review outcomes.
+# ═══════════════════════════════════════════════════════════════════════════
+
+import pytest
+
+from src.server.engine.automatic_action_review import (
+    REVIEW_MAX_ATTEMPTS,
+    run_automatic_action_review,
+)
+
+
+class _CandidateReviewGateway:
+    """Gateway stub whose review_action_intent returns one valid candidate."""
+
+    async def review_action_intent(self, _context, room_id=None):
+        del room_id
+        return {
+            "candidateExplanation": "冻结文本的本意是检查地板而非门框。",
+            "reason": "重释只基于冻结原文。",
+            "conviction": "medium",
+        }
+
+
+@pytest.mark.parametrize(
+    ("objection", "expected_code"),
+    [
+        ("我不喜欢这次的骰点，想重骰", "disagrees_with_dice"),
+        ("我想改用别的方法来尝试", "alternative_method"),
+        ("事后我知道那里是安全的", "posthoc_information"),
+    ],
+)
+async def test_inadmissible_objections_resolve_review_rejected(
+    client, test_db, objection, expected_code
+):
+    room, joined = _setup_ai_only_completed_action(client, test_db)
+    created = _post_review(client, joined, objection=objection).json()
+    before = test_db.execute(
+        "SELECT runtime_status, state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+
+    outcome = await run_automatic_action_review(client.app.state, test_db, created["review_request_id"])
+
+    assert outcome["status"] == "review_rejected"
+    assert outcome["reason_code"] == expected_code
+    row = test_db.execute(
+        "SELECT status, automatic_resolution FROM action_review_requests "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "resolved"
+    assert row["automatic_resolution"]["reason_code"] == expected_code
+    # The room was never paused and the world state never changed.
+    after = test_db.execute(
+        "SELECT runtime_status, state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert after["runtime_status"] == before["runtime_status"]
+    assert after["state_version"] == before["state_version"]
+
+
+async def test_tampered_evidence_pauses_room_as_system_paused(client, test_db):
+    room, joined = _setup_ai_only_completed_action(client, test_db)
+    created = _post_review(client, joined).json()
+    # Tamper with the sealed snapshot after acceptance.
+    test_db.execute(
+        "UPDATE action_review_requests SET evidence_snapshot = jsonb_set("
+        "evidence_snapshot, '{room,state_version}', '99') "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    )
+    test_db.commit()
+
+    outcome = await run_automatic_action_review(client.app.state, test_db, created["review_request_id"])
+
+    assert outcome["status"] == "system_paused"
+    assert outcome["reason_code"] == "evidence_not_sealed"
+    room_row = test_db.execute(
+        "SELECT runtime_status, integrity_reason FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] == "paused_system"
+    assert room_row["integrity_reason"] == "review_evidence_mismatch"
+
+
+async def test_provider_unavailable_bounded_retry_then_system_paused(client, test_db):
+    room, joined = _setup_ai_only_completed_action(client, test_db)
+    created = _post_review(client, joined).json()
+    # No gateway configured on the app state: provider unavailable.
+    first = await run_automatic_action_review(client.app.state, test_db, created["review_request_id"])
+    assert first["status"] == "pending_retry"
+    assert first["attempt"] == 1
+    row = test_db.execute(
+        "SELECT status, automatic_resolution FROM action_review_requests "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "pending"  # stays re-runnable
+    assert row["automatic_resolution"]["review_attempts"]["count"] == 1
+
+    for _ in range(REVIEW_MAX_ATTEMPTS - 1):
+        await run_automatic_action_review(client.app.state, test_db, created["review_request_id"])
+
+    row = test_db.execute(
+        "SELECT status FROM action_review_requests WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "resolved"
+    room_row = test_db.execute(
+        "SELECT runtime_status FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] == "paused_system"
+
+
+async def test_admissible_objection_with_candidate_waits_for_engine_review(client, test_db):
+    room, joined = _setup_ai_only_completed_action(client, test_db)
+    created = _post_review(client, joined, objection="结算对象理解错了").json()
+    previous_gateway = client.app.state.gateway
+    client.app.state.gateway = _CandidateReviewGateway()
+    try:
+        outcome = await run_automatic_action_review(
+            client.app.state, test_db, created["review_request_id"]
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+    assert outcome["status"] == "awaiting_engine_review"
+    row = test_db.execute(
+        "SELECT status, automatic_resolution FROM action_review_requests "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "pending"  # R5 consumes the candidate
+    assert row["automatic_resolution"]["candidate"]["reason"] == "重释只基于冻结原文。"
+    room_row = test_db.execute(
+        "SELECT runtime_status FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] != "paused_system"

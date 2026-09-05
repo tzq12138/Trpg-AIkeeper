@@ -99,6 +99,25 @@ class HypothesisDisproofSuggestion(BaseModel):
     confidence: Literal["low", "medium", "high"] = "low"
 
 
+class ReviewIntentCandidate(BaseModel):
+    """Engine-validated AI candidate for one automatic action review (R4).
+
+    The gateway may only re-interpret the FROZEN original text it receives in
+    the context; the output is a candidate explanation with reasons and never
+    contains mutations — the Engine validates and applies any correction.
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    candidate_explanation: str = Field(
+        alias="candidateExplanation",
+        default="",
+        max_length=1000,
+        description="Re-interpretation of the frozen original intent text only.",
+    )
+    reason: str = Field(default="", max_length=500)
+    conviction: Literal["low", "medium", "high"] = "low"
+
+
 class KpResponse(BaseModel):
     """Unified KP response — all providers must return this shape."""
     model_config = ConfigDict(populate_by_name=True)

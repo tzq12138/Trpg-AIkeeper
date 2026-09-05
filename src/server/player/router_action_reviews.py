@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 import uuid
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -9,6 +11,7 @@ from ..engine.automatic_action_review import (
     automatic_review_summary,
     build_review_evidence_snapshot,
     review_evidence_hash,
+    run_automatic_action_review,
 )
 from ..engine.host_autonomy import AiOnlyResolutionPolicy, room_session_mode
 from ..events.event_log import EventLog
@@ -16,6 +19,34 @@ from .router_actions_v2 import _require_character
 
 
 router = APIRouter(prefix="/api/player")
+logger = logging.getLogger(__name__)
+
+
+def _schedule_automatic_review_background(app, review_request_id: str) -> None:
+    """Dispatch one accepted case through the unified background machinery.
+
+    Requires the production pg_db pool; tests exercise
+    run_automatic_action_review() directly, and cases without a pool stay
+    pending until the scheduler/real-runner picks them up (R7/V3 scenario).
+    """
+    pg_db = getattr(app.state, "pg_db", None)
+    if pg_db is None:
+        return
+
+    async def _run() -> None:
+        conn = pg_db.get_connection()
+        try:
+            await run_automatic_action_review(app, conn, review_request_id)
+        except Exception as exc:
+            logger.error(
+                "Automatic action review failed review=%s error_type=%s",
+                review_request_id,
+                type(exc).__name__,
+            )
+        finally:
+            conn.close()
+
+    asyncio.create_task(_run())
 
 
 class ActionReviewCreate(BaseModel):
@@ -191,13 +222,18 @@ async def create_action_review(
     if not action:
         raise HTTPException(404, detail={"code": "action_not_found"})
     if _is_ai_only(conn, str(action["room_id"])):
-        return _accept_automatic_review(
+        accepted = _accept_automatic_review(
             conn,
             dict(action),
             character,
             body,
             idempotency_key.strip(),
         )
+        _schedule_automatic_review_background(
+            request.app,
+            accepted["review_request_id"],
+        )
+        return accepted
     if action["status"] not in (
         "resolving",
         "awaiting_player_choice",

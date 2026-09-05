@@ -28,6 +28,15 @@ from ..scenario.content_package import ContentPackage
 
 logger = logging.getLogger(__name__)
 _IMPORT_STRUCTURE_TIMEOUT_SECONDS = 180
+
+_AUTOMATIC_REVIEW_SYSTEM_PROMPT = (
+    "你是跑团主持人系统的自动复核助手。你只能重新解释下方冻结的玩家原始行动文本"
+    "（frozen_intent），异议文本仅用于定位可疑点。禁止引入结算后才知道的秘密、禁止"
+    "采纳玩家改口后的新说法、禁止输出任何状态修改。"
+    "只输出 JSON：{\"candidateExplanation\": \"对冻结原文的候选重释\", "
+    "\"reason\": \"简短理由\", \"conviction\": \"low|medium|high\"}。"
+    "若冻结文本本身没有歧义则 conviction 必须为 low。"
+)
 _AUTHORITATIVE_AUDIT_TASKS = {"analyze_director_action", "narrate_action"}
 _DETERMINISTIC_FALLBACK_TASKS = {
     "generate_narrative",
@@ -175,6 +184,7 @@ TASK_SCHEMAS: dict[str, Any] = {
     "suggest_scene_images": None,       # validated by scenario review service
     "suggest_scenario_images": None,    # validated by scenario review service
     "analyze_director_action": DirectorPlanDTO,
+    "review_action_intent": None,      # validated by the engine-side review core
     "narrate_action": None,            # validated after local action_id/provider_source injection
     "query_knowledge": KnowledgeAnswer,
     "resolve_sanity": KpResponse,
@@ -534,6 +544,48 @@ class AiGateway:
         try:
             validated = NarrationResultDTO(**result)
         except Exception:
+            return None
+        return validated.model_dump(mode="json", by_alias=True)
+
+    async def review_action_intent(
+        self,
+        context: dict,
+        room_id: str | None = None,
+    ) -> dict | None:
+        """Ask for one candidate re-interpretation of frozen action text (R4).
+
+        The provider receives only the frozen original intent and the
+        objection-as-suspicion-locator; it never sees post-resolution secrets
+        or the player's revised story. Returns the engine-validated candidate
+        shape, or None when every provider failed.
+
+        Args:
+            context: must contain the frozen action text and the objection.
+            room_id: optional room scope for provider routing/audit.
+        Returns:
+            Candidate dict (candidateExplanation/reason/conviction) or None.
+        """
+        from .contracts import ReviewIntentCandidate
+
+        prepared = {
+            "system_prompt": _AUTOMATIC_REVIEW_SYSTEM_PROMPT,
+            "user_message": json.dumps(context, ensure_ascii=False),
+        }
+        result = await self._call_providers(
+            "review_action_intent",
+            prepared,
+            room_id,
+            disable_local_fallback=True,
+            audit_context=context,
+            template_version="review-v1",
+        )
+        if isinstance(result, ProviderFailure) or not isinstance(result, dict):
+            return None
+        try:
+            validated = ReviewIntentCandidate(**result)
+        except Exception:
+            return None
+        if not validated.candidate_explanation:
             return None
         return validated.model_dump(mode="json", by_alias=True)
 

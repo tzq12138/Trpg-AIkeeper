@@ -1580,3 +1580,66 @@ async def test_structure_content_package_falls_back_to_text_chain_when_canonical
     assert mcp.calls[1][1]["rawText"] == canonical_text
     assert deepseek.calls[0][1]["rawText"] == canonical_text
     assert local.calls == []
+
+
+# ── R4 slice B: review_action_intent gateway task contract ──
+
+
+@pytest.mark.asyncio
+async def test_review_action_intent_returns_validated_candidate(test_db):
+    gateway = AiGateway(db_conn=test_db)
+    gateway._providers = {
+        "fake": FakeProvider(
+            {
+                "candidateExplanation": "冻结文本本意是检查地板。",
+                "reason": "只基于冻结原文的重释。",
+                "conviction": "medium",
+            }
+        )
+    }
+    gateway._provider_order = ["fake"]
+    result = await gateway.review_action_intent(
+        {"frozen_intent": "我检查了门框", "objection": "结算对象理解错了"},
+        room_id="room-review-gw",
+    )
+    assert result is not None
+    assert result["candidateExplanation"] == "冻结文本本意是检查地板。"
+    assert result["reason"]
+    assert result["conviction"] == "medium"
+    # The candidate never carries mutations.
+    assert "mutations" not in result
+
+
+@pytest.mark.asyncio
+async def test_review_action_intent_rejects_missing_explanation_or_bad_shape(test_db):
+    for raw in (
+        {"reason": "没有候选解释", "conviction": "low"},
+        {"candidateExplanation": "", "reason": "空", "conviction": "high"},
+        {"candidateExplanation": 123, "reason": "类型错", "conviction": "low"},
+        "not a dict",
+    ):
+        gateway = AiGateway(db_conn=test_db)
+        gateway._providers = {"fake": FakeProvider(raw)}
+        gateway._provider_order = ["fake"]
+        result = await gateway.review_action_intent(
+            {"frozen_intent": "原文", "objection": "异议"},
+            room_id="room-review-gw",
+        )
+        assert result is None
+
+
+@pytest.mark.asyncio
+async def test_review_action_intent_provider_failure_returns_none(test_db):
+    class _RaisingProvider(FakeProvider):
+        async def call(self, task_type, context):
+            del task_type, context
+            raise TimeoutError("provider down")
+
+    gateway = AiGateway(db_conn=test_db)
+    gateway._providers = {"fake": _RaisingProvider({})}
+    gateway._provider_order = ["fake"]
+    result = await gateway.review_action_intent(
+        {"frozen_intent": "原文", "objection": "异议"},
+        room_id="room-review-gw",
+    )
+    assert result is None

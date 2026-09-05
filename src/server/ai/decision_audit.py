@@ -27,11 +27,15 @@ _PROPOSAL_KEYS_BY_TASK = {
         "context_version", "director_plan_digest", "fact_refs",
         "redacted_citations", "style_pack_version", "provider_source", "status",
     },
+    "review_action_intent": {
+        "candidate_explanation", "reason", "conviction", "analysis_source",
+    },
 }
 _CONTEXT_KEYS = {
     "room_id", "state_version", "context_version", "current_scene",
     "declared_intent", "intent_type", "action_id",
     "risk_contract_hash", "rule_version", "template_version", "conditions",
+    "objection", "frozen_intent", "evidence_hash", "review_request_id",
 }
 _CITATION_KEYS = {
     "citation_id", "content_item_id", "source_part_id", "source_ref", "version",
