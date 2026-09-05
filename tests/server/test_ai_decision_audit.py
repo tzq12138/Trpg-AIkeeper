@@ -1536,7 +1536,7 @@ async def test_failed_authoritative_provider_call_is_short_lived_diagnostic(test
     assert row == {
         "record_kind": "diagnostic",
         "decision_audit_id": None,
-        "error_message": "",
+        "error_message": "provider_unavailable",
     }
 
 

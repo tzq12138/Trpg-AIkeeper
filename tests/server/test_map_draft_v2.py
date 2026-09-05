@@ -329,8 +329,30 @@ def test_golden_module_install_builds_a_ready_cited_runtime_package(client, test
     payload = installed.json()
     assert payload["runtimePackage"]["gate_status"] == "ready"
     runtime_package = payload["runtimePackage"]["runtime_package"]
+    assert runtime_package["runtime_contract_version"] == "v1"
+    assert {
+        "purpose",
+        "pressure_clock",
+        "escalation_events",
+        "improv_boundaries",
+    } <= set(runtime_package["semantic_scenes"][0])
+    assert {
+        "importance",
+        "goals",
+        "knowledge_fact_refs",
+        "secret_fact_refs",
+        "reaction_rules",
+    } <= set(runtime_package["npc_states"][0])
+    assert {
+        "importance",
+        "alternative_sources",
+        "failure_outcome",
+        "public_version",
+        "private_version",
+    } <= set(runtime_package["clue_dependencies"][0])
     assert runtime_package["runtime_policy"] == {
         "runtime_version": "v2",
+        "runtime_contract_version": "v1",
         "session_mode": "ai_only",
         "state_scope": "room_run",
         "archive_on_end": True,

@@ -521,6 +521,27 @@ def test_director_analysis_cancels_a_slow_provider_at_the_action_deadline(
     assert response.json()["adjudication_stage"] == "host_exception_required"
 
 
+def test_director_analysis_passes_the_bounded_provider_timeout(client, test_db):
+    from src.server.player import router_actions_v2
+
+    _, _, player_token = _setup_player(client, test_db)
+    gateway = _RecordingDirectorGateway()
+    previous_gateway = getattr(client.app.state, "gateway", None)
+    client.app.state.gateway = gateway
+    try:
+        response = client.post(
+            "/api/player/action-drafts/analyze",
+            headers={"X-Room-Token": player_token},
+            json={"declared_intent": "I try something impossible."},
+        )
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    assert response.status_code == 200
+    assert gateway.contexts[0]["timeout_seconds"] == 55
+    assert router_actions_v2._DIRECTOR_ANALYSIS_TIMEOUT_SECONDS == 55
+
+
 def test_director_analysis_redacts_backstage_entry_references_from_player_summary(
     client,
     test_db,

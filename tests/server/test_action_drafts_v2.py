@@ -867,6 +867,35 @@ def test_completed_room_rejects_action_confirmation(client, test_db):
     assert response.json()["detail"]["code"] == "room_not_active"
 
 
+def test_owner_paused_room_rejects_action_draft_confirmation(client, test_db):
+    """Draft confirmation is a game-action entry point and must honor a pause."""
+    room_id, _, player_token = _setup_player(client, test_db)
+    headers = {"X-Room-Token": player_token}
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={"declared_intent": "我继续调查。"},
+    ).json()
+    test_db.execute(
+        "UPDATE rooms SET runtime_status = 'paused_by_owner', "
+        "pause_mode = 'soft_pause' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+
+    response = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "paused-draft-confirm"},
+        json={"confirmations": draft["confirmation_requirements"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "room_paused_by_owner"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM actions WHERE room_id = %s", (room_id,)
+    ).fetchone()["count"] == 0
+
+
 def test_patch_draft_reanalyzes_and_keeps_revision_history(client, test_db):
     _, _, player_token = _setup_player(client, test_db)
     headers = {"X-Room-Token": player_token}
@@ -925,6 +954,63 @@ def test_confirm_draft_is_idempotent_and_records_timeline(client, test_db):
     assert first.json()["can_cancel"] is True
     assert first.json()["timeline"][0]["status"] == "queued"
     assert test_db.execute("SELECT COUNT(*) AS count FROM actions").fetchone()["count"] == 1
+
+
+def test_first_queued_ai_only_action_freezes_the_runtime_contract(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """The queue boundary is a fallback freeze point for a legacy active room."""
+    room_id, _, player_token = _setup_player(client, test_db)
+    _bind_ai_only_runtime(test_db, room_id)
+    test_db.execute(
+        "UPDATE rooms SET status = 'active', runtime_status = 'running', "
+        "session_mode = 'ai_only' WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.commit()
+    calls = []
+
+    def record_freeze(conn, frozen_room_id, *, reason, action_id=None):
+        calls.append(
+            {
+                "conn": conn,
+                "room_id": frozen_room_id,
+                "reason": reason,
+                "action_id": action_id,
+            }
+        )
+        return {}
+
+    monkeypatch.setattr(
+        "src.server.engine.runtime_governance.freeze_room_runtime_contract",
+        record_freeze,
+    )
+    headers = {"X-Room-Token": player_token}
+    draft = client.post(
+        "/api/player/action-drafts/analyze",
+        headers=headers,
+        json={
+            "declared_intent": "我尝试帮助受伤的保安。",
+            "intent_type": "skill_check",
+            "params": {"skillName": "急救"},
+        },
+    ).json()
+
+    confirmed = client.post(
+        f"/api/player/action-drafts/{draft['draft_id']}/confirm",
+        headers={**headers, "Idempotency-Key": "freeze-on-queued-action"},
+        json={"confirmations": draft["confirmation_requirements"]},
+    )
+
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["status"] == "queued"
+    assert len(calls) == 1
+    assert calls[0]["conn"] is not None
+    assert calls[0]["room_id"] == room_id
+    assert calls[0]["reason"] == "first_authoritative_action_queued"
+    assert calls[0]["action_id"] == confirmed.json()["action_id"]
 
 
 def test_confirm_draft_is_idempotent_under_concurrent_requests(client, test_db, monkeypatch):
@@ -1204,6 +1290,110 @@ def test_ai_only_clarification_revision_cannot_reopen_host_exception_route(
     assert revised["requires_confirmation"] is False
     assert revised["adjudication_stage"] == "player_clarification_required"
     assert 2 <= len(revised["candidate_interpretations"]) <= 3
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM actions WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"] == 0
+
+
+def test_ai_only_confirm_rejects_legacy_host_exception_draft_without_creating_action(
+    client,
+    test_db,
+):
+    room_id, character_id, player_token = _setup_player(client, test_db)
+    _bind_ai_only_runtime(test_db, room_id)
+    analysis = {
+        "resolution_route": "host_exception",
+        "confirmation_requirements": ["host_exception"],
+        "requires_confirmation": True,
+        "visibility": "public",
+        "intent_contract": {
+            "target": "当前场景",
+            "ambiguities": [],
+        },
+    }
+    test_db.execute(
+        "INSERT INTO action_drafts "
+        "(draft_id, room_id, character_id, base_state_version, intent_type, "
+        "declared_intent, params, status, analysis) "
+        "VALUES ('legacy-ai-only-host-draft', %s, %s, 0, 'dialogue', "
+        "'一个旧的 Host 异常草稿', '{}', 'awaiting_confirmation', %s)",
+        (room_id, character_id, json.dumps(analysis, ensure_ascii=False)),
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/player/action-drafts/legacy-ai-only-host-draft/confirm",
+        headers={
+            "X-Room-Token": player_token,
+            "Idempotency-Key": "legacy-ai-only-host-confirm",
+        },
+        json={"confirmations": ["host_exception"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "ai_only_host_exception_forbidden"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM actions WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()["count"] == 0
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM action_status_events",
+    ).fetchone()["count"] == 0
+
+
+def test_frozen_ai_only_mode_survives_runtime_package_policy_mutation(
+    client,
+    test_db,
+):
+    """Authoritative action policy reads the persisted room contract, not a mutable package."""
+    room_id, character_id, player_token = _setup_player(client, test_db)
+    _bind_ai_only_runtime(test_db, room_id)
+    package = test_db.execute(
+        "SELECT runtime_package_version_id FROM rooms WHERE room_id = %s",
+        (room_id,),
+    ).fetchone()
+    test_db.execute(
+        "UPDATE rooms SET session_mode = 'ai_only', session_mode_frozen_at = NOW() "
+        "WHERE room_id = %s",
+        (room_id,),
+    )
+    test_db.execute(
+        "UPDATE runtime_package_versions SET runtime_package = %s "
+        "WHERE runtime_package_version_id = %s",
+        (
+            json.dumps({"runtime_policy": {"session_mode": "assisted"}}),
+            package["runtime_package_version_id"],
+        ),
+    )
+    analysis = {
+        "resolution_route": "host_exception",
+        "confirmation_requirements": ["host_exception"],
+        "requires_confirmation": True,
+        "visibility": "public",
+        "intent_contract": {"target": "当前场景", "ambiguities": []},
+    }
+    test_db.execute(
+        "INSERT INTO action_drafts "
+        "(draft_id, room_id, character_id, base_state_version, intent_type, "
+        "declared_intent, params, status, analysis) "
+        "VALUES ('mutated-runtime-ai-only-draft', %s, %s, 0, 'dialogue', "
+        "'运行包已被修改的旧草稿', '{}', 'awaiting_confirmation', %s)",
+        (room_id, character_id, json.dumps(analysis, ensure_ascii=False)),
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/player/action-drafts/mutated-runtime-ai-only-draft/confirm",
+        headers={
+            "X-Room-Token": player_token,
+            "Idempotency-Key": "mutated-runtime-ai-only-confirm",
+        },
+        json={"confirmations": ["host_exception"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "ai_only_host_exception_forbidden"
     assert test_db.execute(
         "SELECT COUNT(*) AS count FROM actions WHERE room_id = %s",
         (room_id,),

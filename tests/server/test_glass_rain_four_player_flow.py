@@ -122,6 +122,12 @@ async def test_glass_rain_four_players_complete_authoritative_runtime(
     monkeypatch,
 ):
     monkeypatch.setenv("JWT_SECRET", "glass-rain-four-player-secret")
+    # Keep this four-player runtime test on its compact, qualified CoC7 fixture;
+    # the real 380-page authority gate is exercised separately.
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
     installed, tokens, templates = _install_glass_rain(client, test_db)
     room, players, state_service = _create_started_room(
         client,

@@ -111,6 +111,169 @@ def test_player_review_request_creates_non_mutating_ai_suggestion(client, test_d
     assert after_version == before_version
 
 
+def test_ai_only_player_review_does_not_enqueue_host_review(client, test_db):
+    room, joined = _setup_completed_action(client, test_db)
+    scenario = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    package_id = f"review-ai-only-{room['room_id']}"
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, "
+        "gate_status, input_checksum, runtime_package, created_by) "
+        "VALUES (%s, %s, 1, 'ready', 'review-ai-only', %s, 'test')",
+        (
+            package_id,
+            scenario["scenario_version_id"],
+            json.dumps({"runtime_policy": {"session_mode": "ai_only"}}),
+        ),
+    )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = %s WHERE room_id = %s",
+        (package_id, room["room_id"]),
+    )
+    test_db.commit()
+
+    response = client.post(
+        "/api/player/actions/review-action/review-requests",
+        headers={"X-Room-Token": joined["player_token"]},
+        json={"objection": "请重新检查这次规则解释"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "AI_ONLY_HOST_ADJUDICATION_DISABLED"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM action_review_requests "
+        "WHERE action_id = 'review-action'",
+    ).fetchone()["count"] == 0
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM events "
+        "WHERE room_id = %s AND audience = 'host' "
+        "AND event_type = 's2c_action_review_requested'",
+        (room["room_id"],),
+    ).fetchone()["count"] == 0
+
+
+def test_ai_only_host_review_endpoint_rejects_legacy_review(client, test_db):
+    room, joined = _setup_completed_action(client, test_db)
+    scenario = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    package_id = f"review-host-guard-{room['room_id']}"
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, "
+        "gate_status, input_checksum, runtime_package, created_by) "
+        "VALUES (%s, %s, 1, 'ready', 'review-host-guard', %s, 'test')",
+        (
+            package_id,
+            scenario["scenario_version_id"],
+            json.dumps({"runtime_policy": {"session_mode": "ai_only"}}),
+        ),
+    )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = %s WHERE room_id = %s",
+        (package_id, room["room_id"]),
+    )
+    test_db.execute(
+        "INSERT INTO action_review_requests "
+        "(review_request_id, action_id, character_id, objection) "
+        "VALUES ('legacy-ai-only-review', 'review-action', %s, 'legacy review')",
+        (joined["character_id"],),
+    )
+    test_db.commit()
+
+    response = client.get(
+        f"/api/host/{room['room_id']}/action-reviews",
+        headers={"X-Owner-Token": room["owner_token"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "AI_ONLY_HOST_ADJUDICATION_DISABLED"
+
+
+def test_ai_only_host_skip_character_is_not_a_manual_adjudication_path(client, test_db):
+    room, _joined = _setup_completed_action(client, test_db)
+    scenario = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    package_id = f"skip-host-guard-{room['room_id']}"
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, "
+        "gate_status, input_checksum, runtime_package, created_by) "
+        "VALUES (%s, %s, 1, 'ready', 'skip-host-guard', %s, 'test')",
+        (
+            package_id,
+            scenario["scenario_version_id"],
+            json.dumps({"runtime_policy": {"session_mode": "ai_only"}}),
+        ),
+    )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = %s WHERE room_id = %s",
+        (package_id, room["room_id"]),
+    )
+    test_db.commit()
+
+    response = client.post(
+        f"/api/rooms/{room['room_id']}/turns/legacy-turn/skip-character",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"character_id": "any", "policy": "idle"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "AI_ONLY_HOST_ADJUDICATION_DISABLED"
+
+
+def test_ai_only_owner_cannot_restore_arbitrary_checkpoint(client, test_db):
+    """Frozen D11: in ai_only the Owner must not select a checkpoint; the
+    legacy restore endpoint must fail closed until system-generated recovery
+    proposals exist."""
+    room, _joined = _setup_completed_action(client, test_db)
+    scenario = test_db.execute(
+        "SELECT scenario_version_id FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    package_id = f"restore-guard-{room['room_id']}"
+    test_db.execute(
+        "INSERT INTO runtime_package_versions "
+        "(runtime_package_version_id, scenario_version_id, package_version_number, "
+        "gate_status, input_checksum, runtime_package, created_by) "
+        "VALUES (%s, %s, 1, 'ready', 'restore-guard', %s, 'test')",
+        (
+            package_id,
+            scenario["scenario_version_id"],
+            json.dumps({"runtime_policy": {"session_mode": "ai_only"}}),
+        ),
+    )
+    test_db.execute(
+        "UPDATE rooms SET runtime_package_version_id = %s WHERE room_id = %s",
+        (package_id, room["room_id"]),
+    )
+    test_db.commit()
+
+    response = client.post(
+        f"/api/rooms/{room['room_id']}/restore/legacy-checkpoint",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={
+            "proposal": {
+                "mode": "checkpoint_restore",
+                "checkpointId": "legacy-checkpoint",
+            },
+            "dryRunToken": "not-needed",
+            "confirm": True,
+            "reason": "test",
+            "confirmations": {"proposalHash": "x", "stateVersion": 1},
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "AI_ONLY_HOST_ADJUDICATION_DISABLED"
+
+
 def test_player_cannot_review_queued_action_or_another_players_action(client, test_db):
     room, joined = _setup_completed_action(client, test_db)
     other = client.post(f"/api/player/rooms/{room['room_id']}/join").json()

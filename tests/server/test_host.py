@@ -163,6 +163,41 @@ class TestPublicStageProjection:
 
 
 class TestHostStoreSnapshot:
+    def test_stage_client_uses_read_only_stage_credentials_not_owner_credentials(
+        self,
+        client,
+        test_db,
+    ):
+        from tests.server.conftest import create_room, setup_auth_test_data
+
+        setup_auth_test_data(test_db)
+        room = create_room(client)
+
+        owner_stage = client.get(
+            f"/api/host/{room['room_id']}/stage-projection",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+        assert owner_stage.status_code == 403, owner_stage.text
+
+        access = client.get(
+            f"/api/rooms/{room['room_id']}/stage-access",
+            headers={"X-Owner-Token": room["owner_token"]},
+        )
+        assert access.status_code == 200, access.text
+        stage_token = access.json()["stage_token"]
+        projection = client.get(
+            f"/api/host/{room['room_id']}/stage-projection",
+            headers={"X-Stage-Token": stage_token},
+        )
+        assert projection.status_code == 200, projection.text
+        assert "queueStatus" not in projection.json()
+
+        write_attempt = client.post(
+            f"/api/host/{room['room_id']}/presentation/play",
+            headers={"X-Stage-Token": stage_token},
+        )
+        assert write_attempt.status_code == 403
+
     def test_owner_can_advance_presentation_without_mutating_world_state(self, client, test_db):
         from tests.server.conftest import create_room, setup_auth_test_data
         from src.server.host.router_host import get_host_store

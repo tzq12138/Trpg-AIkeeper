@@ -49,13 +49,17 @@ def _install_glass_rain(client, test_db):
     create_account(test_db, "acc-player-4", "testplayer4", "player")
     test_db.execute(
         "INSERT INTO rule_sets "
-        "(rule_set_id, name, slug, system, license_type, created_by, status) "
-        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', 'open', 'test', 'published')"
+        "(rule_set_id, name, slug, system, is_base, license_type, created_by, status) "
+        "VALUES ('coc7-base', 'CoC7', 'coc7', 'coc7', TRUE, 'open', 'test', 'published')"
     )
     test_db.execute(
         "INSERT INTO rule_set_versions "
-        "(rule_set_version_id, rule_set_id, version_number, status, created_by) "
-        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', 'test')"
+        "(rule_set_version_id, rule_set_id, version_number, status, runtime_eligible, created_by) "
+        "VALUES ('coc7-base-v1', 'coc7-base', 1, 'published', TRUE, 'test')"
+    )
+    test_db.execute(
+        "INSERT INTO rule_version_publication_gates (rule_set_version_id, status) "
+        "VALUES ('coc7-base-v1', 'ready')"
     )
     test_db.commit()
     tokens = {
@@ -227,6 +231,257 @@ def _insert_v2_action(
     return action_id
 
 
+def test_ai_only_owner_end_is_an_aborted_termination_not_an_authored_ending(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """The room owner may terminate an AI-only run, but may not author its ending."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, _players, _state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+
+    response = client.post(
+        f"/api/rooms/{room['room_id']}/end",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={
+            "ending_type": "victory",
+            "ending_name": "房主指定的胜利",
+            "summary": "不应由房主写入的结局文本",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ending_type"] == "aborted"
+    assert payload["ending_status"] == "aborted"
+    assert payload["ending_id"] is None
+    assert payload["termination_reason"] == "owner_terminated"
+    room_row = test_db.execute(
+        "SELECT status, runtime_status, campaign_lifecycle_status, ending_status, "
+        "termination_reason, ending_id FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["status"] == "completed"
+    assert room_row["runtime_status"] == "ended"
+    assert room_row["campaign_lifecycle_status"] == "finalized"
+    assert room_row["ending_status"] == "aborted"
+    assert room_row["termination_reason"] == "owner_terminated"
+    assert room_row["ending_id"] is None
+    archive = test_db.execute(
+        "SELECT ending_type, summary FROM campaign_archives WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert archive["ending_type"] == "aborted"
+    assert "房主指定的胜利" not in archive["summary"]
+
+
+def test_ai_only_admin_state_patches_are_rejected_before_mutation(
+    client,
+    test_db,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, players, _state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+    admin_headers = {"Authorization": f"Bearer {tokens['admin']}"}
+    character_id = players[0]["character_id"]
+    before = test_db.execute(
+        "SELECT rooms.status AS room_status, xlsx_data FROM rooms LEFT JOIN characters "
+        "ON characters.room_id = rooms.room_id "
+        "WHERE rooms.room_id = %s AND characters.character_id = %s",
+        (room["room_id"], character_id),
+    ).fetchone()
+
+    room_response = client.patch(
+        f"/api/admin/rooms/{room['room_id']}",
+        headers=admin_headers,
+        json={"status": "completed"},
+    )
+    assert room_response.status_code == 409, room_response.text
+    assert room_response.json()["detail"]["code"] == "AI_ONLY_ADMIN_STATE_PATCH_FORBIDDEN"
+    character_response = client.patch(
+        f"/api/admin/characters/{character_id}",
+        headers=admin_headers,
+        json={"hp": 1, "is_ready": False},
+    )
+    assert character_response.status_code == 409, character_response.text
+    assert character_response.json()["detail"]["code"] == "AI_ONLY_ADMIN_STATE_PATCH_FORBIDDEN"
+    after = test_db.execute(
+        "SELECT rooms.status AS room_status, xlsx_data FROM rooms LEFT JOIN characters "
+        "ON characters.room_id = rooms.room_id "
+        "WHERE rooms.room_id = %s AND characters.character_id = %s",
+        (room["room_id"], character_id),
+    ).fetchone()
+    assert after["room_status"] == before["room_status"] == "active"
+    assert after["xlsx_data"] == before["xlsx_data"]
+
+
+def test_ai_only_force_start_cannot_bypass_session_zero_or_readiness(
+    client,
+    test_db,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, _templates = _install_glass_rain(client, test_db)
+    created = client.post(
+        "/api/rooms",
+        headers={"Authorization": f"Bearer {tokens['admin']}"},
+        json={"scenario_id": installed["scenarioId"]},
+    )
+    assert created.status_code == 200, created.text
+    room = created.json()
+
+    response = client.post(
+        f"/api/rooms/{room['room_id']}/start",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"force_start": True, "reason": "跳过准备", "confirm": True},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "AI_ONLY_SESSION_ZERO_INCOMPLETE"
+    room_row = test_db.execute(
+        "SELECT status, runtime_status FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["status"] == "lobby"
+    assert room_row["runtime_status"] == "lobby"
+
+
+def test_ai_only_session_zero_freezes_mode_and_room_version_bundle(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """A started AI-only room must keep its chosen mode and complete version set."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, _players, _state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+
+    mode_change = client.patch(
+        f"/api/rooms/{room['room_id']}/session-mode",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"session_mode": "assisted"},
+    )
+
+    assert mode_change.status_code == 409, mode_change.text
+    assert mode_change.json()["detail"]["code"] == "session_mode_frozen"
+    room_row = test_db.execute(
+        "SELECT session_mode, session_mode_frozen_at, session_mode_frozen_reason, "
+        "version_bundle, version_bundle_hash, version_bundle_locked_at "
+        "FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["session_mode"] == "ai_only"
+    assert room_row["session_mode_frozen_at"] is not None
+    assert room_row["session_mode_frozen_reason"] == "session_zero_completed"
+    assert room_row["version_bundle_locked_at"] is not None
+    assert len(room_row["version_bundle_hash"]) == 64
+    bundle = room_row["version_bundle"]
+    if isinstance(bundle, str):
+        bundle = json.loads(bundle)
+    assert set(bundle) >= {
+        "runtime_package_version_id",
+        "rule_version_id",
+        "prompt_bundle_version",
+        "scenario_package_hash",
+        "ai_policy_version",
+    }
+    assert bundle["runtime_package_version_id"] == room["runtime_package_version_id"]
+    assert bundle["rule_version_id"] == "coc7-base-v1"
+    assert bundle["scenario_package_hash"]
+    assert bundle["prompt_bundle_version"]
+    assert bundle["ai_policy_version"]
+    event = test_db.execute(
+        "SELECT payload FROM events WHERE room_id = %s "
+        "AND event_type = 's2c_session_mode_frozen' ORDER BY sequence DESC LIMIT 1",
+        (room["room_id"],),
+    ).fetchone()
+    assert event is not None
+    payload = event["payload"] if isinstance(event["payload"], dict) else json.loads(event["payload"])
+    assert payload["reason"] == "session_zero_completed"
+
+
+def test_ai_only_frozen_contract_blocks_scenario_and_status_rewrites(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """A paused/active AI-only run cannot be rebound or state-patched generically."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, _players, _state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+    headers = {"X-Owner-Token": room["owner_token"]}
+
+    generic_scenario = client.patch(
+        f"/api/rooms/{room['room_id']}",
+        headers=headers,
+        json={"scenario_id": installed["scenarioId"]},
+    )
+    dedicated_scenario = client.patch(
+        f"/api/rooms/{room['room_id']}/scenario",
+        headers=headers,
+        json={"scenario_id": installed["scenarioId"]},
+    )
+    status_patch = client.patch(
+        f"/api/rooms/{room['room_id']}",
+        headers=headers,
+        json={"status": "paused"},
+    )
+
+    for response in (generic_scenario, dedicated_scenario):
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["code"] == "runtime_contract_frozen"
+    assert status_patch.status_code == 409, status_patch.text
+    assert status_patch.json()["detail"]["code"] == "ai_only_runtime_state_patch_forbidden"
+    room_row = test_db.execute(
+        "SELECT status, scenario_id, runtime_package_version_id FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["status"] == "active"
+    assert room_row["scenario_id"] == installed["scenarioId"]
+    assert room_row["runtime_package_version_id"] == room["runtime_package_version_id"]
+
+
 async def _resolve(
     test_db,
     state_service,
@@ -262,11 +517,521 @@ async def _resolve(
 
 
 @pytest.mark.asyncio
+async def test_ai_only_resolution_trace_carries_the_locked_room_version_bundle(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """Every authoritative action remains attributable to its frozen versions."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, players, state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+
+    action_id, result = await _resolve(
+        test_db,
+        state_service,
+        _RecordingDispatcher(),
+        room_id=room["room_id"],
+        character_id=players[0]["character_id"],
+        intent_type="dialogue",
+        declared_intent="我向门卫询问展厅关闭的原因。",
+    )
+
+    assert result["status"] == "completed"
+    row = test_db.execute(
+        "SELECT trace FROM resolution_traces WHERE action_id = %s",
+        (action_id,),
+    ).fetchone()
+    trace = row["trace"] if isinstance(row["trace"], dict) else json.loads(row["trace"])
+    room_row = test_db.execute(
+        "SELECT version_bundle, version_bundle_hash FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    bundle = room_row["version_bundle"]
+    if isinstance(bundle, str):
+        bundle = json.loads(bundle)
+    assert trace["version_bundle"] == bundle
+    assert trace["version_bundle_hash"] == room_row["version_bundle_hash"]
+
+
+def test_ai_only_soft_pause_is_durable_and_blocks_new_game_actions(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """Owner soft pause stops new inputs at a durable between-action boundary."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, players, _state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+
+    paused = client.post(
+        f"/api/host/{room['room_id']}/pause",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"mode": "soft_pause", "reason": "房主需要短暂休息"},
+    )
+
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["status"] == "paused_by_owner"
+    room_row = test_db.execute(
+        "SELECT runtime_status, pause_mode, pause_cursor, pause_reason "
+        "FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] == "paused_by_owner"
+    assert room_row["pause_mode"] == "soft_pause"
+    assert room_row["pause_cursor"] == "between_actions"
+    assert room_row["pause_reason"] == "房主需要短暂休息"
+    blocked = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": players[0]["player_token"]},
+        json={
+            "actionId": "soft-pause-blocked",
+            "rawText": "我继续检查展厅入口。",
+            "inputMode": "action",
+        },
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"]["code"] == "room_paused_by_owner"
+    resumed = client.post(
+        f"/api/host/{room['room_id']}/resume",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"reason": "继续游戏"},
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == "running"
+    accepted = client.post(
+        "/api/player/action-submissions",
+        headers={"X-Room-Token": players[0]["player_token"]},
+        json={
+            "actionId": "soft-pause-resumed",
+            "rawText": "我继续检查展厅入口。",
+            "inputMode": "action",
+        },
+    )
+    assert accepted.status_code == 201, accepted.text
+
+
+@pytest.mark.asyncio
+async def test_ai_only_pause_leaves_preexisting_queued_action_unresolved(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """A queued action cannot cross the pre-roll boundary while an owner pause holds."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, players, state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+    action_id = _insert_v2_action(
+        test_db,
+        room_id=room["room_id"],
+        character_id=players[0]["character_id"],
+        intent_type="dialogue",
+        declared_intent="我向门卫询问展厅关闭的原因。",
+    )
+    paused = client.post(
+        f"/api/host/{room['room_id']}/pause",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"mode": "emergency_pause", "reason": "立刻停止"},
+    )
+    assert paused.status_code == 200, paused.text
+
+    result = await ResolutionPipeline(
+        conn=test_db,
+        compiler=_GoldenFlowCompiler(),
+        gateway=_FailingNarratorGateway(),
+        dispatcher=_RecordingDispatcher(),
+        state_service=state_service,
+        host_connection_checker=lambda _room_id: False,
+    ).resolve_action(action_id)
+
+    assert result["status"] == "paused_by_owner"
+    action = test_db.execute(
+        "SELECT status FROM actions WHERE action_id = %s",
+        (action_id,),
+    ).fetchone()
+    assert action["status"] == "queued"
+
+
+def test_ai_only_resume_reschedules_queued_actions(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """Resuming an owner pause hands preserved queued work back to automatic scheduling."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, players, _state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+    action_id = _insert_v2_action(
+        test_db,
+        room_id=room["room_id"],
+        character_id=players[0]["character_id"],
+        intent_type="dialogue",
+        declared_intent="我等待恢复后继续调查。",
+    )
+    paused = client.post(
+        f"/api/host/{room['room_id']}/pause",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"mode": "soft_pause", "reason": "短暂暂停"},
+    )
+    assert paused.status_code == 200, paused.text
+
+    scheduled: list[tuple[str, list[str]]] = []
+
+    async def fake_resume_scheduler(_request, scheduled_room_id):
+        scheduled.append((scheduled_room_id, [action_id]))
+        return [action_id]
+
+    monkeypatch.setattr(
+        "src.server.host.router_host._resume_queued_actions",
+        fake_resume_scheduler,
+        raising=False,
+    )
+    resumed = client.post(
+        f"/api/host/{room['room_id']}/resume",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"reason": "继续调查"},
+    )
+
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["resumed_action_ids"] == [action_id]
+    assert scheduled == [(room["room_id"], [action_id])]
+
+
+@pytest.mark.asyncio
+async def test_ai_only_emergency_pause_requeues_an_action_before_any_roll(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """A pause requested while resolving stops at pre-roll and resumes safely."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, players, state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+    action_id = _insert_v2_action(
+        test_db,
+        room_id=room["room_id"],
+        character_id=players[0]["character_id"],
+        intent_type="dialogue",
+        declared_intent="我询问门卫昨晚发生了什么。",
+    )
+
+    class _PauseBeforeRuleExecutionCompiler:
+        async def compile(self, intent, scenario, character):
+            from src.server.engine.room_pause import request_owner_pause
+
+            with test_db.transaction() as tx:
+                request_owner_pause(
+                    tx,
+                    room["room_id"],
+                    mode="emergency_pause",
+                    actor_id="acc-admin",
+                    reason="演练紧急暂停",
+                )
+            return MechanicCompileResult(triggeredMechanic="dialogue")
+
+    paused = await ResolutionPipeline(
+        conn=test_db,
+        compiler=_PauseBeforeRuleExecutionCompiler(),
+        dispatcher=_RecordingDispatcher(),
+        state_service=state_service,
+        host_connection_checker=lambda _room_id: False,
+    ).resolve_action(action_id)
+
+    assert paused == {"status": "paused_by_owner", "action_id": action_id}
+    action = test_db.execute(
+        "SELECT status, receipt FROM actions WHERE action_id = %s", (action_id,)
+    ).fetchone()
+    assert action["status"] == "queued"
+    assert action["receipt"] is None
+    room_row = test_db.execute(
+        "SELECT runtime_status, pause_mode, pause_cursor FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert dict(room_row) == {
+        "runtime_status": "paused_by_owner",
+        "pause_mode": "emergency_pause",
+        "pause_cursor": "pre_roll",
+    }
+
+    resumed = client.post(
+        f"/api/host/{room['room_id']}/resume",
+        headers={"X-Owner-Token": room["owner_token"]},
+        json={"reason": "继续演练"},
+    )
+    assert resumed.status_code == 200, resumed.text
+    completed = await ResolutionPipeline(
+        conn=test_db,
+        compiler=_GoldenFlowCompiler(),
+        dispatcher=_RecordingDispatcher(),
+        state_service=state_service,
+        host_connection_checker=lambda _room_id: False,
+    ).resolve_action(action_id)
+    assert completed["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_ai_only_pause_requested_after_resolution_settles_post_projection(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """A late pause preserves this completed action then records its boundary."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, players, state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+    action_id = _insert_v2_action(
+        test_db,
+        room_id=room["room_id"],
+        character_id=players[0]["character_id"],
+        intent_type="move",
+        declared_intent="前往兰花展厅。",
+        from_scene="glass-gate",
+        target_scene="orchid-hall",
+    )
+    from src.server.engine.room_pause import request_owner_pause
+
+    class _PauseAfterStateService(StateService):
+        def apply_change(self, *args, transaction=None, **kwargs):
+            result = super().apply_change(*args, transaction=transaction, **kwargs)
+            request_owner_pause(
+                transaction or self.conn,
+                room["room_id"],
+                mode="soft_pause",
+                actor_id="acc-admin",
+                reason="在状态提交后暂停",
+            )
+            return result
+
+    pipeline = ResolutionPipeline(
+        conn=test_db,
+        compiler=_GoldenFlowCompiler(),
+        dispatcher=_RecordingDispatcher(),
+        state_service=_PauseAfterStateService(test_db),
+        host_connection_checker=lambda _room_id: False,
+    )
+    result = await pipeline.resolve_action(action_id)
+
+    assert result["status"] == "completed"
+    action = test_db.execute(
+        "SELECT status FROM actions WHERE action_id = %s", (action_id,)
+    ).fetchone()
+    assert action["status"] == "completed"
+    room_row = test_db.execute(
+        "SELECT runtime_status, pause_mode, pause_cursor FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert dict(room_row) == {
+        "runtime_status": "paused_by_owner",
+        "pause_mode": "soft_pause",
+        "pause_cursor": "post_projection",
+    }
+
+
+def test_ai_only_system_recovery_uses_a_generated_verified_proposal(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """Owner can confirm a system proposal, never select a checkpoint to restore."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, players, _state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+    from src.server.events.event_log import EventLog
+
+    checkpoint = EventLog(test_db).create_checkpoint(
+        room["room_id"],
+        checkpoint_id="system-recovery-source",
+        reason="known-good-state",
+    )
+    before = test_db.execute(
+        "SELECT hp, san FROM character_runtime_state "
+        "WHERE room_id = %s AND character_id = %s",
+        (room["room_id"], players[0]["character_id"]),
+    ).fetchone()
+    test_db.execute(
+        "UPDATE rooms SET runtime_status = 'paused_system', "
+        "integrity_status = 'read_only_recovery', "
+        "integrity_reason = 'checkpoint_hash_mismatch' WHERE room_id = %s",
+        (room["room_id"],),
+    )
+    test_db.commit()
+    headers = {"X-Owner-Token": room["owner_token"]}
+
+    proposed = client.post(
+        f"/api/rooms/{room['room_id']}/recovery/proposals",
+        headers=headers,
+    )
+
+    assert proposed.status_code == 201, proposed.text
+    proposal = proposed.json()["proposal"]
+    assert proposal["source_checkpoint_id"] == checkpoint.checkpoint_id
+    assert proposal["source_state_version"] == proposal["target_state_version"]
+    assert set(proposal) >= {
+        "proposal_id",
+        "room_id",
+        "transactions_to_replay",
+        "roll_receipts_to_reuse",
+        "reveal_transactions_to_replay",
+        "projection_events_to_replay",
+        "integrity_checks",
+        "proposal_hash",
+        "expires_at",
+    }
+    dry_run = client.post(
+        f"/api/rooms/{room['room_id']}/recovery/proposals/{proposal['proposal_id']}/dry-run",
+        headers=headers,
+    )
+    assert dry_run.status_code == 200, dry_run.text
+    assert dry_run.json()["status"] == "dry_run_verified"
+    executed = client.post(
+        f"/api/rooms/{room['room_id']}/recovery/proposals/{proposal['proposal_id']}/execute",
+        headers=headers,
+        json={"confirm": True},
+    )
+    assert executed.status_code == 200, executed.text
+    assert executed.json()["status"] == "running"
+    after = test_db.execute(
+        "SELECT hp, san FROM character_runtime_state "
+        "WHERE room_id = %s AND character_id = %s",
+        (room["room_id"], players[0]["character_id"]),
+    ).fetchone()
+    assert dict(after) == dict(before)
+    restored = test_db.execute(
+        "SELECT runtime_status, integrity_status FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert restored["runtime_status"] == "running"
+    assert restored["integrity_status"] == "healthy"
+
+
+def test_ai_only_system_recovery_refuses_unprovable_intervening_state(
+    client,
+    test_db,
+    monkeypatch,
+):
+    """A checkpoint is never an Owner-selected rollback when replay is unprovable."""
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
+    installed, tokens, templates = _install_glass_rain(client, test_db)
+    room, _players, _state_service = _create_started_room(
+        client,
+        test_db,
+        installed,
+        tokens,
+        templates,
+    )
+    from src.server.events.event_log import EventLog
+
+    checkpoint = EventLog(test_db).create_checkpoint(
+        room["room_id"],
+        checkpoint_id="system-recovery-unprovable-source",
+        reason="known-good-state",
+    )
+    test_db.execute(
+        "UPDATE rooms SET state_version = state_version + 1, "
+        "runtime_status = 'paused_system', integrity_status = 'read_only_recovery' "
+        "WHERE room_id = %s",
+        (room["room_id"],),
+    )
+    test_db.commit()
+
+    response = client.post(
+        f"/api/rooms/{room['room_id']}/recovery/proposals",
+        headers={"X-Owner-Token": room["owner_token"]},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "no_safe_recovery"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM runtime_recovery_proposals "
+        "WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["count"] == 0
+    room_row = test_db.execute(
+        "SELECT runtime_status, state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] == "paused_system"
+    assert room_row["state_version"] == checkpoint.state_version + 1
+
+
+@pytest.mark.asyncio
 async def test_glass_rain_v2_ai_only_success_mixed_and_safe_abort_flows(
     client,
     test_db,
     monkeypatch,
 ):
+    # This flow test uses a compact CoC7 fixture; the authoritative 380-page
+    # source is covered by the lifecycle tests, so pin the fixture explicitly.
+    monkeypatch.setattr(
+        "src.server.rule_source_lifecycle.current_authoritative_base_version",
+        lambda _conn: "coc7-base-v1",
+    )
     installed, tokens, templates = _install_glass_rain(client, test_db)
     runtime = installed["runtimePackage"]["runtime_package"]
     assert runtime["runtime_policy"]["state_scope"] == "room_run"
@@ -502,3 +1267,17 @@ async def test_glass_rain_v2_ai_only_success_mixed_and_safe_abort_flows(
         "WHERE status = 'awaiting_host_exception'"
     ).fetchone()
     assert awaiting_host["count"] == 0
+
+    traces = test_db.execute(
+        "SELECT status, trace FROM resolution_traces "
+        "WHERE room_id IN (%s, %s) ORDER BY created_at",
+        (success_room["room_id"], mixed_room["room_id"]),
+    ).fetchall()
+    assert traces
+    assert any(row["status"] == "completed" for row in traces)
+    completed_trace = next(row["trace"] for row in traces if row["status"] == "completed")
+    assert {
+        "input_received",
+        "resolution_returned",
+        "finalized",
+    } <= {phase["name"] for phase in completed_trace["phases"]}

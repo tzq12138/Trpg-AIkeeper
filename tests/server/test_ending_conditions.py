@@ -88,6 +88,38 @@ def test_evaluate_ending_rejects_ambiguous_or_invalid_conditions(client, test_db
     ) is None
 
 
+def test_evaluate_ending_reads_frozen_mutual_exclusion_group(client, test_db):
+    """Frozen D22: the package field is `mutual_exclusion_group`; legacy
+    `exclusive_group` is only a compatibility fallback."""
+    from src.server.engine.ending_conditions import evaluate_ending_conditions
+
+    setup_auth_test_data(test_db)
+    room_id = create_room(client)["room_id"]
+    test_db.execute("UPDATE rooms SET status = 'active' WHERE room_id = %s", (room_id,))
+    test_db.commit()
+    matching = {
+        "citation": {"source_ref": "page:1"},
+        "completion_conditions": {"room_status": "active"},
+    }
+
+    decision = evaluate_ending_conditions(
+        test_db,
+        room_id,
+        [
+            {
+                **matching,
+                "ending_id": "victory",
+                "type": "victory",
+                "priority": 300,
+                "mutual_exclusion_group": "glass-rescue",
+            },
+        ],
+    )
+
+    assert decision is not None
+    assert decision.exclusive_group == "glass-rescue"
+
+
 def test_evaluate_ending_selects_unique_highest_priority_match(client, test_db):
     from src.server.engine.ending_conditions import evaluate_ending_conditions
 
@@ -98,7 +130,7 @@ def test_evaluate_ending_selects_unique_highest_priority_match(client, test_db):
     matching = {
         "citation": {"source_ref": "page:1"},
         "completion_conditions": {"room_status": "active"},
-        "exclusive_group": "campaign_ending",
+        "mutual_exclusion_group": "campaign_ending",
     }
 
     decision = evaluate_ending_conditions(
@@ -128,7 +160,7 @@ def test_evaluate_ending_rejects_tied_highest_priority(client, test_db):
         "citation": {"source_ref": "page:1"},
         "completion_conditions": {"room_status": "active"},
         "priority": 200,
-        "exclusive_group": "campaign_ending",
+        "mutual_exclusion_group": "campaign_ending",
     }
 
     assert evaluate_ending_conditions(
@@ -154,7 +186,7 @@ def test_evaluate_ending_forces_safe_abort_above_declared_normal_priority(
     matching = {
         "citation": {"source_ref": "page:1"},
         "completion_conditions": {"room_status": "active"},
-        "exclusive_group": "campaign_ending",
+        "mutual_exclusion_group": "campaign_ending",
     }
 
     decision = evaluate_ending_conditions(

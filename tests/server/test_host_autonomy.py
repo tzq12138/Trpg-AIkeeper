@@ -3,7 +3,7 @@ import json
 import pytest
 
 from src.server.engine.resolution_pipeline import ResolutionPipeline
-from src.server.engine.host_autonomy import decide_host_autonomy
+from src.server.engine.host_autonomy import AiOnlyResolutionPolicy, decide_host_autonomy
 
 
 class _Dispatcher:
@@ -81,6 +81,19 @@ def test_ai_only_host_absence_never_routes_to_human_review():
     assert public_move.route == "offline_autonomy"
     assert sensitive_attack.route == "engine_policy"
     assert sensitive_attack.reason_code == "ai_only_policy_required"
+
+
+def test_ai_only_resolution_policy_exposes_explicit_host_boundary():
+    ai_only = AiOnlyResolutionPolicy(session_mode="ai_only")
+    normal = AiOnlyResolutionPolicy(session_mode="assisted")
+
+    assert ai_only.enabled is True
+    assert ai_only.host_exception_reason("host_exception") == (
+        "ai_only_host_exception_forbidden"
+    )
+    assert ai_only.host_exception_reason("local") is None
+    assert normal.enabled is False
+    assert normal.host_exception_reason("host_exception") is None
 
 
 @pytest.mark.asyncio

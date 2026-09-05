@@ -24,9 +24,11 @@ class _NarratorGateway:
         self.response = response or _valid_narration()
         self.fail = fail
         self.contexts: list[dict] = []
+        self.call_kwargs: list[dict] = []
 
     async def narrate_action(self, context: dict, room_id: str | None = None, **_kwargs):
         self.contexts.append(context)
+        self.call_kwargs.append(dict(_kwargs))
         if self.fail:
             raise RuntimeError("narrator provider failed")
         payload = dict(self.response)
@@ -486,6 +488,77 @@ def test_narration_result_requires_human_loop_fields():
         NarrationResultDTO(**_valid_narration(action_id="narrator-action", fact_refs={}))
 
 
+def test_narrator_normalizes_safe_supplier_shape_variants_before_validation():
+    from src.server.ai.gateway import _normalize_narrator_provider_result
+
+    context = {
+        "allowed_facts": [{
+            "fact_ref": "fact:scene-brief",
+            "text": "修表摊旁的灯还亮着，眼前只有可见的柜台。",
+        }],
+        "visible_state_changes": [],
+        "interactable_objects": [],
+        "context_version": 4,
+        "director_plan_digest": "inspect-stall:4",
+    }
+    raw = _valid_narration(
+        environment_changes="修表摊旁的灯还亮着。",
+        interactable_objects=[{"name": "不应直接展示的对象结构"}],
+        fact_refs={
+            "narrative_text": ["fact:scene-brief"],
+            "environment_changes": ["fact:scene-brief"],
+            "interactable_objects": ["fact:scene-brief"],
+            "open_question": ["fact:scene-brief"],
+        },
+    )
+
+    normalized = _normalize_narrator_provider_result(raw, context)
+
+    assert normalized["environment_changes"] == ["修表摊旁的灯还亮着。"]
+    assert normalized["interactable_objects"] == ["当前环境"]
+    assert normalized["fact_refs"]["interactable_objects"] == ["fact:scene-brief"]
+    NarrationResultDTO(**{
+        **normalized,
+        "action_id": "narrator-action",
+        "provider_source": "configured_provider",
+    })
+
+
+def test_narrator_normalizes_empty_environment_to_a_safe_visible_fallback():
+    from src.server.ai.gateway import _normalize_narrator_provider_result
+
+    context = {
+        "allowed_facts": [{
+            "fact_ref": "fact:scene-brief",
+            "text": "夜市修表摊仍在眼前。",
+        }],
+        "visible_state_changes": [],
+        "interactable_objects": ["当前环境"],
+        "context_version": 4,
+        "director_plan_digest": "talk-watchmaker:4",
+    }
+    raw = _valid_narration(
+        environment_changes=[],
+        interactable_objects=["当前环境"],
+        fact_refs={
+            "narrative_text": ["fact:scene-brief"],
+            "environment_changes": ["fact:scene-brief"],
+            "interactable_objects": ["fact:scene-brief"],
+            "open_question": ["fact:scene-brief"],
+        },
+    )
+
+    normalized = _normalize_narrator_provider_result(raw, context)
+
+    assert normalized["environment_changes"] == ["当前场景仍可互动。"]
+    assert normalized["fact_refs"]["environment_changes"] == ["fact:scene-brief"]
+    NarrationResultDTO(**{
+        **normalized,
+        "action_id": "narrator-action",
+        "provider_source": "configured_provider",
+    })
+
+
 def test_narrator_rejects_vehicle_conflict_against_visible_scene():
     narration = NarrationResultDTO(
         **_valid_narration(
@@ -629,6 +702,10 @@ async def test_solo_transition_uses_verified_provider_narration_before_local_fal
 
     assert error is None
     assert len(gateway.contexts) == 1
+    assert gateway.call_kwargs == [{
+        "action_id": "narrator-action",
+        "timeout_seconds": 55,
+    }]
     assert resolution.narrative == "长途车沿着山路颠簸前行，窗外的村庄渐渐靠近。"
     assert resolution.metadata["narration"]["provider_source"] == "fallback_provider"
 

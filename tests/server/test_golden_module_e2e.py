@@ -28,6 +28,11 @@ def test_runner_imports_runs_and_ends_a_module_through_official_routes(
     assert result["runtime_gate_status"] == "ready"
     assert result["room_status"] == "completed"
     assert result["action_status"] == "completed"
+    assert result["trace_complete"] is True
+    assert result["trace_phase_names"][0] == "input_received"
+    assert "resolution_returned" in result["trace_phase_names"]
+    assert result["trace_phase_names"][-1] == "finalized"
+    assert result["host_adjudication_count"] == 0
     assert result["ending"]["source_mode"] == "scenario"
     assert result["ending"]["citation"]["source_ref"].endswith("#paragraph:1")
 

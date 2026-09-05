@@ -134,6 +134,13 @@ async def test_pipeline_does_not_claim_a_retired_room_action_for_resolution(test
         "SELECT status FROM actions WHERE action_id = 'action-v2'"
     ).fetchone()["status"] == "queued"
     assert dispatcher.events == []
+    trace = test_db.execute(
+        "SELECT status, resolution_outcome, trace FROM resolution_traces "
+        "WHERE action_id = 'action-v2'"
+    ).fetchone()
+    assert trace["status"] == "failed"
+    assert trace["resolution_outcome"] is None
+    assert any(phase["name"] == "input_received" for phase in trace["trace"]["phases"])
 
 
 def test_shared_turn_scene_arrival_is_not_rejected_as_stale(test_db):

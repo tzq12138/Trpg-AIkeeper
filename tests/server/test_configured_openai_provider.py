@@ -158,6 +158,48 @@ async def test_structure_call_uses_bounded_extended_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_narrator_call_uses_bounded_extended_timeout(monkeypatch):
+    from src.server.ai.providers import ConfiguredOpenAIProvider
+
+    _RecordingClient.requests = []
+    _RecordingClient.response = _FakeResponse({
+        "choices": [{"message": {"content": json.dumps({
+            "narrative_text": "门后的脚步声停住了。",
+        }, ensure_ascii=False)}}],
+    })
+    monkeypatch.setattr("src.server.ai.providers.httpx.AsyncClient", _RecordingClient)
+    provider = ConfiguredOpenAIProvider(_provider_config("chat_completions"), timeout=30)
+
+    await provider.call(
+        "narrate_action",
+        {"user_message": "返回叙事 JSON。", "timeout_seconds": 55},
+    )
+
+    assert _RecordingClient.requests[0]["client"]["timeout"] == 55
+
+
+@pytest.mark.asyncio
+async def test_director_call_uses_bounded_extended_timeout(monkeypatch):
+    from src.server.ai.providers import ConfiguredOpenAIProvider
+
+    _RecordingClient.requests = []
+    _RecordingClient.response = _FakeResponse({
+        "choices": [{"message": {"content": json.dumps({
+            "interpreted_intent": "检查柜台",
+        }, ensure_ascii=False)}}],
+    })
+    monkeypatch.setattr("src.server.ai.providers.httpx.AsyncClient", _RecordingClient)
+    provider = ConfiguredOpenAIProvider(_provider_config("chat_completions"), timeout=30)
+
+    await provider.call(
+        "analyze_director_action",
+        {"user_message": "返回导演计划 JSON。", "timeout_seconds": 55},
+    )
+
+    assert _RecordingClient.requests[0]["client"]["timeout"] == 55
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_unwraps_nested_json_for_runtime_tasks(monkeypatch):
     from src.server.ai.providers import ConfiguredOpenAIProvider
 

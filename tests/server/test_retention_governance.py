@@ -70,6 +70,8 @@ def test_retention_dry_run_apply_and_retry_are_safe_and_idempotent(test_db):
         "diagnostics": 1,
         "ai_decisions": 1,
         "governance_audits": 4,
+        "full_resolution_traces": 0,
+        "redacted_resolution_traces": 0,
     }
     assert test_db.execute("SELECT COUNT(*) AS c FROM retention_runs").fetchone()["c"] == 1
     assert test_db.execute(
@@ -108,6 +110,70 @@ def test_retention_dry_run_apply_and_retry_are_safe_and_idempotent(test_db):
     ).fetchone()["c"] == 0
     assert test_db.execute(
         "SELECT COUNT(*) AS c FROM private_data_access_audits"
+    ).fetchone()["c"] == 0
+
+
+def test_retention_purges_full_trace_after_30_days_and_redacted_trace_after_180_days(
+    test_db,
+):
+    from src.server.engine.resolution_trace import ResolutionTraceRecorder
+    from src.server.governance.retention import RetentionService
+
+    _seed_retention_rows(test_db)
+    for action_id, intent in (
+        ("trace-expire-secure-only", "保留脱敏记录"),
+        ("trace-expire-redacted", "删除完整与脱敏记录"),
+    ):
+        test_db.execute(
+            "INSERT INTO actions "
+            "(action_id, room_id, character_id, intent_type, declared_intent, status) "
+            "VALUES (%s, 'retention-room', 'trace-character', 'dialogue', %s, 'queued')",
+            (action_id, intent),
+        )
+        recorder = ResolutionTraceRecorder(test_db)
+        recorder.start(
+            {
+                "action_id": action_id,
+                "room_id": "retention-room",
+                "declared_intent": intent,
+            },
+            state_version=1,
+        )
+        recorder.finalize(action_id, status="completed", outcome="success")
+    test_db.execute(
+        "UPDATE resolution_trace_secure_payloads "
+        "SET expires_at = NOW() - INTERVAL '1 day'"
+    )
+    test_db.execute(
+        "UPDATE resolution_traces SET created_at = NOW() - INTERVAL '181 days' "
+        "WHERE action_id = 'trace-expire-redacted'"
+    )
+    test_db.commit()
+
+    cutoff = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    service = RetentionService(test_db)
+    dry_run = service.dry_run(cutoff=cutoff, idempotency_key="retention-traces")
+    assert dry_run["counts"]["full_resolution_traces"] == 2
+    assert dry_run["counts"]["redacted_resolution_traces"] == 1
+
+    applied = service.apply(
+        cutoff=cutoff,
+        idempotency_key="retention-traces",
+        dry_run_token=dry_run["dry_run_token"],
+        actor_id="acc-admin",
+    )
+    assert applied["counts"]["full_resolution_traces"] == 2
+    assert applied["counts"]["redacted_resolution_traces"] == 1
+    assert test_db.execute(
+        "SELECT COUNT(*) AS c FROM resolution_trace_secure_payloads"
+    ).fetchone()["c"] == 0
+    assert test_db.execute(
+        "SELECT COUNT(*) AS c FROM resolution_traces "
+        "WHERE action_id = 'trace-expire-secure-only'"
+    ).fetchone()["c"] == 1
+    assert test_db.execute(
+        "SELECT COUNT(*) AS c FROM resolution_traces "
+        "WHERE action_id = 'trace-expire-redacted'"
     ).fetchone()["c"] == 0
 
 

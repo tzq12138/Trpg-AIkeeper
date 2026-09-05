@@ -6,6 +6,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import src.server.engine.resolution_pipeline as resolution_pipeline_module
 import src.server.main as main_module
+import src.server.player.router_player as router_player_module
 from src.server.engine.ending_conditions import EndingDecision
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from src.server.engine.rule_executor import RuleExecutor
@@ -408,6 +409,41 @@ async def test_production_background_worker_persists_submitted_background_decisi
     assert runtime["temp_modifiers"]["coc7_sanity"]["background_change"][
         "selection_source"
     ] == "engine_safe_rejection"
+
+
+@pytest.mark.asyncio
+async def test_background_resolver_forwards_configured_gateway_to_pipeline(
+    test_db,
+    monkeypatch,
+):
+    captured = {}
+
+    class CapturingPipeline:
+        def __init__(self, _conn, *, gateway=None, **_kwargs):
+            captured["gateway"] = gateway
+
+        async def resolve_action(self, action_id):
+            captured["action_id"] = action_id
+            return {"status": "completed"}
+
+    configured_gateway = object()
+    monkeypatch.setattr(
+        app.state,
+        "pg_db",
+        _ConnectionProvider(test_db),
+        raising=False,
+    )
+    monkeypatch.setattr(app.state, "gateway", configured_gateway, raising=False)
+    monkeypatch.setattr(
+        router_player_module,
+        "ResolutionPipeline",
+        CapturingPipeline,
+    )
+
+    await _resolve_action_background(app, "action-gateway-forwarding")
+
+    assert captured["action_id"] == "action-gateway-forwarding"
+    assert captured["gateway"] is configured_gateway
 
 
 @pytest.mark.asyncio

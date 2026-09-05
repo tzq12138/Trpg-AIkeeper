@@ -3,7 +3,7 @@ import json
 import pytest
 
 from src.server.ai.contracts import CombatRoundSuggestion, KpResponse, NarrativePayload
-from src.server.ai.gateway import AiGateway
+from src.server.ai.gateway import AiGateway, ProviderFailure
 from src.server.ai.providers import BaseAiProvider
 from src.server.scenario.content_package import ContentPackage, ContentPart
 
@@ -42,6 +42,34 @@ class RecordingProvider(BaseAiProvider):
 
     async def health_check(self) -> bool:
         return True
+
+
+@pytest.mark.asyncio
+async def test_all_provider_failures_return_structured_failure_without_empty_dto():
+    gateway = AiGateway()
+    remote = RecordingProvider("remote", None)
+    local = RecordingProvider("local", None)
+    gateway._providers = {"remote": remote, "local": local}
+    gateway._provider_order = ["remote", "local"]
+
+    failure = await gateway._call_providers(
+        "generate_narrative",
+        {"declared_intent": "inspect"},
+    )
+
+    assert isinstance(failure, ProviderFailure)
+    assert failure.task_type == "generate_narrative"
+    assert failure.attempts == [
+        "remote:null_response",
+        "local:null_response",
+        "local_fallback:null_response",
+    ]
+    assert failure.last_error_code == "provider_unavailable"
+    assert failure.fallback_available is False
+    assert gateway.last_provider_failure is failure
+
+    # The public narration API must fail closed rather than manufacture an empty payload.
+    assert await gateway.generate_narrative({"declared_intent": "inspect"}) is None
 
 
 @pytest.mark.asyncio

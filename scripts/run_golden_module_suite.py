@@ -302,6 +302,7 @@ class GoldenModuleSuiteRunner:
             "FROM source_documents WHERE scenario_id = %s ORDER BY source_filename",
             (scenario_id,),
         ).fetchall()
+        trace = self._trace_metrics(action_id, room["room_id"])
         return {
             "slug": spec.slug,
             "title": spec.title,
@@ -313,9 +314,51 @@ class GoldenModuleSuiteRunner:
             "runtime_gate_status": runtime["gate_status"],
             "action_id": action_id,
             "action_status": action_status,
+            **trace,
             "room_status": room_status,
             "ending": ending,
             "sources": [dict(row) for row in source_rows],
+        }
+
+    def _trace_metrics(self, action_id: str, room_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT status, resolution_outcome, trace, trace_hash "
+            "FROM resolution_traces WHERE action_id = %s AND room_id = %s",
+            (action_id, room_id),
+        ).fetchone()
+        if not row:
+            raise GoldenSuiteError(f"resolution trace missing for action {action_id}")
+        trace = _json_object(row.get("trace"))
+        phases = trace.get("phases") if isinstance(trace.get("phases"), list) else []
+        phase_names = [
+            str(phase.get("name"))
+            for phase in phases
+            if isinstance(phase, dict) and phase.get("name")
+        ]
+        required = {"input_received", "resolution_returned", "finalized"}
+        trace_hash = str(row.get("trace_hash") or trace.get("trace_hash") or "")
+        complete = (
+            str(row.get("status") or "") == "completed"
+            and bool(trace_hash)
+            and required.issubset(phase_names)
+        )
+        if not complete:
+            raise GoldenSuiteError(
+                f"incomplete resolution trace for action {action_id}: "
+                f"status={row.get('status')}, phases={phase_names}"
+            )
+        host_rows = self.conn.execute(
+            "SELECT COUNT(*) AS count FROM action_status_events "
+            "WHERE action_id = %s AND status = 'awaiting_host_exception'",
+            (action_id,),
+        ).fetchone()
+        return {
+            "trace_complete": True,
+            "trace_status": str(row.get("status") or ""),
+            "trace_outcome": row.get("resolution_outcome"),
+            "trace_hash": trace_hash,
+            "trace_phase_names": phase_names,
+            "host_adjudication_count": int(host_rows.get("count") or 0),
         }
 
     def run_all(self, root: Path) -> list[dict[str, Any]]:
@@ -800,7 +843,13 @@ def _write_report(
     results: list[dict[str, Any]],
     supporting_assets: dict[str, Any] | None = None,
 ) -> None:
-    passed = [item for item in results if item.get("room_status") == "completed"]
+    passed = [
+        item
+        for item in results
+        if item.get("room_status") == "completed"
+        and item.get("trace_complete") is True
+        and item.get("host_adjudication_count") == 0
+    ]
     lines = [
         "# 六类黄金样本批量导入与通关报告",
         "",
@@ -811,20 +860,24 @@ def _write_report(
         "",
         "## 结果",
         "",
-        "| 模组 | 导入 | 运行包 | 动作 | 房间 | 结局来源 |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| 模组 | 导入 | 运行包 | 动作 | 房间 | Trace | Host 裁决 | 结局来源 |",
+        "| --- | --- | --- | --- | --- | --- | ---: | --- |",
     ]
     for item in results:
         if item.get("status") == "failed":
             lines.append(
-                f"| {item['slug']} | failed | - | - | - | {item['error_type']} ({item['error_code']}) |"
+                f"| {item['slug']} | failed | - | - | - | - | - | "
+                f"{item['error_type']} ({item['error_code']}) |"
             )
             continue
         ending = item["ending"]
         source_mode = "derived_from_materials_only" if ending["derived_from_materials_only"] else "source_backed"
         lines.append(
             f"| {item['slug']} | {item['import_status']} | {item['runtime_gate_status']} | "
-            f"{item['action_status']} | {item['room_status']} | {source_mode} ({ending['citation']['source_ref']}) |"
+            f"{item['action_status']} | {item['room_status']} | "
+            f"{'complete' if item.get('trace_complete') else 'incomplete'} | "
+            f"{item.get('host_adjudication_count', '-')} | "
+            f"{source_mode} ({ending['citation']['source_ref']}) |"
         )
     if supporting_assets:
         lines.extend([
@@ -889,7 +942,12 @@ def main() -> int:
             results = runner.run_all(args.root)
             supporting_assets = runner.run_supporting_assets(args.root)
         _write_report(args.report, results, supporting_assets)
-        return 0 if all(item.get("room_status") == "completed" for item in results) else 1
+        return 0 if all(
+            item.get("room_status") == "completed"
+            and item.get("trace_complete") is True
+            and item.get("host_adjudication_count") == 0
+            for item in results
+        ) else 1
     finally:
         conn.close()
         database.close()

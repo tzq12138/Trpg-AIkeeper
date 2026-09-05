@@ -73,7 +73,7 @@ def test_db():
         "runtime_package_exception_confirmations, runtime_package_versions, v2_cutover_records, "
         "import_jobs, rule_source_pages, source_parts, source_documents, "
         "scenario_versions, clarifications, clue_shares, clues, objectives, inventory_transfer_requests, inventory, "
-        "actions, fact_reveals, events, player_sequences, checkpoints, campaign_archives, "
+        "resolution_trace_secure_payloads, resolution_traces, actions, fact_reveals, events, player_sequences, checkpoints, campaign_archives, "
         "host_states, characters, room_rule_bindings, scenario_rule_bindings, "
         "room_rule_adjudications, rooms, scenarios, rule_documents, rule_version_publication_gates, rule_set_versions, rule_sets, "
         "spoiler_sensitive_items, spoiler_audits, "
