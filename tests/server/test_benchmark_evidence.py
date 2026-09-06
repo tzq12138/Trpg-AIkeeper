@@ -165,7 +165,10 @@ def test_technical_retry_never_counts_as_new_observation():
     ]
     observation = collect_session_observation(session, actions)
     assert observation.accepted_actions == 1
-    assert observation.duplicate_submission_count == 1
+    # V4/A07: a normal technical retry is never counted as duplicate submission.
+    # Technical retries are legitimate network retransmissions of the same
+    # authoritative action, not repeated authoritative side-effects.
+    assert observation.duplicate_submission_count == 0
     assert observation.trace_actions == 1  # one logical action, one trace
 
 

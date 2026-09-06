@@ -210,6 +210,11 @@ def validate_evidence_manifest(manifest: dict[str, Any]) -> list[str]:
             _block("trace_manifest_shapes_invalid", blocks)
         elif len(complete) > len(set(expected)):
             _block("trace_complete_exceeds_expected", blocks)
+        elif not set(expected).issubset(set(complete)):
+            # V4/A07: every entered action must have a COMPLETE trace — an
+            # expected action with an empty/partial complete set is a missing
+            # set, never a silent pass.
+            _block("trace_incomplete_for_expected", blocks)
 
     ratings = manifest.get("ratings") or {}
     if not isinstance(ratings, dict):
@@ -246,6 +251,8 @@ def collect_session_observation(
     session: dict[str, Any],
     actions: list[dict[str, Any]],
     annotations: list[dict[str, Any]] | None = None,
+    *,
+    complete_trace_action_ids: set[str] | None = None,
 ) -> BenchmarkObservation:
     """Convert one validated session's raw rows into an aggregator observation.
 
@@ -289,6 +296,7 @@ def collect_session_observation(
     clarification_count = 0
     correction_count = 0
     unnecessary_check_count = 0
+    silent_misinterpretation_count = 0
     duplicate_roll_count = 0
     duplicate_submission_count = 0
     latencies: list[int] = []
@@ -308,9 +316,10 @@ def collect_session_observation(
             if not isinstance(retry_of, str) or retry_of == action_id:
                 raise ValueError("action_retry_of_invalid")
             retried_original.add(retry_of)
-            # A technical retry never creates a second logical action, dice,
-            # or transaction — it only re-drives the same one.
-            duplicate_submission_count += 1
+            # V4/A07: a technical retry never creates a second logical action,
+            # dice, transaction OR duplicate submission — it only re-drives
+            # the same authoritative action. Normal retransmission must not be
+            # counted as a duplicate authoritative side-effect.
             continue
         if action_id in unique_action_ids:
             raise ValueError("action_id_duplicate_within_session")
@@ -341,7 +350,13 @@ def collect_session_observation(
                 raise ValueError("action_latency_invalid")
             latencies.append(int(latency))
 
-    annotations = session.get("annotations") or []
+    # V4/A07: annotations was already resolved above (explicit argument wins
+    # over session["annotations"]) — never re-read from the session here or an
+    # explicitly supplied annotation list is silently discarded.
+    if annotations is None:
+        annotations = session.get("annotations") if isinstance(session, dict) else None
+    if annotations is None:
+        annotations = []
     for annotation in annotations:
         if not isinstance(annotation, dict):
             raise ValueError("annotation_entry_invalid")
@@ -354,10 +369,22 @@ def collect_session_observation(
             correction_count += 1
         elif judgment == "unnecessary_check":
             unnecessary_check_count += 1
-        elif judgment in ("silent_misunderstanding", "none", None):
+        elif judgment == "silent_misunderstanding":
+            # V4/A07: mechanically-influential silent misinterpretations must be
+            # counted — a missing trace for an entered action is a blocking code.
+            # Only the mechanical kind counts towards D25 quality gate.
+            if annotation.get("mechanical_effect", False) is True:
+                silent_misinterpretation_count += 1
+        elif judgment in ("none", None):
             pass
         else:
             raise ValueError("annotation_judgment_invalid")
+
+    # V4/A07: compute full-trace count from explicit manifest data if available.
+    # When unknown/missing, keep as zero (not defaulting to a fake completion).
+    trace_complete_count = len(
+        trace_ids & complete_trace_action_ids
+    ) if complete_trace_action_ids else 0
 
     return BenchmarkObservation(
         session_id=session_id,
@@ -372,6 +399,8 @@ def collect_session_observation(
         duplicate_roll_count=duplicate_roll_count,
         duplicate_submission_count=duplicate_submission_count,
         trace_actions=len(trace_ids),
+        trace_complete_actions=trace_complete_count,
+        silent_misinterpretation_count=silent_misinterpretation_count,
     )
 
 
