@@ -5,6 +5,7 @@ import { buildHostLaunchChecklist } from '../shared/host-launch-checklist';
 import { updatePublicSceneTime } from '../shared/public-scene-time';
 import { buildStageClientUrl } from '../shared/stage-client';
 import HostCampaignControls from '../components/HostCampaignControls';
+import OwnerRecoveryPanel from '../components/OwnerRecoveryPanel';
 
 // ── types ──────────────────────────────────────────────────────────
 
@@ -438,6 +439,9 @@ export default function HostLobby({ roomId }: { roomId: string }) {
           <span>HOST</span>
           <span style={{ flex: 1, textAlign: 'center', letterSpacing: 4 }}>{roomId}</span>
         </div>
+
+        {/* R7: Owner-only system recovery + normal termination console */}
+        <OwnerRecoveryPanel roomId={roomId} />
 
         <div className="bh-lobby-layout">
           {/* LEFT: Scenario + Start */}

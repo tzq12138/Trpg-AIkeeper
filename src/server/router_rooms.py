@@ -435,6 +435,11 @@ async def get_room(request: Request, room_id: str):
     return {
         "room_id": room["room_id"],
         "status": room["status"],
+        # R7: runtime status + integrity reason are party-safe machine codes
+        # (paused_system/recovering/ended...) so the Owner console and lobby
+        # can react without internal detail.
+        "runtime_status": room.get("runtime_status") or room.get("status"),
+        "integrity_reason": room.get("integrity_reason") or "",
         "scenario_id": room.get("scenario_id", ""),
         "scenario_title": scenario_title,
         "spoiler_level": room.get("spoiler_level", "standard"),

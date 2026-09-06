@@ -150,6 +150,24 @@ def test_paused_receipt_without_dice_and_conclusive_reason_not_retryable(
     assert recovery["original_roll_preserved"] is False
 
 
+def test_room_get_exposes_runtime_status_and_integrity_reason(client, test_db):
+    """Owner console reads recovery state from the public room GET."""
+    room, joined = _paused_room_action(
+        client, test_db, integrity_reason="review_outcome_flip"
+    )
+    del joined
+
+    public = client.get(f"/api/rooms/{room['room_id']}")
+
+    assert public.status_code == 200, public.text
+    body = public.json()
+    assert body["runtime_status"] == "paused_system"
+    assert body["integrity_reason"] == "review_outcome_flip"
+    # Still never leaks owner credentials or internal proposal content.
+    assert "owner_token" not in public.text
+    assert "review-action" not in public.text
+
+
 def test_receipt_is_player_scoped_never_stage_visible(client, test_db):
     room, joined = _paused_room_action(
         client, test_db, integrity_reason="provider_failure"
