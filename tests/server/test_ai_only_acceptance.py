@@ -63,7 +63,7 @@ def _evidence_tree(tmp_path: Path, *, requirement_count: int = 123,
             "exit_code": "0",
             "trace_ids": "",
             "evidence_path": "backend-full.exitcode",
-            "evidence_sha256": "",
+            "evidence_sha256": _sha256_of(root / "backend-full.exitcode"),
             "rc_id": "rc-20260905-01",
             "reviewer": "qa-signer 2026-09-06",
         }

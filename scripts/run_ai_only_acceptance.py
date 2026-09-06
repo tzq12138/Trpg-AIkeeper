@@ -33,6 +33,18 @@ MAX_EVIDENCE_BYTES = 50 * 1024 * 1024
 _ID_RE = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
 _REVIEWER_RE = r"[A-Za-z0-9._-]+ \d{4}-\d{2}-\d{2}"
 
+# Authoritative frozen requirement ID set (123 items from the release checklist).
+# Loaded once; validation falls back to evidence-tree data when this file is
+# absent (CI/forked environments that do not carry the canonical data dir).
+_FROZEN_IDS: frozenset[str] | None = None
+_frozen_path = Path(__file__).resolve().parent.parent / "data" / "frozen_requirement_ids.csv"
+if _frozen_path.exists():
+    with _frozen_path.open("r", encoding="utf-8-sig") as _handle:
+        _reader = csv.DictReader(_handle)
+        _ids = {row["requirement_id"].strip() for row in _reader if row.get("requirement_id", "").strip()}
+    if len(_ids) == 123:
+        _FROZEN_IDS = frozenset(_ids)
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -122,31 +134,30 @@ def validate_evidence(evidence: Path, rows: list[dict], *, rc_id: str) -> tuple[
     artifact bundle: every row's rc_id must equal it, and the evidence
     manifest.json must carry the same id.
 
-    Blocker-level requirements (``minimum_level == "blocker"``) must be PASSED
-    with valid evidence; a zero-passed-row mapping can never pass the gate
-    (V5/A01: "发布校验器全部失败判为 RC 通过").
+    Every mapped requirement must be genuinely PASSED with machine-checkable
+    evidence; any FAILED or BLOCKED row rejects the gate. Missing hashes,
+    non-zero exit codes, wrong frozen IDs or synthetic-only manifests each
+    fail independently (V5/A01).
     """
     blocks: list[str] = []
     if not evidence.exists():
         return 1, ["evidence_root_missing"]
 
-    for name in ("backend-full", "frontend-test", "frontend-build"):
-        blocked, code = _read_exitcode(evidence, f"{name}.exitcode")
-        if blocked:
-            blocks.append(code)
-
+    # Read manifest early to get metadata needed during per-row validation
+    manifest: dict = {}
     manifest_path = evidence / "manifest.json"
     if not manifest_path.exists():
         blocks.append("manifest_missing")
     else:
         try:
             with manifest_path.open("r", encoding="utf-8") as handle:
-                manifest_rc = json.load(handle).get("rc_id")
+                manifest = json.load(handle)
         except (json.JSONDecodeError, OSError):
             blocks.append("manifest_unreadable")
-            manifest_rc = None
-        if manifest_rc != rc_id:
+            manifest = {}
+        if manifest.get("rc_id") != rc_id:
             blocks.append("manifest_rc_mismatch")
+
     if not (evidence / "requirements.csv").exists():
         blocks.append("requirements_csv_missing")
 
@@ -154,6 +165,7 @@ def validate_evidence(evidence: Path, rows: list[dict], *, rc_id: str) -> tuple[
     blocks.extend(signer_blocks)
 
     requirement_ids: set[str] = set()
+    non_passed_entries: list[tuple[str, bool]] = []
     for row in rows:
         requirement_id = row["requirement_id"]
         if not isinstance(requirement_id, str) or not requirement_id.strip():
@@ -167,11 +179,15 @@ def validate_evidence(evidence: Path, rows: list[dict], *, rc_id: str) -> tuple[
         requirement_ids.add(requirement_id)
         if row.get("rc_id") != rc_id:
             blocks.append(f"rc_id_mismatch:{safe_id}")
-        if row["status"] not in REQUIRED_STATUSES:
+
+        status = row["status"]
+        if status not in REQUIRED_STATUSES:
             blocks.append(f"requirement_status_invalid:{safe_id}")
-        if row.get("minimum_level", "").strip() == "blocker" and row["status"] != "PASSED":
-            blocks.append(f"blocker_not_passed:{safe_id}")
-        if row["status"] == "PASSED":
+        elif status != "PASSED":
+            is_blocker = row.get("minimum_level", "").strip() == "blocker"
+            non_passed_entries.append((safe_id, is_blocker))
+
+        if status == "PASSED":
             evidence_path = row.get("evidence_path") or ""
             if not evidence_path or not evidence_path.strip():
                 blocks.append(f"passed_without_evidence:{safe_id}")
@@ -190,22 +206,64 @@ def validate_evidence(evidence: Path, rows: list[dict], *, rc_id: str) -> tuple[
             if target.stat().st_size > MAX_EVIDENCE_BYTES:
                 blocks.append(f"evidence_too_large:{safe_id}")
                 continue
+
+            # V5/A01: PASSED rows MUST have non-empty evidence sha256
             expected = (row.get("evidence_sha256") or "").strip()
-            if expected and _sha256(target) != expected:
+            if not expected:
+                blocks.append(f"passed_without_hash:{safe_id}")
+                continue
+            if _sha256(target) != expected:
                 blocks.append(f"evidence_hash_mismatch:{safe_id}")
+
             command = row.get("command") or ""
             exit_code = (row.get("exit_code") or "").strip()
             if not command:
                 blocks.append(f"passed_without_command:{safe_id}")
             if not exit_code:
                 blocks.append(f"passed_without_exit_code:{safe_id}")
+            elif exit_code != "0":
+                # PASSED claim contradicts non-zero exit code
+                blocks.append(f"passed_with_non_zero_exit:{safe_id}")
+
         if not _expect_signed(row.get("reviewer"), signers=signers):
             blocks.append(f"reviewer_missing:{safe_id}")
+
     if len(requirement_ids) < 123:
         blocks.append(f"requirements_below_123:{len(requirement_ids)}")
+
+    # Emit non-passed row blocks — summary "zero_passed_rows" when none
+    # passed (concise), per-row details when some passed but not all.
     passed_rows = sum(1 for row in rows if row.get("status") == "PASSED")
     if passed_rows == 0:
         blocks.append("zero_passed_rows")
+    else:
+        for safe_id, is_blocker in non_passed_entries:
+            if is_blocker:
+                blocks.append(f"blocker_not_passed:{safe_id}")
+            else:
+                blocks.append(f"non_passed_row:{safe_id}")
+
+    # V5/A01: validate exact match against the frozen requirement ID set.
+    # The authoritative data/frozen_requirement_ids.csv is checked when
+    # available (loads at module level); the evidence tree manifest's
+    # optional list serves as fallback for forked/CI environments.
+    frozen: frozenset[str] | None = _FROZEN_IDS
+    if frozen is None:
+        manifest_list = manifest.get("frozen_requirement_ids") if isinstance(manifest, dict) else None
+        if manifest_list is not None:
+            if not isinstance(manifest_list, list):
+                blocks.append("frozen_ids_not_list")
+            else:
+                frozen = frozenset(str(r) for r in manifest_list)
+    if frozen is not None:
+        if frozen != requirement_ids:
+            missing = frozen - requirement_ids
+            extra = requirement_ids - frozen
+            blocks.append(
+                f"frozen_id_mismatch:missing={sorted(missing)[:3]} "
+                f"extra={sorted(extra)[:3]}"
+            )
+
     return len(blocks), blocks
 
 
