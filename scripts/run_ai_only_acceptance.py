@@ -121,6 +121,10 @@ def validate_evidence(evidence: Path, rows: list[dict], *, rc_id: str) -> tuple[
     The release-candidate id is an ANCHOR from the invocation, never from the
     artifact bundle: every row's rc_id must equal it, and the evidence
     manifest.json must carry the same id.
+
+    Blocker-level requirements (``minimum_level == "blocker"``) must be PASSED
+    with valid evidence; a zero-passed-row mapping can never pass the gate
+    (V5/A01: "发布校验器全部失败判为 RC 通过").
     """
     blocks: list[str] = []
     if not evidence.exists():
@@ -165,6 +169,8 @@ def validate_evidence(evidence: Path, rows: list[dict], *, rc_id: str) -> tuple[
             blocks.append(f"rc_id_mismatch:{safe_id}")
         if row["status"] not in REQUIRED_STATUSES:
             blocks.append(f"requirement_status_invalid:{safe_id}")
+        if row.get("minimum_level", "").strip() == "blocker" and row["status"] != "PASSED":
+            blocks.append(f"blocker_not_passed:{safe_id}")
         if row["status"] == "PASSED":
             evidence_path = row.get("evidence_path") or ""
             if not evidence_path or not evidence_path.strip():
@@ -197,6 +203,9 @@ def validate_evidence(evidence: Path, rows: list[dict], *, rc_id: str) -> tuple[
             blocks.append(f"reviewer_missing:{safe_id}")
     if len(requirement_ids) < 123:
         blocks.append(f"requirements_below_123:{len(requirement_ids)}")
+    passed_rows = sum(1 for row in rows if row.get("status") == "PASSED")
+    if passed_rows == 0:
+        blocks.append("zero_passed_rows")
     return len(blocks), blocks
 
 
