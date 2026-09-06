@@ -676,3 +676,296 @@ async def test_apply_state_version_mismatch_pauses_instead_of_guessing(
         "SELECT hp FROM character_runtime_state WHERE character_id = %s AND room_id = %s",
         (joined["character_id"], room["room_id"]),
     ).fetchone() is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R5 slice B — original-dice reuse review.
+# ═══════════════════════════════════════════════════════════════════════════
+
+from src.server.engine.automatic_action_review import (
+    AutomaticReviewResolutionError,
+    resolve_roll_reinterpretation,
+)
+from src.server.engine.roll_receipt import create_roll_receipt
+
+
+def _roll_record(dice_value):
+    return {
+        "dice": "d100",
+        "values": {
+            "ones": dice_value % 10,
+            "tens": [dice_value // 10],
+            "candidates": [dice_value],
+            "selected_index": 0,
+        },
+        "result": dice_value,
+    }
+
+
+def _insert_review_bundle(test_db, room_id, character_id, *, receipt, explanation_extra=None):
+    explanation = {
+        "rule_set_version": "coc7-v1",
+        "authoritative_inputs": {
+            "intent_type": "skill_check",
+            "skill_value": 60,
+            "difficulty": "hard",
+        },
+        "verification_receipt": receipt,
+    }
+    if explanation_extra:
+        explanation.update(explanation_extra)
+    test_db.execute(
+        "INSERT INTO resolution_bundles "
+        "(action_id, room_id, character_id, canonical_result, rule_explanation, "
+        "actor_projection, stage_projection, host_console, release_status) "
+        "VALUES ('review-action', %s, %s, '{}', %s, '{}', '{}', '{}', 'released')",
+        (room_id, character_id, json.dumps(explanation, ensure_ascii=False)),
+    )
+    test_db.commit()
+
+
+async def _awaiting_roll_case(client, test_db, monkeypatch, *, dice_value, version="v1"):
+    """ai_only completed action + frozen skill receipt + awaiting case."""
+    monkeypatch.setenv("ROLL_RECEIPT_SECRET", "roll-reuse-test-secret")
+    room, joined = _setup_ai_only_completed_action(client, test_db)
+    kwargs = dict(
+        action_id="review-action",
+        rule_set_version="coc7-v1",
+        rolled_at="2026-07-19T12:00:00+00:00",
+        raw_rolls=[_roll_record(dice_value)],
+    )
+    if version == "v2":
+        kwargs = dict(
+            version="v2",
+            room_id=room["room_id"],
+            state_version=0,
+            action_id="review-action",
+            purpose="skill_check",
+            rule_set_version="coc7-v1",
+            locked_inputs={"skill_value": 60, "difficulty": "hard"},
+            raw_draws=[_roll_record(dice_value)],
+            idempotency_key="review-roll-idem-1",
+        )
+    receipt = create_roll_receipt(**kwargs)
+    _insert_review_bundle(test_db, room["room_id"], joined["character_id"], receipt=receipt)
+    created = _post_review(client, joined, objection="难度参数录入错误").json()
+    previous_gateway = client.app.state.gateway
+    gateway = _CandidateReviewGateway()
+    client.app.state.gateway = gateway
+    try:
+        outcome = await run_automatic_action_review(
+            client.app.state, test_db, created["review_request_id"]
+        )
+        assert outcome["status"] == "awaiting_engine_review", outcome
+    finally:
+        client.app.state.gateway = previous_gateway
+    return room, joined, created, receipt
+
+
+async def test_reuse_v1_die_relabels_difficulty_with_same_outcome(
+    client, test_db, monkeypatch,
+):
+    # roll 20: hard (target 30) success AND regular (target 60) success — the
+    # corrected label keeps the outcome, so only the explanation is corrected.
+    room, joined, created, receipt = await _awaiting_roll_case(
+        client, test_db, monkeypatch, dice_value=20, version="v1"
+    )
+    before = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"]
+
+    outcome = resolve_roll_reinterpretation(
+        test_db, created["review_request_id"], difficulty="regular"
+    )
+
+    assert outcome["status"] == "explanation_corrected"
+    assert outcome["transaction_id"]
+    row = test_db.execute(
+        "SELECT status, automatic_resolution FROM action_review_requests "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "resolved"
+    auto = row["automatic_resolution"]
+    assert auto["status"] == "explanation_corrected"
+    stored = test_db.execute(
+        "SELECT payload FROM compensation_transactions WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert stored["payload"]["kind"] == "explanation_corrected"
+    assert stored["payload"]["correction"]["kind"] == "difficulty_relabel"
+    assert stored["payload"]["correction"]["recalculation"] == {
+        "roll": 20,
+        "skillValue": 60,
+        "difficulty": "regular",
+        "target": 60,
+        "isSuccess": True,
+        "reusedOriginalRoll": True,
+    }
+    # The SAME recorded die was reused: the receipt in the DB is untouched.
+    stored_receipt = test_db.execute(
+        "SELECT rule_explanation FROM resolution_bundles WHERE action_id = 'review-action'"
+    ).fetchone()["rule_explanation"]["verification_receipt"]
+    assert stored_receipt == receipt
+    assert test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"] == before
+
+
+async def test_reuse_v2_die_via_locked_inputs_purpose(
+    client, test_db, monkeypatch,
+):
+    room, joined, created, receipt = await _awaiting_roll_case(
+        client, test_db, monkeypatch, dice_value=20, version="v2"
+    )
+    assert receipt["version"] == "v2"
+    outcome = resolve_roll_reinterpretation(
+        test_db, created["review_request_id"], difficulty="regular"
+    )
+    assert outcome["status"] == "explanation_corrected"
+    stored = test_db.execute(
+        "SELECT payload FROM compensation_transactions WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()["payload"]
+    # Purpose mapping came from the v2 locked_inputs; no second random call.
+    assert stored["correction"]["recalculation"]["roll"] == 20
+    assert stored["correction"]["original_difficulty"] == "hard"
+    assert test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"] == 0
+
+
+async def test_outcome_flip_with_same_die_fails_closed_to_system_paused(
+    client, test_db, monkeypatch,
+):
+    # The spec vector: d100=42, skill 60 — hard target 30 fails, regular
+    # target 60 succeeds. The die is reused for the new interpretation, but
+    # the consequence magnitude is not provable without a rule recomputation.
+    room, joined, created, _receipt = await _awaiting_roll_case(
+        client, test_db, monkeypatch, dice_value=42, version="v1"
+    )
+
+    outcome = resolve_roll_reinterpretation(
+        test_db, created["review_request_id"], difficulty="regular"
+    )
+
+    assert outcome["status"] == "system_paused"
+    assert outcome["reason_code"] == "outcome_flip_requires_consequence_proof"
+    assert outcome["recalculation"]["roll"] == 42
+    assert outcome["recalculation"]["isSuccess"] is True
+    row = test_db.execute(
+        "SELECT status, automatic_resolution FROM action_review_requests "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "resolved"
+    assert row["automatic_resolution"]["reason_code"] == (
+        "outcome_flip_requires_consequence_proof"
+    )
+    room_row = test_db.execute(
+        "SELECT runtime_status, integrity_reason FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] == "paused_system"
+    assert room_row["integrity_reason"] == "review_outcome_flip"
+    # Nothing was compensated or guessed.
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM compensation_transactions"
+    ).fetchone()["count"] == 0
+
+
+async def test_same_difficulty_is_upheld(client, test_db, monkeypatch):
+    room, joined, created, _receipt = await _awaiting_roll_case(
+        client, test_db, monkeypatch, dice_value=42, version="v1"
+    )
+    outcome = resolve_roll_reinterpretation(
+        test_db, created["review_request_id"], difficulty="hard"
+    )
+    assert outcome["status"] == "upheld"
+    row = test_db.execute(
+        "SELECT status FROM action_review_requests WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "resolved"
+    room_row = test_db.execute(
+        "SELECT runtime_status FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] != "paused_system"
+
+
+@pytest.mark.parametrize(
+    ("corrupt", "expected_code"),
+    [
+        ("missing_bundle", "roll_receipt_missing"),
+        ("tampered_signature", "roll_receipt_invalid"),
+        ("wrong_action", "roll_receipt_action_mismatch"),
+        ("two_dice", "recalculation_not_supported"),
+    ],
+)
+async def test_unverifiable_receipt_refuses_changes_and_pauses(
+    client, test_db, monkeypatch, corrupt, expected_code,
+):
+    monkeypatch.setenv("ROLL_RECEIPT_SECRET", "roll-reuse-test-secret")
+    room, joined = _setup_ai_only_completed_action(client, test_db)
+    if corrupt != "missing_bundle":
+        receipt = create_roll_receipt(
+            action_id="review-action",
+            rule_set_version="coc7-v1",
+            rolled_at="2026-07-19T12:00:00+00:00",
+            raw_rolls=(
+                [_roll_record(42), _roll_record(50)]
+                if corrupt == "two_dice"
+                else [_roll_record(42)]
+            ),
+        )
+        if corrupt == "tampered_signature":
+            receipt["signature"] = "0" * len(receipt.get("signature", ""))
+        if corrupt == "wrong_action":
+            # A VALIDLY signed receipt that belongs to a different action:
+            # the mismatch is caught on the field, not on the signature.
+            receipt = create_roll_receipt(
+                action_id="some-other-action",
+                rule_set_version="coc7-v1",
+                rolled_at="2026-07-19T12:00:00+00:00",
+                raw_rolls=[_roll_record(42)],
+            )
+        _insert_review_bundle(test_db, room["room_id"], joined["character_id"],
+                              receipt=receipt)
+    created = _post_review(client, joined, objection="难度参数录入错误").json()
+    previous_gateway = client.app.state.gateway
+    gateway = _CandidateReviewGateway()
+    client.app.state.gateway = gateway
+    try:
+        outcome = await run_automatic_action_review(
+            client.app.state, test_db, created["review_request_id"]
+        )
+        assert outcome["status"] == "awaiting_engine_review", outcome
+    finally:
+        client.app.state.gateway = previous_gateway
+
+    outcome = resolve_roll_reinterpretation(
+        test_db, created["review_request_id"], difficulty="regular"
+    )
+
+    assert outcome["status"] == "system_paused"
+    assert outcome["reason_code"] == expected_code
+    room_row = test_db.execute(
+        "SELECT runtime_status FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] == "paused_system"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM compensation_transactions"
+    ).fetchone()["count"] == 0
+
+
+def test_invalid_difficulty_label_is_rejected(client, test_db):
+    with pytest.raises(AutomaticReviewResolutionError) as exc:
+        resolve_roll_reinterpretation(
+            test_db, "no-such-case", difficulty="impossible"
+        )
+    assert exc.value.code == "invalid_difficulty"

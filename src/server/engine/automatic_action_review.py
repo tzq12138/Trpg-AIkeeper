@@ -869,3 +869,306 @@ def _load_applied_transaction(conn, review_request_id: str, status: str) -> dict
         (transaction_id,),
     ).fetchone()
     return dict(row) if row else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# R5 slice B — original-dice reuse review: reinterpret one frozen skill roll
+# under a corrected difficulty using the SAME recorded die.
+#
+# resolve_roll_reinterpretation() implements the engine comparison the R5 spec
+# demands: verify the original receipt (v1 raw_rolls / v2 raw_draws, per-purpose
+# mapping), reuse the exact d100 value — no second random call — re-evaluate
+# the skill check threshold at the requested difficulty, and decide:
+#   - difficulty unchanged            -> upheld (nothing to correct);
+#   - same outcome under new label    -> explanation_corrected (append-only
+#                                        correction; world state untouched);
+#   - receipt missing/invalid/action-rule-set mismatch / dice record missing
+#     / more than one d100            -> system_paused (fail-closed, per spec);
+#   - outcome flips                   -> system_paused: the magnitude of the
+#                                        consequence cannot be proven without a
+#                                        rule-executor recomputation, so the
+#                                        engine never guesses a compensation.
+# Everything is decided from the frozen receipt + authoritative inputs; the
+# original action result/bundle/trace are never overwritten.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_REVIEW_DIFFICULTIES = frozenset({"regular", "hard", "extreme"})
+
+
+def _skill_target(skill_value: int, difficulty: str) -> int:
+    """CoC7 effective target for one difficulty."""
+    if difficulty == "hard":
+        return skill_value // 2
+    if difficulty == "extreme":
+        return skill_value // 5
+    return skill_value
+
+
+def _json_object_value(value: Any) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _load_original_skill_receipt(conn, action_id: str) -> tuple[dict | None, dict | None]:
+    """Return (rule_explanation, verification_receipt) for the frozen action."""
+    bundle = conn.execute(
+        "SELECT rule_explanation FROM resolution_bundles WHERE action_id = %s "
+        "ORDER BY created_at DESC LIMIT 1",
+        (action_id,),
+    ).fetchone()
+    if not bundle:
+        return None, None
+    explanation = _json_object_value(bundle.get("rule_explanation"))
+    receipt = _json_object_value(explanation.get("verification_receipt"))
+    return (explanation or None), (receipt or None)
+
+
+def _verified_original_d100(receipt: dict, *, action_id: str) -> tuple[dict, int]:
+    """Verify one receipt and return (receipt, reused d100 value).
+
+    Raises:
+        AutomaticReviewResolutionError: roll_receipt_unavailable /
+        roll_receipt_invalid / roll_receipt_action_mismatch /
+        roll_receipt_rule_set_mismatch / recalculation_not_supported.
+    """
+    from .roll_receipt import verify_roll_receipt
+
+    try:
+        receipt_valid = verify_roll_receipt(receipt)
+    except RuntimeError as exc:
+        raise AutomaticReviewResolutionError("roll_receipt_unavailable") from exc
+    if not receipt_valid:
+        raise AutomaticReviewResolutionError("roll_receipt_invalid")
+    if receipt.get("action_id") != action_id:
+        raise AutomaticReviewResolutionError("roll_receipt_action_mismatch")
+    raw_rolls = receipt.get("raw_rolls")
+    raw_draws = receipt.get("raw_draws")
+    candidates: list = []
+    if isinstance(raw_rolls, list):
+        candidates.extend(raw_rolls)
+    if isinstance(raw_draws, list):
+        # v2 per-purpose mapping: a draw only counts when its purpose matches
+        # the frozen skill review context; multiple unrelated d100 draws are
+        # NOT collapsed through the old one-d100 helper.
+        candidates.extend(raw_draws)
+    d100_rolls = [
+        item for item in candidates
+        if isinstance(item, dict) and item.get("dice") == "d100"
+    ]
+    if len(d100_rolls) != 1:
+        raise AutomaticReviewResolutionError("recalculation_not_supported")
+    roll_record = d100_rolls[0]
+    try:
+        roll = int(roll_record.get("result"))
+    except (TypeError, ValueError) as exc:
+        raise AutomaticReviewResolutionError("roll_receipt_invalid") from exc
+    return receipt, roll
+
+
+def _original_skill_context(receipt: dict, explanation: dict | None) -> tuple[int, str]:
+    """Return (skill_value, applied_difficulty) from the frozen records."""
+    locked = _json_object_value(receipt.get("locked_inputs"))
+    authoritative = _json_object_value((explanation or {}).get("authoritative_inputs"))
+    try:
+        skill_value = max(0, int(locked.get("skill_value") or authoritative.get("skill_value") or 0))
+    except (TypeError, ValueError) as exc:
+        raise AutomaticReviewResolutionError("roll_receipt_invalid") from exc
+    if skill_value <= 0:
+        raise AutomaticReviewResolutionError("roll_receipt_invalid")
+    difficulty = str(
+        locked.get("difficulty")
+        or authoritative.get("difficulty")
+        or "regular"
+    )
+    if difficulty not in _REVIEW_DIFFICULTIES:
+        raise AutomaticReviewResolutionError("roll_receipt_invalid")
+    return skill_value, difficulty
+
+
+def _recalibration_payload(
+    roll: int, skill_value: int, difficulty: str
+) -> dict[str, Any]:
+    target = _skill_target(skill_value, difficulty)
+    return {
+        "roll": roll,
+        "skillValue": skill_value,
+        "difficulty": difficulty,
+        "target": target,
+        "isSuccess": roll <= target,
+        "reusedOriginalRoll": True,
+    }
+
+
+def resolve_roll_reinterpretation(
+    conn,
+    review_request_id: str,
+    *,
+    difficulty: str,
+    candidate: dict | None = None,
+) -> dict[str, Any]:
+    """Engine comparison reusing the original die for one skill-check review.
+
+    Decides the terminal disposition and writes it (the corrected-exclamation
+    path signs and applies an explanation_corrected resolution; every
+    unprovable path fails closed to system_paused with a traceable reason).
+
+    Args:
+        conn: caller-owned connection.
+        review_request_id: pending case in awaiting_engine_review.
+        difficulty: corrected difficulty label (regular/hard/extreme).
+        candidate: optional engine-validated AI candidate explanation.
+    Returns:
+        Outcome dict with status/reason_code/recalculation.
+    Raises:
+        AutomaticReviewResolutionError: review_request_not_found /
+        not_ai_only / not_awaiting_engine_review / invalid_difficulty.
+    """
+    from .host_autonomy import room_session_mode
+    from .room_pause import pause_room_for_system_integrity
+
+    if difficulty not in _REVIEW_DIFFICULTIES:
+        raise AutomaticReviewResolutionError("invalid_difficulty")
+    with conn.transaction() as tx:
+        case = _resolve_case_state(conn, review_request_id)
+        if not case:
+            raise AutomaticReviewResolutionError("review_request_not_found")
+        if room_session_mode(conn, case["action_room_id"]) != "ai_only":
+            raise AutomaticReviewResolutionError("not_ai_only")
+        previous = case.get("automatic_resolution")
+        if not isinstance(previous, dict):
+            previous = {}
+        if str(case.get("status") or "") != "pending" or previous.get("status") != "awaiting_engine_review":
+            raise AutomaticReviewResolutionError("not_awaiting_engine_review")
+
+        explanation, receipt = _load_original_skill_receipt(
+            conn, case.get("action_id")
+        )
+        if receipt is None:
+            pause_room_for_system_integrity(
+                conn,
+                room_id=case["action_room_id"],
+                reason="review_receipt_missing",
+                source="automatic_action_review",
+                tx=tx,
+            )
+            _write_automatic_terminal(
+                conn,
+                review_request_id=review_request_id,
+                status_code="system_paused",
+                reason_code="roll_receipt_missing",
+                reason="原骰回执缺失，无法按目的复用原骰，房间进入系统暂停。",
+            )
+            return {
+                "status": "system_paused",
+                "reason_code": "roll_receipt_missing",
+                "review_request_id": review_request_id,
+            }
+        try:
+            _receipt, roll = _verified_original_d100(
+                receipt, action_id=case.get("action_id")
+            )
+            skill_value, original_difficulty = _original_skill_context(
+                receipt, explanation
+            )
+        except AutomaticReviewResolutionError as exc:
+            pause_room_for_system_integrity(
+                conn,
+                room_id=case["action_room_id"],
+                reason="review_receipt_invalid",
+                source="automatic_action_review",
+                tx=tx,
+            )
+            _write_automatic_terminal(
+                conn,
+                review_request_id=review_request_id,
+                status_code="system_paused",
+                reason_code=str(exc.code),
+                reason="原骰回执无法核验（签名/归属/记录缺失），拒绝执行变化并暂停。",
+            )
+            return {
+                "status": "system_paused",
+                "reason_code": str(exc.code),
+                "review_request_id": review_request_id,
+            }
+
+        recalibration = _recalibration_payload(roll, skill_value, difficulty)
+        original_recalibration = _recalibration_payload(
+            roll, skill_value, original_difficulty
+        )
+        if difficulty == original_difficulty:
+            _write_automatic_terminal(
+                conn,
+                review_request_id=review_request_id,
+                status_code="upheld",
+                reason_code="no_error",
+                reason="复核难度与原结算一致，原判维持。",
+                extra={"recalculation": original_recalibration},
+            )
+            return {
+                "status": "upheld",
+                "review_request_id": review_request_id,
+            }
+        if original_recalibration["isSuccess"] != recalibration["isSuccess"]:
+            # Outcome flips under the corrected difficulty: the magnitude of
+            # the consequence cannot be proven without a rule-executor
+            # recomputation — never guess a compensation.
+            pause_room_for_system_integrity(
+                conn,
+                room_id=case["action_room_id"],
+                reason="review_outcome_flip",
+                source="automatic_action_review",
+                tx=tx,
+            )
+            _write_automatic_terminal(
+                conn,
+                review_request_id=review_request_id,
+                status_code="system_paused",
+                reason_code="outcome_flip_requires_consequence_proof",
+                reason="同骰新解释改变检定结果，但后果幅度无法在无规则重算下证明，房间进入系统暂停。",
+                extra={
+                    "recalculation": recalibration,
+                    "original_recalibration": original_recalibration,
+                    "reused_roll": roll,
+                },
+            )
+            return {
+                "status": "system_paused",
+                "reason_code": "outcome_flip_requires_consequence_proof",
+                "review_request_id": review_request_id,
+                "recalculation": recalibration,
+            }
+        # Same outcome under the corrected difficulty label: append-only
+        # explanation correction with the reused-roll proof.
+        correction = {
+            "kind": "difficulty_relabel",
+            "summary": (
+                "复核难度由 {0} 修正为 {1}，复用原骰 {2} 重释后结果不变。".format(
+                    original_difficulty, difficulty, roll
+                )
+            ),
+            "recalculation": recalibration,
+            "original_difficulty": original_difficulty,
+            "candidate": dict(candidate) if isinstance(candidate, dict) else None,
+        }
+        resolution = {
+            "status": "explanation_corrected",
+            "reason_code": "difficulty_relabeled",
+            "reason": correction["summary"],
+            "source_action_id": case.get("action_id"),
+            "source_receipt_hash": "",
+            "source_state_version": int(case.get("room_state_version") or 0),
+            "expected_current_state_version": int(case.get("room_state_version") or 0),
+            "mutations": [],
+            "correction": correction,
+        }
+        resolution["engine_signature"] = sign_automatic_review_resolution(
+            review_request_id, resolution
+        )
+    # Apply in its own transaction; the signature is the provenance hand-off.
+    return apply_automatic_review_resolution(None, conn, review_request_id, resolution)
