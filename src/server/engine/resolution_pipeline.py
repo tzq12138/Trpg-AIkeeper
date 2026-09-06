@@ -3821,16 +3821,6 @@ class ResolutionPipeline:
         )
         await self.dispatcher.emit(
             action["room_id"],
-            "s2c_room_paused",
-            "party",
-            {
-                "reasonCode": reason,
-                "mode": "system_paused",
-                "actionId": action["action_id"],
-            },
-        )
-        await self.dispatcher.emit(
-            action["room_id"],
             "s2c_ai_recovery_required",
             "player",
             {

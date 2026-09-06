@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Literal
 
 
@@ -82,14 +83,26 @@ def pause_room_for_system_integrity(
         tx: optional caller-owned transaction object; when omitted a new
             transaction is opened and committed.
     """
+    sequence = 0
     if tx is None:
         with conn.transaction() as tx_ctx:
-            _write_pause_statements(tx_ctx, room_id, reason, source, action_id)
+            sequence = _write_pause_statements(tx_ctx, room_id, reason, source, action_id)
+        # Post-commit live notice: the EventLog row committed with the pause.
+        _push_pause_live(room_id, reason, action_id, sequence)
         return
-    _write_pause_statements(tx, room_id, reason, source, action_id)
+    sequence = _write_pause_statements(tx, room_id, reason, source, action_id)
+    # Caller-owned transaction: the row commits with the caller; the live push
+    # is best-effort right away (clients treat WS as refresh trigger only).
+    _push_pause_live(room_id, reason, action_id, sequence)
 
 
-def _write_pause_statements(tx, room_id: str, reason: str, source: str, action_id: str | None) -> None:
+def _write_pause_statements(
+    tx,
+    room_id: str,
+    reason: str,
+    source: str,
+    action_id: str | None,
+) -> int:
     tx.execute(
         "UPDATE rooms SET status = 'paused', runtime_status = 'paused_system', "
         "integrity_status = 'read_only_recovery', integrity_reason = %s, "
@@ -97,15 +110,29 @@ def _write_pause_statements(tx, room_id: str, reason: str, source: str, action_i
         "integrity_updated_at = NOW() WHERE room_id = %s",
         (reason, source, room_id),
     )
+    # Sanitized party notice in the SAME transaction as the pause (R7): the
+    # row is the durable refresh trigger and the payload never carries the
+    # internal source/reason detail beyond the machine-readable code.
+    event_row = tx.execute(
+        "INSERT INTO events (room_id, event_type, audience, payload, action_id) "
+        "VALUES (%s, 's2c_room_paused', 'party', %s, %s) RETURNING sequence",
+        (
+            room_id,
+            json.dumps(
+                {"mode": "system_paused", "reasonCode": reason, "actionId": action_id},
+                ensure_ascii=False,
+            ),
+            action_id,
+        ),
+    ).fetchone()
+    sequence = int(event_row["sequence"]) if event_row else 0
     if action_id:
-        import json as _json
-
         tx.execute(
             "INSERT INTO action_status_events (action_id, status, metadata) "
             "VALUES (%s, 'resolving', %s)",
             (
                 action_id,
-                _json.dumps(
+                json.dumps(
                     {
                         "reason_code": "room_integrity_paused",
                         "note": "action preserved for recovery; not terminated",
@@ -119,6 +146,24 @@ def _write_pause_statements(tx, room_id: str, reason: str, source: str, action_i
         from .resolution_journal import release_interrupted_resolution
 
         release_interrupted_resolution(tx, action_id)
+    return sequence
+
+
+def _push_pause_live(
+    room_id: str,
+    reason: str,
+    action_id: str | None,
+    sequence: int,
+) -> None:
+    from ..events.live import push_live_event
+
+    push_live_event(
+        room_id,
+        "s2c_room_paused",
+        "party",
+        {"mode": "system_paused", "reasonCode": reason, "actionId": action_id},
+        sequence=sequence,
+    )
 
 
 def request_owner_pause(

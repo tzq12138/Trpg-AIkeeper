@@ -10,6 +10,8 @@ The system pause written by the resolution pipeline must:
 - block new game actions while paused_system/recovering.
 """
 
+import asyncio
+
 import pytest
 
 from src.server.engine.resolution_pipeline import ResolutionPipeline
@@ -79,6 +81,16 @@ async def test_provider_failure_enters_recovery_from_real_pipeline(
     previous_gateway = client.app.state.gateway
     client.app.state.gateway = _DeterministicDirectorGateway()
     dispatcher = _RecordingDispatcher()
+    # R7 live-notification spy: the pause helper broadcasts through the shared
+    # ConnectionManager singleton (the same object events.live delivers on).
+    from src.server.host.ws_manager import manager as live_manager
+
+    live_broadcasts: list = []
+
+    async def _record_broadcast(room_id, event):
+        live_broadcasts.append((room_id, event))
+
+    monkeypatch.setattr(live_manager, "broadcast_to_room", _record_broadcast)
     try:
         # 1) A rule action settles normally first, committing an original dice
         #    receipt that must survive the later pause untouched.
@@ -149,10 +161,24 @@ async def test_provider_failure_enters_recovery_from_real_pipeline(
             event for event in dispatcher.events
             if event[1] == "s2c_action_completed" and event[3].get("actionId") == move_receipt["action_id"]
         ] == []
-        assert [
-            event for event in dispatcher.events
-            if event[1] == "s2c_room_paused" and event[2] == "party"
-        ], "s2c_room_paused must reach the party audience over WS"
+        # R7: the pause notice is centralized in the pause helper — durable
+        # party row (EventLog) + live WS broadcast through the ConnectionManager
+        # singleton. Assert both surfaces instead of the pipeline dispatcher.
+        pause_rows = test_db.execute(
+            "SELECT event_type, audience, payload FROM events "
+            "WHERE room_id = %s AND event_type = 's2c_room_paused'",
+            (room["room_id"],),
+        ).fetchall()
+        assert len(pause_rows) == 1, pause_rows
+        assert pause_rows[0]["audience"] == "party"
+        assert pause_rows[0]["payload"]["reasonCode"] == "narrator_timeout"
+        await asyncio.sleep(0)  # let the queued live delivery task run
+        live_pauses = [
+            event for (rid, event) in live_broadcasts
+            if rid == room["room_id"] and event.type == "s2c_room_paused"
+        ]
+        assert live_pauses, "s2c_room_paused must reach the party audience over WS"
+        assert live_pauses[0].audience == "party"
         # The earlier dice receipt survived untouched.
         skill_status = test_db.execute(
             "SELECT status FROM actions WHERE action_id = %s",

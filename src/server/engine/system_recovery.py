@@ -163,7 +163,7 @@ def create_system_recovery_proposal(conn, room_id: str) -> dict[str, Any]:
         EventLog(tx).log_event(
             room_id,
             "s2c_system_recovery_proposed",
-            "system",
+            "host",
             {
                 "proposal_id": proposal["proposal_id"],
                 "proposal_hash": proposal["proposal_hash"],
@@ -171,6 +171,17 @@ def create_system_recovery_proposal(conn, room_id: str) -> dict[str, Any]:
             },
             commit=False,
         )
+    from ..events.live import push_live_event
+
+    push_live_event(
+        room_id,
+        "s2c_system_recovery_proposed",
+        "host",
+        {
+            "proposal_id": proposal["proposal_id"],
+            "proposal_hash": proposal["proposal_hash"],
+        },
+    )
     return proposal
 
 
@@ -222,10 +233,18 @@ def dry_run_system_recovery(conn, room_id: str, proposal_id: str) -> dict[str, A
         EventLog(tx).log_event(
             room_id,
             "s2c_system_recovery_dry_run_verified",
-            "system",
+            "host",
             {"proposal_id": proposal_id, "proposal_hash": proposal["proposal_hash"]},
             commit=False,
         )
+    from ..events.live import push_live_event
+
+    push_live_event(
+        room_id,
+        "s2c_system_recovery_dry_run_verified",
+        "host",
+        {"proposal_id": proposal_id},
+    )
     return {"status": "dry_run_verified", "proposal": proposal, "dry_run": result}
 
 
@@ -289,9 +308,17 @@ def execute_system_recovery(conn, room_id: str, proposal_id: str) -> dict[str, A
         EventLog(tx).log_event(
             room_id,
             "s2c_system_recovery_started",
-            "system",
+            "host",
             {"proposal_id": proposal_id, "proposal_hash": proposal["proposal_hash"]},
             commit=False,
+        )
+        from ..events.live import push_live_event
+
+        push_live_event(
+            room_id,
+            "s2c_system_recovery_started",
+            "host",
+            {"proposal_id": proposal_id},
         )
         tx.execute(
             "UPDATE runtime_recovery_proposals SET status = 'executing' "
@@ -431,9 +458,17 @@ def finalize_system_recovery(
             EventLog(tx).log_event(
                 room_id,
                 "s2c_system_recovery_completed",
-                "system",
+                "party",
                 {"proposal_id": proposal_id, "proposal_hash": proposal_hash},
                 commit=False,
+            )
+            from ..events.live import push_live_event
+
+            push_live_event(
+                room_id,
+                "s2c_system_recovery_completed",
+                "party",
+                {"proposal_id": proposal_id},
             )
             return {"status": "running", "proposal_id": proposal_id}
         # Failure path: never claim running; keep the reason traceable.
@@ -453,8 +488,16 @@ def finalize_system_recovery(
         EventLog(tx).log_event(
             room_id,
             "s2c_system_recovery_failed",
-            "system",
+            "host",
             {"proposal_id": proposal_id, "reason_code": failure_code},
             commit=False,
+        )
+        from ..events.live import push_live_event
+
+        push_live_event(
+            room_id,
+            "s2c_system_recovery_failed",
+            "host",
+            {"proposal_id": proposal_id, "reason_code": failure_code},
         )
         return {"status": "paused_system", "proposal_id": proposal_id}

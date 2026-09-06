@@ -333,6 +333,44 @@ def _write_automatic_terminal(
             review_request_id,
         ),
     )
+    # R7 notification contract: the terminal disposition is durable as a
+    # player-scoped s2c_action_review_resolved row (own player only, catch-up
+    # via the redacted GET) plus a best-effort live refresh trigger. The
+    # payload never carries evidence or correction detail — the GET is the
+    # source of truth.
+    case = conn.execute(
+        "SELECT a.room_id, a.character_id, a.action_id "
+        "FROM action_review_requests r "
+        "JOIN actions a ON a.action_id = r.action_id "
+        "WHERE r.review_request_id = %s",
+        (review_request_id,),
+    ).fetchone()
+    if case and case.get("character_id"):
+        from ..events.event_log import EventLog
+        from ..events.live import push_live_event
+
+        payload = {
+            "actionId": case.get("action_id"),
+            "reviewRequestId": review_request_id,
+            "characterId": case.get("character_id"),
+            "status": status_code,
+            "reasonCode": reason_code,
+            "reason": reason,
+        }
+        EventLog(conn).log_event(
+            case["room_id"],
+            "s2c_action_review_resolved",
+            "player",
+            payload,
+            action_id=case.get("action_id"),
+        )
+        push_live_event(
+            case["room_id"],
+            "s2c_action_review_resolved",
+            "player",
+            payload,
+            character_id=case.get("character_id"),
+        )
 
 
 async def run_automatic_action_review(

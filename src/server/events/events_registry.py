@@ -211,6 +211,44 @@ ALL_EVENTS: dict[str, EventDef] = {
         "运行时完整性状态改变，通知参与者允许的后续操作",
     ),
 
+    # ── Room pause / system recovery (R7 live notification contract) ──
+    "s2c_room_pause_requested": EventDef(
+        "s2c_room_pause_requested", EventDomain.ROOM, "system",
+        "Owner 暂停请求已登记——审计行；Live 由 pause/settle 状态事件覆盖",
+    ),
+    "s2c_room_paused": EventDef(
+        "s2c_room_paused", EventDomain.ROOM, "party",
+        "房间暂停（owner 或 system integrity）——脱敏原因码，广播触发各方刷新",
+    ),
+    "s2c_room_resumed": EventDef(
+        "s2c_room_resumed", EventDomain.ROOM, "system",
+        "Owner 恢复房间——审计行（恢复后玩家经 snapshot/GET 刷新）",
+    ),
+    "s2c_system_recovery_proposed": EventDef(
+        "s2c_system_recovery_proposed", EventDomain.ROOM, "host",
+        "系统恢复方案已生成（携 proposal_id/hash）——Owner 控制台动作入口",
+    ),
+    "s2c_system_recovery_dry_run_verified": EventDef(
+        "s2c_system_recovery_dry_run_verified", EventDomain.ROOM, "host",
+        "恢复方案 dry-run 验证通过，Owner 可执行同一方案",
+    ),
+    "s2c_system_recovery_started": EventDef(
+        "s2c_system_recovery_started", EventDomain.ROOM, "host",
+        "恢复执行已开始（房间 recovering）",
+    ),
+    "s2c_system_recovery_completed": EventDef(
+        "s2c_system_recovery_completed", EventDomain.ROOM, "party",
+        "恢复完成，房间回到 running——广播触发玩家刷新原行动回执",
+    ),
+    "s2c_system_recovery_failed": EventDef(
+        "s2c_system_recovery_failed", EventDomain.ROOM, "host",
+        "恢复执行失败，房间保持/回到 paused_system（携 reason_code）",
+    ),
+    "s2c_review_projection_repair": EventDef(
+        "s2c_review_projection_repair", EventDomain.ACTION, "system",
+        "自动复核补发缺失受众通知的 DB 级 repair 行（catch-up 可见）",
+    ),
+
     # ── System ──
     "s2c_atmosphere": EventDef(
         "s2c_atmosphere", EventDomain.SYSTEM, "host",
