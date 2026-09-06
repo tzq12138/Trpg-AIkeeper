@@ -221,6 +221,7 @@ export interface ActionReceiptDTO {
   timeline: ActionTimelineEventDTO[];
   can_cancel: boolean;
   can_review: boolean;
+  review_request_id?: string | null;
   rule_explanation: RuleExplanationDTO | null;
   /** R7 receipt contract: room runtime context + recovery state so a waiting
    * client can say "系统暂停/恢复中" without guessing from the action status. */

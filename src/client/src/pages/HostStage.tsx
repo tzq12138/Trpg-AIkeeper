@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { buildStageClientHeaders, getStageClientToken } from '../shared/stage-client';
+import OwnerRecoveryPanel from '../components/OwnerRecoveryPanel';
 import {
   normalizePublicStage,
   normalizePublicStagePresentation,
@@ -88,6 +89,10 @@ export default function HostStage({ roomId }: { roomId: string }) {
       </header>
 
       {error && <p className="bh-stage-notice">{error}</p>}
+
+      {/* R7: Owner-only normal termination entry available from the stage */}
+      <OwnerRecoveryPanel roomId={roomId} />
+
       <div className="bh-host-layout">
         <section className="bh-stage-panel">
           <div className="bh-stage-label">PUBLIC STAGE</div>

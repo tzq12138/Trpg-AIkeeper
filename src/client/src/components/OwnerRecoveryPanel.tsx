@@ -38,7 +38,9 @@ export interface OwnerRecoveryViewProps {
 
 /**
  * R7 presentational Owner console (state injected; the polling wrapper below
- * owns the data). Renders nothing while the room runs.
+ * owns the data). Shows recovery controls during paused_system/recovering, and
+ * always shows the "normal ending" entry so the owner can end the room from
+ * any non-terminal state.
  */
 export function OwnerRecoveryView({
   state,
@@ -55,7 +57,14 @@ export function OwnerRecoveryView({
 }: OwnerRecoveryViewProps) {
   const copy = statusCopy(state.runtime);
   const active = needsRecoveryPanel(state.runtime) || state.phase !== 'idle';
-  if (!active && !isOwnerTerminal(state.runtime) && state.runtime !== 'paused_by_owner') {
+  // Show during terminal states (ended), paused_system (recovery), recovering,
+  // paused_by_owner, and running (always expose the normal-ending button).
+  // Only hide during lobby — the host lobby has its own controls there.
+  if (state.runtime === 'lobby') {
+    return null;
+  }
+  if (!active && !isOwnerTerminal(state.runtime)
+      && state.runtime !== 'paused_by_owner' && state.runtime !== 'running') {
     return null;
   }
   const canExecute = state.phase === 'dry_run_verified' && state.runtime === 'paused_system';

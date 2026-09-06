@@ -49,6 +49,13 @@ export default function ReviewPanel({
   const recovery = recoveryCopy(runtime);
   const reviewPending = isReviewPending(review);
 
+  /** R7 A09 fix: restore existing pending review case from receipt on mount */
+  useEffect(() => {
+    if (runtime.review_request_id && !review && canReview) {
+      getActionReview(actionId, runtime.review_request_id).then(setReview).catch(() => {});
+    }
+  }, [actionId, canReview, runtime.review_request_id]);
+
   useEffect(() => {
     return () => {
       if (pollTimer.current) clearInterval(pollTimer.current);

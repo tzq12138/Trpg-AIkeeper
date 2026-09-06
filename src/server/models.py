@@ -630,6 +630,7 @@ class ActionReceiptV2(BaseModel):
     timeline: list[ActionStatusEventDTO] = Field(default_factory=list)
     can_cancel: bool = False
     can_review: bool = False
+    review_request_id: str | None = None
     rule_explanation: dict[str, Any] | None = None
     # R7 receipt contract: room runtime context so a waiting client can say
     # "系统暂停/恢复中" without guessing from the action status alone.

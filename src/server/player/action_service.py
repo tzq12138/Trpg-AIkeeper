@@ -2088,6 +2088,13 @@ def build_action_receipt(conn, character_id: str, action_id: str) -> ActionRecei
     ).fetchone()
     if not action:
         raise ActionDraftError(404, {"code": "action_not_found"})
+    # R7: check for existing pending review case so the client can restore it on refresh
+    review_row = conn.execute(
+        "SELECT review_request_id FROM action_review_requests "
+        "WHERE action_id = %s AND character_id = %s AND status = 'pending'",
+        (action_id, character_id),
+    ).fetchone()
+    review_request_id = str(review_row["review_request_id"]) if review_row and review_row.get("review_request_id") else None
     rows = conn.execute(
         "SELECT status, metadata, created_at FROM action_status_events "
         "WHERE action_id = %s ORDER BY status_event_id",
@@ -2184,6 +2191,7 @@ def build_action_receipt(conn, character_id: str, action_id: str) -> ActionRecei
             "timeout",
             "sync_required",
         ),
+        review_request_id=review_request_id,
         rule_explanation=rule_explanation,
         room_runtime_status=room_runtime_status,
         resolution_outcome=resolution_outcome,
