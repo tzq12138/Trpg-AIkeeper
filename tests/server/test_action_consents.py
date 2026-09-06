@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import asyncio
 
+import pytest
+
 from src.server.engine.action_consent import evaluate_group_decision
 from src.server.engine.resolution_pipeline import ResolutionPipeline
 from tests.server.conftest import create_room, setup_auth_test_data
@@ -418,3 +420,76 @@ def test_resolution_pipeline_refuses_a_queued_action_with_pending_consent(client
         "SELECT COUNT(*) AS count FROM resolution_bundles WHERE action_id = %s",
         (receipt["action_id"],),
     ).fetchone()["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_no_randomness_before_consent_and_reattempt_gets_new_action(
+    client, test_db, monkeypatch
+):
+    """R6 explicit ordering: zero RNG before consent; a retried intent after a
+    blocked attempt is a NEW action, never a silent reuse of the old one."""
+    from src.server.engine import skill_check
+    from src.server.engine.rule_executor import RuleExecutor
+
+    room, (actor, target) = _setup_players(client, test_db)
+    receipt = _confirm_action(
+        client,
+        actor,
+        declared_intent="我攻击另一名调查员。",
+        intent_type="combat_action",
+        params={"targetId": target["character_id"], "pvpEffect": "damage"},
+        key="pvp-rng-key-1",
+    )
+    assert receipt["status"] == "awaiting_player_consent"
+    action_id = receipt["action_id"]
+
+    skill_calls: list = []
+    rule_calls: list = []
+    monkeypatch.setattr(
+        "src.server.engine.skill_check.random.randint",
+        lambda *args: skill_calls.append(args) or 5,
+    )
+    original_execute = RuleExecutor.execute
+
+    async def spied_execute(self, *args, **kwargs):
+        rule_calls.append(1)
+        return await original_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(RuleExecutor, "execute", spied_execute)
+
+    pipeline = ResolutionPipeline(conn=test_db)
+    outcome = await pipeline.resolve_action(action_id)
+
+    # The consent gate holds the action BEFORE any rule execution: neither
+    # the dice module nor the rule executor was reached.
+    assert outcome.get("status") in {"awaiting_player_consent", "resolving"}, outcome
+    assert skill_calls == [], "randomness must never run before consent"
+    assert rule_calls == [], "rule execution must never run before consent"
+    version = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"]
+    assert version == 0
+
+    # The player declines consent -> the action cannot proceed.
+    pending = client.get(
+        "/api/player/action-consents",
+        headers={"X-Room-Token": target["player_token"]},
+    ).json()["items"]
+    declined = client.post(
+        f"/api/player/action-consents/{pending[0]['consentId']}",
+        headers={"X-Room-Token": target["player_token"]},
+        json={"accepted": False},
+    )
+    assert declined.status_code == 200, declined.text
+
+    # A retry of the same declared intent creates a NEW action id.
+    retry = _confirm_action(
+        client,
+        actor,
+        declared_intent="我攻击另一名调查员。",
+        intent_type="combat_action",
+        params={"targetId": target["character_id"], "pvpEffect": "damage"},
+        key="pvp-rng-key-2",
+    )
+    assert retry["action_id"] != action_id
