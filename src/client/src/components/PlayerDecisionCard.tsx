@@ -14,6 +14,8 @@ import {
   type PlayerInputMode,
 } from '../shared/player-input-modes';
 import RedactedCitationDisclosure from './RedactedCitationDisclosure';
+import ReviewPanel from './ReviewPanel';
+import { recoveryCopy } from '../shared/review-controller';
 
 
 interface PlayerDecisionCardProps {
@@ -379,6 +381,16 @@ export default function PlayerDecisionCard({
             <span className="bh-eyebrow">ACTION RECEIPT</span>
             <strong>{actionStatusLabel(receipt.status)}</strong>
           </div>
+          {(() => {
+            const copy = recoveryCopy(receipt);
+            return copy ? (
+              <div className="bh-muted-box" role="status">
+                <strong>{copy.title}</strong>
+                <p>{copy.detail}</p>
+                {copy.code && <code>{copy.code}</code>}
+              </div>
+            ) : null;
+          })()}
           <p className="bh-muted">回执：{receipt.action_id} · 草稿版本：{receipt.revision}</p>
           <ol className="bh-action-timeline">{receipt.timeline.map((event, index) => (
             <li key={`${event.status}-${event.created_at}-${index}`}><strong>{actionStatusLabel(event.status)}</strong><time>{event.created_at}</time></li>
@@ -420,6 +432,13 @@ export default function PlayerDecisionCard({
               </div>
             </div>
           )}
+
+          <ReviewPanel
+            actionId={receipt.action_id}
+            canReview={Boolean(receipt.can_review)}
+            declaredIntent={receipt.declared_intent}
+            runtime={receipt}
+          />
 
           {ruleExplanation && (
             <>

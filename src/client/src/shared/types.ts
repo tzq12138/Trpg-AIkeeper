@@ -222,6 +222,15 @@ export interface ActionReceiptDTO {
   can_cancel: boolean;
   can_review: boolean;
   rule_explanation: RuleExplanationDTO | null;
+  /** R7 receipt contract: room runtime context + recovery state so a waiting
+   * client can say "系统暂停/恢复中" without guessing from the action status. */
+  room_runtime_status?: 'lobby' | 'running' | 'paused_by_owner' | 'paused_system' | 'recovering' | 'ended' | null;
+  resolution_outcome?: 'success' | 'failure' | 'partial_success' | 'no_check' | 'blocked' | 'not_applicable' | null;
+  recovery?: {
+    reason_code: string;
+    retryable: boolean;
+    original_roll_preserved: boolean;
+  } | null;
 }
 
 export interface SoloCombatReactionDTO {
@@ -250,6 +259,38 @@ export interface SoloCombatReactionResolutionDTO {
     is_ending: boolean;
   } | null;
   idempotent: boolean;
+}
+
+export type AutomaticReviewStatus =
+  | 'pending'
+  | 'awaiting_engine_review'
+  | 'upheld'
+  | 'explanation_corrected'
+  | 'projection_repaired'
+  | 'compensated'
+  | 'review_rejected'
+  | 'system_paused';
+
+export interface AutomaticReviewResolutionDTO {
+  status: AutomaticReviewStatus;
+  reason_code?: string;
+  reason?: string;
+  compensation_transaction_id?: string | null;
+  [key: string]: unknown;
+}
+
+export interface ActionReviewRequestDTO {
+  review_request_id: string;
+  action_id: string;
+  status: 'pending' | 'resolved';
+  original_intent: string;
+  objection: string;
+  created?: boolean;
+  created_at?: string | null;
+  resolved_at?: string | null;
+  evidence_hash?: string;
+  evidence_summary?: Record<string, unknown>;
+  automatic_resolution?: AutomaticReviewResolutionDTO | null;
 }
 
 export interface NarrationResultDTO {

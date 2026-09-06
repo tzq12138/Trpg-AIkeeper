@@ -9,6 +9,28 @@ const SLOTS_KEY = 'aikeeper_slots';
 const ACTIVE_SLOT_KEY = 'aikeeper_active_slot';
 const LEGACY_KEYS = ['account_token', 'account', 'owner_token', 'player_token'];
 
+// Storage shim for non-DOM environments (node-env unit tests / SSR): modules
+// that import identity (api -> player-api chains) must not crash when
+// localStorage/sessionStorage are absent. The shim is in-memory and private
+// to this process — browsers always use the real storage.
+if (
+  typeof globalThis !== 'undefined'
+  && typeof (globalThis as { localStorage?: unknown }).localStorage === 'undefined'
+) {
+  const memory = new Map<string, string>();
+  const shim: Storage = {
+    get length() { return memory.size; },
+    clear: () => { memory.clear(); },
+    getItem: (key: string) => (memory.has(key) ? memory.get(key) ?? null : null),
+    key: (index: number) => [...memory.keys()][index] ?? null,
+    removeItem: (key: string) => { memory.delete(key); },
+    setItem: (key: string, value: string) => { memory.set(key, String(value)); },
+  };
+  const globals = globalThis as Record<string, unknown>;
+  globals.localStorage = shim;
+  globals.sessionStorage = shim;
+}
+
 export interface AccountInfo {
   account_id: string;
   username: string;

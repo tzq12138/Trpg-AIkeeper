@@ -16,6 +16,7 @@ import type {
   SessionZeroDTO,
 } from './types';
 import type { PlayerInputMode } from './player-input-modes';
+import type { ActionReviewRequestDTO } from './types';
 
 
 const PLAYER_DEVICE_ID_KEY = 'aikeeper_player_device_id';
@@ -649,4 +650,34 @@ async function requestJson<T = void>(path: string, init: RequestInit = {}): Prom
     throw new PlayerApiError(response.status, detail);
   }
   return payload as T;
+}
+
+export interface ActionReviewSubmission {
+  objection: string;
+  original_intent?: string;
+}
+
+/** R7: submit one own-action dispute as an automatic review case (ai_only).
+ * The idempotency key is per-action and stable across retries: a repeated
+ * click or network retry replays the SAME review_request_id. */
+export async function submitActionReview(
+  actionId: string,
+  submission: ActionReviewSubmission,
+  idempotencyKey: string,
+): Promise<ActionReviewRequestDTO> {
+  return requestJson(`/api/player/actions/${encodeURIComponent(actionId)}/review-requests`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify(submission),
+  });
+}
+
+/** R7: refresh one own review case (pending status or D07 terminal). */
+export async function getActionReview(
+  actionId: string,
+  reviewRequestId: string,
+): Promise<ActionReviewRequestDTO> {
+  return requestJson(
+    `/api/player/actions/${encodeURIComponent(actionId)}/review-requests/${encodeURIComponent(reviewRequestId)}`,
+  );
 }
