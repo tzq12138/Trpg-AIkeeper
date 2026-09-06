@@ -966,10 +966,24 @@ def _load_applied_transaction(conn, review_request_id: str, status: str) -> dict
 #                                        correction; world state untouched);
 #   - receipt missing/invalid/action-rule-set mismatch / dice record missing
 #     / more than one d100            -> system_paused (fail-closed, per spec);
-#   - outcome flips                   -> system_paused: the magnitude of the
-#                                        consequence cannot be proven without a
-#                                        rule-executor recomputation, so the
-#                                        engine never guesses a compensation.
+#   - outcome flips with a PROVEN failure-branch expenditure -> compensated:
+#                                        the engine's only difficulty-bound
+#                                        failure-branch expenditure is the CoC
+#                                        spend-luck follow-up. Its frozen
+#                                        record (actions.result.metadata:
+#                                        difficulty/skill_value/target/
+#                                        initial_roll/luck_spent/
+#                                        follow_up.decision=spend_luck, with
+#                                        the original skill_check.initial
+#                                        receipt holding the reused die) makes
+#                                        the reverse delta provable, so the
+#                                        engine refunds exactly luck_spent onto
+#                                        the CURRENT luck value as a signed
+#                                        compensated resolution;
+#   - any unprovable flip              -> system_paused: without that frozen
+#                                        proof the magnitude of the consequence
+#                                        cannot be recomputed, so the engine
+#                                        never guesses a compensation.
 # Everything is decided from the frozen receipt + authoritative inputs; the
 # original action result/bundle/trace are never overwritten.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1087,6 +1101,147 @@ def _recalibration_payload(
     }
 
 
+def _frozen_initial_receipt(conn, action_id: str) -> dict | None:
+    """The frozen skill_check.initial receipt when a CoC follow-up settled the
+    action (the settlement receipt records no new d100 draw; the reused die
+    lives inside the original receipt embedded in the action result)."""
+    row = conn.execute(
+        "SELECT result FROM actions WHERE action_id = %s",
+        (action_id,),
+    ).fetchone()
+    if not row:
+        return None
+    payload = row.get("result")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    meta = payload.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    receipt = meta.get("initial_verification_receipt")
+    if not isinstance(receipt, dict):
+        return None
+    if str(receipt.get("purpose") or "") != "skill_check.initial":
+        return None
+    return receipt
+
+
+def _prove_luck_refund(
+    conn,
+    *,
+    action_id: str,
+    roll: int,
+    skill_value: int,
+    original_difficulty: str,
+    latest_receipt: dict | None,
+) -> dict[str, Any] | None:
+    """Prove one difficulty-bound failure-branch expenditure from frozen data.
+
+    The CoC spend-luck follow-up is the engine's only difficulty-bound
+    failure-branch expenditure: when a check fails under the applied
+    difficulty, the player may spend exactly required = roll - target(difficulty)
+    luck, and the settlement freezes difficulty/skill_value/target/initial_roll/
+    luck_spent/follow_up.decision=spend_luck into the action result metadata.
+
+    This verifies that the frozen record is self-consistent AND consistent
+    with the receipt chain (the settlement receipt declares purpose
+    skill_check.spend_luck). Every field must agree — any contradiction
+    returns None so the caller fails closed instead of guessing.
+
+    Args:
+        conn: caller-owned connection.
+        action_id: the reviewed action (frozen result lives here).
+        roll: the reused original die (already verified from a receipt).
+        skill_value / original_difficulty: locked skill context of that die.
+        latest_receipt: the settlement receipt (purpose check).
+    Returns:
+        {"luck_spent": n, "path": "/character/luck", "target": t} when the
+        expenditure is proven, else None.
+    """
+    if not isinstance(latest_receipt, dict):
+        return None
+    if str(latest_receipt.get("purpose") or "") != "skill_check.spend_luck":
+        return None
+    row = conn.execute(
+        "SELECT result FROM actions WHERE action_id = %s",
+        (action_id,),
+    ).fetchone()
+    if not row:
+        return None
+    payload = row.get("result")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    meta = payload.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    try:
+        meta_skill = int(meta.get("skill_value"))
+    except (TypeError, ValueError):
+        return None
+    if meta_skill != int(skill_value):
+        return None
+    if str(meta.get("difficulty") or "") != str(original_difficulty):
+        return None
+    target = _skill_target(int(skill_value), original_difficulty)
+    try:
+        meta_target = int(meta.get("target"))
+    except (TypeError, ValueError):
+        return None
+    if meta_target != target:
+        return None
+    try:
+        meta_initial_roll = int(meta.get("initial_roll"))
+    except (TypeError, ValueError):
+        return None
+    if meta_initial_roll != int(roll):
+        return None
+    follow_up = meta.get("follow_up")
+    if not isinstance(follow_up, dict):
+        return None
+    if str(follow_up.get("decision") or "") != "spend_luck":
+        return None
+    if str(follow_up.get("status") or "") != "resolved":
+        return None
+    if meta.get("pushed") not in (False, None):
+        return None
+    if meta.get("pushed_consequence") not in (None,):
+        return None
+    try:
+        luck_spent = int(meta.get("luck_spent"))
+    except (TypeError, ValueError):
+        return None
+    required = max(0, int(roll) - target)
+    if luck_spent != required or luck_spent <= 0:
+        return None
+    return {"luck_spent": luck_spent, "path": "/character/luck", "target": target}
+
+
+def _read_character_luck(conn, room_id: str, character_id: str) -> int | None:
+    """Current authoritative luck of one character, or None when unreadable."""
+    runtime = conn.execute(
+        "SELECT luck FROM character_runtime_state "
+        "WHERE character_id = %s AND room_id = %s",
+        (character_id, room_id),
+    ).fetchone()
+    if runtime and runtime.get("luck") is not None:
+        try:
+            return int(runtime.get("luck"))
+        except (TypeError, ValueError):
+            return None
+    # Runtime row never materialized: the spend record could not have applied
+    # through StateService, so the refund target is not provable.
+    return None
+
+
 def resolve_roll_reinterpretation(
     conn,
     review_request_id: str,
@@ -1151,6 +1306,7 @@ def resolve_roll_reinterpretation(
                 "reason_code": "roll_receipt_missing",
                 "review_request_id": review_request_id,
             }
+        latest_receipt = receipt
         try:
             _receipt, roll = _verified_original_d100(
                 receipt, action_id=case.get("action_id")
@@ -1159,25 +1315,47 @@ def resolve_roll_reinterpretation(
                 receipt, explanation
             )
         except AutomaticReviewResolutionError as exc:
-            pause_room_for_system_integrity(
-                conn,
-                room_id=case["action_room_id"],
-                reason="review_receipt_invalid",
-                source="automatic_action_review",
-                tx=tx,
-            )
-            _write_automatic_terminal(
-                conn,
-                review_request_id=review_request_id,
-                status_code="system_paused",
-                reason_code=str(exc.code),
-                reason="原骰回执无法核验（签名/归属/记录缺失），拒绝执行变化并暂停。",
-            )
-            return {
-                "status": "system_paused",
-                "reason_code": str(exc.code),
-                "review_request_id": review_request_id,
-            }
+            # CoC follow-up settlements (spend_luck/decline/push) record no
+            # new d100 draw in their own receipt; the reused die lives in the
+            # original skill_check.initial receipt frozen inside the action
+            # result metadata. When the latest receipt alone carries no die,
+            # fall back to that frozen initial receipt (verified, purpose
+            # skill_check.initial) before declaring the review unsupported.
+            fallback = None
+            if str(exc.code) == "recalculation_not_supported":
+                fallback = _frozen_initial_receipt(conn, case.get("action_id"))
+                if fallback is not None:
+                    try:
+                        _receipt, roll = _verified_original_d100(
+                            fallback, action_id=case.get("action_id")
+                        )
+                        receipt = fallback
+                        skill_value, original_difficulty = _original_skill_context(
+                            receipt, explanation
+                        )
+                    except AutomaticReviewResolutionError as fallback_exc:
+                        exc = fallback_exc
+                        fallback = None
+            if fallback is None:
+                pause_room_for_system_integrity(
+                    conn,
+                    room_id=case["action_room_id"],
+                    reason="review_receipt_invalid",
+                    source="automatic_action_review",
+                    tx=tx,
+                )
+                _write_automatic_terminal(
+                    conn,
+                    review_request_id=review_request_id,
+                    status_code="system_paused",
+                    reason_code=str(exc.code),
+                    reason="原骰回执无法核验（签名/归属/记录缺失），拒绝执行变化并暂停。",
+                )
+                return {
+                    "status": "system_paused",
+                    "reason_code": str(exc.code),
+                    "review_request_id": review_request_id,
+                }
 
         recalibration = _recalibration_payload(roll, skill_value, difficulty)
         original_recalibration = _recalibration_payload(
@@ -1196,59 +1374,124 @@ def resolve_roll_reinterpretation(
                 "status": "upheld",
                 "review_request_id": review_request_id,
             }
+        resolution = None
         if original_recalibration["isSuccess"] != recalibration["isSuccess"]:
-            # Outcome flips under the corrected difficulty: the magnitude of
-            # the consequence cannot be proven without a rule-executor
-            # recomputation — never guess a compensation.
-            pause_room_for_system_integrity(
+            # Outcome flips under the corrected difficulty. Compensation is
+            # possible ONLY when the frozen payload proves exactly one
+            # difficulty-bound failure-branch expenditure — the CoC spend-luck
+            # follow-up, whose luck_spent == roll - target(difficulty) makes
+            # the reverse delta fully determined. Any other flip (no recorded
+            # expenditure, contradictory metadata, unreadable refund target)
+            # keeps the fail-closed system pause; the engine never guesses.
+            refund = _prove_luck_refund(
                 conn,
-                room_id=case["action_room_id"],
-                reason="review_outcome_flip",
-                source="automatic_action_review",
-                tx=tx,
+                action_id=case.get("action_id"),
+                roll=roll,
+                skill_value=skill_value,
+                original_difficulty=original_difficulty,
+                latest_receipt=latest_receipt,
             )
-            _write_automatic_terminal(
-                conn,
-                review_request_id=review_request_id,
-                status_code="system_paused",
-                reason_code="outcome_flip_requires_consequence_proof",
-                reason="同骰新解释改变检定结果，但后果幅度无法在无规则重算下证明，房间进入系统暂停。",
-                extra={
-                    "recalculation": recalibration,
-                    "original_recalibration": original_recalibration,
-                    "reused_roll": roll,
-                },
-            )
-            return {
-                "status": "system_paused",
-                "reason_code": "outcome_flip_requires_consequence_proof",
-                "review_request_id": review_request_id,
-                "recalculation": recalibration,
-            }
-        # Same outcome under the corrected difficulty label: append-only
-        # explanation correction with the reused-roll proof.
-        correction = {
-            "kind": "difficulty_relabel",
-            "summary": (
-                "复核难度由 {0} 修正为 {1}，复用原骰 {2} 重释后结果不变。".format(
-                    original_difficulty, difficulty, roll
+            luck_now = None
+            if refund is not None:
+                luck_now = _read_character_luck(
+                    conn,
+                    case["action_room_id"],
+                    case.get("action_character_id"),
                 )
-            ),
-            "recalculation": recalibration,
-            "original_difficulty": original_difficulty,
-            "candidate": dict(candidate) if isinstance(candidate, dict) else None,
-        }
-        resolution = {
-            "status": "explanation_corrected",
-            "reason_code": "difficulty_relabeled",
-            "reason": correction["summary"],
-            "source_action_id": case.get("action_id"),
-            "source_receipt_hash": "",
-            "source_state_version": int(case.get("room_state_version") or 0),
-            "expected_current_state_version": int(case.get("room_state_version") or 0),
-            "mutations": [],
-            "correction": correction,
-        }
+            if refund is None or luck_now is None:
+                pause_room_for_system_integrity(
+                    conn,
+                    room_id=case["action_room_id"],
+                    reason="review_outcome_flip",
+                    source="automatic_action_review",
+                    tx=tx,
+                )
+                _write_automatic_terminal(
+                    conn,
+                    review_request_id=review_request_id,
+                    status_code="system_paused",
+                    reason_code="outcome_flip_requires_consequence_proof",
+                    reason="同骰新解释改变检定结果，但失败分支消耗无法从冻结记录证明，房间进入系统暂停。",
+                    extra={
+                        "recalculation": recalibration,
+                        "original_recalibration": original_recalibration,
+                        "reused_roll": roll,
+                    },
+                )
+                return {
+                    "status": "system_paused",
+                    "reason_code": "outcome_flip_requires_consequence_proof",
+                    "review_request_id": review_request_id,
+                    "recalculation": recalibration,
+                }
+            refund_value = luck_now + refund["luck_spent"]
+            correction = {
+                "kind": "difficulty_flip_luck_refund",
+                "summary": (
+                    "复核难度由 {0} 修正为 {1}，复用原骰 {2} 重释后检定成功；"
+                    "原失败分支按该难度消耗的 {3} 点幸运无从发生，"
+                    "按当前幸运 {4} 返还至 {5}。".format(
+                        original_difficulty,
+                        difficulty,
+                        roll,
+                        refund["luck_spent"],
+                        luck_now,
+                        refund_value,
+                    )
+                ),
+                "recalculation": recalibration,
+                "original_recalibration": original_recalibration,
+                "refund": {
+                    "luck_spent": refund["luck_spent"],
+                    "path": refund["path"],
+                    "target": refund["target"],
+                    "value_before": luck_now,
+                    "value_after": refund_value,
+                },
+                "candidate": dict(candidate) if isinstance(candidate, dict) else None,
+            }
+            resolution = {
+                "status": "compensated",
+                "reason_code": "luck_refund_difficulty_flip",
+                "reason": correction["summary"],
+                "source_action_id": case.get("action_id"),
+                "source_receipt_hash": str(receipt.get("signature") or ""),
+                "source_state_version": int(case.get("room_state_version") or 0),
+                "expected_current_state_version": int(
+                    case.get("room_state_version") or 0
+                ),
+                "mutations": [
+                    {"op": "replace", "path": refund["path"], "value": refund_value}
+                ],
+                "correction": correction,
+            }
+        else:
+            # Same outcome under the corrected difficulty label: append-only
+            # explanation correction with the reused-roll proof.
+            correction = {
+                "kind": "difficulty_relabel",
+                "summary": (
+                    "复核难度由 {0} 修正为 {1}，复用原骰 {2} 重释后结果不变。".format(
+                        original_difficulty, difficulty, roll
+                    )
+                ),
+                "recalculation": recalibration,
+                "original_difficulty": original_difficulty,
+                "candidate": dict(candidate) if isinstance(candidate, dict) else None,
+            }
+            resolution = {
+                "status": "explanation_corrected",
+                "reason_code": "difficulty_relabeled",
+                "reason": correction["summary"],
+                "source_action_id": case.get("action_id"),
+                "source_receipt_hash": "",
+                "source_state_version": int(case.get("room_state_version") or 0),
+                "expected_current_state_version": int(
+                    case.get("room_state_version") or 0
+                ),
+                "mutations": [],
+                "correction": correction,
+            }
         resolution["engine_signature"] = sign_automatic_review_resolution(
             review_request_id, resolution
         )

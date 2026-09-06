@@ -975,6 +975,17 @@ def test_invalid_difficulty_label_is_rejected(client, test_db):
 
 
 def _insert_original_reveal(test_db, room_id, character_id, *, reveal_id="reveal-1"):
+    # fact_reveals.event_sequence references events(sequence): a schema-faithful
+    # reveal ALWAYS rides on an events row the engine created first, so the
+    # fixture must materialize that backing event (at the reserved 990000
+    # sequence) before inserting the reveal row it references.
+    test_db.execute(
+        "INSERT INTO events "
+        "(sequence, room_id, event_type, audience, payload, action_id, "
+        "state_version, payload_hash) "
+        "VALUES (990000, %s, 's2c_fact_revealed', 'player', %s, 'review-action', 0, '')",
+        (room_id, json.dumps({"revealId": reveal_id, "kind": "reveal"})),
+    )
     test_db.execute(
         "INSERT INTO fact_reveals "
         "(reveal_id, room_id, fact_id, fact_text, citation, audience, "
@@ -1100,4 +1111,249 @@ async def test_invalid_fact_correction_payload_aborts_apply(client, test_db):
     assert case_row["status"] == "pending"  # untouched by the refused apply
     assert test_db.execute(
         "SELECT COUNT(*) AS count FROM fact_reveals WHERE record_kind = 'correction'"
+    ).fetchone()["count"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R5 remainder — flip compensation over a PROVEN failure-branch expenditure.
+#
+# The engine's only difficulty-bound failure-branch resource expenditure is
+# the CoC spend-luck follow-up: a check that failed under the applied
+# difficulty (roll > target) lets the player spend exactly
+# luck_spent = roll - target, and the settlement freezes that fact into the
+# action result metadata (difficulty/skill_value/target/initial_roll/
+# luck_spent/follow_up.decision=spend_luck) together with the original
+# skill_check.initial receipt (the reused die lives there, not in the
+# spend-luck receipt, which records no new draw).
+#
+# When a review flips the outcome under the SAME die (hard-failure -> regular
+# success), that frozen metadata is sufficient to prove the reverse delta: the
+# luck spend was only ever required because of the reviewed difficulty, so the
+# engine refunds exactly luck_spent onto the CURRENT luck value (never
+# overwriting with a historical value), as a signed compensated resolution.
+# Any contradiction in the frozen metadata keeps the fail-closed system_paused
+# path — no proof, no guess.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _v2_receipt(*, purpose, raw_draws, locked_inputs, action_id="review-action",
+                room_id=None, state_version=0, idempotency_key="review-roll-idem-1",
+                initial_signature=None):
+    locked = dict(locked_inputs)
+    if initial_signature:
+        locked["initial_receipt_signature"] = initial_signature
+    return create_roll_receipt(
+        version="v2",
+        room_id=room_id,
+        state_version=state_version,
+        action_id=action_id,
+        purpose=purpose,
+        rule_set_version="coc7-v1",
+        locked_inputs=locked,
+        raw_draws=raw_draws,
+        idempotency_key=idempotency_key,
+    )
+
+
+async def _spend_luck_flip_case(client, test_db, monkeypatch, *, roll=42,
+                                luck_now=28, luck_spent=12, skill_value=60,
+                                original_difficulty="hard",
+                                pushed_consequence=None, decision="spend_luck"):
+    """ai_only completed action whose settlement was: hard check failed with
+    the frozen die, player spent exactly roll - target(hard) luck to succeed.
+    Returns (room, joined, created, initial_receipt, spend_receipt, meta)."""
+    monkeypatch.setenv("ROLL_RECEIPT_SECRET", "roll-reuse-test-secret")
+    room, joined = _setup_ai_only_completed_action(client, test_db)
+    target = skill_value // 2  # hard
+    locked = {
+        "skill_value": skill_value,
+        "difficulty": original_difficulty,
+        "bonus_dice": 0,
+        "target": target,
+    }
+    initial_receipt = _v2_receipt(
+        purpose="skill_check.initial",
+        raw_draws=[_roll_record(roll)],
+        locked_inputs=locked,
+        room_id=room["room_id"],
+        idempotency_key="review-roll-idem-1",
+    )
+    spend_receipt = _v2_receipt(
+        purpose="skill_check.spend_luck",
+        raw_draws=[],
+        locked_inputs=locked,
+        room_id=room["room_id"],
+        idempotency_key="review-roll-idem-1",
+        initial_signature=initial_receipt.get("signature"),
+    )
+    meta = {
+        "difficulty": original_difficulty,
+        "skill_value": skill_value,
+        "target": target,
+        "roll": roll,
+        "initial_roll": roll,
+        "luck_spent": luck_spent,
+        "success_level": original_difficulty,
+        "is_success": True,
+        "pushed": False,
+        "pushed_consequence": pushed_consequence,
+        "follow_up": {"status": "resolved", "decision": decision},
+        "initial_verification_receipt": initial_receipt,
+        "receipt_purpose": "skill_check.spend_luck",
+        "receipt_locked_inputs": {
+            **locked,
+            "decision": decision,
+            "initial_receipt_signature": initial_receipt.get("signature"),
+        },
+    }
+    test_db.execute(
+        "UPDATE actions SET result = %s WHERE action_id = 'review-action'",
+        (json.dumps({"narrative": "你检查了地板（幸运挽救）", "metadata": meta},
+                    ensure_ascii=False),),
+    )
+    test_db.execute(
+        "INSERT INTO character_runtime_state "
+        "(character_id, room_id, hp, hp_max, san, san_max, mp, mp_max, luck) "
+        "VALUES (%s, %s, 10, 10, 50, 50, 10, 10, %s)",
+        (joined["character_id"], room["room_id"], luck_now),
+    )
+    _insert_review_bundle(
+        test_db,
+        room["room_id"],
+        joined["character_id"],
+        receipt=spend_receipt,
+        explanation_extra={
+            "authoritative_inputs": {
+                "intent_type": "skill_check",
+                "skill_value": skill_value,
+                "difficulty": original_difficulty,
+            }
+        },
+    )
+    created = _post_review(client, joined, objection="难度参数录入错误").json()
+    previous_gateway = client.app.state.gateway
+    gateway = _CandidateReviewGateway()
+    client.app.state.gateway = gateway
+    try:
+        outcome = await run_automatic_action_review(
+            client.app.state, test_db, created["review_request_id"]
+        )
+        assert outcome["status"] == "awaiting_engine_review", outcome
+    finally:
+        client.app.state.gateway = previous_gateway
+    return room, joined, created, initial_receipt, spend_receipt, meta
+
+
+async def test_outcome_flip_with_proven_luck_spend_refunds_exactly_once(
+    client, test_db, monkeypatch,
+):
+    # roll 42, skill 60: hard (target 30) FAILED -> the player spent 12 luck to
+    # succeed. The corrected regular difficulty (target 60) succeeds with the
+    # SAME die, so the engine proves the spend was difficulty-bound and refunds
+    # it onto the CURRENT luck value.
+    room, joined, created, initial_receipt, spend_receipt, meta = (
+        await _spend_luck_flip_case(client, test_db, monkeypatch)
+    )
+    version_before = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"]
+
+    outcome = resolve_roll_reinterpretation(
+        test_db, created["review_request_id"], difficulty="regular"
+    )
+
+    assert outcome["status"] == "compensated", outcome
+    assert outcome["transaction_id"]
+    row = test_db.execute(
+        "SELECT status, automatic_resolution FROM action_review_requests "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "resolved"
+    auto = row["automatic_resolution"]
+    assert auto["status"] == "compensated"
+    assert auto["reason_code"] == "luck_refund_difficulty_flip"
+    # Exactly ONE compensation transaction, one version bump, refund onto
+    # current luck (28 + 12 = 40), never a second refund (not 52).
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM compensation_transactions "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()["count"] == 1
+    runtime = test_db.execute(
+        "SELECT luck FROM character_runtime_state WHERE character_id = %s AND room_id = %s",
+        (joined["character_id"], room["room_id"]),
+    ).fetchone()
+    assert runtime["luck"] == 40
+    assert test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"] == version_before + 1
+    stored = test_db.execute(
+        "SELECT payload FROM compensation_transactions WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()["payload"]
+    assert stored["kind"] == "compensated"
+    correction = stored["correction"]
+    assert correction["kind"] == "difficulty_flip_luck_refund"
+    assert correction["recalculation"]["roll"] == 42
+    assert correction["recalculation"]["difficulty"] == "regular"
+    assert correction["recalculation"]["isSuccess"] is True
+    assert correction["recalculation"]["reusedOriginalRoll"] is True
+    assert correction["refund"]["luck_spent"] == 12
+    assert correction["refund"]["path"] == "/character/luck"
+    assert stored["source_receipt_hash"] == initial_receipt.get("signature")
+    # The room is NOT paused: the proof held, so fail-closed never fired.
+    room_row = test_db.execute(
+        "SELECT runtime_status FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] != "paused_system"
+    # Original frozen records are untouched (append-only review).
+    original_result = test_db.execute(
+        "SELECT result FROM actions WHERE action_id = 'review-action'"
+    ).fetchone()["result"]
+    assert original_result["metadata"] == meta
+    original_bundle = test_db.execute(
+        "SELECT rule_explanation FROM resolution_bundles WHERE action_id = 'review-action'"
+    ).fetchone()["rule_explanation"]
+    assert original_bundle["verification_receipt"] == spend_receipt
+
+
+async def test_outcome_flip_with_contradictory_luck_metadata_stays_paused(
+    client, test_db, monkeypatch,
+):
+    # The frozen metadata declares luck_spent=5, but roll - target(hard) is
+    # 42-30 = 12. The refund amount cannot be proven from frozen records, so
+    # the engine fails closed: no compensation, room paused, nothing guessed.
+    room, joined, created, _initial, _spend, _meta = (
+        await _spend_luck_flip_case(client, test_db, monkeypatch, luck_spent=5)
+    )
+
+    outcome = resolve_roll_reinterpretation(
+        test_db, created["review_request_id"], difficulty="regular"
+    )
+
+    assert outcome["status"] == "system_paused"
+    assert outcome["reason_code"] == "outcome_flip_requires_consequence_proof"
+    row = test_db.execute(
+        "SELECT status, automatic_resolution FROM action_review_requests "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "resolved"
+    room_row = test_db.execute(
+        "SELECT runtime_status, integrity_reason FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] == "paused_system"
+    assert room_row["integrity_reason"] == "review_outcome_flip"
+    runtime = test_db.execute(
+        "SELECT luck FROM character_runtime_state WHERE character_id = %s AND room_id = %s",
+        (joined["character_id"], room["room_id"]),
+    ).fetchone()
+    assert runtime["luck"] == 28  # untouched
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM compensation_transactions"
     ).fetchone()["count"] == 0
