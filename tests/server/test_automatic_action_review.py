@@ -346,3 +346,292 @@ async def test_admissible_objection_with_candidate_waits_for_engine_review(clien
         (room["room_id"],),
     ).fetchone()
     assert room_row["runtime_status"] != "paused_system"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R5 slice A — apply_automatic_review_resolution deterministic dispositions.
+# ═══════════════════════════════════════════════════════════════════════════
+
+from src.server.engine.automatic_action_review import (
+    AutomaticReviewResolutionError,
+    apply_automatic_review_resolution,
+)
+
+
+async def _awaiting_engine_case(client, test_db):
+    """One own completed ai_only action whose admissible review is awaiting
+    the engine step (R4 path: admissible objection + candidate gateway)."""
+    room, joined = _setup_ai_only_completed_action(client, test_db)
+    created = _post_review(client, joined, objection="结算对象理解错了").json()
+    previous_gateway = client.app.state.gateway
+    gateway = _CandidateReviewGateway()
+    client.app.state.gateway = gateway
+    try:
+        outcome = await run_automatic_action_review(
+            client.app.state, test_db, created["review_request_id"]
+        )
+        assert outcome["status"] == "awaiting_engine_review"
+    finally:
+        client.app.state.gateway = previous_gateway
+    return room, joined, created, gateway
+
+
+def _resolution(status, *, mutations=None, reason_code="review_applied", reason="x",
+                expected_version=None, source_action_id="review-action",
+                correction=None):
+    return {
+        "status": status,
+        "reason_code": reason_code,
+        "reason": reason,
+        "source_action_id": source_action_id,
+        "source_receipt_hash": "sha256-original-receipt",
+        "source_state_version": 0,
+        "expected_current_state_version": (
+            expected_version if expected_version is not None else 0
+        ),
+        "mutations": mutations or [],
+        "correction": correction or {},
+    }
+
+
+async def test_apply_upheld_closes_case_without_world_changes(client, test_db):
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    before = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"]
+    resolution = _resolution("upheld", reason_code="no_error",
+                              reason="原结算无错误，维持原判。")
+
+    applied = apply_automatic_review_resolution(
+        client.app.state, test_db, created["review_request_id"], resolution
+    )
+
+    assert applied["status"] == "upheld"
+    assert applied["transaction_id"] is None
+    row = test_db.execute(
+        "SELECT status, resolved_at, automatic_resolution FROM action_review_requests "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "resolved"
+    assert row["resolved_at"] is not None
+    assert row["automatic_resolution"]["status"] == "upheld"
+    assert row["automatic_resolution"]["reason_code"] == "no_error"
+    after = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"]
+    assert after == before
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM compensation_transactions"
+    ).fetchone()["count"] == 0
+
+
+async def test_apply_explanation_corrected_appends_correction_without_state_change(
+    client, test_db,
+):
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    before = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"]
+    correction = {"summary": "补充解释：原文无歧义，只是说明顺序调整。"}
+    resolution = _resolution(
+        "explanation_corrected",
+        reason_code="explanation_clarified",
+        reason="补充正确解释。",
+        correction=correction,
+    )
+
+    applied = apply_automatic_review_resolution(
+        client.app.state, test_db, created["review_request_id"], resolution
+    )
+
+    assert applied["status"] == "explanation_corrected"
+    assert applied["transaction_id"]
+    row = test_db.execute(
+        "SELECT transaction_id, transaction_type, status, payload, reason "
+        "FROM compensation_transactions WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["transaction_type"] == "review_correction"
+    assert row["status"] == "applied"
+    assert row["payload"]["kind"] == "explanation_corrected"
+    assert row["payload"]["correction"]["summary"] == correction["summary"]
+    assert row["payload"]["source_action_id"] == "review-action"
+    assert row["payload"]["source_receipt_hash"] == "sha256-original-receipt"
+    assert row["transaction_id"] == applied["transaction_id"]
+    after = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"]
+    assert after == before
+    # The original action result/bundle are never overwritten.
+    original = test_db.execute(
+        "SELECT result FROM actions WHERE action_id = 'review-action'"
+    ).fetchone()["result"]
+    assert original["narrative"] == "你检查了地板"
+
+
+async def test_apply_projection_repaired_records_correction_and_notice(client, test_db):
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    resolution = _resolution(
+        "projection_repaired",
+        reason_code="missed_audience",
+        reason="补发缺失受众的通知。",
+        correction={"audience": "player", "character_id": joined["character_id"]},
+    )
+
+    applied = apply_automatic_review_resolution(
+        client.app.state, test_db, created["review_request_id"], resolution
+    )
+
+    assert applied["status"] == "projection_repaired"
+    row = test_db.execute(
+        "SELECT payload FROM compensation_transactions WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["payload"]["kind"] == "projection_repaired"
+    assert row["payload"]["requires_redispatch"] is True
+    notice = test_db.execute(
+        "SELECT COUNT(*) AS count FROM events WHERE room_id = %s "
+        "AND event_type = 's2c_review_projection_repair'",
+        (room["room_id"],),
+    ).fetchone()["count"]
+    assert notice == 1
+    # No world state changed and the original bundle stays untouched.
+    assert test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"] == 0
+
+
+async def test_apply_compensated_applies_exactly_once_with_deterministic_id(
+    client, test_db,
+):
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    version_before = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"]
+    resolution = _resolution(
+        "compensated",
+        reason_code="state_mismatch",
+        reason="原行动重复扣除了生命值，返还已核实的差额。",
+        expected_version=version_before,
+        mutations=[{"op": "replace", "path": "/character/hp", "value": 8}],
+        correction={},
+    )
+
+    first = apply_automatic_review_resolution(
+        client.app.state, test_db, created["review_request_id"], resolution
+    )
+    # Reply lost -> retry with the identical resolution.
+    replay = apply_automatic_review_resolution(
+        client.app.state, test_db, created["review_request_id"], resolution
+    )
+
+    assert first["status"] == "compensated"
+    assert first["state_version"] == version_before + 1
+    assert first["transaction_id"] == replay["transaction_id"]
+    assert replay["already_applied"] is True
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM compensation_transactions "
+        "WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()["count"] == 1
+    row = test_db.execute(
+        "SELECT status FROM action_review_requests WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "resolved"
+    version_after = test_db.execute(
+        "SELECT state_version FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()["state_version"]
+    assert version_after == version_before + 1
+    runtime = test_db.execute(
+        "SELECT hp FROM character_runtime_state WHERE character_id = %s AND room_id = %s",
+        (joined["character_id"], room["room_id"]),
+    ).fetchone()
+    assert runtime["hp"] == 8
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["upheld", "explanation_corrected", "projection_repaired", "review_rejected",
+     "system_paused"],
+)
+async def test_apply_refuses_mutations_outside_compensated(client, test_db, status):
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    del room, joined
+    resolution = _resolution(
+        status,
+        mutations=[{"op": "replace", "path": "/character/hp", "value": 8}],
+    )
+    with pytest.raises(AutomaticReviewResolutionError) as exc:
+        apply_automatic_review_resolution(
+            client.app.state, test_db, created["review_request_id"], resolution
+        )
+    assert exc.value.code == "mutations_not_allowed"
+
+
+async def test_apply_rejects_unknown_status_and_action_mismatch(client, test_db):
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    bad_status = _resolution("invented_outcome")
+    with pytest.raises(AutomaticReviewResolutionError) as exc:
+        apply_automatic_review_resolution(
+            client.app.state, test_db, created["review_request_id"], bad_status
+        )
+    assert exc.value.code == "invalid_resolution"
+    wrong_action = _resolution("upheld", source_action_id="other-action")
+    with pytest.raises(AutomaticReviewResolutionError) as exc:
+        apply_automatic_review_resolution(
+            client.app.state, test_db, created["review_request_id"], wrong_action
+        )
+    assert exc.value.code == "action_id_mismatch"
+    row = test_db.execute(
+        "SELECT status FROM action_review_requests WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "pending"  # untouched by refused applies
+
+
+async def test_apply_state_version_mismatch_pauses_instead_of_guessing(
+    client, test_db,
+):
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    # World moved after the case was frozen (simulate one committed change).
+    test_db.execute(
+        "UPDATE rooms SET state_version = state_version + 1 WHERE room_id = %s",
+        (room["room_id"],),
+    )
+    test_db.commit()
+    resolution = _resolution(
+        "compensated",
+        reason_code="state_mismatch",
+        reason="返还误扣。",
+        expected_version=0,
+        mutations=[{"op": "replace", "path": "/character/hp", "value": 8}],
+    )
+
+    outcome = apply_automatic_review_resolution(
+        client.app.state, test_db, created["review_request_id"], resolution
+    )
+
+    assert outcome["status"] == "system_paused"
+    assert outcome["reason_code"] == "state_version_mismatch"
+    room_row = test_db.execute(
+        "SELECT runtime_status, integrity_reason FROM rooms WHERE room_id = %s",
+        (room["room_id"],),
+    ).fetchone()
+    assert room_row["runtime_status"] == "paused_system"
+    assert room_row["integrity_reason"] == "review_state_version_mismatch"
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM compensation_transactions"
+    ).fetchone()["count"] == 0
+    assert test_db.execute(
+        "SELECT hp FROM character_runtime_state WHERE character_id = %s AND room_id = %s",
+        (joined["character_id"], room["room_id"]),
+    ).fetchone() is None

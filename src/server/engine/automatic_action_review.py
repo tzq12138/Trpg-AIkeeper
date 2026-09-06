@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from typing import Any
 
 AUTOMATIC_REVIEW_TERMINAL_STATUSES = {
@@ -482,3 +483,330 @@ async def run_automatic_action_review(
         "status": "awaiting_engine_review",
         "review_request_id": review_request_id,
     }
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# R5 slice A — apply_automatic_review_resolution: engine-validated terminal
+# dispositions applied atomically, append-only, idempotent under replay.
+#
+# The service accepts ONLY Engine-built resolutions and never fabricates a
+# disposition itself. Supported statuses (D07): upheld / explanation_corrected
+# / projection_repaired / compensated (engine-applied) plus review_rejected /
+# system_paused which R4 already writes through _write_automatic_terminal.
+# Rules enforced here:
+#   - mutations are allowed ONLY for compensated, and only against the
+#     original authorized character's resources;
+#   - every applied outcome is append-only: correction records and the
+#     compensation transaction carry causal references (source action id,
+#     receipt hash, source/current state versions, review id) and never
+#     overwrite the original action result / resolution bundle / trace;
+#   - transaction ids are deterministically derived from the review id so a
+#     repeated apply (reply lost, retry) returns the SAME transaction id and
+#     never re-applies a compensation or re-bumps the state version;
+#   - unprovable conditions (state version moved underneath the case) go to
+#     system_paused in the same transaction — never a guessed correction.
+# ─────────────────────────────────────────────────────────────────────────────
+
+AUTOMATIC_REVIEW_STATUSES = frozenset(
+    {
+        "upheld",
+        "explanation_corrected",
+        "projection_repaired",
+        "compensated",
+        "review_rejected",
+        "system_paused",
+    }
+)
+# Terminal statuses that may carry mutations (only compensation changes world
+# state; every other disposition must refuse non-empty mutations).
+_MUTATION_ALLOWED_STATUSES = frozenset({"compensated"})
+_APPLIED_STATUSES = frozenset({"explanation_corrected", "projection_repaired", "compensated"})
+_REVIEW_ID_NAMESPACE = "aikeeper-automatic-review-v1"
+_APPLY_PATH_PREFIXES = (
+    "/character/hp",
+    "/character/san",
+    "/character/mp",
+    "/character/luck",
+    "/character/hp_max",
+    "/character/san_max",
+    "/character/mp_max",
+)
+
+
+class AutomaticReviewResolutionError(ValueError):
+    """Raised with a machine-readable code for HTTP/retry mapping."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+def _deterministic_id(kind: str, review_request_id: str) -> str:
+    return str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"{_REVIEW_ID_NAMESPACE}:{kind}:{review_request_id}")
+    )
+
+
+def _validated_mutations(mutations: Any, character_id: str) -> list[dict]:
+    if not isinstance(mutations, list):
+        raise AutomaticReviewResolutionError("invalid_resolution")
+    validated: list[dict] = []
+    for item in mutations:
+        if not isinstance(item, dict):
+            raise AutomaticReviewResolutionError("invalid_resolution")
+        op = item.get("op")
+        path = item.get("path")
+        if op != "replace" or not isinstance(path, str):
+            raise AutomaticReviewResolutionError("invalid_mutation")
+        if not any(
+            path == prefix or path.startswith(prefix + "/")
+            for prefix in _APPLY_PATH_PREFIXES
+        ):
+            raise AutomaticReviewResolutionError("invalid_mutation_path")
+        if path.startswith("/character/"):
+            segments = path.split("/")
+            if len(segments) >= 4:
+                raise AutomaticReviewResolutionError("invalid_mutation_path")
+        if "value" not in item:
+            raise AutomaticReviewResolutionError("invalid_resolution")
+        validated.append({"op": op, "path": path, "value": item.get("value")})
+    return validated
+
+
+def _resolve_case_state(conn, review_request_id: str):
+    """Lock the case row and its room version for one apply decision."""
+    return conn.execute(
+        "SELECT r.*, a.room_id AS action_room_id, a.character_id AS action_character_id, "
+        "rooms.state_version AS room_state_version, rooms.runtime_status AS room_runtime "
+        "FROM action_review_requests r "
+        "JOIN actions a ON a.action_id = r.action_id "
+        "JOIN rooms ON rooms.room_id = a.room_id "
+        "WHERE r.review_request_id = %s FOR UPDATE",
+        (review_request_id,),
+    ).fetchone()
+
+
+def apply_automatic_review_resolution(
+    app_state,
+    conn,
+    review_request_id: str,
+    resolution: dict,
+) -> dict:
+    """Apply one Engine-built automatic review disposition atomically (R5).
+
+    Accepts only the canonical Engine-built resolution shape; the service
+    validates provenance (review id, action id, state version), enforces
+    bounded mutations, writes the compensation/correction row and the case
+    terminal state in ONE transaction, and never touches the original action
+    result / bundle / trace. Replays return the deterministic transaction id
+    without re-applying side effects.
+
+    Args:
+        app_state: FastAPI app state (used only to source StateService).
+        conn: caller-owned connection.
+        review_request_id: pending case in awaiting_engine_review state.
+        resolution: Engine-built dict, e.g.
+            {"status": "compensated", "reason_code": "state_mismatch",
+             "reason": "...", "source_action_id": "...",
+             "source_receipt_hash": "...", "source_state_version": 7,
+             "expected_current_state_version": 8,
+             "mutations": [{"op": "replace", "path": "/character/hp",
+                            "value": 10}], "correction": {}}
+    Returns:
+        Outcome dict with the terminal status and (for applied dispositions)
+        the deterministic transaction id and resulting state version.
+    Raises:
+        AutomaticReviewResolutionError: review_request_not_found /
+        not_ai_only / not_awaiting_engine_review / invalid_resolution /
+        invalid_mutation / mutations_not_allowed / already_resolved.
+    """
+    from ..models import CharacterMutationItem, StateChangeSet
+    from .host_autonomy import room_session_mode
+    from .room_pause import pause_room_for_system_integrity
+    from .state_service import StateService
+    from ..events.event_log import EventLog
+
+    if not isinstance(resolution, dict):
+        raise AutomaticReviewResolutionError("invalid_resolution")
+    status = str(resolution.get("status") or "")
+    if status not in AUTOMATIC_REVIEW_STATUSES:
+        raise AutomaticReviewResolutionError("invalid_resolution")
+    reason = str(resolution.get("reason") or "")
+    reason_code = str(resolution.get("reason_code") or "review_applied")
+    correction = resolution.get("correction")
+    if not isinstance(correction, dict):
+        raise AutomaticReviewResolutionError("invalid_resolution")
+
+    with conn.transaction() as tx:
+        case = _resolve_case_state(conn, review_request_id)
+        if not case:
+            raise AutomaticReviewResolutionError("review_request_not_found")
+        if room_session_mode(conn, case["action_room_id"]) != "ai_only":
+            raise AutomaticReviewResolutionError("not_ai_only")
+        previous = case.get("automatic_resolution")
+        if not isinstance(previous, dict):
+            previous = {}
+        previous_status = str(previous.get("status") or "")
+        row_status = str(case.get("status") or "")
+        if row_status != "pending" or previous_status != "awaiting_engine_review":
+            if previous_status == status:
+                applied = _load_applied_transaction(conn, review_request_id, status)
+                return {
+                    "status": status,
+                    "review_request_id": review_request_id,
+                    "already_applied": True,
+                    "transaction_id": (applied or {}).get("transaction_id"),
+                }
+            raise AutomaticReviewResolutionError("not_awaiting_engine_review")
+        # Provenance: the resolution must reference the frozen action.
+        if str(resolution.get("source_action_id") or "") != case.get("action_id"):
+            raise AutomaticReviewResolutionError("action_id_mismatch")
+        current_version = int(case.get("room_state_version") or 0)
+        raw_expected = resolution.get("expected_current_state_version")
+        if raw_expected is None:
+            raise AutomaticReviewResolutionError("invalid_resolution")
+        expected_version = int(raw_expected)
+        if expected_version != current_version:
+            # The world moved under the frozen case: the delta can no longer
+            # be proven — fail closed to a system pause, never guess.
+            pause_room_for_system_integrity(
+                conn,
+                room_id=case["action_room_id"],
+                reason="review_state_version_mismatch",
+                source="automatic_action_review",
+                tx=tx,
+            )
+            _write_automatic_terminal(
+                conn,
+                review_request_id=review_request_id,
+                status_code="system_paused",
+                reason_code="state_version_mismatch",
+                reason="复核基准版本与当前世界版本不一致，无法证明差量，房间进入系统暂停。",
+            )
+            return {
+                "status": "system_paused",
+                "reason_code": "state_version_mismatch",
+                "review_request_id": review_request_id,
+            }
+
+        mutations: list[dict] = []
+        if resolution.get("mutations"):
+            if status not in _MUTATION_ALLOWED_STATUSES:
+                raise AutomaticReviewResolutionError("mutations_not_allowed")
+            mutations = _validated_mutations(
+                resolution.get("mutations"), case.get("action_character_id")
+            )
+
+        source_receipt_hash = str(resolution.get("source_receipt_hash") or "")
+        transaction_id = None
+        if status in _APPLIED_STATUSES:
+            transaction_id = _deterministic_id(f"applied:{status}", review_request_id)
+            existing = tx.execute(
+                "SELECT transaction_id FROM compensation_transactions "
+                "WHERE transaction_id = %s",
+                (transaction_id,),
+            ).fetchone()
+            if existing:
+                # Replay: the side effects already landed; do not re-apply.
+                return {
+                    "status": status,
+                    "review_request_id": review_request_id,
+                    "already_applied": True,
+                    "transaction_id": transaction_id,
+                }
+            tx.execute(
+                "INSERT INTO compensation_transactions "
+                "(transaction_id, room_id, character_id, review_request_id, "
+                "transaction_type, payload, reason, status, applied_at) "
+                "VALUES (%s, %s, %s, %s, 'review_correction', %s, %s, 'applied', NOW())",
+                (
+                    transaction_id,
+                    case["action_room_id"],
+                    case.get("action_character_id"),
+                    review_request_id,
+                    json.dumps(
+                        {
+                            "kind": status,
+                            "correction": correction,
+                            "source_action_id": case.get("action_id"),
+                            "source_receipt_hash": source_receipt_hash,
+                            "source_state_version": int(
+                                resolution.get("source_state_version") or 0
+                            ),
+                            "expected_state_version": current_version,
+                            "requires_redispatch": (
+                                status == "projection_repaired"
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    reason,
+                ),
+            )
+            if status == "projection_repaired":
+                # DB-level repair: reconnect/catch-up clients see the missed
+                # notice; live WS push remains the R7 dispatcher contract.
+                EventLog(conn).log_event(
+                    case["action_room_id"],
+                    "s2c_review_projection_repair",
+                    "system",
+                    {
+                        "reviewRequestId": review_request_id,
+                        "actionId": case.get("action_id"),
+                        "correction": correction,
+                    },
+                    commit=False,
+                )
+
+        state_version_after = current_version
+        if status == "compensated":
+            if not mutations:
+                raise AutomaticReviewResolutionError("invalid_resolution")
+            state_service = getattr(app_state, "state_service", None) or StateService(conn)
+            changes = StateChangeSet(
+                characterMutations=[
+                    CharacterMutationItem(
+                        characterId=case.get("action_character_id"),
+                        mutations=mutations,
+                    )
+                ],
+            )
+            result = state_service.apply_change(
+                case["action_room_id"],
+                {"character_id": case.get("action_character_id"), "role": "player"},
+                changes,
+                reason=reason,
+                transaction=tx,
+            )
+            state_version_after = int(result.get("state_version") or current_version)
+            if result.get("no_op") or state_version_after == current_version:
+                raise AutomaticReviewResolutionError("compensation_noop")
+
+        _write_automatic_terminal(
+            conn,
+            review_request_id=review_request_id,
+            status_code=status,
+            reason_code=reason_code,
+            reason=reason,
+            extra={
+                "compensation_transaction_id": transaction_id,
+                "state_version_after": state_version_after,
+                "mutations": mutations if status == "compensated" else [],
+            },
+        )
+    return {
+        "status": status,
+        "review_request_id": review_request_id,
+        "transaction_id": transaction_id,
+        "state_version": state_version_after,
+    }
+
+
+def _load_applied_transaction(conn, review_request_id: str, status: str) -> dict | None:
+    transaction_id = _deterministic_id(f"applied:{status}", review_request_id)
+    row = conn.execute(
+        "SELECT transaction_id FROM compensation_transactions WHERE transaction_id = %s",
+        (transaction_id,),
+    ).fetchone()
+    return dict(row) if row else None
