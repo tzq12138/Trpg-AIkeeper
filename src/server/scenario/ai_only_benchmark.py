@@ -108,11 +108,21 @@ def aggregate_benchmark(
     silent_misunderstanding_total = sum(
         max(0, item.silent_misinterpretation_count) for item in sessions
     )
-    session_ids = [str(item.session_id) for item in sessions]
+    browser_misunderstanding_total = sum(
+        max(0, item.silent_misinterpretation_count) for item in browser_sessions
+    )
+    # V2/A05: uniqueness spans simulations AND real browser sessions — a
+    # duplicated browser session id is just as fabricated as a duplicated sim.
+    session_ids = [
+        str(item.session_id) for item in sessions
+    ] + [str(item.session_id) for item in browser_sessions]
     invalid_values: list[str] = []
     if len(session_ids) != len(set(session_ids)):
         invalid_values.append("duplicate_session_ids")
-    for item in sessions:
+    # Validation applies to every observation, browser sessions included
+    # (V2/A05): spoilers/illegal writes/repeated rolls in a real browser run
+    # must not be ignored because they came from the browser lane.
+    for item in list(sessions) + list(browser_sessions):
         for latency in item.ordinary_action_latencies_ms:
             if not _finite_positive(latency, integer=True):
                 invalid_values.append("non_finite_or_negative_latency")
@@ -172,33 +182,37 @@ def aggregate_benchmark(
         "player_rating_average": _rating_metric(player_ratings),
     }
 
+    # V2/A05: hard blockers aggregate over simulations AND real browser
+    # sessions. A severe spoiler / illegal state write / repeated roll in the
+    # browser lane is a hard block for release, not a clean zero.
+    all_sessions = list(sessions) + list(browser_sessions)
     hard_blockers = {
         key: total
         for key, total in {
             "host_adjudication_count": sum(
-                max(0, item.host_adjudication_count) for item in sessions
+                max(0, item.host_adjudication_count) for item in all_sessions
             ),
             "ai_only_host_exception_count": sum(
-                max(0, item.ai_only_host_exception_count) for item in sessions
+                max(0, item.ai_only_host_exception_count) for item in all_sessions
             ),
             "severe_spoiler_count": sum(
-                max(0, item.severe_spoiler_count) for item in sessions
+                max(0, item.severe_spoiler_count) for item in all_sessions
             ),
             "illegal_state_mutation_count": sum(
-                max(0, item.illegal_state_mutation_count) for item in sessions
+                max(0, item.illegal_state_mutation_count) for item in all_sessions
             ),
             "duplicate_roll_count": sum(
-                max(0, item.duplicate_roll_count) for item in sessions
+                max(0, item.duplicate_roll_count) for item in all_sessions
             ),
             "duplicate_submission_count": sum(
-                max(0, item.duplicate_submission_count) for item in sessions
+                max(0, item.duplicate_submission_count) for item in all_sessions
             ),
             "deadlock_count": sum(
-                max(0, item.deadlock_count) for item in sessions
+                max(0, item.deadlock_count) for item in all_sessions
             ),
             "trace_incomplete_actions": sum(
                 max(0, item.trace_actions - item.trace_complete_actions)
-                for item in sessions
+                for item in all_sessions
             ),
         }.items()
         if total
@@ -219,12 +233,14 @@ def aggregate_benchmark(
     p95 = metrics["ordinary_action_p95_ms"]["value"]
     if p95 is not None and p95 > _OBSERVE_THRESHOLDS["ordinary_action_p95_ms"]:
         observe_threshold_breaches.append("ordinary_action_p95_ms")
-    # D25 quality gate: mechanically influential silent misinterpretations must be zero.
-    if silent_misunderstanding_total > 0:
+    # D25 quality gate: mechanically influential silent misinterpretations
+    # must be zero — across simulations AND real browser sessions (V2/A05).
+    if silent_misunderstanding_total > 0 or browser_misunderstanding_total > 0:
         observe_threshold_breaches.append("silent_misinterpretation_count")
     rating_average = metrics["player_rating_average"]["value"]
     if rating_average is not None and rating_average < _OBSERVE_THRESHOLDS["player_rating_average"]:
         observe_threshold_breaches.append("player_rating_average")
+
 
     two_player_sessions = sum(item.player_count == 2 for item in sessions)
     four_player_sessions = sum(item.player_count == 4 for item in sessions)
@@ -266,6 +282,18 @@ def aggregate_benchmark(
         item.player_ratings for item in browser_sessions
     ):
         release_blockers.append("browser_evidence_invalid")
+    # V2/A05 per-session integrity: a session claiming an authored ending must
+    # carry accepted actions and a trace — never "声明 victory 却清空行动/Trace".
+    # Applies to simulation AND browser sessions alike.
+    empty_claiming_session = [
+        str(item.session_id)
+        for item in list(sessions) + list(browser_sessions)
+        if item.ending_type in _AUTHORED_ENDING_TYPES
+        and int(item.accepted_actions or 0) == 0
+        and int(item.trace_actions or 0) == 0
+    ]
+    if empty_claiming_session:
+        release_blockers.append("empty_session_claims_ending")
     release_blockers.extend(observe_threshold_breaches)
 
     return {
