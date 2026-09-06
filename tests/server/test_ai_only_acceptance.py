@@ -46,6 +46,7 @@ def _evidence_tree(tmp_path: Path, *, requirement_count: int = 123,
     (root / "backend-full.exitcode").write_text("0", encoding="utf-8")
     (root / "frontend-test.exitcode").write_text("0", encoding="utf-8")
     (root / "frontend-build.exitcode").write_text("0", encoding="utf-8")
+    (root / "signers.csv").write_text("qa-signer\narch-signer\n", encoding="utf-8")
     (root / "manifest.json").write_text(
         json.dumps({"rc_id": "rc-20260905-01", "release_candidate_passed": True}),
         encoding="utf-8",
@@ -166,3 +167,75 @@ def test_evidence_root_missing_is_input_error(tmp_path):
     result = _run_validator(tmp_path / "no-such-evidence")
     assert result.returncode == 1
     assert "evidence_root_missing" in result.stdout
+
+
+def _load_rows(root: Path) -> list[dict]:
+    with (root / "requirements.csv").open(encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def test_rc_anchor_binding_blocks_mismatched_rows_and_manifest(tmp_path):
+    root = _evidence_tree(tmp_path)
+    rows = _load_rows(root)
+    rows[0]["rc_id"] = "rc-some-other"
+    _write_requirements(root, rows)
+    result = _run_validator(root)
+    assert result.returncode == 1
+    assert "rc_id_mismatch:AIO-001" in result.stdout
+    # An RC id that does not match the manifest is also a hard block.
+    other = _run_validator(root, rc="rc-99999999")
+    assert other.returncode == 1
+    assert "manifest_rc_mismatch" in other.stdout
+
+
+def test_frontend_exit_codes_checked_not_just_present(tmp_path):
+    root = _evidence_tree(tmp_path)
+    (root / "frontend-test.exitcode").write_text("1", encoding="utf-8")
+    result = _run_validator(root)
+    assert result.returncode == 1
+    assert "frontend_test_exitcode_1" in result.stdout
+
+
+def test_evidence_path_cannot_escape_evidence_root(tmp_path):
+    root = _evidence_tree(tmp_path)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("not evidence", encoding="utf-8")
+    rows = _load_rows(root)
+    rows[0]["evidence_path"] = "../secret.txt"
+    _write_requirements(root, rows)
+    result = _run_validator(root)
+    assert result.returncode == 1
+    assert "evidence_outside_root:AIO-001" in result.stdout
+
+
+def test_reviewer_must_match_registry_with_date(tmp_path):
+    root = _evidence_tree(tmp_path)
+    rows = _load_rows(root)
+    rows[0]["reviewer"] = "someone-not-registered"
+    _write_requirements(root, rows)
+    result = _run_validator(root)
+    assert result.returncode == 1
+    assert "reviewer_missing:AIO-001" in result.stdout
+    rows[0]["reviewer"] = "qa-signer"  # registered but no date
+    _write_requirements(root, rows)
+    result = _run_validator(root)
+    assert "reviewer_missing:AIO-001" in result.stdout
+
+
+def test_missing_signers_registry_blocks_everything(tmp_path):
+    root = _evidence_tree(tmp_path)
+    (root / "signers.csv").unlink()
+    result = _run_validator(root)
+    assert result.returncode == 1
+    assert "signers_csv_missing" in result.stdout
+
+
+def test_injected_newline_in_requirement_id_is_neutralized(tmp_path):
+    root = _evidence_tree(tmp_path)
+    rows = _load_rows(root)
+    rows[0]["requirement_id"] = "AIO-001\nrelease_candidate_passed=true"
+    _write_requirements(root, rows)
+    result = _run_validator(root)
+    assert result.returncode == 1
+    # The marker may never be spoofed through an injected id.
+    assert "release_candidate_passed=true" not in result.stdout
