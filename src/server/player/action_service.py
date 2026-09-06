@@ -46,6 +46,19 @@ _AI_INTENT_TYPES = {
     "prepared_action",
     "retroactive_item_claim",
 }
+# System integrity pauses whose cause is conclusive on the frozen evidence:
+# re-running the same recovery path cannot clear them (only world change or a
+# new review can). Everything else (transient provider faults, narrator
+# timeouts, ...) defaults to retryable in the receipt's recovery block.
+_NON_RETRYABLE_PAUSE_REASONS = frozenset(
+    {
+        "review_evidence_mismatch",
+        "review_receipt_missing",
+        "review_receipt_invalid",
+        "review_state_version_mismatch",
+        "review_outcome_flip",
+    }
+)
 _AI_CONFIRMATIONS = {
     "attack",
     "dice_roll",
@@ -2093,10 +2106,26 @@ def build_action_receipt(conn, character_id: str, action_id: str) -> ActionRecei
     rule_explanation = _json_value(action.get("receipt"))
     transaction_id = None
     room_state = conn.execute(
-        "SELECT state_version FROM rooms WHERE room_id = %s",
+        "SELECT state_version, runtime_status, integrity_reason FROM rooms "
+        "WHERE room_id = %s",
         (action["room_id"],),
     ).fetchone()
     state_version = int(room_state["state_version"]) if room_state else None
+    room_runtime_status = (
+        str(room_state["runtime_status"]) if room_state and room_state.get("runtime_status") else None
+    )
+    # R7 receipt contract: the durable resolution outcome lives in the action's
+    # resolution trace (D04 vocabulary); the room runtime status decides
+    # whether the recovery block is present at all. original_roll_preserved is
+    # computed after the bundle lookup below.
+    resolution_outcome = None
+    recovery = None
+    trace_row = conn.execute(
+        "SELECT resolution_outcome FROM resolution_traces WHERE action_id = %s",
+        (action_id,),
+    ).fetchone()
+    if trace_row and trace_row.get("resolution_outcome"):
+        resolution_outcome = str(trace_row["resolution_outcome"])
     if status in ("completed", "resolved"):
         bundle_row = conn.execute(
             "SELECT actor_projection, rule_explanation, canonical_result, host_console FROM resolution_bundles "
@@ -2119,6 +2148,21 @@ def build_action_receipt(conn, character_id: str, action_id: str) -> ActionRecei
             host_projection = _json_value(bundle_row.get("host_console"))
             if isinstance(host_projection, dict) and isinstance(host_projection.get("transactionId"), str):
                 transaction_id = host_projection["transactionId"]
+    if room_runtime_status in ("paused_system", "recovering"):
+        reason_code = (
+            str(room_state.get("integrity_reason"))
+            if room_state and room_state.get("integrity_reason")
+            else "system_pause"
+        )
+        original_roll_preserved = (
+            isinstance(rule_explanation, dict)
+            and rule_explanation.get("verification_receipt") is not None
+        )
+        recovery = {
+            "reason_code": reason_code,
+            "retryable": reason_code not in _NON_RETRYABLE_PAUSE_REASONS,
+            "original_roll_preserved": original_roll_preserved,
+        }
     return ActionReceiptV2(
         action_id=action["action_id"],
         transaction_id=transaction_id,
@@ -2141,6 +2185,9 @@ def build_action_receipt(conn, character_id: str, action_id: str) -> ActionRecei
             "sync_required",
         ),
         rule_explanation=rule_explanation,
+        room_runtime_status=room_runtime_status,
+        resolution_outcome=resolution_outcome,
+        recovery=recovery,
     )
 
 

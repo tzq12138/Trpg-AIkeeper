@@ -631,6 +631,11 @@ class ActionReceiptV2(BaseModel):
     can_cancel: bool = False
     can_review: bool = False
     rule_explanation: dict[str, Any] | None = None
+    # R7 receipt contract: room runtime context so a waiting client can say
+    # "系统暂停/恢复中" without guessing from the action status alone.
+    room_runtime_status: str | None = None
+    resolution_outcome: str | None = None
+    recovery: dict[str, Any] | None = None
 
 
 class RuleExplanationDTO(BaseModel):
