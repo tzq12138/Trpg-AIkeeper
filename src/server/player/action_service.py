@@ -1237,6 +1237,11 @@ def confirm_action_draft(
         intent_contract = _json_value(analysis.get("intent_contract")) or {}
         from ..engine.action_policy import evaluate_action_policy
 
+        room_risk = tx.execute(
+            "SELECT risk_contract FROM rooms WHERE room_id = %s",
+            (draft["room_id"],),
+        ).fetchone()
+        risk_contract = _json_value(room_risk.get("risk_contract") if room_risk else None)
         policy = evaluate_action_policy(
             {
                 "intent_type": draft["intent_type"],
@@ -1248,7 +1253,7 @@ def confirm_action_draft(
                 "candidate_interpretations": analysis.get("candidate_interpretations") or [],
             },
             current_state={},
-            risk_contract={},
+            risk_contract=risk_contract,
         )
         if policy.outcome != "allow":
             raise ActionDraftError(

@@ -345,3 +345,191 @@ def test_one_players_clarification_does_not_block_another_safe_action(client, te
         "SELECT status FROM action_drafts WHERE draft_id = %s",
         (first_draft["draft_id"],),
     ).fetchone()["status"] == "analyzing"
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R6 slice A — structured 12-dimension consequence routing.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_LOW_RISK_CONTRACT = {
+    "max_harm": "low",
+    "irreversible_controls": [],
+    "default_harm": "low",
+}
+
+
+def _candidate(label, interpreted, **consequences):
+    candidate = {"label": label, "interpreted_intent": interpreted}
+    if consequences:
+        candidate["consequences"] = consequences
+    return candidate
+
+
+def _ambiguous_intent(candidates, **overrides):
+    intent = {
+        "intent_type": "skill_check",
+        "declared_intent": "我检查它",
+        "visibility": "public",
+        "ambiguities": ["target", "skill", "risk"],
+        "candidate_interpretations": candidates,
+    }
+    intent.update(overrides)
+    return intent
+
+
+def test_material_equivalence_with_low_risk_routes_straight_through_with_disclosure():
+    intent = _ambiguous_intent(
+        [
+            _candidate(
+                "检查同一目标",
+                "inspect_target",
+                target="a",
+                mechanic="skill_check",
+                difficulty="regular",
+                resource="none",
+                skill="侦查",
+                risk="low",
+                penalty="none",
+                reward="clue",
+                other_player_impact="none",
+                secret_reveal="none",
+                irreversible="none",
+                scene_transition="none",
+            ),
+            _candidate(
+                "检查同一目标的另一表述",
+                "inspect_target_alt",
+                target="a",
+                mechanic="skill_check",
+                difficulty="regular",
+                resource="none",
+                skill="侦查",
+                risk="low",
+                penalty="none",
+                reward="clue",
+                other_player_impact="none",
+                secret_reveal="none",
+                irreversible="none",
+                scene_transition="none",
+            ),
+        ]
+    )
+
+    decision = evaluate_action_policy(
+        intent,
+        current_state={},
+        risk_contract=_LOW_RISK_CONTRACT,
+    )
+
+    assert decision.outcome == "allow"
+    assert decision.reason_code == "consequences_equivalent"
+    assert decision.disclosures
+    assert "首选解释" in decision.disclosures[0]
+    assert decision.candidates == []
+
+
+def test_single_material_dimension_difference_keeps_clarify():
+    candidates = [
+        _candidate(
+            "检查目标 A", "inspect_a",
+            target="a", mechanic="skill_check", risk="low",
+        ),
+        _candidate(
+            "检查目标 B", "inspect_b",
+            target="b", mechanic="skill_check", risk="low",
+        ),
+    ]
+    decision = evaluate_action_policy(
+        _ambiguous_intent(candidates),
+        current_state={},
+        risk_contract=_LOW_RISK_CONTRACT,
+    )
+    assert decision.outcome == "clarify"
+    assert decision.reason_code == "material_intent_ambiguity"
+    assert 2 <= len(decision.candidates) <= 3
+
+
+def test_missing_mechanic_field_is_never_equivalence():
+    candidates = [
+        _candidate(
+            "检查目标 A", "inspect_a",
+            target="a", mechanic="skill_check",
+        ),
+        # Same target but NO mechanic claim: absence must not be equivalent.
+        _candidate("检查目标 A 的另一表述", "inspect_a_alt", target="a"),
+    ]
+    decision = evaluate_action_policy(
+        _ambiguous_intent(candidates),
+        current_state={},
+        risk_contract=_LOW_RISK_CONTRACT,
+    )
+    assert decision.outcome == "clarify"
+
+
+def test_equivalent_but_risk_not_declared_low_fails_closed_to_clarify():
+    candidates = [
+        _candidate("检查目标 A", "inspect_a", target="a", mechanic="skill_check"),
+        _candidate("检查目标 A 的另一种表述", "inspect_a2", target="a", mechanic="skill_check"),
+    ]
+    decision = evaluate_action_policy(
+        _ambiguous_intent(candidates),
+        current_state={},
+        risk_contract={},  # no declaration -> fail closed
+    )
+    assert decision.outcome == "clarify"
+    decision_high = evaluate_action_policy(
+        _ambiguous_intent(candidates),
+        current_state={},
+        risk_contract={"max_harm": "high", "irreversible_controls": []},
+    )
+    assert decision_high.outcome == "clarify"
+
+
+def test_consequences_free_cancel_candidate_blocks_straight_through():
+    candidates = [
+        _candidate("检查目标 A", "inspect_a", target="a", mechanic="skill_check"),
+        _candidate("检查目标 A 的另一表述", "inspect_a2", target="a", mechanic="skill_check"),
+        _candidate("取消行动，不产生任何效果", "cancel_action"),
+    ]
+    decision = evaluate_action_policy(
+        _ambiguous_intent(candidates),
+        current_state={},
+        risk_contract=_LOW_RISK_CONTRACT,
+    )
+    # Cancel is materially different from both equivalent readings.
+    assert decision.outcome == "clarify"
+    assert "cancel_action" in {
+        item["interpreted_intent"] for item in decision.candidates
+    }
+
+
+def test_candidates_leaking_internal_references_are_filtered():
+    intent = _ambiguous_intent(
+        [
+            {"label": "前往 scene_7f3a 检查", "interpreted_intent": "go_check"},
+            {"label": "检查门锁", "interpreted_intent": "inspect_lock"},
+            {"label": "取消", "interpreted_intent": "cancel_action"},
+        ]
+    )
+    decision = evaluate_action_policy(
+        intent,
+        current_state={},
+        risk_contract=_LOW_RISK_CONTRACT,
+    )
+    assert decision.outcome == "clarify"
+    labels = [item["label"] for item in decision.candidates]
+    assert not any("scene_7f3a" in label for label in labels)
+    assert "检查门锁" in labels
+
+
+def test_single_proven_candidate_alone_does_not_prove_equivalence():
+    candidates = [
+        _candidate("检查目标 A", "inspect_a", target="a", mechanic="skill_check"),
+    ]
+    decision = evaluate_action_policy(
+        _ambiguous_intent(candidates),
+        current_state={},
+        risk_contract=_LOW_RISK_CONTRACT,
+    )
+    assert decision.outcome == "clarify"

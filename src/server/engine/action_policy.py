@@ -42,6 +42,84 @@ _MATERIAL_AMBIGUITIES = {
     "方法",
 }
 
+# R6 — structured consequence comparison over 12 material dimensions. Two
+# candidate interpretations of the SAME declared intent are only routed
+# straight-through when every dimension they both claim is equal; a dimension
+# present on one candidate and missing on another is a MATERIAL difference
+# (a candidate without a mechanic field can never count as "equivalent").
+_MATERIAL_DIMENSIONS = (
+    "target",           # 目标/指代
+    "mechanic",         # 触发机制
+    "difficulty",       # 难度
+    "reward",           # 奖励
+    "penalty",          # 惩罚
+    "risk",             # 风险
+    "resource",         # 资源消耗
+    "skill",            # 检定技能
+    "other_player_impact",   # 影响其他玩家
+    "secret_reveal",         # 秘密揭示
+    "irreversible",          # 不可逆资源
+    "scene_transition",      # 场景转移
+)
+# Engine/rules/scene-internal identifiers that must never surface inside a
+# player-facing candidate label.
+_INTERNAL_REFERENCE_RE = re.compile(
+    r"(?:scene|node|clue|fact|npc|proposal|action)[-_][a-z0-9-]{4,}"
+    r"|[0-9a-f]{8,}|_id\b|sha256:|hash\b"
+)
+
+
+def _consequences_of(candidate: dict[str, Any]) -> dict[str, Any]:
+    value = candidate.get("consequences")
+    return value if isinstance(value, dict) else {}
+
+
+def _canonical_dimension(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value).strip().lower())
+
+
+def _materially_equivalent(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True when both candidates claim the same value on every dimension.
+
+    A dimension that only one side claims makes the pair materially
+    different — absence is never treated as equivalence.
+    """
+    a_dims = _consequences_of(a)
+    b_dims = _consequences_of(b)
+    for dimension in _MATERIAL_DIMENSIONS:
+        a_has = dimension in a_dims and a_dims[dimension] not in (None, "")
+        b_has = dimension in b_dims and b_dims[dimension] not in (None, "")
+        if a_has != b_has:
+            return False
+        if a_has and _canonical_dimension(a_dims[dimension]) != _canonical_dimension(
+            b_dims[dimension]
+        ):
+            return False
+    return True
+
+
+def _low_risk_reversible(risk_contract: Any) -> bool:
+    """Fail-closed risk gate for the straight-through route.
+
+    Requires an explicit declaration: maximum harm is low and no irreversible
+    controls are declared. Anything else (missing dict, unknown harm level,
+    declared irreversible resources) keeps the clarifying route.
+    """
+    if not isinstance(risk_contract, dict):
+        return False
+    if str(risk_contract.get("max_harm") or "") != "low":
+        return False
+    irreversible = risk_contract.get("irreversible_controls")
+    if irreversible:
+        if isinstance(irreversible, list) and not irreversible:
+            return True
+        return False
+    return True
+
+
+def _leaks_internal_reference(text: str) -> bool:
+    return bool(_INTERNAL_REFERENCE_RE.search(text or ""))
+
 
 @dataclass(frozen=True)
 class ActionPolicyDecision:
@@ -59,7 +137,6 @@ def evaluate_action_policy(
     risk_contract: dict[str, Any],
     timed_out: bool = False,
 ) -> ActionPolicyDecision:
-    del risk_contract
     intent_type = str(intent.get("intent_type") or "dialogue")
     declared_intent = str(intent.get("declared_intent") or "").strip()
     visibility = str(intent.get("visibility") or "public")
@@ -140,7 +217,18 @@ def evaluate_action_policy(
             disclosures=["按可逆装饰性解释处理；不会改变资源、线索或规则状态"],
         )
     if ambiguities & _MATERIAL_AMBIGUITIES:
-        candidates = _safe_candidates(intent.get("candidate_interpretations"))
+        raw_candidates = intent.get("candidate_interpretations")
+        candidates = _safe_candidates(raw_candidates)
+        straight_through = _straight_through_disclosure(
+            raw_candidates,
+            risk_contract=risk_contract,
+        )
+        if straight_through is not None:
+            return ActionPolicyDecision(
+                outcome="allow",
+                reason_code="consequences_equivalent",
+                disclosures=[straight_through],
+            )
         return ActionPolicyDecision(
             outcome="clarify",
             reason_code="material_intent_ambiguity",
@@ -148,6 +236,55 @@ def evaluate_action_policy(
         )
 
     return ActionPolicyDecision(outcome="allow")
+
+
+def _straight_through_disclosure(
+    raw_candidates: Any,
+    *,
+    risk_contract: Any,
+) -> str | None:
+    """Disclosure when every candidate is materially equivalent and low-risk.
+
+    Only candidates that actually carry a structured consequences block can
+    participate in the equivalence proof; the straight-through route requires
+    at least two proven-equivalent interpretations AND an explicit
+    low/reversible risk contract. Any material difference — including a
+    dimension claimed by only one candidate, or the presence of a
+    consequences-free cancel option — keeps the clarifying route.
+
+    Args:
+        raw_candidates: candidate_interpretations list from the intent.
+        risk_contract: declared risk contract (fail-closed).
+    Returns:
+        The disclosure text when the straight-through route is provable,
+        else None.
+    """
+    proven: list[dict[str, Any]] = []
+    if isinstance(raw_candidates, list):
+        for raw in raw_candidates:
+            if isinstance(raw, dict) and _consequences_of(raw):
+                proven.append(raw)
+    if len(proven) < 2 or not _low_risk_reversible(risk_contract):
+        return None
+    first = proven[0]
+    for other in proven[1:]:
+        if not _materially_equivalent(first, other):
+            return None
+    # Every proven candidate equals the first along all 12 dimensions; a
+    # consequences-free alternative (e.g. cancel_action) would have made the
+    # proof fail above only when listed among candidates — require that every
+    # supplied candidate is either proven or filtered earlier as unsafe.
+    raw_list = raw_candidates if isinstance(raw_candidates, list) else []
+    for raw in raw_list:
+        if isinstance(raw, dict) and not _consequences_of(raw):
+            label = str(raw.get("label") or "").strip()
+            if label and not _leaks_internal_reference(label):
+                return None
+    chosen = first.get("label") or first.get("interpreted_intent") or ""
+    return (
+        "按首选解释推进：{0}。其余候选在 12 维机制后果上与首选等价，"
+        "且风险契约声明低风险可逆，无需二次选择。".format(str(chosen)[:120])
+    )
 
 
 def _safe_candidates(value: Any) -> list[dict[str, Any]]:
@@ -163,6 +300,7 @@ def _safe_candidates(value: Any) -> list[dict[str, Any]]:
                 or not interpreted
                 or interpreted.startswith("assert_")
                 or any(marker in label for marker in _UNSAFE_CANDIDATE_MARKERS)
+                or _leaks_internal_reference(label)
             ):
                 continue
             candidate = {"label": label, "interpreted_intent": interpreted}
