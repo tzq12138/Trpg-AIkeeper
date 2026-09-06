@@ -62,6 +62,7 @@ _MATERIAL_DIMENSIONS = (
     "secret_reveal",         # 秘密揭示
     "irreversible",          # 不可逆资源
     "scene_transition",      # 场景转移
+    "audience",              # 受众 actor/party (A06)
 )
 # Engine/rules/scene-internal identifiers that must never surface inside a
 # player-facing candidate label.
@@ -84,6 +85,7 @@ def _consequences_of(candidate: dict[str, Any]) -> dict[str, Any]:
         "skill": candidate.get("skill"),
         "risk": candidate.get("risk"),
         "resource": candidate.get("resource_impacts") or candidate.get("resource"),
+        "audience": candidate.get("audience"),
     }
     merged = dict(dims)
     for dimension, top_value in derived.items():
@@ -111,10 +113,18 @@ def _materially_equivalent(a: dict[str, Any], b: dict[str, Any]) -> bool:
     """True when both candidates claim the same value on every dimension.
 
     A dimension that only one side claims makes the pair materially
-    different — absence is never treated as equivalence.
+    different — absence is never treated as equivalence. The trigger
+    mechanism is additionally REQUIRED on both sides (R6/A06): two candidates
+    that each omit ``mechanic`` prove nothing about how the action triggers,
+    so they can never route straight-through as "equivalent".
     """
     a_dims = _consequences_of(a)
     b_dims = _consequences_of(b)
+    if (
+        a_dims.get("mechanic") in (None, "")
+        or b_dims.get("mechanic") in (None, "")
+    ):
+        return False
     for dimension in _MATERIAL_DIMENSIONS:
         a_has = dimension in a_dims and a_dims[dimension] not in (None, "")
         b_has = dimension in b_dims and b_dims[dimension] not in (None, "")
