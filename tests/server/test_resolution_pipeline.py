@@ -176,6 +176,36 @@ class FakeConn:
             return Rows()
         if normalized.startswith("SELECT status FROM rooms WHERE room_id"):
             return Rows([self.rooms.get(params[0])])
+        # R1 migration (04 §6): the pause gate reads runtime pause state
+        # before every resolution; acknowledge the query (fixture stays
+        # strict about any NEW engine query after this one).
+        # R1 migration (04 §6): the pause gate / owner-pause helpers read the
+        # room runtime state in several column variants (plain and FOR
+        # UPDATE); acknowledge every one so the fixture stays strict about any
+        # genuinely NEW engine query while these fixtures run legacy rooms.
+        for _pause_prefix in (
+            "SELECT runtime_status, pause_mode FROM rooms WHERE room_id",
+            "SELECT room_id, runtime_status, pause_mode FROM rooms WHERE room_id",
+            "SELECT room_id, status, runtime_status, pause_mode FROM rooms",
+            "SELECT room_id, runtime_status, pause_mode, pause_cursor FROM rooms",
+            "SELECT state_version, runtime_status FROM rooms WHERE room_id",
+            "SELECT runtime_status FROM rooms WHERE room_id",
+        ):
+            if normalized.startswith(_pause_prefix):
+                room = self.rooms.get(params[0]) or {}
+                return Rows([{
+                    **room,
+                    "room_id": params[0],
+                    "runtime_status": "running",
+                    "pause_mode": None,
+                }])
+        if normalized.startswith(
+            "SELECT rooms.session_mode, packages.runtime_package FROM rooms"
+        ):
+            # Fixture-completeness (04 §6): the engine reads the ai_only
+            # session mode through this join; the fixtures run legacy rooms
+            # without a bound runtime package.
+            return Rows([{"session_mode": None, "runtime_package": None}])
         if normalized.startswith("SELECT 1 FROM player_action_submissions"):
             return Rows([])
         if normalized.startswith("SELECT COUNT(*) AS count FROM action_consents"):

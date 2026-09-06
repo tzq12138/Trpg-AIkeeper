@@ -1544,9 +1544,20 @@ async def test_turn_settlement_uses_verified_narrator_results_without_second_pub
     event_types = [event[1] for event in dispatcher.events]
     assert "s2c_turn_resolved" in event_types
     assert "s2c_public_observation" not in event_types
+    # B1 migration (04 §6): s2c_turn_resolved carries the safe summary only
+    # (build_turn_resolved_projection). Each action's verified narration is
+    # NOT broadcast a second time — it persists exactly once on the action
+    # row, and no broadcast payload carries narrative body text.
     turn_event = next(event for event in dispatcher.events if event[1] == "s2c_turn_resolved")
-    assert "SECONDARY UNVERIFIED NARRATIVE" not in json.dumps(turn_event[3], ensure_ascii=False)
-    assert "verified narrator text for batch-action-0" in json.dumps(turn_event[3], ensure_ascii=False)
+    turn_payload = json.dumps(turn_event[3], ensure_ascii=False)
+    assert '"actionCount": 2' in turn_payload
+    all_payloads = json.dumps([event[3] for event in dispatcher.events], ensure_ascii=False)
+    assert "SECONDARY UNVERIFIED NARRATIVE" not in all_payloads
+    # No second public narrative: the verified text is never broadcast again
+    # (per-action narration persistence is the real pipeline's bundle path,
+    # exercised by the bundle suites, not by this turn-settlement fake).
+    assert "verified narrator text for batch-action-0" not in all_payloads
+    assert all_payloads.count("verified narrator text") == 0
 
 
 @pytest.mark.asyncio
@@ -1760,12 +1771,20 @@ async def test_ai_only_turn_settlement_pauses_on_resolution_exception_without_ho
         "SELECT status, integrity_reason FROM rooms WHERE room_id = %s",
         (room_id,),
     ).fetchone()
-    assert action["status"] == "rejected"
-    assert action["result"] == {"reason": "resolution_pipeline_error"}
+    # R1/R7A migration (04 §6): an ai_only integrity pause PRESERVES the
+    # in-flight action for verified recovery — it is never terminated with a
+    # rejected result — and the pause notice is a durable party row written
+    # by the pause helper, not a pipeline dispatcher event.
+    assert action["status"] == "resolving"
+    assert (action["result"] or {}) == {}
     assert room == {
         "status": "paused",
         "integrity_reason": "resolution_pipeline_error",
     }
-    event_types = [event[1] for event in dispatcher.events]
-    assert "s2c_room_paused" in event_types
-    assert "s2c_action_exception_requested" not in event_types
+    pause_rows = test_db.execute(
+        "SELECT event_type, audience FROM events "
+        "WHERE room_id = %s AND event_type = 's2c_room_paused'",
+        (room_id,),
+    ).fetchall()
+    assert len(pause_rows) == 1 and pause_rows[0]["audience"] == "party"
+    assert "s2c_action_exception_requested" not in [event[1] for event in dispatcher.events]

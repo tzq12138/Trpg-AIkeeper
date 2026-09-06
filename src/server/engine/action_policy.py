@@ -318,6 +318,14 @@ def _straight_through_disclosure(
             label = str(raw.get("label") or "").strip()
             if label and not _leaks_internal_reference(label):
                 return None
+    # The straight-through disclosure embeds the CHOSEN label verbatim into
+    # player-visible text, so every proven candidate's label — including the
+    # chosen one — must pass the same internal-reference screening the
+    # clarifying route applies. A leaking label keeps the clarifying path.
+    for candidate in proven:
+        label = str(candidate.get("label") or "").strip()
+        if label and _leaks_internal_reference(label):
+            return None
     chosen = first.get("label") or first.get("interpreted_intent") or ""
     return (
         "按首选解释推进：{0}。其余候选在 12 维机制后果上与首选等价，"

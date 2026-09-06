@@ -1357,3 +1357,47 @@ async def test_outcome_flip_with_contradictory_luck_metadata_stays_paused(
     assert test_db.execute(
         "SELECT COUNT(*) AS count FROM compensation_transactions"
     ).fetchone()["count"] == 0
+
+
+async def test_correction_tamper_invalidates_signed_resolution(client, test_db):
+    """The signature covers the player-visible correction/reason fields: a
+    tampered correction (e.g. a rewritten fact correction) invalidates the
+    resolution exactly like a tampered mutation would."""
+    from src.server.engine.automatic_action_review import (
+        sign_automatic_review_resolution,
+    )
+
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    del room, joined
+    resolution = _resolution_with_fact_correction(
+        "explanation_corrected",
+        fact_reveals=[],
+        reason_code="fact_relabeled",
+        reason="原揭示含剧透，追加更正。",
+    )
+    signed = {
+        **resolution,
+        "engine_signature": sign_automatic_review_resolution(
+            created["review_request_id"], resolution
+        ),
+    }
+    signed["correction"] = {
+        "fact_reveals": [
+            {
+                "reveal_id": "reveal-1",
+                "kind": "corrected",
+                "corrected_text": "被篡改的更正文本（不应被应用）",
+            }
+        ],
+        "summary": "被篡改的摘要",
+    }
+    with pytest.raises(AutomaticReviewResolutionError) as exc:
+        apply_automatic_review_resolution(
+            client.app.state, test_db, created["review_request_id"], signed
+        )
+    assert exc.value.code == "unverified_resolution"
+    row = test_db.execute(
+        "SELECT status FROM action_review_requests WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "pending"  # nothing was applied

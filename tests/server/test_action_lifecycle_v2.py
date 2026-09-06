@@ -756,9 +756,14 @@ async def test_ai_only_state_persistence_failure_pauses_room_without_human_revie
     assert test_db.execute(
         "SELECT status FROM rooms WHERE room_id = 'room-v2'"
     ).fetchone()["status"] == "paused"
-    event_types = [event[1] for event in dispatcher.events]
-    assert "s2c_room_paused" in event_types
-    assert "s2c_action_exception_requested" not in event_types
+    # R7A migration (04 §6): pause notice is a durable party row written by
+    # the pause helper (single source), not a pipeline dispatcher event.
+    pause_rows = test_db.execute(
+        "SELECT event_type, audience FROM events "
+        "WHERE room_id = 'room-v2' AND event_type = 's2c_room_paused'"
+    ).fetchall()
+    assert len(pause_rows) == 1 and pause_rows[0]["audience"] == "party"
+    assert "s2c_action_exception_requested" not in [event[1] for event in dispatcher.events]
 
 
 @pytest.mark.asyncio
@@ -811,12 +816,20 @@ async def test_ai_only_ending_persistence_failure_pauses_without_human_review(
     assert test_db.execute(
         "SELECT status FROM rooms WHERE room_id = 'room-v2'"
     ).fetchone()["status"] == "paused"
+    # R1/R7A migration (04 §6): an ai_only integrity pause PRESERVES the
+    # in-flight action for verified recovery instead of terminating it — the
+    # resolve return stays terminal-shaped, but the actions row must remain
+    # 'resolving'; the pause notice is a durable party row (single source in
+    # the pause helper), not a pipeline dispatcher event.
     assert test_db.execute(
         "SELECT status FROM actions WHERE action_id = 'action-v2'"
-    ).fetchone()["status"] == "rejected"
-    event_types = [event[1] for event in dispatcher.events]
-    assert "s2c_room_paused" in event_types
-    assert "s2c_action_exception_requested" not in event_types
+    ).fetchone()["status"] == "resolving"
+    pause_rows = test_db.execute(
+        "SELECT event_type, audience FROM events "
+        "WHERE room_id = 'room-v2' AND event_type = 's2c_room_paused'"
+    ).fetchall()
+    assert len(pause_rows) == 1 and pause_rows[0]["audience"] == "party"
+    assert "s2c_action_exception_requested" not in [event[1] for event in dispatcher.events]
 
 
 @pytest.mark.asyncio
@@ -859,12 +872,19 @@ async def test_ai_only_unrecoverable_narrator_failure_pauses_without_human_revie
     assert test_db.execute(
         "SELECT status FROM rooms WHERE room_id = 'room-v2'"
     ).fetchone()["status"] == "paused"
+    # R1/R7A migration (04 §6): an ai_only integrity pause PRESERVES the
+    # in-flight action (verified recovery resumes it later); the resolve
+    # return stays terminal-shaped but the actions row must remain resolving,
+    # and the pause notice is a durable party row, not a dispatcher event.
     assert test_db.execute(
         "SELECT status FROM actions WHERE action_id = 'action-v2'"
-    ).fetchone()["status"] == "rejected"
-    event_types = [event[1] for event in dispatcher.events]
-    assert "s2c_room_paused" in event_types
-    assert "s2c_action_exception_requested" not in event_types
+    ).fetchone()["status"] == "resolving"
+    pause_rows = test_db.execute(
+        "SELECT event_type, audience FROM events "
+        "WHERE room_id = 'room-v2' AND event_type = 's2c_room_paused'"
+    ).fetchall()
+    assert len(pause_rows) == 1 and pause_rows[0]["audience"] == "party"
+    assert "s2c_action_exception_requested" not in [event[1] for event in dispatcher.events]
 
 
 @pytest.mark.asyncio

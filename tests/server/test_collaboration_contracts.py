@@ -83,9 +83,12 @@ def test_ai_only_collaboration_infrastructure_failure_pauses_without_host_queue(
         "resolution_pipeline_unavailable",
     )
 
+    # R1/R7A migration (04 §6): an ai_only integrity pause PRESERVES the
+    # in-flight batch action (verified recovery resumes it later) instead of
+    # terminating it as rejected.
     assert test_db.execute(
         "SELECT status FROM actions WHERE action_id = 'ai-only-block-action'"
-    ).fetchone()["status"] == "rejected"
+    ).fetchone()["status"] == "batched"
     assert test_db.execute(
         "SELECT status, integrity_reason FROM rooms WHERE room_id = %s",
         (room_id,),

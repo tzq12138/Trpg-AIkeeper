@@ -42,7 +42,14 @@ _REVIEW_SIGNATURE_KEYS = (
     "status",
     "source_action_id",
     "source_receipt_hash",
+    "source_state_version",
     "expected_current_state_version",
+    # Player-visible output fields ride inside the signed envelope too: a
+    # tampered reason/reason_code/correction (including fact_reveals) must
+    # invalidate the resolution exactly like a tampered mutation would.
+    "reason_code",
+    "reason",
+    "correction",
     "mutations",
 )
 

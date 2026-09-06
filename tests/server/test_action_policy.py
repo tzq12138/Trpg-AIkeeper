@@ -608,3 +608,40 @@ def test_top_level_target_mismatch_still_blocks_equivalence():
         risk_contract=_LOW_RISK_CONTRACT,
     )
     assert decision.outcome == "clarify"
+
+
+def test_chosen_label_with_internal_reference_keeps_clarifying_route():
+    """The straight-through disclosure embeds the chosen label into
+    player-visible text, so a proven candidate whose label leaks an internal
+    scene/npc id must never reach that disclosure (sanitization parity with
+    the clarifying route)."""
+    candidates = [
+        {
+            "label": "侦查 scene-a1b2c3d4 的柜台",
+            "interpreted_intent": "inspect_a",
+            "consequences": {
+                "target": "柜台",
+                "mechanic": "skill_check",
+                "difficulty": "regular",
+                "risk": "low",
+            },
+        },
+        {
+            "label": "检查柜台区域",
+            "interpreted_intent": "inspect_b",
+            "consequences": {
+                "target": "柜台",
+                "mechanic": "skill_check",
+                "difficulty": "regular",
+                "risk": "low",
+            },
+        },
+    ]
+    decision = evaluate_action_policy(
+        _ambiguous_intent(candidates),
+        current_state={},
+        risk_contract=_LOW_RISK_CONTRACT,
+    )
+    assert decision.outcome == "clarify"
+    labels = [c["label"] for c in decision.candidates]
+    assert all("scene-a1b2c3d4" not in label for label in labels)

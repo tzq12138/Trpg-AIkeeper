@@ -6,14 +6,16 @@ live in one call. Events persisted outside the pipeline (system integrity
 pauses, system recovery milestones, automatic review terminals) used to stop
 at the EventLog row: reconnect/catch-up saw them, live sockets did not.
 
-This module closes that gap with a fire-and-forget helper that mirrors the
-dispatcher's audience semantics:
+This module closes that gap with a fire-and-forget helper with explicit,
+audience-scoped delivery (never a room-wide fan-out for host events):
 
   - audience="party"            -> every connection of the room (host + players)
-  - audience="host"             -> only the Owner console connection
-  - audience="player"           -> only the owning player's connection
-                                   (requires character_id; without one the
-                                   event stays catch-up-only)
+  - audience="host"             -> ONLY the Owner console connection
+                                   (manager.send_event to "host", never a
+                                   broadcast that player sockets could see)
+  - audience="player"           -> ONLY the owning player's connection; a
+                                   player event without character_id stays
+                                   catch-up-only (fail-closed, no fan-out)
   - audience="system"           -> audit/catch-up row only, nothing live
 
 The row (EventLog) remains the source of truth: the WebSocket event only
@@ -96,12 +98,27 @@ async def _deliver(
 ) -> None:
     try:
         if audience == "player":
+            # Owner-scoped notice: only the named character's socket receives
+            # it. A player event WITHOUT a character id is ambiguous and is
+            # NEVER widened to the whole room — it stays catch-up-only
+            # (fail-closed: the EventLog row remains the durable contract).
             if character_id:
                 await manager.send_event(room_id, f"player:{character_id}", event)
-            else:
-                await manager.broadcast_to_room(room_id, event)
+                return
+            logger.warning(
+                "push_live_event: player event without character_id is "
+                "catch-up-only room=%s type=%s",
+                room_id,
+                event.type,
+            )
             return
-        if audience in {"host", "party"}:
+        if audience == "host":
+            # Explicit owner-console delivery; never broadcast host events to
+            # player sockets (the ws_manager filters on audience today, but
+            # the delivery path should not depend on that filter).
+            await manager.send_event(room_id, "host", event)
+            return
+        if audience == "party":
             await manager.broadcast_to_room(room_id, event)
         # audience="system" is catch-up/audit only: nothing is pushed live.
     except Exception as exc:
