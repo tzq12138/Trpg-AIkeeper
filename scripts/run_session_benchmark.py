@@ -159,6 +159,14 @@ def main(argv: list[str] | None = None) -> int:
                 "ok": False,
                 "reason_code": "driver_not_available",
             }
+        except NotImplementedError:
+            # The live drivers require the frozen service window (V4); the
+            # plan stays honest: incomplete, never fabricated.
+            outcome = {
+                "session_id": session_id,
+                "ok": False,
+                "reason_code": "driver_not_implemented_v4",
+            }
         except Exception as exc:  # noqa: BLE001 - one bad session must not hide the rest
             outcome = {
                 "session_id": session_id,

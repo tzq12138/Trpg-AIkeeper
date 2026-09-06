@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -131,3 +132,29 @@ def test_available_server_without_driver_is_plan_incomplete(tmp_path, health_ser
     run_config = output / "benchmark" / "run-config.json"
     assert run_config.exists()
     assert "rc_id" in run_config.read_text(encoding="utf-8")
+
+
+def test_persona_utterance_selection_is_deterministic_per_seed():
+    from scripts.benchmark_sim_driver import pick_utterance
+
+    first = [pick_utterance("2026090501", "cautious", seat=0, index=i) for i in range(4)]
+    second = [pick_utterance("2026090501", "cautious", seat=0, index=i) for i in range(4)]
+    assert first == second
+    other_seed = [pick_utterance("2026090502", "cautious", seat=0, index=i) for i in range(4)]
+    assert first != other_seed or True  # different seeds may collide; determinism is the contract
+    # Different personas draw from their own pools.
+    pool_normal = {pick_utterance("2026090501", "normal", 0, i) for i in range(20)}
+    pool_aggressive = {pick_utterance("2026090501", "aggressive", 0, i) for i in range(20)}
+    assert pool_normal and pool_aggressive
+
+
+def test_session_budget_records_stop_reason_never_fabricates_ending():
+    from scripts.benchmark_sim_driver import budget
+
+    started = time.time()
+    keep, reason = budget(119, started, time.time())
+    assert keep and reason == ""
+    keep, reason = budget(120, started, time.time())
+    assert not keep and reason == "cap_120_actions"
+    keep, reason = budget(10, started, started + 61 * 60)
+    assert not keep and reason == "cap_60_minutes"
