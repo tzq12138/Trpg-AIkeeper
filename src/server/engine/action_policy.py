@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -71,11 +73,38 @@ _INTERNAL_REFERENCE_RE = re.compile(
 
 def _consequences_of(candidate: dict[str, Any]) -> dict[str, Any]:
     value = candidate.get("consequences")
-    return value if isinstance(value, dict) else {}
+    dims = value if isinstance(value, dict) else {}
+    # Normalize top-level mechanism fields into the dimension map (R6): an AI
+    # candidate that states its mechanism/target/skill at the top level still
+    # participates in the equivalence proof without duplicating them.
+    derived = {
+        "target": candidate.get("target"),
+        "mechanic": candidate.get("mechanic_plan") or candidate.get("mechanic"),
+        "difficulty": candidate.get("difficulty"),
+        "skill": candidate.get("skill"),
+        "risk": candidate.get("risk"),
+        "resource": candidate.get("resource_impacts") or candidate.get("resource"),
+    }
+    merged = dict(dims)
+    for dimension, top_value in derived.items():
+        if top_value not in (None, "") and dimension not in merged:
+            merged[dimension] = top_value
+    return merged
 
 
 def _canonical_dimension(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value).strip().lower())
+
+
+def _candidate_list_hash(candidates: list[dict[str, Any]]) -> str:
+    """Deterministic hash of exactly the candidate list shown to the player."""
+    canonical = json.dumps(
+        candidates,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _materially_equivalent(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -128,6 +157,10 @@ class ActionPolicyDecision:
     candidates: list[dict[str, Any]] = field(default_factory=list)
     safe_effect: dict[str, Any] | None = None
     disclosures: list[str] = field(default_factory=list)
+    # Canonical hash of exactly what the player was shown; the service stores
+    # it so a later re-analysis can prove the candidate list was not swapped
+    # behind the player's back (R6 choice-freeze evidence).
+    candidates_hash: str | None = None
 
 
 def evaluate_action_policy(
@@ -169,41 +202,45 @@ def evaluate_action_policy(
 
     if visibility == "private" and intent_type in _MECHANICAL_INTENTS:
         target = str(intent.get("target") or "目标").strip() or "目标"
+        reproposal_candidates = [
+            {
+                "label": f"公开提出前往{target}" if intent_type == "move" else "公开重提这项行动",
+                "interpreted_intent": "public_reproposal",
+                "visibility": "public",
+            },
+            {
+                "label": "取消行动，不产生任何效果",
+                "interpreted_intent": "cancel_action",
+                "visibility": "private",
+            },
+        ]
         return ActionPolicyDecision(
             outcome="reject",
             reason_code="private_mechanical_action_forbidden",
-            candidates=[
-                {
-                    "label": f"公开提出前往{target}" if intent_type == "move" else "公开重提这项行动",
-                    "interpreted_intent": "public_reproposal",
-                    "visibility": "public",
-                },
-                {
-                    "label": "取消行动，不产生任何效果",
-                    "interpreted_intent": "cancel_action",
-                    "visibility": "private",
-                },
-            ],
+            candidates=reproposal_candidates,
+            candidates_hash=_candidate_list_hash(reproposal_candidates),
         )
 
     if _FACT_CLAIM_RE.search(declared_intent):
+        fact_claim_candidates = [
+            {
+                "label": "尝试取得该物品或线索",
+                "interpreted_intent": "attempt_to_acquire",
+            },
+            {
+                "label": "询问当前是否持有该物品或线索",
+                "interpreted_intent": "ask_about_possession",
+            },
+            {
+                "label": "取消行动，不产生任何效果",
+                "interpreted_intent": "cancel_action",
+            },
+        ]
         return ActionPolicyDecision(
             outcome="clarify",
             reason_code="player_asserted_world_fact",
-            candidates=[
-                {
-                    "label": "尝试取得该物品或线索",
-                    "interpreted_intent": "attempt_to_acquire",
-                },
-                {
-                    "label": "询问当前是否持有该物品或线索",
-                    "interpreted_intent": "ask_about_possession",
-                },
-                {
-                    "label": "取消行动，不产生任何效果",
-                    "interpreted_intent": "cancel_action",
-                },
-            ],
+            candidates=fact_claim_candidates,
+            candidates_hash=_candidate_list_hash(fact_claim_candidates),
         )
 
     ambiguities = {
@@ -233,6 +270,7 @@ def evaluate_action_policy(
             outcome="clarify",
             reason_code="material_intent_ambiguity",
             candidates=candidates,
+            candidates_hash=_candidate_list_hash(candidates),
         )
 
     return ActionPolicyDecision(outcome="allow")

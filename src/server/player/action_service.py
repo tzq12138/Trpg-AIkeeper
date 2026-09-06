@@ -369,6 +369,11 @@ def apply_engine_action_policy(
     params["policyOutcome"] = decision.outcome
     if decision.reason_code:
         params["policyReason"] = decision.reason_code
+    if decision.candidates_hash:
+        # R6 choice-freeze evidence: the hash of exactly what the player was
+        # shown travels with the draft so a later re-analysis can prove the
+        # candidate list was not swapped behind the player.
+        params["candidatesFrozenHash"] = decision.candidates_hash
     return draft.model_copy(
         update={
             "status": "analyzing",

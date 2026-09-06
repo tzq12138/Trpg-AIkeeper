@@ -533,3 +533,78 @@ def test_single_proven_candidate_alone_does_not_prove_equivalence():
         risk_contract=_LOW_RISK_CONTRACT,
     )
     assert decision.outcome == "clarify"
+
+
+def test_clarify_decision_carries_frozen_candidates_hash():
+    intent = _ambiguous_intent(
+        [
+            {"label": "检查门锁", "interpreted_intent": "inspect_lock"},
+            {"label": "取消", "interpreted_intent": "cancel_action"},
+        ]
+    )
+    decision = evaluate_action_policy(
+        intent, current_state={}, risk_contract=_LOW_RISK_CONTRACT
+    )
+    assert decision.outcome == "clarify"
+    assert decision.candidates_hash
+    # Stable and covers exactly the returned list.
+    expected = __import__("hashlib").sha256(
+        __import__("json").dumps(
+            decision.candidates, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert decision.candidates_hash == expected
+
+
+def test_top_level_mechanism_fields_participate_in_equivalence_proof():
+    # Candidates state their mechanism at the TOP level (no consequences
+    # block); the normalizer maps them into the 12 dimensions.
+    candidates = [
+        {
+            "label": "检查目标 A",
+            "interpreted_intent": "inspect_a",
+            "target": "a",
+            "mechanic": "skill_check",
+            "skill": "侦查",
+            "difficulty": "regular",
+        },
+        {
+            "label": "检查目标 A 的另一表述",
+            "interpreted_intent": "inspect_a2",
+            "target": "a",
+            "mechanic": "skill_check",
+            "skill": "侦查",
+            "difficulty": "regular",
+        },
+    ]
+    decision = evaluate_action_policy(
+        _ambiguous_intent(candidates),
+        current_state={},
+        risk_contract=_LOW_RISK_CONTRACT,
+    )
+    assert decision.outcome == "allow"
+    assert decision.reason_code == "consequences_equivalent"
+
+
+def test_top_level_target_mismatch_still_blocks_equivalence():
+    candidates = [
+        {
+            "label": "检查目标 A",
+            "interpreted_intent": "inspect_a",
+            "target": "a",
+            "mechanic": "skill_check",
+        },
+        {
+            "label": "检查目标 B",
+            "interpreted_intent": "inspect_b",
+            "target": "b",
+            "mechanic": "skill_check",
+        },
+    ]
+    decision = evaluate_action_policy(
+        _ambiguous_intent(candidates),
+        current_state={},
+        risk_contract=_LOW_RISK_CONTRACT,
+    )
+    assert decision.outcome == "clarify"
