@@ -757,6 +757,21 @@ def apply_automatic_review_resolution(
                 resolution.get("mutations"), case.get("action_character_id")
             )
 
+        # Fact-level corrections ride inside the same transaction: a wrongly
+        # revealed fact is corrected (or safety-flagged) append-only and never
+        # overwrites the original reveal row; existing failure accounting
+        # (severe spoilers) is never zeroed by remediation.
+        fact_reveals = correction.get("fact_reveals")
+        if fact_reveals is not None:
+            _apply_fact_corrections(
+                conn,
+                room_id=case["action_room_id"],
+                source_action_id=case.get("action_id"),
+                state_version=current_version,
+                fact_reveals=fact_reveals,
+                tx=tx,
+            )
+
         source_receipt_hash = str(resolution.get("source_receipt_hash") or "")
         transaction_id = None
         if status in _APPLIED_STATUSES:
@@ -860,6 +875,73 @@ def apply_automatic_review_resolution(
         "transaction_id": transaction_id,
         "state_version": state_version_after,
     }
+
+
+def _apply_fact_corrections(
+    conn,
+    *,
+    room_id: str,
+    source_action_id: str,
+    state_version: int,
+    fact_reveals: Any,
+    tx,
+) -> None:
+    """Apply engine-built fact corrections inside the caller transaction.
+
+    Each entry follows {"reveal_id", "kind": "corrected"|"safety",
+    "corrected_text"?, "citation"?, "reason_code"?}. Corrections are
+    append-only through RevealLedger (never overwrite the original reveal
+    row) and idempotent per (source action, fact, audience, record kind), so
+    a failed apply can be retried safely. Remediation never zeroes existing
+    severe-spoiler failure accounting — no counter is touched here.
+
+    Args:
+        conn: caller-owned connection.
+        room_id: room scope.
+        source_action_id: the reviewed action.
+        state_version: current world version (validated by the caller).
+        fact_reveals: list of fact correction entries.
+        tx: caller transaction to write inside.
+    Raises:
+        AutomaticReviewResolutionError: invalid_fact_correction /
+        fact_correction_failed.
+    """
+    from .reveal_ledger import RevealLedger, RevealPolicyError
+
+    if not isinstance(fact_reveals, list):
+        raise AutomaticReviewResolutionError("invalid_fact_correction")
+    ledger = RevealLedger(conn)
+    for entry in fact_reveals:
+        if not isinstance(entry, dict):
+            raise AutomaticReviewResolutionError("invalid_fact_correction")
+        reveal_id = str(entry.get("reveal_id") or "")
+        kind = str(entry.get("kind") or "")
+        if not reveal_id or kind not in {"corrected", "safety"}:
+            raise AutomaticReviewResolutionError("invalid_fact_correction")
+        try:
+            if kind == "corrected":
+                ledger.append_correction(
+                    room_id=room_id,
+                    reveal_id=reveal_id,
+                    corrected_text=str(entry.get("corrected_text") or ""),
+                    citation=entry.get("citation")
+                    if isinstance(entry.get("citation"), dict)
+                    else {},
+                    source_action_id=source_action_id,
+                    state_version=state_version,
+                    tx=tx,
+                )
+            else:
+                ledger.flag_safety_event(
+                    room_id=room_id,
+                    reveal_id=reveal_id,
+                    reason_code=str(entry.get("reason_code") or "review_correction"),
+                    source_action_id=source_action_id,
+                    state_version=state_version,
+                    tx=tx,
+                )
+        except RevealPolicyError as exc:
+            raise AutomaticReviewResolutionError("fact_correction_failed") from exc
 
 
 def _load_applied_transaction(conn, review_request_id: str, status: str) -> dict | None:

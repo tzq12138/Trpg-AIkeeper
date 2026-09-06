@@ -969,3 +969,135 @@ def test_invalid_difficulty_label_is_rejected(client, test_db):
             test_db, "no-such-case", difficulty="impossible"
         )
     assert exc.value.code == "invalid_difficulty"
+# ═══════════════════════════════════════════════════════════════════════════
+# R5 remainder — fact corrections and safety events ride with the apply.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _insert_original_reveal(test_db, room_id, character_id, *, reveal_id="reveal-1"):
+    test_db.execute(
+        "INSERT INTO fact_reveals "
+        "(reveal_id, room_id, fact_id, fact_text, citation, audience, "
+        "target_character_id, source_action_id, state_version, event_sequence, "
+        "record_kind, status) "
+        "VALUES (%s, %s, 'fact-secret-location', '旧文本：线索在窗台。', %s, 'player', %s, "
+        "'review-action', 0, 990000, 'reveal', 'revealed')",
+        (
+            reveal_id,
+            room_id,
+            json.dumps({"source": "scene"}),
+            character_id,
+        ),
+    )
+    test_db.commit()
+
+
+def _resolution_with_fact_correction(status="explanation_corrected", *, fact_reveals, **kwargs):
+    resolution = _resolution(status, **kwargs)
+    resolution["correction"]["fact_reveals"] = fact_reveals
+    return resolution
+
+
+async def test_fact_correction_appends_append_only_and_keeps_terminal(
+    client, test_db,
+):
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    _insert_original_reveal(test_db, room["room_id"], joined["character_id"])
+    resolution = _resolution_with_fact_correction(
+        "explanation_corrected",
+        fact_reveals=[
+            {
+                "reveal_id": "reveal-1",
+                "kind": "corrected",
+                "corrected_text": "更正：线索实际在书桌抽屉。",
+                "citation": {"source": "review"},
+            }
+        ],
+        reason_code="fact_relabeled",
+        reason="原揭示文本有误，追加更正。",
+    )
+
+    outcome = _apply(client.app.state, test_db, created["review_request_id"], resolution)
+
+    assert outcome["status"] == "explanation_corrected"
+    original = test_db.execute(
+        "SELECT record_kind, fact_text, status FROM fact_reveals "
+        "WHERE reveal_id = 'reveal-1'"
+    ).fetchone()
+    assert original["record_kind"] == "reveal"  # never overwritten
+    assert original["fact_text"] == "旧文本：线索在窗台。"
+    correction = test_db.execute(
+        "SELECT record_kind, status, fact_text, corrects_reveal_id, reason_code "
+        "FROM fact_reveals WHERE record_kind = 'correction'"
+    ).fetchone()
+    assert correction["status"] == "corrected"
+    assert correction["fact_text"] == "更正：线索实际在书桌抽屉。"
+    assert correction["corrects_reveal_id"] == "reveal-1"
+    assert correction["reason_code"] == "fact_corrected"
+    case_row = test_db.execute(
+        "SELECT status FROM action_review_requests WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert case_row["status"] == "resolved"
+
+
+async def test_safety_event_flagged_while_existing_failure_accounting_untouched(
+    client, test_db,
+):
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    _insert_original_reveal(test_db, room["room_id"], joined["character_id"])
+    # Pre-existing severe-spoiler accounting that remediation must NOT zero.
+    test_db.execute(
+        "INSERT INTO spoiler_audits (audit_id, room_id, action_id, original_text, "
+        "violations, final_status) "
+        "VALUES ('spoiler-audit-1', %s, 'review-action', '旧叙事', "
+        "'[{\"severity\": \"severe\", \"kind\": \"reveal_scan\"}]', 'blocked_fallback')",
+        (room["room_id"],),
+    )
+    test_db.commit()
+    resolution = _resolution_with_fact_correction(
+        "explanation_corrected",
+        fact_reveals=[
+            {
+                "reveal_id": "reveal-1",
+                "kind": "safety",
+                "reason_code": "review_spoiler_exposure",
+            }
+        ],
+        reason_code="fact_relabeled",
+        reason="原揭示含剧透，追加安全事件。",
+    )
+
+    outcome = _apply(client.app.state, test_db, created["review_request_id"], resolution)
+
+    assert outcome["status"] == "explanation_corrected"
+    safety = test_db.execute(
+        "SELECT record_kind, status, reason_code FROM fact_reveals "
+        "WHERE record_kind = 'safety_event'"
+    ).fetchone()
+    assert safety["status"] == "safety_flagged"
+    assert safety["reason_code"] == "review_spoiler_exposure"
+    spoiler = test_db.execute(
+        "SELECT COUNT(*) AS count FROM spoiler_audits WHERE audit_id = 'spoiler-audit-1'"
+    ).fetchone()["count"]
+    assert spoiler == 1  # remediation never zeroes failure accounting
+
+
+async def test_invalid_fact_correction_payload_aborts_apply(client, test_db):
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    _insert_original_reveal(test_db, room["room_id"], joined["character_id"])
+    resolution = _resolution_with_fact_correction(
+        "explanation_corrected",
+        fact_reveals=[{"reveal_id": "reveal-1", "kind": "mystery_kind"}],
+    )
+    with pytest.raises(AutomaticReviewResolutionError) as exc:
+        _apply(client.app.state, test_db, created["review_request_id"], resolution)
+    assert exc.value.code == "invalid_fact_correction"
+    case_row = test_db.execute(
+        "SELECT status FROM action_review_requests WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert case_row["status"] == "pending"  # untouched by the refused apply
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM fact_reveals WHERE record_kind = 'correction'"
+    ).fetchone()["count"] == 0

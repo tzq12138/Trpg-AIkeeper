@@ -320,14 +320,17 @@ class RevealLedger:
         citation: dict[str, Any],
         source_action_id: str,
         state_version: int,
+        tx=None,
     ) -> dict[str, Any]:
+        """Append a fact correction; tx= allows running inside a caller tx."""
         text = str(corrected_text or "").strip()
         if not text or len(text) > 4000 or not isinstance(citation, dict) or not citation:
             raise RevealPolicyError("reveal_correction_invalid")
-        with self.conn.transaction() as transaction:
-            original = self._load_original(transaction, room_id, reveal_id)
+
+        def _write(executor):
+            original = self._load_original(executor, room_id, reveal_id)
             return self._append_record(
-                transaction,
+                executor,
                 original=original,
                 fact_text=text,
                 citation=citation,
@@ -338,6 +341,11 @@ class RevealLedger:
                 reason_code="fact_corrected",
             )
 
+        if tx is not None:
+            return _write(tx)
+        with self.conn.transaction() as transaction:
+            return _write(transaction)
+
     def flag_safety_event(
         self,
         *,
@@ -346,14 +354,17 @@ class RevealLedger:
         reason_code: str,
         source_action_id: str,
         state_version: int,
+        tx=None,
     ) -> dict[str, Any]:
+        """Flag a safety event; tx= allows running inside a caller tx."""
         safe_reason = str(reason_code or "").strip()
         if not _SAFE_REASON_CODE.fullmatch(safe_reason):
             raise RevealPolicyError("reveal_safety_reason_invalid")
-        with self.conn.transaction() as transaction:
-            original = self._load_original(transaction, room_id, reveal_id)
+
+        def _write(executor):
+            original = self._load_original(executor, room_id, reveal_id)
             return self._append_record(
-                transaction,
+                executor,
                 original=original,
                 fact_text="",
                 citation=_json_object(original.get("citation")),
@@ -363,6 +374,11 @@ class RevealLedger:
                 status="safety_flagged",
                 reason_code=safe_reason,
             )
+
+        if tx is not None:
+            return _write(tx)
+        with self.conn.transaction() as transaction:
+            return _write(transaction)
 
     def _append_record(
         self,
