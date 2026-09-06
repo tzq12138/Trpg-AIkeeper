@@ -376,6 +376,21 @@ async def _awaiting_engine_case(client, test_db):
     return room, joined, created, gateway
 
 
+
+def _apply(app_state, conn, review_request_id, resolution):
+    """Engine-style invocation: sign the canonical resolution first."""
+    from src.server.engine.automatic_action_review import (
+        sign_automatic_review_resolution,
+    )
+
+    signed = {
+        **resolution,
+        "engine_signature": sign_automatic_review_resolution(
+            review_request_id, resolution
+        ),
+    }
+    return apply_automatic_review_resolution(app_state, conn, review_request_id, signed)
+
 def _resolution(status, *, mutations=None, reason_code="review_applied", reason="x",
                 expected_version=None, source_action_id="review-action",
                 correction=None):
@@ -403,9 +418,7 @@ async def test_apply_upheld_closes_case_without_world_changes(client, test_db):
     resolution = _resolution("upheld", reason_code="no_error",
                               reason="原结算无错误，维持原判。")
 
-    applied = apply_automatic_review_resolution(
-        client.app.state, test_db, created["review_request_id"], resolution
-    )
+    applied = _apply(client.app.state, test_db, created["review_request_id"], resolution)
 
     assert applied["status"] == "upheld"
     assert applied["transaction_id"] is None
@@ -444,9 +457,7 @@ async def test_apply_explanation_corrected_appends_correction_without_state_chan
         correction=correction,
     )
 
-    applied = apply_automatic_review_resolution(
-        client.app.state, test_db, created["review_request_id"], resolution
-    )
+    applied = _apply(client.app.state, test_db, created["review_request_id"], resolution)
 
     assert applied["status"] == "explanation_corrected"
     assert applied["transaction_id"]
@@ -483,9 +494,7 @@ async def test_apply_projection_repaired_records_correction_and_notice(client, t
         correction={"audience": "player", "character_id": joined["character_id"]},
     )
 
-    applied = apply_automatic_review_resolution(
-        client.app.state, test_db, created["review_request_id"], resolution
-    )
+    applied = _apply(client.app.state, test_db, created["review_request_id"], resolution)
 
     assert applied["status"] == "projection_repaired"
     row = test_db.execute(
@@ -524,13 +533,9 @@ async def test_apply_compensated_applies_exactly_once_with_deterministic_id(
         correction={},
     )
 
-    first = apply_automatic_review_resolution(
-        client.app.state, test_db, created["review_request_id"], resolution
-    )
+    first = _apply(client.app.state, test_db, created["review_request_id"], resolution)
     # Reply lost -> retry with the identical resolution.
-    replay = apply_automatic_review_resolution(
-        client.app.state, test_db, created["review_request_id"], resolution
-    )
+    replay = _apply(client.app.state, test_db, created["review_request_id"], resolution)
 
     assert first["status"] == "compensated"
     assert first["state_version"] == version_before + 1
@@ -571,9 +576,7 @@ async def test_apply_refuses_mutations_outside_compensated(client, test_db, stat
         mutations=[{"op": "replace", "path": "/character/hp", "value": 8}],
     )
     with pytest.raises(AutomaticReviewResolutionError) as exc:
-        apply_automatic_review_resolution(
-            client.app.state, test_db, created["review_request_id"], resolution
-        )
+        _apply(client.app.state, test_db, created["review_request_id"], resolution)
     assert exc.value.code == "mutations_not_allowed"
 
 
@@ -581,21 +584,61 @@ async def test_apply_rejects_unknown_status_and_action_mismatch(client, test_db)
     room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
     bad_status = _resolution("invented_outcome")
     with pytest.raises(AutomaticReviewResolutionError) as exc:
-        apply_automatic_review_resolution(
-            client.app.state, test_db, created["review_request_id"], bad_status
-        )
+        _apply(client.app.state, test_db, created["review_request_id"], bad_status)
     assert exc.value.code == "invalid_resolution"
     wrong_action = _resolution("upheld", source_action_id="other-action")
     with pytest.raises(AutomaticReviewResolutionError) as exc:
-        apply_automatic_review_resolution(
-            client.app.state, test_db, created["review_request_id"], wrong_action
-        )
+        _apply(client.app.state, test_db, created["review_request_id"], wrong_action)
     assert exc.value.code == "action_id_mismatch"
     row = test_db.execute(
         "SELECT status FROM action_review_requests WHERE review_request_id = %s",
         (created["review_request_id"],),
     ).fetchone()
     assert row["status"] == "pending"  # untouched by refused applies
+
+
+async def test_apply_rejects_unsigned_and_tampered_resolutions(client, test_db):
+    """Engine-only provenance: a resolution without the engine signature (or
+    with one that no longer covers the payload) can never dispose a case."""
+    room, joined, created, _gateway = await _awaiting_engine_case(client, test_db)
+    resolution = _resolution("compensated",
+                             reason_code="state_mismatch",
+                             reason="返还误扣。",
+                             mutations=[{"op": "replace", "path": "/character/hp",
+                                         "value": 8}])
+    # No signature at all: rejected before any status is honored.
+    with pytest.raises(AutomaticReviewResolutionError) as exc:
+        apply_automatic_review_resolution(
+            client.app.state, test_db, created["review_request_id"], resolution
+        )
+    assert exc.value.code == "unverified_resolution"
+    # Signature valid for the original fields, then a field is tampered with:
+    # the signature no longer covers the payload and the apply is refused.
+    from src.server.engine.automatic_action_review import (
+        sign_automatic_review_resolution,
+    )
+
+    signed = {
+        **resolution,
+        "engine_signature": sign_automatic_review_resolution(
+            created["review_request_id"], resolution
+        ),
+    }
+    signed["mutations"] = [{"op": "replace", "path": "/character/hp", "value": 99}]
+    with pytest.raises(AutomaticReviewResolutionError) as exc:
+        apply_automatic_review_resolution(
+            client.app.state, test_db, created["review_request_id"], signed
+        )
+    assert exc.value.code == "unverified_resolution"
+    # Nothing was applied and the case is untouched.
+    assert test_db.execute(
+        "SELECT COUNT(*) AS count FROM compensation_transactions"
+    ).fetchone()["count"] == 0
+    row = test_db.execute(
+        "SELECT status FROM action_review_requests WHERE review_request_id = %s",
+        (created["review_request_id"],),
+    ).fetchone()
+    assert row["status"] == "pending"
 
 
 async def test_apply_state_version_mismatch_pauses_instead_of_guessing(
@@ -616,9 +659,7 @@ async def test_apply_state_version_mismatch_pauses_instead_of_guessing(
         mutations=[{"op": "replace", "path": "/character/hp", "value": 8}],
     )
 
-    outcome = apply_automatic_review_resolution(
-        client.app.state, test_db, created["review_request_id"], resolution
-    )
+    outcome = _apply(client.app.state, test_db, created["review_request_id"], resolution)
 
     assert outcome["status"] == "system_paused"
     assert outcome["reason_code"] == "state_version_mismatch"

@@ -16,7 +16,9 @@ returns the redacted summary only.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 import uuid
 from typing import Any
 
@@ -26,6 +28,59 @@ AUTOMATIC_REVIEW_TERMINAL_STATUSES = {
     "rejected",
     "timeout",
 }
+
+# Engine-only provenance for review resolutions (R5 hardening). Applying a
+# compensation must never depend on a caller-controlled payload alone: the
+# resolution carries an HMAC over its canonical authoritative fields, keyed
+# by the same domain-separated secret derivation the roll receipts use, so
+# only the engine-side builder can produce a valid resolution. Clients never
+# reach apply_automatic_review_resolution today, and any future wiring that
+# accepts client-shaped resolutions fails closed on the signature.
+_REVIEW_SIGNING_DOMAIN = "aikeeper-automatic-review-v1"
+_REVIEW_SIGNATURE_KEYS = (
+    "review_request_id",
+    "status",
+    "source_action_id",
+    "source_receipt_hash",
+    "expected_current_state_version",
+    "mutations",
+)
+
+
+def _review_signing_secret() -> str:
+    secret = os.getenv("ROLL_RECEIPT_SECRET") or os.getenv("JWT_SECRET")
+    if not secret and os.getenv("AIKEEPER_DEV_MODE", "").lower() in ("1", "true", "yes"):
+        return "aikeeper-local-development-automatic-review-v1"
+    if not secret:
+        raise AutomaticReviewResolutionError("resolution_signing_unavailable")
+    return secret
+
+
+def _review_signing_key() -> bytes:
+    derived = hashlib.sha256(
+        f"{_REVIEW_SIGNING_DOMAIN}:{_review_signing_secret()}".encode("utf-8")
+    ).digest()
+    return derived
+
+
+def sign_automatic_review_resolution(
+    review_request_id: str, resolution: dict[str, Any]
+) -> str:
+    """Engine-side signature over the canonical authoritative fields."""
+    canonical = {key: resolution.get(key) for key in _REVIEW_SIGNATURE_KEYS}
+    canonical["review_request_id"] = review_request_id
+    body = _canonical_json(canonical)
+    return hmac.new(_review_signing_key(), body.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _verify_resolution_signature(
+    review_request_id: str, resolution: dict[str, Any]
+) -> bool:
+    provided = resolution.get("engine_signature")
+    if not isinstance(provided, str) or not provided:
+        return False
+    expected = sign_automatic_review_resolution(review_request_id, resolution)
+    return hmac.compare_digest(provided, expected)
 
 
 def _canonical_json(value: Any) -> str:
@@ -629,6 +684,10 @@ def apply_automatic_review_resolution(
 
     if not isinstance(resolution, dict):
         raise AutomaticReviewResolutionError("invalid_resolution")
+    # Provenance gate: only an engine-signed resolution may dispose a case;
+    # client-shaped payloads fail closed here before any status is honored.
+    if not _verify_resolution_signature(review_request_id, resolution):
+        raise AutomaticReviewResolutionError("unverified_resolution")
     status = str(resolution.get("status") or "")
     if status not in AUTOMATIC_REVIEW_STATUSES:
         raise AutomaticReviewResolutionError("invalid_resolution")
