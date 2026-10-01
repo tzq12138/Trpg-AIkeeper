@@ -61,8 +61,31 @@ describe('player narrative shell components', () => {
     expect(html).toContain('煤气灯忽明忽暗。');
     expect(html).toContain('你接下来想调查哪里？');
     expect(html).toContain('已从行动时间线恢复。');
+    expect(html).not.toContain('aria-label="当前场景摘要"');
+    expect(html).not.toContain('aria-label="历史消息"');
     expect(html).toContain('<details');
     expect(html).toContain('bh-player-narrative-layout--mobile-safe');
+  });
+
+  test('keeps the current scene summary separate from readable history without duplicating it', async () => {
+    const { NarrativeFeed } = await import('../src/pages/PlayerActionPage');
+    const sceneText = '门后的抓挠声停了，走廊重新陷入寂静。';
+    const html = renderToStaticMarkup(
+      <NarrativeFeed
+        sceneText={sceneText}
+        items={[
+          { id: 'scene-copy', kind: 'kp_narration', text: sceneText },
+          { id: 'old-kp', kind: 'kp_narration', text: '楼下传来一次沉闷的关门声。' },
+          { id: 'player-1', kind: 'player', text: '我把提灯举高，观察门缝。' },
+        ]}
+      />,
+    );
+
+    expect(html).toContain('aria-label="当前场景摘要"');
+    expect(html).toContain('aria-label="历史消息"');
+    expect(html.match(new RegExp(sceneText, 'g'))).toHaveLength(1);
+    expect(html).toContain('楼下传来一次沉闷的关门声。');
+    expect(html).toContain('我把提灯举高，观察门缝。');
   });
 
   test('renders AI stage and recovery states from canonical progress', async () => {

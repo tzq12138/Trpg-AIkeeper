@@ -6,6 +6,8 @@ import TacticalButtons from '../components/TacticalButtons';
 import PlayerTerminal from '../components/PlayerTerminal';
 import VoiceInput from '../components/VoiceInput';
 import PlayerActionComposer from '../components/PlayerActionComposer';
+import PlayerSceneHeader from '../components/PlayerSceneHeader';
+import '../components/player-journal.css';
 import AbsentPolicyControl, { type AbsentPolicy } from '../components/AbsentPolicyControl';
 import CampaignHomePanel from '../components/CampaignHomePanel';
 import CollaborationContractPanel from '../components/CollaborationContractPanel';
@@ -95,6 +97,7 @@ import type {
   ActionStatus,
   AiStageName,
   AiStageProgress,
+  CampaignHomeDTO,
   CharacterSheet,
   EngineEvent,
   PlayerChatMessage,
@@ -182,24 +185,50 @@ export function mergeNarrationDetails(
 export function NarrativeFeed({
   items,
   recoveryText,
+  title = '你眼前发生的事',
+  sceneText,
 }: {
   items: NarrativeFeedItem[];
   recoveryText?: string;
+  /// <summary>玩家已知的场景标题，缺省时显示通用叙事标题。</summary>
+  title?: string;
+  /// <summary>当前场景公开摘要；传入时独立于历史消息持续显示。</summary>
+  sceneText?: string;
 }) {
+  const labels: Record<NarrativeFeedItem['kind'], string> = {
+    kp_narration: '守秘人', player: '我的行动', recovery: '最新进展',
+    environment_change: '环境变化', interactable_object: '眼前所见', open_question: '接下来',
+    judgement: '判定结果', clarification: '待澄清',
+  };
+  const currentSceneText = sceneText?.trim() || '';
+  const historicalItems = currentSceneText
+    ? items.filter((item) => item.kind !== 'kp_narration' || item.text.trim() !== currentSceneText)
+    : items;
+  const history = historicalItems.map((item) => (
+    <article key={item.id} className={`bh-message bh-message--${item.kind}`}>
+      <span className="bh-eyebrow">{labels[item.kind]}</span>
+      <p>{item.text}</p>
+    </article>
+  ));
   return (
     <section className="bh-panel bh-narrative-feed" aria-label="叙事对话流">
-      <span className="bh-eyebrow">叙事对话流</span>
-      <h2 className="bh-panel-title">你眼前发生的事</h2>
+      <h2 className="bh-panel-title">{title}</h2>
       {recoveryText ? <div className="bh-muted-box">{recoveryText}</div> : null}
       <div className="bh-message-list" aria-live="polite">
-        {items.length === 0 ? (
-          <article className="bh-message">等待 KP 叙事，或用自然语言描述你的下一步。</article>
-        ) : items.map((item) => (
-          <article key={item.id} className={`bh-message bh-message--${item.kind}`}>
-            <span className="bh-eyebrow">{item.kind}</span>
-            <p>{item.text}</p>
+        {currentSceneText ? (
+          <article className="bh-message bh-message--current-scene" aria-label="当前场景摘要">
+            <span className="bh-eyebrow">当前场景</span>
+            <p>{currentSceneText}</p>
           </article>
-        ))}
+        ) : null}
+        {historicalItems.length === 0 && !currentSceneText ? (
+          <article className="bh-message">等待 KP 叙事，或用自然语言描述你的下一步。</article>
+        ) : currentSceneText && historicalItems.length > 0 ? (
+          <div className="bh-message-history" aria-label="历史消息">
+            <span className="bh-eyebrow">历史消息</span>
+            {history}
+          </div>
+        ) : history}
       </div>
       </section>
   );
@@ -351,6 +380,7 @@ export default function PlayerActionPage({
   const [actionHints, setActionHints] = useState<string[]>([]);
   const [hasPendingInventoryTransfer, setHasPendingInventoryTransfer] = useState(false);
   const [hasUnresolvedPartyQuestion, setHasUnresolvedPartyQuestion] = useState(false);
+  const [sceneHome, setSceneHome] = useState<Pick<CampaignHomeDTO, 'room_id' | 'current_scene'> | null>(null);
   const [unreadNotifications, setUnreadNotifications] = useState({ privateResults: 0, publicClues: 0 });
   const [collaborationContracts, setCollaborationContracts] = useState<CollaborationContractDTO[]>([]);
   const [collaborationParticipants, setCollaborationParticipants] = useState<CollaborationParticipantDTO[]>([]);
@@ -456,9 +486,15 @@ export default function PlayerActionPage({
     const load = async () => {
       try {
         const home = await getCampaignHome();
-        if (!cancelled) setHasUnresolvedPartyQuestion((home.unresolved_questions || []).length > 0);
+        if (!cancelled) {
+          setHasUnresolvedPartyQuestion((home.unresolved_questions || []).length > 0);
+          setSceneHome({ room_id: home.room_id, current_scene: home.current_scene });
+        }
       } catch {
-        if (!cancelled) setHasUnresolvedPartyQuestion(false);
+        if (!cancelled) {
+          setHasUnresolvedPartyQuestion(false);
+          setSceneHome(null);
+        }
       }
     };
     void load();
@@ -467,7 +503,7 @@ export default function PlayerActionPage({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [roomId, mapRefresh, stateVersion]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1492,6 +1528,7 @@ export default function PlayerActionPage({
       )}
       {tab === 'action' && (
         <ActionPanel
+          scene={sceneHome?.room_id === roomId ? sceneHome.current_scene : null}
           actionStatus={actionStatus}
           connectionStatus={connectionStatus}
           actionError={actionError}
@@ -1586,6 +1623,8 @@ export default function PlayerActionPage({
 }
 
 interface ActionPanelProps {
+  /// <summary>当前角色获授权的场景摘要和素材标识。</summary>
+  scene?: CampaignHomeDTO['current_scene'];
   actionStatus: ActionStatus;
   connectionStatus: PlayerWSStatus;
   actionError: string;
@@ -1698,6 +1737,7 @@ const combatDistanceText: Record<'engaged' | 'near' | 'short' | 'medium' | 'long
 };
 
 function ActionPanel({
+  scene = null,
   actionStatus,
   connectionStatus,
   actionError,
@@ -1809,12 +1849,14 @@ function ActionPanel({
       <section
         className="bh-panel bh-player-narrative-layout bh-player-narrative-layout--mobile-safe"
         data-safe-widths="360 390 430"
+        data-player-priority={safetyState.status === 'safety_paused' ? 'danger' : currentPriority.kind}
       >
-      <section
+      <PlayerSceneHeader scene={scene} />
+      <NarrativeFeed items={narrativeItems} recoveryText={recoveryText} title={scene?.title || '你眼前发生的事'} sceneText={scene?.text_preview} />
+      {safetyState.status !== 'safety_paused' && <section
         className={`bh-muted-box bh-player-current bh-player-current--${currentPriority.kind}`}
         aria-label="当前最重要的事"
       >
-        <span className="bh-eyebrow">CURRENT PRIORITY</span>
         <h3>{currentPriority.title}</h3>
         <p>{currentPriority.detail}</p>
         {pendingTaskCount > 1 && <p className="bh-hint">另有 {pendingTaskCount - 1} 项待处理。</p>}
@@ -1836,11 +1878,9 @@ function ActionPanel({
             <button className="bh-button" type="button" onClick={onDiscardAction}>撤回预览</button>
           </div>
         )}
-      </section>
-      <span className="bh-eyebrow">TACTICAL CHANNEL</span>
-      <h2 className="bh-panel-title">自然语言行动</h2>
-      <NarrativeFeed items={narrativeItems} recoveryText={recoveryText} />
-      <AiStageIndicator progress={aiProgress} />
+      </section>}
+      <h2 className="bh-journal-sr-only">自然语言行动</h2>
+      {aiProgress.status !== 'idle' && <AiStageIndicator progress={aiProgress} />}
       {connectionStatus !== 'open' && (
         <div className="bh-muted-box" role="status">
           {connectionStatus === 'unauthorized'
@@ -1880,6 +1920,8 @@ function ActionPanel({
       )}
 
       {character && (
+        <details className="bh-journal-collaboration" open={collaborationContracts.some((contract) => ['pending', 'accepted'].includes(contract.status))}>
+          <summary>协同行动</summary>
         <CollaborationContractPanel
           currentCharacterId={character.character_id}
           participants={collaborationParticipants}
@@ -1889,6 +1931,7 @@ function ActionPanel({
           onRespond={onRespondToCollaboration}
           onCancel={onCancelCollaboration}
         />
+        </details>
       )}
 
       {combatRound?.hasCombat && combatRound.declaration && (
@@ -1968,7 +2011,7 @@ function ActionPanel({
       )}
 
       {safetyState.status === 'safety_paused' && (
-        <section className="bh-muted-box" aria-live="assertive" aria-label="匿名安全暂停">
+        <section className="bh-muted-box bh-journal-safety-pause" aria-live="assertive" aria-label="匿名安全暂停">
           <span className="bh-eyebrow">SAFETY PAUSE</span>
           <h3>引擎已匿名暂停</h3>
           <p>新的剧情行动不会结算。队伍可以继续发送场外信息或安全请求。</p>
@@ -1982,7 +2025,9 @@ function ActionPanel({
         </section>
       )}
 
-      <VoiceInput
+      <details className="bh-journal-voice">
+        <summary>语音输入</summary>
+        <VoiceInput
         onSendToTeam={(text, source) => {
           fetch('/api/player/team-message', {
             method: 'POST',
@@ -1993,13 +2038,10 @@ function ActionPanel({
         onSubmitAction={(text) => {
           onSubmitAction(text);
         }}
-      />
+        />
+      </details>
 
-      <div className="bh-action-box">
-        <button className="bh-button" type="button" onClick={onRequestActionHints}>
-          给我一些行动灵感
-        </button>
-        {actionHints.length > 0 && (
+      {actionHints.length > 0 && (
           <div className="bh-hint-list">
             {actionHints.slice(0, 5).map((hint) => (
               <button className="bh-button" key={hint} type="button" onClick={() => onApplyHint(hint)}>
@@ -2007,10 +2049,10 @@ function ActionPanel({
               </button>
             ))}
           </div>
-        )}
-      </div>
+      )}
 
       <PlayerActionComposer
+        onRequestHints={onRequestActionHints}
         inputText={inputText}
         inputMode={inputMode}
         phase={actionStatus}

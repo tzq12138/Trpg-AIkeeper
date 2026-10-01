@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { ArrowRightIcon } from '@phosphor-icons/react/dist/csr/ArrowRight';
+import { LightbulbIcon } from '@phosphor-icons/react/dist/csr/Lightbulb';
 
 import type {
   ActionConsentDTO,
@@ -24,6 +26,8 @@ export { actionStatusLabel } from './PlayerDecisionCard';
 
 
 interface PlayerActionComposerProps {
+  /// <summary>请求可填入输入框的行动灵感，不自动提交。</summary>
+  onRequestHints?: () => void;
   inputText: string;
   inputMode?: PlayerInputMode;
   phase: ActionStatus;
@@ -54,6 +58,7 @@ interface PlayerActionComposerProps {
 
 
 export default function PlayerActionComposer({
+  onRequestHints,
   inputText,
   inputMode = 'action',
   phase,
@@ -139,8 +144,11 @@ export default function PlayerActionComposer({
   };
 
   return (
-    <section className="bh-action-composer" aria-label="玩家行动编辑器">
+    <section className="bh-action-composer" aria-label="玩家行动编辑器" data-phase={phase}>
       <div className="bh-action-box">
+        <details className="bh-journal-input-options">
+          <summary>输入方式 · {PLAYER_INPUT_MODE_LABELS[inputMode]}</summary>
+          <div className="bh-journal-input-options__body">
         <label className="bh-field-label" htmlFor="player-input-mode">输入类型</label>
         <select
           className="bh-input"
@@ -203,7 +211,10 @@ export default function PlayerActionComposer({
             <p className="bh-hint">选择玩家目标后，只有对方明确接受才会产生机械效果。</p>
           </div>
         )}
+          </div>
+        </details>
         <textarea
+          aria-label="描述你的行动"
           className="bh-textarea"
           value={inputText}
           onChange={(event) => onInputChange(event.target.value)}
@@ -211,6 +222,12 @@ export default function PlayerActionComposer({
           disabled={editingDisabled}
         />
         <div className="bh-action-row bh-action-row--responsive">
+          {onRequestHints && (
+            <button className="bh-journal-inspiration" type="button" onClick={onRequestHints} aria-label="给我一些行动灵感">
+              <LightbulbIcon size={24} aria-hidden="true" />
+              行动灵感
+            </button>
+          )}
           <button
             className="bh-button bh-button--yellow"
             type="button"
@@ -220,6 +237,7 @@ export default function PlayerActionComposer({
             {phase === 'analyzing' && isStatefulPlayerInputMode(inputMode, speechRoutesToDialogue)
               ? '分析中...'
               : inputModeSubmitLabel(inputMode, speechRoutesToDialogue)}
+            <ArrowRightIcon size={24} aria-hidden="true" />
           </button>
           <span className="bh-action-phase" aria-live="polite">{actionStatusLabel(phase)}</span>
         </div>

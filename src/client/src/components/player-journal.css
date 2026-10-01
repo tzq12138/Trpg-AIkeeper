@@ -1,0 +1,420 @@
+/* 场景手记：只作用于玩家当前行动页，沿用真实行动和授权数据。 */
+.bh-player-terminal--journal {
+  color: #1a1a1a;
+  background: #f5f0e8;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+.bh-player-terminal--journal .bh-player-content {
+  padding: 0 0 100px;
+  width: min(1280px, 100%);
+}
+
+.bh-player-terminal--journal .bh-player-play-grid {
+  gap: 36px;
+}
+
+.bh-player-terminal--journal .bh-player-narrative-layout {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.bh-player-terminal--journal .bh-journal-scene {
+  position: relative;
+  margin: 0;
+  height: clamp(180px, 26svh, 280px);
+  overflow: hidden;
+  background: #22201b;
+}
+
+.bh-player-terminal--journal .bh-journal-scene img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 52%;
+}
+
+.bh-player-terminal--journal .bh-journal-scene figcaption {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  max-width: 100%;
+  padding: 9px 20px;
+  background: #1a1a1a;
+  color: #f5f0e8;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.bh-player-terminal--journal .bh-narrative-feed {
+  margin: 0;
+  padding: 20px 24px 12px;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.bh-player-terminal--journal .bh-narrative-feed > .bh-panel-title {
+  margin: 0 0 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #1a1a1a;
+  font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  font-size: clamp(26px, 6.5vw, 38px);
+  font-weight: 800;
+  line-height: 1.35;
+  text-transform: none;
+  overflow-wrap: anywhere;
+}
+
+.bh-player-terminal--journal .bh-message-list {
+  max-height: min(36svh, 380px);
+  padding: 0;
+  gap: 20px;
+  scrollbar-width: thin;
+  scrollbar-color: #aaa298 transparent;
+}
+
+.bh-player-terminal--journal .bh-message {
+  max-width: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+
+.bh-player-terminal--journal .bh-message > .bh-eyebrow {
+  display: inline-block;
+  padding: 1px 7px;
+  background: #1a1a1a;
+  color: #f5f0e8;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: .08em;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.bh-player-terminal--journal .bh-message p {
+  margin: 12px 0 0;
+  white-space: pre-wrap;
+}
+
+.bh-player-terminal--journal .bh-message--player {
+  padding-left: 14px;
+  border-left: 2px solid #c4bdae;
+}
+
+.bh-player-terminal--journal .bh-message-history {
+  display: grid;
+  gap: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #c9c1b4;
+}
+
+.bh-player-terminal--journal .bh-message-history > .bh-eyebrow {
+  margin: 0;
+  color: #615a50;
+  font-size: 12px;
+  letter-spacing: .06em;
+}
+
+.bh-player-terminal--journal .bh-message--player > .bh-eyebrow {
+  background: transparent;
+  color: #554e42;
+  padding-left: 0;
+}
+
+.bh-player-terminal--journal .bh-player-narrative-layout > .bh-player-current {
+  margin: 8px 24px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.bh-player-terminal--journal .bh-player-current h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.bh-player-terminal--journal .bh-player-current p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #615a50;
+}
+
+.bh-player-terminal--journal .bh-player-narrative-layout > .bh-player-current--danger,
+.bh-player-terminal--journal .bh-player-narrative-layout > .bh-player-current--decision,
+.bh-player-terminal--journal .bh-player-narrative-layout > .bh-player-current--waiting {
+  order: -1;
+  padding: 14px 18px;
+  margin: 12px 18px;
+  border-left: 4px solid #aa7600;
+  background: #eee8da;
+}
+
+.bh-player-terminal--journal .bh-journal-safety-pause {
+  order: -2;
+  margin: 12px 18px;
+  padding: 14px 18px;
+  border: 1px solid #a13728;
+  background: #fff0e8;
+  box-shadow: none;
+  font-weight: 400;
+}
+
+.bh-player-terminal--journal .bh-player-current--danger {
+  border-left-color: #a13728;
+  background: #fff0e8;
+}
+
+.bh-player-terminal--journal .bh-action-composer {
+  margin: 0 24px;
+}
+
+.bh-player-terminal--journal .bh-action-composer > .bh-action-box {
+  gap: 10px;
+  margin: 8px 0 0;
+}
+
+.bh-player-terminal--journal .bh-journal-input-options summary,
+.bh-player-terminal--journal .bh-journal-voice summary {
+  min-height: 34px;
+  padding: 6px 0;
+  font-size: 12px;
+  line-height: 22px;
+  color: #615a50;
+  cursor: pointer;
+}
+
+.bh-player-terminal--journal .bh-journal-input-options__body {
+  display: grid;
+  gap: 8px;
+  padding: 10px 0 14px;
+}
+
+.bh-player-terminal--journal .bh-textarea,
+.bh-player-terminal--journal .bh-input {
+  border: 1px solid #9d9588;
+  border-radius: 3px;
+  box-shadow: none;
+  background: #fcf8f0;
+  color: #1a1a1a;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.bh-player-terminal--journal .bh-action-composer .bh-textarea {
+  min-height: 64px;
+  height: 64px;
+  padding: 14px 12px;
+  border: 1.5px solid #1a1a1a;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.bh-player-terminal--journal .bh-action-composer .bh-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.bh-player-terminal--journal .bh-action-composer .bh-button--yellow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 46px;
+  padding: 10px 14px;
+  border: 1.5px solid #1a1a1a;
+  border-radius: 3px;
+  background: #ffcc00;
+  box-shadow: 3px 4px 0 #1a1a1a;
+  color: #1a1a1a;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.bh-player-terminal--journal .bh-action-composer .bh-button--yellow:disabled {
+  opacity: .6;
+  box-shadow: none;
+}
+
+.bh-player-terminal--journal .bh-journal-inspiration {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: auto;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  color: #29241d;
+  font: inherit;
+  font-size: 13px;
+  text-underline-offset: 5px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.bh-player-terminal--journal .bh-action-phase {
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #615a50;
+}
+
+.bh-player-terminal--journal .bh-action-composer[data-phase="idle"] .bh-action-phase,
+.bh-player-terminal--journal .bh-action-composer[data-phase="typing"] .bh-action-phase,
+.bh-player-terminal--journal .bh-journal-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.bh-player-terminal--journal .bh-journal-voice {
+  order: 2;
+  margin: 20px 24px 0;
+  border-top: 1px solid #c9c1b4;
+}
+
+.bh-player-terminal--journal .bh-journal-collaboration {
+  order: 2;
+  margin: 12px 24px 0;
+  padding: 10px 0;
+  border-top: 1px solid #c9c1b4;
+}
+
+.bh-player-terminal--journal .bh-journal-collaboration > summary {
+  min-height: 34px;
+  font-size: 13px;
+  line-height: 34px;
+  cursor: pointer;
+}
+
+.bh-player-terminal--journal .bh-journal-collaboration[open] {
+  order: 0;
+}
+
+.bh-player-terminal--journal .bh-journal-collaboration > .bh-panel {
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  padding: 12px 0;
+}
+
+.bh-player-terminal--journal .bh-vitals {
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 400;
+  font-size: 16px;
+}
+
+.bh-player-terminal--journal .bh-player-tabs .bh-tab[aria-selected="true"] {
+  background: transparent;
+  color: #1a1a1a;
+  outline: none;
+}
+
+.bh-player-terminal--journal .bh-player-narrative-layout > .bh-action-box:last-child {
+  margin: 12px 24px;
+  order: 3;
+}
+
+.bh-player-terminal--journal .bh-player-context-rail {
+  top: 120px;
+  padding-top: 28px;
+  font-weight: 400;
+}
+
+.bh-player-terminal--journal .bh-player-context-rail .bh-eyebrow {
+  width: fit-content;
+  padding: 3px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.bh-player-terminal--journal .bh-context-vitals > div {
+  border-bottom: 1px solid #c9c1b4;
+  background: transparent;
+  color: #1a1a1a;
+}
+
+.bh-player-terminal--journal .bh-context-vitals strong {
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 400;
+}
+
+.bh-player-terminal--journal .bh-context-actions .bh-button {
+  border: 1px solid #9d9588;
+  box-shadow: none;
+  background: transparent;
+  font-family: inherit;
+  font-weight: 500;
+}
+
+.bh-player-terminal--journal .bh-player-context-rail__desktop,
+.bh-player-terminal--journal .bh-player-context-rail__drawer {
+  border: 0;
+  border-left: 1px solid #b6ac9a;
+  box-shadow: none;
+  background: transparent;
+}
+
+.bh-player-terminal--journal .bh-context-drawer-section {
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid #c9c1b4;
+  background: transparent;
+}
+
+.bh-player-terminal--journal :is(button, summary, select, textarea):focus-visible,
+.bh-player-terminal--journal .bh-player-tabs .bh-tab:focus-visible {
+  outline: 3px solid #966b00;
+  outline-offset: 4px;
+}
+
+@media (min-width: 900px) {
+  .bh-player-terminal--journal .bh-player-content { padding: 28px 32px 110px; }
+  .bh-player-terminal--journal .bh-journal-scene { height: clamp(220px, 28svh, 350px); }
+  .bh-player-terminal--journal .bh-narrative-feed { padding: 28px 0 20px; }
+  .bh-player-terminal--journal .bh-action-composer,
+  .bh-player-terminal--journal .bh-player-narrative-layout > .bh-player-current { margin-left: 0; margin-right: 0; }
+}
+
+@media (max-width: 899px) {
+  :root:has(.bh-player-terminal--journal) { scrollbar-width: none; }
+  .bh-player-terminal--journal .bh-player-context-rail { padding: 12px 24px 0; }
+}
+
+@media (max-width: 430px) and (max-height: 820px) {
+  .bh-player-terminal--journal .bh-journal-scene { height: clamp(140px, 22svh, 180px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bh-player-terminal--journal * { scroll-behavior: auto; transition: none; }
+}

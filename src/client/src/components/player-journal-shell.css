@@ -1,0 +1,190 @@
+.bh-player-terminal--journal {
+  --journal-paper: #f5f0e8;
+  --journal-ink: #171717;
+  --journal-accent: #c99700;
+  background: var(--journal-paper);
+  color: var(--journal-ink);
+}
+
+.bh-player-terminal--journal .bh-player-header {
+  min-height: 104px;
+  grid-template-columns: 80px minmax(0, 1fr);
+  padding: 4px 24px 4px 16px;
+  border-bottom: 5px solid var(--journal-ink);
+  background: var(--journal-paper);
+  color: var(--journal-ink);
+}
+
+.bh-player-terminal--journal .bh-player-identity {
+  min-width: 0;
+}
+
+.bh-player-terminal--journal .bh-avatar {
+  width: 80px;
+  height: 96px;
+  border: 0;
+  box-shadow: none;
+  overflow: hidden;
+  background: transparent;
+}
+
+.bh-player-terminal--journal .bh-avatar img {
+  display: block;
+  width: 155px;
+  max-width: none;
+  height: 155px;
+  transform: translate(-18px, -4px);
+  object-fit: cover;
+  object-position: 25% 12%;
+}
+
+.bh-player-terminal--journal .bh-player-name {
+  padding: 0;
+  background: transparent;
+  color: var(--journal-ink);
+  font-family: "Noto Serif SC", "Source Han Serif SC", SimSun, serif;
+  text-transform: none;
+}
+
+.bh-player-terminal--journal .bh-vitals {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 14px;
+  padding: 0;
+  background: transparent;
+  color: var(--journal-ink);
+}
+
+.bh-player-terminal--journal .bh-vital {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.bh-player-terminal--journal .bh-vital strong {
+  padding: 2px 6px;
+  background: var(--journal-ink);
+  color: var(--journal-paper);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 0.78em;
+  letter-spacing: 0.03em;
+}
+
+.bh-player-terminal--journal .bh-player-ready {
+  min-height: 24px;
+  margin-left: auto;
+  padding: 1px 5px;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  color: var(--journal-ink);
+  font-size: 10px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.bh-player-terminal--journal .bh-player-tabs {
+  border-top: 4px solid var(--journal-ink);
+  background: var(--journal-paper);
+}
+
+.bh-player-terminal--journal .bh-player-tabs .bh-tab,
+.bh-player-terminal--journal .bh-player-more > summary {
+  position: relative;
+  border-right-color: var(--journal-ink);
+  color: var(--journal-ink);
+}
+
+.bh-player-terminal--journal .bh-player-tabs .bh-tab[aria-selected="true"]::before,
+.bh-player-terminal--journal .bh-player-more > summary[aria-current="page"]::before {
+  position: absolute;
+  top: 0;
+  right: 12px;
+  left: 12px;
+  height: 4px;
+  background: var(--journal-accent);
+  content: "";
+}
+
+.bh-player-terminal--journal .bh-tab-icon {
+  display: none;
+}
+
+.bh-player-terminal--journal .bh-player-tabs--mobile {
+  display: none;
+}
+
+@media (max-width: 430px) {
+  .bh-player-terminal--journal .bh-player-tabs--mobile { display: grid; }
+  .bh-player-terminal--journal .bh-player-header {
+    min-height: 104px;
+    grid-template-columns: 80px minmax(0, 1fr);
+    gap: 10px;
+    padding: 4px 10px 4px 4px;
+  }
+
+  .bh-player-terminal--journal .bh-avatar {
+    width: 80px;
+    height: 96px;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .bh-player-terminal--journal .bh-avatar img {
+    width: 155px;
+    max-width: none;
+    height: 155px;
+    transform: translate(-18px, -4px);
+  }
+
+  .bh-player-terminal--journal .bh-player-name {
+    display: block;
+    overflow: hidden;
+    font-size: 27px;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .bh-player-terminal--journal .bh-vitals {
+    margin-top: 10px;
+    gap: 9px;
+    font-size: 14px;
+    line-height: 1.2;
+  }
+
+  .bh-player-terminal--journal .bh-vital {
+    gap: 5px;
+  }
+
+  .bh-player-terminal--journal .bh-vital strong {
+    padding: 3px 5px;
+    font-size: 12px;
+  }
+
+  .bh-player-terminal--journal .bh-player-ready {
+    align-self: stretch;
+    padding-inline: 2px;
+    font-size: 9px;
+  }
+
+  .bh-player-terminal--journal .bh-player-tabs--mobile .bh-tab,
+  .bh-player-terminal--journal .bh-player-more > summary {
+    min-height: 68px;
+    border-right: 0;
+    gap: 3px;
+    font-size: 12px;
+  }
+
+  .bh-player-terminal--journal .bh-tab-icon {
+    display: block;
+  }
+
+  .bh-player-terminal--journal .bh-player-more__menu {
+    border-color: var(--journal-ink);
+    background: var(--journal-paper);
+    color: var(--journal-ink);
+  }
+}
