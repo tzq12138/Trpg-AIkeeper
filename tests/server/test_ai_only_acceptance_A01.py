@@ -50,7 +50,7 @@ def test_blocker_level_requirement_must_be_passed(tmp_path):
     _write_requirements(root, rows)
     result = _run_validator(root)
     assert result.returncode == 1, result.stdout
-    assert "blocker_not_passed:AIO-001" in result.stdout
+    assert "blocker_not_passed:AIO-ROLE-001" in result.stdout
     assert "release_candidate_passed=true" not in result.stdout
 
 

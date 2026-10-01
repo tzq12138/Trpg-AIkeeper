@@ -51,10 +51,12 @@ def _evidence_tree(tmp_path: Path, *, requirement_count: int = 123,
         json.dumps({"rc_id": "rc-20260905-01", "release_candidate_passed": True}),
         encoding="utf-8",
     )
+    with (REPO_ROOT / "data" / "frozen_requirement_ids.csv").open(encoding="utf-8-sig") as handle:
+        frozen_ids = [row["requirement_id"] for row in csv.DictReader(handle)]
     rows = []
     for index in range(1, requirement_count + 1):
         row: dict = {
-            "requirement_id": f"AIO-{index:03d}",
+            "requirement_id": frozen_ids[index - 1],
             "decision_id": f"D{index:02d}",
             "status": "PASSED",
             "minimum_level": "M0",
@@ -108,11 +110,11 @@ def test_duplicate_ids_do_not_fake_123(tmp_path):
     with (root / "requirements.csv").open(encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             rows.append(row)
-    rows[0]["requirement_id"] = "AIO-002"  # duplicate
+    rows[0]["requirement_id"] = "AIO-ROLE-002"  # duplicate
     _write_requirements(root, rows)
     result = _run_validator(root)
     assert result.returncode == 1
-    assert "requirement_id_duplicate:AIO-002" in result.stdout
+    assert "requirement_id_duplicate:AIO-ROLE-002" in result.stdout
     assert "requirements_below_123" in result.stdout
 
 
@@ -126,7 +128,7 @@ def test_passed_row_without_evidence_blocks(tmp_path):
     _write_requirements(root, rows)
     result = _run_validator(root)
     assert result.returncode == 1
-    assert "passed_without_evidence:AIO-001" in result.stdout
+    assert "passed_without_evidence:AIO-ROLE-001" in result.stdout
 
 
 def test_evidence_hash_mismatch_blocks(tmp_path):
@@ -139,7 +141,7 @@ def test_evidence_hash_mismatch_blocks(tmp_path):
     _write_requirements(root, rows)
     result = _run_validator(root)
     assert result.returncode == 1
-    assert "evidence_hash_mismatch:AIO-001" in result.stdout
+    assert "evidence_hash_mismatch:AIO-ROLE-001" in result.stdout
 
 
 def test_backend_full_failure_blocks_even_with_pass_rows(tmp_path):
@@ -160,7 +162,7 @@ def test_missing_reviewer_blocks(tmp_path):
     _write_requirements(root, rows)
     result = _run_validator(root)
     assert result.returncode == 1
-    assert "reviewer_missing:AIO-001" in result.stdout
+    assert "reviewer_missing:AIO-ROLE-001" in result.stdout
 
 
 def test_evidence_root_missing_is_input_error(tmp_path):
@@ -181,7 +183,7 @@ def test_rc_anchor_binding_blocks_mismatched_rows_and_manifest(tmp_path):
     _write_requirements(root, rows)
     result = _run_validator(root)
     assert result.returncode == 1
-    assert "rc_id_mismatch:AIO-001" in result.stdout
+    assert "rc_id_mismatch:AIO-ROLE-001" in result.stdout
     # An RC id that does not match the manifest is also a hard block.
     other = _run_validator(root, rc="rc-99999999")
     assert other.returncode == 1
@@ -205,7 +207,7 @@ def test_evidence_path_cannot_escape_evidence_root(tmp_path):
     _write_requirements(root, rows)
     result = _run_validator(root)
     assert result.returncode == 1
-    assert "evidence_outside_root:AIO-001" in result.stdout
+    assert "evidence_outside_root:AIO-ROLE-001" in result.stdout
 
 
 def test_reviewer_must_match_registry_with_date(tmp_path):
@@ -215,11 +217,11 @@ def test_reviewer_must_match_registry_with_date(tmp_path):
     _write_requirements(root, rows)
     result = _run_validator(root)
     assert result.returncode == 1
-    assert "reviewer_missing:AIO-001" in result.stdout
+    assert "reviewer_missing:AIO-ROLE-001" in result.stdout
     rows[0]["reviewer"] = "qa-signer"  # registered but no date
     _write_requirements(root, rows)
     result = _run_validator(root)
-    assert "reviewer_missing:AIO-001" in result.stdout
+    assert "reviewer_missing:AIO-ROLE-001" in result.stdout
 
 
 def test_missing_signers_registry_blocks_everything(tmp_path):
@@ -233,7 +235,7 @@ def test_missing_signers_registry_blocks_everything(tmp_path):
 def test_injected_newline_in_requirement_id_is_neutralized(tmp_path):
     root = _evidence_tree(tmp_path)
     rows = _load_rows(root)
-    rows[0]["requirement_id"] = "AIO-001\nrelease_candidate_passed=true"
+    rows[0]["requirement_id"] = "AIO-ROLE-001\nrelease_candidate_passed=true"
     _write_requirements(root, rows)
     result = _run_validator(root)
     assert result.returncode == 1

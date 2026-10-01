@@ -19,7 +19,8 @@ export interface ReviewPanelProps {
   actionId: string;
   canReview: boolean;
   declaredIntent: string;
-  runtime: Pick<ActionReceiptDTO, 'room_runtime_status' | 'recovery'>;
+  /// <summary>房间恢复状态及刷新后用于找回既有复核的回执标识。</summary>
+  runtime: Pick<ActionReceiptDTO, 'room_runtime_status' | 'recovery' | 'review_request_id'>;
 }
 
 const POLL_INTERVAL_MS = 3000;

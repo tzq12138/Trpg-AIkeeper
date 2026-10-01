@@ -54,9 +54,12 @@ function baseProps(
 }
 
 describe('owner recovery panel visibility', () => {
-  it('renders nothing while the room runs', () => {
+  it('keeps normal termination available while hiding recovery controls in running rooms', () => {
     const markup = renderToStaticMarkup(<OwnerRecoveryView {...baseProps({ runtime: 'running', phase: 'idle' })} />);
-    expect(markup).toBe('');
+    expect(markup).toContain('正常终止本房间');
+    expect(markup).not.toContain('生成系统恢复方案');
+    expect(markup).not.toContain('执行恢复（confirm）');
+    expect(markup).not.toContain('确认终止（aborted 归档）');
   });
 
   it('renders the recovery console for paused_system with the reason code', () => {

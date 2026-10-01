@@ -161,6 +161,12 @@ def validate_evidence(evidence: Path, rows: list[dict], *, rc_id: str) -> tuple[
     if not (evidence / "requirements.csv").exists():
         blocks.append("requirements_csv_missing")
 
+    # 全量验证的退出码独立于逐条证据检查，任何失败或缺失均阻断发布。
+    for name in ("backend-full.exitcode", "frontend-test.exitcode", "frontend-build.exitcode"):
+        _, block = _read_exitcode(evidence, name)
+        if block:
+            blocks.append(block)
+
     signers, signer_blocks = _load_signers(evidence)
     blocks.extend(signer_blocks)
 
