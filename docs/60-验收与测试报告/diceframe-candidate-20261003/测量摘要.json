@@ -1,0 +1,48 @@
+{
+  "2p": {
+    "players": 2,
+    "independent_host": true,
+    "model": "deepseek-flash",
+    "completed_rounds": 5,
+    "saved_round": 6,
+    "state": "paused",
+    "checks": 7,
+    "llm_calls": 12,
+    "tokens": 97700,
+    "private_channels": "isolated",
+    "recap_entries": 1,
+    "recap_first_attempt_failed": false,
+    "restart_state_sha256": "402aa6fecce01d6d37c0efefaa54a112cd61a33a54647a25a0d7bf5495a62d24",
+    "archive_sha256": "6eee912fa3bb010d1f1a284d9e2a3f97241612048caa5c7b6dba2b60be3a983d",
+    "archive_bytes": 19660,
+    "archive_files": [
+      "state.json",
+      "chatlog.jsonl"
+    ],
+    "recorded_player_actions": 10,
+    "recorded_actions_including_opening": 11
+  },
+  "4p": {
+    "players": 4,
+    "independent_host": true,
+    "model": "deepseek-flash",
+    "completed_rounds": 5,
+    "saved_round": 6,
+    "state": "paused",
+    "checks": 13,
+    "llm_calls": 12,
+    "tokens": 103364,
+    "private_channels": "isolated",
+    "recap_entries": 1,
+    "recap_first_attempt_failed": true,
+    "restart_state_sha256": "4abe3f519b9a5b92f0ed748c192aec0581f8561e5117377ebf399bbbc5ee05d9",
+    "archive_sha256": "3f57b7ae1f16df3da7dc1b7246f0a2835f5805b1b63affa9eeca0e71c9dd4deb",
+    "archive_bytes": 23113,
+    "archive_files": [
+      "state.json",
+      "chatlog.jsonl"
+    ],
+    "recorded_player_actions": 20,
+    "recorded_actions_including_opening": 21
+  }
+}
