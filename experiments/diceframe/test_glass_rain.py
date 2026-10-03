@@ -79,7 +79,7 @@ def test_pack_can_be_enabled_by_diceframe_host(tmp_path):
         pytest.skip("设置 DICEFRAME_ROOT 指向固定版本 Diceframe 可运行真实宿主验证")
     build_pack(root / "data/golden_modules/02-short-team-glass-rain/module.json", tmp_path / "plugins/aikeeper-glass-rain")
     result = subprocess.run([
-        sys.executable, "-c",
+        sys.executable, "-X", "utf8", "-c",
         "import asyncio, json, sys; from pathlib import Path; from src.plugin_host import PluginHost; "
         "from src.rules.rule_system import RuleSystem; "
         "root = Path(sys.argv[1]); host = PluginHost(root / 'plugins', root / 'data'); host.discover(); "

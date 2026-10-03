@@ -61,9 +61,14 @@ $trialProcess.Id | Set-Content (Join-Path $trialRoot 'server.pid')
 
 ```powershell
 $trialProcessId = [int](Get-Content .runtime/diceframe-pilot/server.pid)
-Get-CimInstance Win32_Process -Filter "ProcessId=$trialProcessId" | Select-Object ProcessId, ExecutablePath, CommandLine
-# 核对 ExecutablePath 指向本试点 venv 后执行：
-Stop-Process -Id $trialProcessId
+$trialParent = Get-CimInstance Win32_Process -Filter "ProcessId=$trialProcessId"
+$trialExpectedPython = (Resolve-Path .runtime/diceframe-pilot/venv/Scripts/python.exe).Path
+if ($trialParent.ExecutablePath -ne $trialExpectedPython) { throw 'PID 不属于本试点' }
+$trialChildren = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$trialProcessId")
+$trialChildren | Select-Object ProcessId, ExecutablePath, CommandLine
+# Windows venv 可能由启动进程派生实际服务进程；核对为 web_server.py 后执行：
+foreach ($trialChild in $trialChildren) { Stop-Process -Id $trialChild.ProcessId }
+Stop-Process -Id $trialProcessId -ErrorAction SilentlyContinue
 ```
 
 ## 试玩流程
@@ -74,10 +79,14 @@ Stop-Process -Id $trialProcessId
 4. 两个席位均须先认领；未认领席位不参与等待。当前本机房主兼程雁，普通玩家许遥用独立浏览器来源验证。
 5. 开局私人钩子保留在 GM 世界书中，尚未自动投递给所属玩家；可用 GM「角色感知」分别发给对应角色。本次已实际投递并核对正常投影。
 
+本次实测已完成 5 个行动回合并形成撤离叙事，当前保留第 6 轮存档。服务重启后，原生 Diceframe 会将未结束的战役恢复为暂停状态；角色、记录与私信仍保留。它没有自动转换成旧系统的结团档案。
+
 试点仅监听回环地址。原生分享弹窗可能自动选取局域网 IP，本机测试使用 `127.0.0.1:19876`；它不是已开放的远程联机服务。
 
 ## 迁移边界
 
 这是叙事内容包，原 AI-Keeper 的节点前置条件、倒计时、SAN 触发、结局互斥与结构化战役归档并未迁移为程序规则。原生骰子结算和状态更新能工作，不代表原模组约束全部等价。
 
-当前版本的普通玩家正常投影能隐藏他人私人钩子，但本地验证发现跨席位身份边界不足。它是正式多人迁移的阻断项；具体复现仅保留在本地试点证据中。当前环境适合可信人员本机试用，不足以批准完整切换。
+当前稳定版的普通玩家正常投影能隐藏他人私人钩子，但本地验证发现跨席位身份边界不足。上游主分支 `297da1f` 已含 GM 席位分享保护，本次单独执行其 18 项相关测试通过；运行中的试点仍固定为 v2.6.1。该结果不代表普通玩家之间的隔离已全面验证。
+
+同时，一次真实模型回合出现内部提示混入公开剧情。权限边界和模型输出质量是正式迁移前的门槛；具体权限复现仅保留在本地试点证据中。当前环境适合可信人员本机试用，不足以批准完整切换。
