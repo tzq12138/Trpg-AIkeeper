@@ -8,7 +8,7 @@
 - 候选目录 `.runtime/diceframe-candidate/`，入口 <http://127.0.0.1:19877>。
 - 旧试点 <http://127.0.0.1:19876> 及其存档保留。
 - 四张卡：程雁、许遥、贺北、苏眠；开团可只选择其中两张。
-- 核心权限补丁已获用户授权，尚在实施；在完成权限验收前不要开放给外部人员。
+- 已实现[最小席位权限补丁](patches/README.md)，自动化身份验证通过；真实多人验收仍在进行。
 
 ## 首次准备
 
@@ -17,6 +17,7 @@
 ```powershell
 git clone https://github.com/diceframe/diceframe.git .runtime/diceframe-candidate/app
 git -C .runtime/diceframe-candidate/app checkout --detach 297da1f06d1e177ade2324eb35d9eb8e1dff89cb
+# 按 patches/README.md 检查并应用权限补丁，再启动服务。
 python -m venv .runtime/diceframe-candidate/venv
 $candidatePython = (Resolve-Path .runtime/diceframe-candidate/venv/Scripts/python.exe).Path
 & $candidatePython -m pip install -r .runtime/diceframe-candidate/app/requirements-dev.txt
@@ -49,6 +50,9 @@ $env:PYTHONIOENCODING = 'utf-8'
 ```powershell
 $env:DICEFRAME_ROOT = (Resolve-Path .runtime/diceframe-candidate/app).Path
 & .runtime/diceframe-candidate/venv/Scripts/python.exe -m pytest experiments/diceframe/test_glass_rain.py -q
+& .runtime/diceframe-candidate/venv/Scripts/python.exe -m pytest experiments/diceframe/test_candidate_identity.py -q
 ```
 
-当前内容测试 4 项通过，含实际宿主启用、四张卡的规则验证和私有材料隔离。多人权限、真实模型短团与恢复仍待后续验收，不能据此宣称候选版完成。
+当前内容测试 4 项通过，含实际宿主启用、四张卡的规则验证和私有材料隔离；身份测试入口内部执行 13 项真实 HTTP 合同，另有 173 项相关上游测试通过。模型异常的回滚、保留行动队列与重试来自上游真实服务加模型替身的故障注入测试。真实模型双人/四人短团与实际服务重启仍待后续验收，不能据此宣称候选版完成。
+
+建团时，把所有预设卡切换为“等待认领”，房主即可独立主持；各玩家用自己的浏览器首次认领。每张卡认领后由 GM 的“角色感知”单独发送该角色私人钩子。保留浏览器 cookie 用于重连。

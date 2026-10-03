@@ -1,0 +1,206 @@
+diff --git a/src/webui/access_control.py b/src/webui/access_control.py
+index d3fa294..7a0c808 100644
+--- a/src/webui/access_control.py
++++ b/src/webui/access_control.py
+@@ -104,6 +104,19 @@ class WebAccessControl:
+                     status=403,
+                 )
+             viewer_uid = request.get("user_id", "")
++            if not owner_authenticated and share_uid != viewer_uid:
++                # <summary>邀请页可查看公开详情、申请认领，但不能凭链接取得目标身份。</summary>
++                parts = [part for part in request.path.split("/") if part]
++                joining = (
++                    (len(parts) == 3 and request.method == "GET")
++                    or (len(parts) == 4 and parts[3] == "players" and request.method == "POST")
++                )
++                if not joining or not viewer_uid:
++                    return web.json_response(
++                        {"ok": False, "error_code": "PLAYER_SESSION_MISMATCH", "error": "链接席位与当前会话不符，请使用原浏览器进入"},
++                        status=403,
++                    )
++                share_uid = viewer_uid
+             request["viewer_user_id"] = viewer_uid
+             request["user_id"] = share_uid
+             request["player_preview"] = bool(
+diff --git a/src/webui/routes/game_character_routes.py b/src/webui/routes/game_character_routes.py
+index 3bafffa..e76d910 100644
+--- a/src/webui/routes/game_character_routes.py
++++ b/src/webui/routes/game_character_routes.py
+@@ -262,7 +262,8 @@ async def api_player_create(request: web.Request) -> web.Response:
+     session_uid = request.get("user_id", "")
+     requested_uid = str(body.get("user_id") or "").strip()
+     join_as_new = bool(body.get("join_as_new")) and not requested_uid
+-    force_uid = "" if join_as_new else session_uid
++    # <summary>普通玩家的服务端身份始终传入原子认领检查；房主可代建/查看席位。</summary>
++    force_uid = "" if request.get("owner_authenticated") and (requested_uid or join_as_new) else session_uid
+     result = await api.create_player(
+         gk, body, force_uid=force_uid, assign_new_id=join_as_new
+     )
+@@ -274,5 +275,5 @@ async def api_player_create(request: web.Request) -> web.Response:
+         token = request.get("session_token")
+         if mgr and token:
+             mgr.rebind(token, result.get("user_id", ""))
+-    status = 409 if result.get("error_code") == "REWRITE_IN_PROGRESS" else 200
++    status = 403 if result.get("error_code") == "PLAYER_SEAT_ALREADY_BOUND" else (409 if result.get("error_code") == "REWRITE_IN_PROGRESS" else 200)
+     return web.json_response(result, status=status)
+diff --git a/src/webui/routes/sse.py b/src/webui/routes/sse.py
+index 501d842..59a62c4 100644
+--- a/src/webui/routes/sse.py
++++ b/src/webui/routes/sse.py
+@@ -33,7 +33,8 @@ async def api_sse_ticket(request: web.Request) -> web.Response:
+     inst = api.get_game_instance(game_key)
+     if not inst:
+         return web.json_response({"error": "not found"}, status=404)
+-    if not user_id or user_id not in inst.players:
++    # <summary>认证房主无需占用玩家角色也能订阅；分享访问由权限中间件校验。</summary>
++    if not user_id or (user_id not in inst.players and user_id != inst.gm_uid):
+         return web.json_response({"error": "未加入本局，无法订阅"}, status=403)
+     ticket, expires_in = request.app["sse_tickets"].issue(game_key, user_id)
+     return web.json_response({"ticket": ticket, "expires_in": expires_in})
+@@ -178,7 +179,8 @@ async def sse_play(request: web.Request) -> web.StreamResponse:
+     inst = api.get_game_instance(game_key)
+     if not inst:
+         raise web.HTTPNotFound()
+-    if not user_id or user_id not in inst.players:
++    # <summary>票据绑定的独立房主同样接收桌面事件。</summary>
++    if not user_id or (user_id not in inst.players and user_id != inst.gm_uid):
+         return web.json_response({"error": "未加入本局，无法订阅"}, status=403)
+ 
+     resp = web.StreamResponse(
+diff --git a/src/webui/services/characters.py b/src/webui/services/characters.py
+index 629a958..c1dc231 100644
+--- a/src/webui/services/characters.py
++++ b/src/webui/services/characters.py
+@@ -1170,8 +1170,11 @@ def _record_seat_claim(inst: GameInstance, uid: str) -> bool:
+     席位会在重启后变回 AI；而普通重连什么都没改，不能因此在热路径上多写一次盘。
+     """
+ 
++    # <summary>身份认领独立于 AI/真人控制模式，随原生 players 存档持久化。</summary>
++    already_claimed = bool(inst.players[uid].get("web_claimed"))
++    inst.players[uid]["web_claimed"] = True
+     if is_human_controlled(inst, uid):
+-        return False
++        return not already_claimed
+     claim_seat(inst, uid)
+     return True
+ 
+@@ -1179,6 +1182,16 @@ def _record_seat_claim(inst: GameInstance, uid: str) -> bool:
+ async def _create_player_authority(dependencies: CharacterDependencies, inst: GameInstance, character: dict,
+                        force_uid: str = "", assign_new_id: bool = False) -> dict[str, Any]:
+     requested_uid = str(character.get("user_id") or "").strip()
++    # <summary>在现有状态锁内检查首次认领，避免两个会话同时抢到同一身份。</summary>
++    if force_uid and (
++        (assign_new_id and force_uid in inst.players)
++        or (requested_uid in inst.players and requested_uid != force_uid and (
++            force_uid in inst.players or requested_uid == inst.gm_uid
++            or is_human_controlled(inst, requested_uid)
++            or bool(inst.players[requested_uid].get("web_claimed"))
++        ))
++    ):
++        return {"ok": False, "error_code": "PLAYER_SEAT_ALREADY_BOUND", "error": "该席位已认领；请使用原浏览器恢复，或联系房主"}
+     if requested_uid and requested_uid in inst.players:
+         # 已有席位被重新加入：按控制权权威记录这次认领（已经是真人则是普通重连）。
+         if _record_seat_claim(inst, requested_uid):
+@@ -1318,6 +1331,8 @@ async def _create_player_authority(dependencies: CharacterDependencies, inst: Ga
+     player = {
+         "character_name": character.get("character_name") or character.get("name") or "冒险者",
+         "character_sheet": cs,
++        # <summary>真实玩家创建时绑定身份；房主代建的空席位仍可首次认领。</summary>
++        "web_claimed": bool(force_uid),
+     }
+     inst.put_player(uid, player)
+     # 新建席位由 put_player/ensure_control 直接生成为 human 控制，无需认领转换。
+diff --git a/src/webui/services/game_creation_phases.py b/src/webui/services/game_creation_phases.py
+index 81edca9..b759639 100644
+--- a/src/webui/services/game_creation_phases.py
++++ b/src/webui/services/game_creation_phases.py
+@@ -200,7 +200,8 @@ async def create_players(
+     public_key = _GAME_KEY_SEP.join(transaction.game_key)
+     for index, character in enumerate(players):
+         try:
+-            if index == 0 and gm_uid:
++            # <summary>等待认领/AI 席位不绑定房主；房主只在第一张卡选择真人时兼任玩家。</summary>
++            if index == 0 and gm_uid and _requested_control(character, unclaimed_control_default) == DEFAULT_CONTROL_MODE:
+                 created = await dependencies.create_player(
+                     public_key,
+                     character,
+diff --git a/src/webui/services/game_lifecycle.py b/src/webui/services/game_lifecycle.py
+index 100abcb..a43f99c 100644
+--- a/src/webui/services/game_lifecycle.py
++++ b/src/webui/services/game_lifecycle.py
+@@ -324,9 +324,9 @@ async def create_game(
+     transaction.advance(CreationPhase.OPENING_STARTED)
+     world_name = instance.world_name
+ 
+-    # GM 严格绑定成功创建的第一个角色；没有角色就没有 GM。
++    # <summary>已认证的房主可独立于等待认领的角色；无显式房主时沿用第一席位。</summary>
+     instance.configure_session(
+-        gm_uid=created_players[0]["user_id"] if created_players else ""
++        gm_uid=gm_uid or (created_players[0]["user_id"] if created_players else "")
+     )
+     try:
+         await transaction.commit(instance)
+diff --git a/tests/test_characters_viewer.py b/tests/test_characters_viewer.py
+index 5e4043f..ff0b4f5 100644
+--- a/tests/test_characters_viewer.py
++++ b/tests/test_characters_viewer.py
+@@ -79,11 +79,14 @@ def test_service_projects_npc_roster_without_changing_other_fields(characters_en
+ )
+ async def test_l7_non_gm_characters_withholds_npc_roster(characters_env, suffix, use_owner):
+     app, key, _, headers, _ = characters_env
++    # A shared player must already own the selected server-side session identity.
++    token, _ = app["session_manager"].get_or_create(None)
++    app["session_manager"].rebind(token, "p1")
+ 
+     async with TestClient(TestServer(app)) as client:
+         response = await client.get(
+             f"/api/games/{key}/characters{suffix}",
+-            headers=headers if use_owner else {},
++            headers=headers if use_owner else {"Cookie": f"trpg_session={token}"},
+         )
+         body = await response.json()
+ 
+diff --git a/tests/test_share_gm_seat_guard.py b/tests/test_share_gm_seat_guard.py
+index 77a3710..c27172b 100644
+--- a/tests/test_share_gm_seat_guard.py
++++ b/tests/test_share_gm_seat_guard.py
+@@ -165,10 +165,13 @@ async def test_f4_join_gm_seat_does_not_rebind_session(share_env, owner):
+             json={"user_id": env.instance.gm_uid},
+         )
+         body = await response.json()
+-    assert response.status == 200
+-    assert body["ok"] is True
+-    assert body["user_id"] == env.instance.gm_uid
+-    assert body["reused"] is True
++    assert response.status == (200 if owner else 403)
++    if owner:
++        assert body["ok"] is True
++        assert body["user_id"] == env.instance.gm_uid
++        assert body["reused"] is True
++    else:
++        assert body["error_code"] == "PLAYER_SEAT_ALREADY_BOUND"
+     assert env.sessions._sessions[env.token]["user_id"] == original_uid
+     assert env.sessions._sessions[env.token]["user_id"] != env.instance.gm_uid
+     reloaded = SessionManager(env.sessions._path.parent)
+@@ -176,7 +179,7 @@ async def test_f4_join_gm_seat_does_not_rebind_session(share_env, owner):
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_regular_player_join_still_rebinds_session(share_env):
++async def test_regular_player_cannot_rebind_to_another_claimed_seat(share_env):
+     env = share_env
+     async with TestClient(TestServer(env.app)) as client:
+         response = await client.post(
+@@ -184,9 +187,9 @@ async def test_regular_player_join_still_rebinds_session(share_env):
+             json={"user_id": "p2"},
+         )
+         body = await response.json()
+-    assert response.status == 200
+-    assert body["ok"] is True
+-    assert env.sessions._sessions[env.token]["user_id"] == "p2"
++    assert response.status == 403
++    assert body["ok"] is False
++    assert env.sessions._sessions[env.token]["user_id"] == "p1"
+ 
+ 
+ def test_new_sessions_have_distinct_eight_hex_user_ids(tmp_path):
