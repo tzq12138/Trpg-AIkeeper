@@ -44,7 +44,7 @@ def build_pack(source: Path, destination: Path) -> Path:
     if destination.name != "aikeeper-glass-rain":
         raise ValueError("输出目录名必须为 aikeeper-glass-rain，与插件 ID 一致")
     graph = module["knowledge_graph"]
-    characters = module["character_templates"][:2]
+    characters = module["character_templates"]
     rule_id = "aikeeper_glass_rain_coc"
     world_id = "aikeeper_glass_rain"
 
@@ -80,11 +80,11 @@ def build_pack(source: Path, destination: Path) -> Path:
             key: clue[key] for key in ("name", "location", "description", "public_version", "private_version", "reveal_conditions")
         }, [clue["name"], clue["location"]]))
     world = {
-        "world_id": world_id, "world_name": "玻璃雨夜 · 两人迁移试点",
-        "description": "冰雨封闭了市立温室。两名调查员在救援与调查之间寻找出路。",
+        "world_id": world_id, "world_name": "玻璃雨夜 · 二至四人短团",
+        "description": "冰雨封闭了市立温室。二至四名调查员在救援与调查之间寻找出路。",
         "language": "zh-CN", "default_locale": "zh-CN", "suggested_difficulty": "标准",
         "default_rule": rule_id, "world_setting": opening + "\n" + map_description,
-        "starter_scene": opening + "\n程雁与许遥站在急救台旁。你们准备如何分工？",
+        "starter_scene": opening + "\n调查员们站在急救台旁。你们准备如何分工？",
         "starter_lorebook": entries,
     }
 
@@ -108,8 +108,8 @@ def build_pack(source: Path, destination: Path) -> Path:
     # 3. 包保持纯声明式，来源、许可及差异跟随本地生成物。
     _write_json(destination / "plugin.json", {
         "schema_version": 1, "id": "aikeeper-glass-rain", "name": "AI-Keeper · 玻璃雨夜",
-        "version": "0.1.0", "min_app_version": "2.6.1", "plugin_type": "content-pack",
-        "description": "原创双人调查短团的本地迁移试点；剧情条件为叙事指引。",
+        "version": "0.2.0", "min_app_version": "2.6.1", "plugin_type": "content-pack",
+        "description": "原创二至四人调查短团候选版；剧情条件为叙事指引。",
         "config_schema": "config.schema.json", "docs": "README_CN.md",
         "capabilities": ["content.rule", "content.world", "content.character-template"],
         "permissions": ["plugin.config", "content.read", "content.import"],
@@ -119,18 +119,18 @@ def build_pack(source: Path, destination: Path) -> Path:
         "type": "object", "additionalProperties": False,
         "properties": {"enabled": {
             "type": "boolean", "title": "启用玻璃雨夜内容包", "default": False,
-            "description": "注册试点规则、世界与两张角色卡。", "ui": {"control": "switch"},
+            "description": "注册短团规则、世界与四张角色卡。", "ui": {"control": "switch"},
         }},
     })
     _write_json(destination / "source.json", {
         "module_id": module["manifest"]["module_id"],
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "license": module["manifest"]["license"],
-        "upstream": {"version": "2.6.1", "commit": "962fda45a68caa24bac38fd2313d92d66fa59a7a"},
+        "upstream": {"version": "main-pinned", "commit": "297da1f06d1e177ade2324eb35d9eb8e1dff89cb"},
     })
     (destination / "README_CN.md").write_text(
         "# 玻璃雨夜试点\n\n仅按 AI-Keeper-Original-Private-Use-1.0 私用，禁止公开再分发。\n\n"
-        "提供一个世界、继承的 CoC 轻量规则和两张角色卡。私人钩子只在 GM 世界书中。\n\n"
+        "提供一个世界、继承的 CoC 轻量规则和四张角色卡。私人钩子只在 GM 世界书中。\n\n"
         "节点条件、倒计时、自动 SAN 触发与结局互斥未迁移成程序规则；此包仅提供叙事指引。\n",
         encoding="utf-8",
     )

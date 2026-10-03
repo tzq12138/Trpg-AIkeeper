@@ -25,7 +25,7 @@ def test_public_content_excludes_unrevealed_clues_and_private_hooks(tmp_path):
     }, ensure_ascii=False)
     private = json.dumps([entry for entry in world["starter_lorebook"] if not entry["visible_to"]], ensure_ascii=False)
     assert "入口的玻璃顶" in public
-    for secret in ("必须先关闭回灌阀，再断开控制室电源", "韩岑隐瞒旧测试", "模糊录像", "G-17 测试表"):
+    for secret in ("必须先关闭回灌阀，再断开控制室电源", "韩岑隐瞒旧测试", "模糊录像", "G-17 测试表", "控制器属于早已淘汰的试验批次", "你曾在储藏室见过写着 G-17 的标签箱"):
         assert secret not in public
         assert secret in private
 
@@ -43,7 +43,15 @@ def test_presets_keep_original_values_and_private_use_license(tmp_path):
     assert card["character_name"] == "程雁"
     assert card["attributes"]["pow"] == 55
     assert {skill["name"]: skill["value"] for skill in card["skills"]}["侦查"] == 65
-    assert len(list((pack / "content/characters").glob("*.json"))) == 2
+    assert len(list((pack / "content/characters").glob("*.json"))) == 4
+    mechanic = json.loads((pack / "content/characters/glass-mechanic.json").read_text(encoding="utf-8"))
+    student = json.loads((pack / "content/characters/glass-student.json").read_text(encoding="utf-8"))
+    assert mechanic["character_name"] == "贺北"
+    assert student["character_name"] == "苏眠"
+    assert sum(mechanic["attributes"].values()) == 460
+    assert sum(student["attributes"].values()) == 460
+    assert {skill["name"]: skill["value"] for skill in mechanic["skills"]}["机械维修"] == 70
+    assert {skill["name"]: skill["value"] for skill in student["skills"]}["博物学"] == 70
     assert rule["extends"] == "freeform_coc"
     assert rule["attribute_points"] == 480
     provenance = json.loads((pack / "source.json").read_text(encoding="utf-8"))
@@ -86,7 +94,7 @@ def test_pack_can_be_enabled_by_diceframe_host(tmp_path):
         "detail = asyncio.run(host.update_config('aikeeper-glass-rain', {'enabled': True})); "
         "assert detail['enabled'], detail; assert detail['status'] == 'active', detail; "
         "assert host.load_world_template('aikeeper_glass_rain'); "
-        "assert len(host.contributions.list('character_template')) == 2; "
+        "assert len(host.contributions.list('character_template')) == 4; "
         "pack = root / 'plugins/aikeeper-glass-rain/content'; "
         "rule = RuleSystem.load(pack / 'rules/glass_rain_coc.json'); "
         "assert rule.dice_system == 'd100'; "

@@ -1,5 +1,7 @@
 # Diceframe《玻璃雨夜》本地试点
 
+本页记录已完成的 0.1.0 双人试点。当前转换器已扩展为 0.2.0 四卡候选包；新环境与后续进度见 [候选版说明](CANDIDATE.md)。现有试点安装包与存档没有被替换。
+
 目标是验证能否用原生 Diceframe 减少 AI-Keeper 的开发维护量。本仓只维护一个内容转换器、针对性测试和试点记录；上游核心保持零修改。
 
 - 固定版本：[Diceframe v2.6.1](https://github.com/diceframe/diceframe/tree/962fda45a68caa24bac38fd2313d92d66fa59a7a)，提交 `962fda45a68caa24bac38fd2313d92d66fa59a7a`。
