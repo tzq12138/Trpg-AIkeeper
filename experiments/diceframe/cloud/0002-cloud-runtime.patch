@@ -1,0 +1,24 @@
+diff --git a/src/webui/host_credentials.py b/src/webui/host_credentials.py
+--- a/src/webui/host_credentials.py
++++ b/src/webui/host_credentials.py
+@@ -136,7 +136,7 @@
+         self.save_config()
+         self.write_access_token_file(generated_password)
+         print("\n" + "=" * 60, flush=True)
+-        print("  Initial access password: " + generated_password, flush=True)
++        print("  Initial access password is stored in data/access_token.txt.", flush=True)
+         print("  Frontend will prompt for this on open.", flush=True)
+         print("  It is also saved once to data/access_token.txt.", flush=True)
+         print(
+diff --git a/src/webui/session.py b/src/webui/session.py
+--- a/src/webui/session.py
++++ b/src/webui/session.py
+@@ -89,5 +89,8 @@
+ async def session_middleware(request: web.Request, handler) -> web.StreamResponse:
+     """aiohttp 中间件：解析 session token，注入 user_id。"""
++    if request.method == "GET" and request.path == "/api/system/update/health":
++        return await handler(request)
++
+     mgr: SessionManager = request.app.get("session_manager")
+     if not mgr:
+         return await handler(request)

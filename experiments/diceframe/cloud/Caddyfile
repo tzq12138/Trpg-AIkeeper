@@ -1,0 +1,19 @@
+{$DICEFRAME_DOMAIN} {
+    header {
+        Referrer-Policy no-referrer
+        X-Content-Type-Options nosniff
+        -Server
+    }
+
+    handle /source/diceframe-cloud-source.zip {
+        root * /srv
+        file_server
+    }
+
+    handle {
+        reverse_proxy web:9876 {
+            flush_interval -1
+            header_down Set-Cookie "(.*)" "$1; Secure"
+        }
+    }
+}
