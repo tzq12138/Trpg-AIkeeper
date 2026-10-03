@@ -17,7 +17,7 @@ if not (UPSTREAM / "tests/test_share_gm_seat_guard.py").exists():
 sys.path[:0] = [str(UPSTREAM), str(UPSTREAM / "tests")]
 
 from test_share_gm_seat_guard import share_env, _cookie, _share_url
-from test_game_query_routes_http import play_env, _owner_password, _owner, _make_app
+from test_game_query_routes_http import play_env, _owner_password, _owner, _make_app, _make_game
 from src.engine.player_control import set_control
 from src.webui.session import SessionManager, session_middleware
 from src.webui.routes.sse import register_sse
@@ -91,7 +91,7 @@ async def test_unclaimed_invitation_can_be_claimed_once_then_reconnected(share_e
         assert second.status == 403
         again = await client.post(_share_url(env, "players"), headers=_cookie(first_token), json={"user_id": "p2"})
         assert again.status == 200
-    assert SessionManager(env.sessions._path.parent).get_or_create(first_token)[1] == "p2"
+    assert SessionManager(env.sessions._path.parent).game_user_id(first_token, env.key) == "p2"
     assert env.sessions._sessions[second_token]["user_id"] == second_uid
 
 
@@ -126,7 +126,7 @@ async def test_concurrent_claim_has_one_winner(share_env):
     async with TestClient(TestServer(env.app)) as client:
         responses = await asyncio.gather(*(client.post(_share_url(env, "players"), headers=_cookie(token), json={"user_id": "p2"}) for token in tokens))
         assert sorted(response.status for response in responses) == [200, 403]
-    assert sum(env.sessions._sessions[token]["user_id"] == "p2" for token in tokens) == 1
+    assert sum(env.sessions.game_user_id(token, env.key) == "p2" for token in tokens) == 1
 
 
 @pytest.mark.asyncio
@@ -184,7 +184,7 @@ async def test_real_game_creation_keeps_unclaimed_seat_available(web_api, tmp_pa
         response = await client.post(f"/api/games/{created['game_key']}/players?share=1&user={guest}", headers=_cookie(token), json={"user_id": guest})
         assert response.status == 200
         assert (await response.json())["ok"] is True
-    assert sessions._sessions[token]["user_id"] == guest
+    assert sessions.game_user_id(token, created["game_key"]) == guest
 
 
 @pytest.mark.asyncio
@@ -204,3 +204,36 @@ async def test_independent_host_can_subscribe_without_a_player_seat(share_env, r
         await stream.content.readline()
         assert env.instance.gm_uid in env.app["connection_pool"]._conns[env.key]
         stream.close()
+
+
+@pytest.mark.asyncio
+async def test_same_browser_can_return_to_first_game_after_joining_another(share_env, play_env):
+    """<summary>同一 cookie 跨局后仍恢复本人原席位，其他 cookie 仍不能冒领。</summary>
+    <param name="share_env">第一局与会话。</param><param name="play_env">真实多局注册表。</param>
+    <returns>无返回值。</returns>
+    """
+    env = share_env
+    set_control(env.instance, "p2", "unclaimed")
+    second_key, second = _make_game(play_env, "other-table", bind_adventure=False)
+    second.players = {"seat-b": {"character_name": "Second", "character_sheet": {}}}
+    set_control(second, "seat-b", "unclaimed")
+    token, _ = env.sessions.get_or_create(None)
+    other_token, _ = env.sessions.get_or_create(None)
+    async with TestClient(TestServer(env.app)) as client:
+        first_claim = await client.post(_share_url(env, "players"), headers=_cookie(token), json={"user_id": "p2"})
+        assert first_claim.status == 200
+        second_claim = await client.post(f"/api/games/{second_key}/players?share=1", headers=_cookie(token), json={"user_id": "seat-b"})
+        assert second_claim.status == 200
+        # Reload sessions from disk, as on a real restart, before revisiting A.
+        env.sessions._load()
+        resumed = await client.get(_share_url(env, "private-log", "p2"), headers=_cookie(token))
+        assert resumed.status == 200
+        assert [item["text"] for item in (await resumed.json())["messages"]] == ["B private"]
+        own_claim = await client.post(_share_url(env, "players"), headers=_cookie(token), json={"user_id": "p2"})
+        assert own_claim.status == 200
+        denied = await client.post(_share_url(env, "players"), headers=_cookie(other_token), json={"user_id": "p2"})
+        assert denied.status == 403
+        restored_host = await client.post(f"/api/games/{env.key}/claim-gm", headers={**_cookie(token), **_owner()})
+        assert restored_host.status == 200
+        assert env.sessions.game_user_id(token, env.key) == env.instance.gm_uid
+        assert env.sessions.game_user_id(token, second_key) == "seat-b"

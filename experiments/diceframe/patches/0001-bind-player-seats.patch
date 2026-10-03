@@ -23,10 +23,10 @@ index d3fa294..7a0c808 100644
              request["user_id"] = share_uid
              request["player_preview"] = bool(
 diff --git a/src/webui/routes/game_character_routes.py b/src/webui/routes/game_character_routes.py
-index 3bafffa..e76d910 100644
+index 3bafffa..7ce8184 100644
 --- a/src/webui/routes/game_character_routes.py
 +++ b/src/webui/routes/game_character_routes.py
-@@ -262,7 +262,8 @@ async def api_player_create(request: web.Request) -> web.Response:
+@@ -262,17 +262,18 @@ async def api_player_create(request: web.Request) -> web.Response:
      session_uid = request.get("user_id", "")
      requested_uid = str(body.get("user_id") or "").strip()
      join_as_new = bool(body.get("join_as_new")) and not requested_uid
@@ -36,13 +36,32 @@ index 3bafffa..e76d910 100644
      result = await api.create_player(
          gk, body, force_uid=force_uid, assign_new_id=join_as_new
      )
-@@ -274,5 +275,5 @@ async def api_player_create(request: web.Request) -> web.Response:
+-    # 换设备恢复：普通玩家可按链接恢复身份；GM 点击玩家操作链接时不能改绑成玩家。
++    # 首次认领只绑定当前局；跨局加入不应覆盖已有席位，GM 预览不改绑。
+     if _should_rebind_player_session(
+         session_uid, inst.gm_uid, requested_uid, result, join_as_new
+     ):
+         mgr = request.app.get("session_manager")
          token = request.get("session_token")
          if mgr and token:
-             mgr.rebind(token, result.get("user_id", ""))
+-            mgr.rebind(token, result.get("user_id", ""))
 -    status = 409 if result.get("error_code") == "REWRITE_IN_PROGRESS" else 200
++            mgr.rebind_game(token, gk, result.get("user_id", ""))
 +    status = 403 if result.get("error_code") == "PLAYER_SEAT_ALREADY_BOUND" else (409 if result.get("error_code") == "REWRITE_IN_PROGRESS" else 200)
      return web.json_response(result, status=status)
+diff --git a/src/webui/routes/game_control_routes.py b/src/webui/routes/game_control_routes.py
+index 33e5c36..dc7ab77 100644
+--- a/src/webui/routes/game_control_routes.py
++++ b/src/webui/routes/game_control_routes.py
+@@ -28,7 +28,7 @@ async def api_claim_gm_session(request: web.Request) -> web.Response:
+     manager = request.app.get("session_manager")
+     if not token or not manager:
+         return web.json_response({"ok": False, "error": "浏览器会话不可用"}, status=400)
+-    manager.rebind(token, inst.gm_uid)
++    manager.rebind_game(token, request.match_info["game_key"], inst.gm_uid)
+     return web.json_response({"ok": True, "user_id": inst.gm_uid})
+ 
+ 
 diff --git a/src/webui/routes/sse.py b/src/webui/routes/sse.py
 index 501d842..59a62c4 100644
 --- a/src/webui/routes/sse.py
@@ -140,6 +159,43 @@ index 100abcb..a43f99c 100644
      )
      try:
          await transaction.commit(instance)
+diff --git a/src/webui/session.py b/src/webui/session.py
+index 1f2f34a..b1d224e 100644
+--- a/src/webui/session.py
++++ b/src/webui/session.py
+@@ -69,6 +69,23 @@ class SessionManager:
+             self._sessions[token]["user_id"] = user_id
+             self._save()
+ 
++    def game_user_id(self, token: str, game_key: str) -> str:
++        """<summary>Resolve this session's seat without replacing identities in other games.</summary>
++        <param name="token">Existing browser session.</param><param name="game_key">Game identifier.</param>
++        <returns>The saved game seat, or the legacy session identity.</returns>
++        """
++        session = self._sessions.get(token, {})
++        return session.get("game_users", {}).get(game_key, session.get("user_id", ""))
++
++    def rebind_game(self, token: str, game_key: str, user_id: str) -> None:
++        """<summary>Persist a claimed seat only for its game.</summary>
++        <param name="token">Existing browser session.</param><param name="game_key">Game identifier.</param>
++        <param name="user_id">Authorized seat identity.</param><returns>Nothing.</returns>
++        """
++        if token in self._sessions:
++            self._sessions[token].setdefault("game_users", {})[game_key] = user_id
++            self._save()
++
+ 
+ @web.middleware
+ async def session_middleware(request: web.Request, handler) -> web.StreamResponse:
+@@ -79,6 +96,8 @@ async def session_middleware(request: web.Request, handler) -> web.StreamRespons
+ 
+     token = request.cookies.get("trpg_session")
+     new_token, user_id = mgr.get_or_create(token)
++    if game_key := request.match_info.get("game_key"):
++        user_id = mgr.game_user_id(new_token, game_key)
+     request["user_id"] = user_id
+     request["session_token"] = new_token
+ 
 diff --git a/tests/test_characters_viewer.py b/tests/test_characters_viewer.py
 index 5e4043f..ff0b4f5 100644
 --- a/tests/test_characters_viewer.py
