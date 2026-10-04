@@ -1,0 +1,22 @@
+{
+  "checkedAt": "2026-10-04T07:01:58.890Z",
+  "transport": "loopback service gateway to actual private Sites Worker and D1",
+  "players": "two independent tab-scoped game capabilities; same Site service principal",
+  "fixture": {
+    "room": "e2cbfb45-69b7-4721-8b16-32a0ce8a326d",
+    "completedRounds": 1,
+    "generationAttempts": 1,
+    "revision": 4,
+    "refreshPassed": true
+  },
+  "live": {
+    "room": "7fcb055b-641f-43be-afb9-929fcae4814e",
+    "completedRounds": 1,
+    "generationAttempts": 1,
+    "revision": 4,
+    "model": "deepseek-flash",
+    "refreshPassed": true,
+    "privateClueIsolationPassed": true
+  },
+  "externalChatGPTAccountLoginVerified": false
+}

@@ -1,0 +1,166 @@
+{
+  "startedAt": "2026-10-04T06:39:03.894Z",
+  "checks": [
+    {
+      "name": "two_distinct_player_capabilities",
+      "passed": true
+    },
+    {
+      "name": "private_projection_and_no_credential_leak",
+      "passed": true
+    },
+    {
+      "name": "missing_and_forged_player_denied",
+      "passed": true
+    },
+    {
+      "name": "seat_impersonation_denied",
+      "passed": true
+    },
+    {
+      "name": "cannot_advance_before_both_players_ready",
+      "passed": true
+    },
+    {
+      "name": "round_1_concurrency_idempotence_shared_history",
+      "passed": true
+    },
+    {
+      "name": "round_2_concurrency_idempotence_shared_history",
+      "passed": true
+    },
+    {
+      "name": "round_3_concurrency_idempotence_shared_history",
+      "passed": true
+    },
+    {
+      "name": "round_4_concurrency_idempotence_shared_history",
+      "passed": true
+    },
+    {
+      "name": "round_5_concurrency_idempotence_shared_history",
+      "passed": true
+    },
+    {
+      "name": "persistence_and_private_projection_after_worker_redeploy",
+      "passed": true
+    },
+    {
+      "name": "persistence_and_private_projection_after_worker_redeploy",
+      "passed": true
+    }
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "elapsedMs": 9521,
+      "duplicateResolveRequests": 8,
+      "responseStatuses": [
+        202,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "attempts": 1,
+      "historyLength": 1,
+      "provenance": {
+        "mode": "fixture",
+        "model": "deterministic-fixture"
+      }
+    },
+    {
+      "round": 2,
+      "elapsedMs": 9572,
+      "duplicateResolveRequests": 8,
+      "responseStatuses": [
+        200,
+        202,
+        200,
+        200,
+        202,
+        202,
+        200,
+        200
+      ],
+      "attempts": 2,
+      "historyLength": 2,
+      "provenance": {
+        "mode": "fixture",
+        "model": "deterministic-fixture"
+      }
+    },
+    {
+      "round": 3,
+      "elapsedMs": 6019,
+      "duplicateResolveRequests": 8,
+      "responseStatuses": [
+        200,
+        200,
+        202,
+        202,
+        200,
+        202,
+        202,
+        202
+      ],
+      "attempts": 3,
+      "historyLength": 3,
+      "provenance": {
+        "mode": "fixture",
+        "model": "deterministic-fixture"
+      }
+    },
+    {
+      "round": 4,
+      "elapsedMs": 7910,
+      "duplicateResolveRequests": 8,
+      "responseStatuses": [
+        200,
+        202,
+        200,
+        202,
+        200,
+        200,
+        202,
+        202
+      ],
+      "attempts": 4,
+      "historyLength": 4,
+      "provenance": {
+        "mode": "fixture",
+        "model": "deterministic-fixture"
+      }
+    },
+    {
+      "round": 5,
+      "elapsedMs": 6770,
+      "duplicateResolveRequests": 8,
+      "responseStatuses": [
+        200,
+        200,
+        200,
+        202,
+        200,
+        202,
+        200,
+        202
+      ],
+      "attempts": 5,
+      "historyLength": 5,
+      "provenance": {
+        "mode": "fixture",
+        "model": "deterministic-fixture"
+      }
+    }
+  ],
+  "base": "https://aikeeper-duo-sites-probe.www-2682028238.chatgpt.site",
+  "configured": true,
+  "roomId": "7c0be7bf-5b28-4f63-88e9-4a8d6b8a7c97",
+  "mode": "fixture",
+  "expectedRound": 6,
+  "persistenceVerifiedAt": "2026-10-04T06:53:28.204Z"
+}

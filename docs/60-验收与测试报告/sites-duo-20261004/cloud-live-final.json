@@ -1,0 +1,91 @@
+{
+  "startedAt": "2026-10-04T06:51:14.643Z",
+  "checks": [
+    {
+      "name": "two_distinct_player_capabilities",
+      "passed": true
+    },
+    {
+      "name": "private_projection_and_no_credential_leak",
+      "passed": true
+    },
+    {
+      "name": "missing_and_forged_player_denied",
+      "passed": true
+    },
+    {
+      "name": "seat_impersonation_denied",
+      "passed": true
+    },
+    {
+      "name": "cannot_advance_before_both_players_ready",
+      "passed": true
+    },
+    {
+      "name": "round_1_concurrency_idempotence_shared_history",
+      "passed": true
+    },
+    {
+      "name": "round_2_concurrency_idempotence_shared_history",
+      "passed": true
+    },
+    {
+      "name": "persistence_and_private_projection_after_worker_redeploy",
+      "passed": true
+    }
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "elapsedMs": 14937,
+      "duplicateResolveRequests": 8,
+      "responseStatuses": [
+        200,
+        202,
+        202,
+        202,
+        202,
+        202,
+        202,
+        202
+      ],
+      "attempts": 1,
+      "historyLength": 1,
+      "provenance": {
+        "mode": "live",
+        "model": "deepseek-flash",
+        "responseId": "2f32c1e4-e325-4e2e-aac3-210216c34d5a",
+        "totalTokens": 1537
+      }
+    },
+    {
+      "round": 2,
+      "elapsedMs": 15060,
+      "duplicateResolveRequests": 8,
+      "responseStatuses": [
+        202,
+        200,
+        202,
+        202,
+        202,
+        202,
+        202,
+        202
+      ],
+      "attempts": 2,
+      "historyLength": 2,
+      "provenance": {
+        "mode": "live",
+        "model": "deepseek-flash",
+        "responseId": "735be2b8-16c4-41d5-8240-758d7ea33591",
+        "totalTokens": 1619
+      }
+    }
+  ],
+  "base": "https://aikeeper-duo-sites-probe.www-2682028238.chatgpt.site",
+  "configured": true,
+  "roomId": "77c2fbea-d439-44dd-8cc1-88972d90ff71",
+  "mode": "live",
+  "expectedRound": 3,
+  "persistenceVerifiedAt": "2026-10-04T06:53:28.196Z"
+}
