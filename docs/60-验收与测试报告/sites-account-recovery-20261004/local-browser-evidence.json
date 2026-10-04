@@ -1,0 +1,21 @@
+{
+  "checkedAt": "2026-10-04T15:11:00.432Z",
+  "environment": "built Worker on local Miniflare D1, loopback gateways supply two synthetic identities",
+  "fixtureRoom": "148fe984-85ce-441f-9c09-5fe1b4506a77",
+  "fixtureRounds": 1,
+  "fixtureAttempts": 1,
+  "invitationClaimPassed": true,
+  "accountRefreshPassed": true,
+  "privateViewsInspected": true,
+  "failureRoom": "09756d06-04a4-4ba6-8adf-9dcb845f3998",
+  "injectedFailure": "model_not_configured",
+  "failedRound": 1,
+  "attemptsBeforeExplicitRetry": 1,
+  "attemptsAfterExplicitRetry": 2,
+  "actionsRemainSubmitted": true,
+  "retryDisabledWithoutAcknowledgement": true,
+  "failedStateSurvivesRefresh": true,
+  "realChatGPTAccounts": false,
+  "clipboardTransferVerified": false,
+  "invitationTransport": "local test setup rotated unused invitation then redirected second browser to redemption UI"
+}

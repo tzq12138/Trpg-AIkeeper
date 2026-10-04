@@ -1,0 +1,8 @@
+{
+  "checkedAt": "2026-10-04T15:21:07.593Z",
+  "probe": "sites-duo-v2",
+  "modelConfigured": true,
+  "serviceSignedIn": false,
+  "forgedHeadersSignedIn": false,
+  "serviceCreateRoomStatus": 401
+}
